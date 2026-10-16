@@ -1,0 +1,56 @@
+// Shared enums for Bergsmith wire contracts.
+//
+// Values mirror `bergsmith-common`. Never renumber or remove a value; add new
+// values at the end.
+syntax = "proto3";
+
+package bergsmith.common.v1;
+
+// Durable state of a maintenance job.
+enum JobState {
+  JOB_STATE_UNSPECIFIED = 0;
+  JOB_STATE_PLANNING = 1;
+  JOB_STATE_QUEUED = 2;
+  JOB_STATE_RUNNING = 3;
+  JOB_STATE_READY_TO_COMMIT = 4;
+  JOB_STATE_COMMITTING = 5;
+  JOB_STATE_COMMIT_OUTCOME_UNKNOWN = 6;
+  JOB_STATE_CANCELLING = 7;
+  JOB_STATE_SUCCEEDED = 8;
+  JOB_STATE_NO_OP = 9;
+  JOB_STATE_CANCELLED = 10;
+  JOB_STATE_REPLAN_REQUIRED = 11;
+  JOB_STATE_FAILED = 12;
+}
+
+// State of one execution attempt.
+enum AttemptState {
+  ATTEMPT_STATE_UNSPECIFIED = 0;
+  ATTEMPT_STATE_GRANTED = 1;
+  ATTEMPT_STATE_RUNNING = 2;
+  ATTEMPT_STATE_ACCEPTED = 3;
+  ATTEMPT_STATE_FAILED = 4;
+  ATTEMPT_STATE_EXPIRED = 5;
+  ATTEMPT_STATE_CANCELLED = 6;
+}
+
+// How a failure must be handled. The coordinator's classification is
+// authoritative; a worker's value is only a suggestion.
+enum FailureDisposition {
+  FAILURE_DISPOSITION_UNSPECIFIED = 0;
+  FAILURE_DISPOSITION_RETRY_SAME_REQUEST = 1;
+  FAILURE_DISPOSITION_RETRY_TASK = 2;
+  FAILURE_DISPOSITION_REPLAN_REQUIRED = 3;
+  FAILURE_DISPOSITION_PERMANENT_FAILURE = 4;
+  FAILURE_DISPOSITION_RESOLVE_PUBLICATION = 5;
+}
+
+// A typed failure with a stable reason code.
+message Failure {
+  // Stable, machine-readable reason, such as `SourceObjectMissing`.
+  string reason_code = 1;
+  // Suggested handling.
+  FailureDisposition disposition = 2;
+  // Human-readable detail. Never contains credentials.
+  string message = 3;
+}

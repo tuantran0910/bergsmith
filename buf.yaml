@@ -1,0 +1,11 @@
+# Protobuf lint and breaking-change rules (BS-004.T4). Run with
+# `make proto-lint` and `make proto-breaking`.
+version: v2
+modules:
+  - path: crates/protocol/proto
+lint:
+  use:
+    - STANDARD
+breaking:
+  use:
+    - WIRE_JSON

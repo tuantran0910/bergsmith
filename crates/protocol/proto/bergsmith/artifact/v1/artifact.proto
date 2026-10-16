@@ -1,0 +1,138 @@
+// Immutable task artifacts and receipts.
+//
+// These messages are hashed (see `bergsmith_protocol::hashing`), so they
+// follow stricter rules than the rest of the protocol:
+//   * no `map` fields, because map order is not canonical;
+//   * no floating-point fields;
+//   * repeated fields are sorted as documented on each field before hashing;
+//   * new fields are added only with numbers never used before. An unset
+//     proto3 field is not encoded, so adding one keeps old hashes stable.
+syntax = "proto3";
+
+package bergsmith.artifact.v1;
+
+// The work one task performs. Produced by the planner, stored at the
+// artifact URI in the grant, and verified by its SHA-256 before execution.
+message TaskArtifact {
+  string job_id = 1;
+  string plan_id = 2;
+  string task_id = 3;
+  TableRef table = 4;
+  // The planning baseline the task was derived from.
+  Baseline baseline = 5;
+  // Data files to rewrite. Sorted by `path`.
+  repeated SourceFile source_files = 6;
+  // Delete files to apply. Sorted by `path`.
+  repeated DeleteFile delete_files = 7;
+  // How to write the replacement files.
+  OutputSpec output = 8;
+}
+
+// The table a task belongs to.
+message TableRef {
+  // The Iceberg `table-uuid`.
+  string table_uuid = 1;
+  // The table's base location URI.
+  string location = 2;
+  // The Iceberg format version (2 in the MVP).
+  int32 format_version = 3;
+}
+
+// The table state captured when the plan was built.
+message Baseline {
+  int64 snapshot_id = 1;
+  int64 sequence_number = 2;
+  int32 schema_id = 3;
+}
+
+// A partition tuple, one value per partition field. Sorted by `field_id`.
+message PartitionKey {
+  int32 spec_id = 1;
+  repeated PartitionValue values = 2;
+}
+
+// One partition field's value, in Iceberg single-value binary form.
+message PartitionValue {
+  // The partition field ID.
+  int32 field_id = 1;
+  // Iceberg single-value serialization. Unset means null.
+  optional bytes value = 2;
+}
+
+message SourceFile {
+  string path = 1;
+  int64 file_size_bytes = 2;
+  int64 record_count = 3;
+  int64 data_sequence_number = 4;
+  PartitionKey partition = 5;
+}
+
+enum DeleteContent {
+  DELETE_CONTENT_UNSPECIFIED = 0;
+  DELETE_CONTENT_POSITION = 1;
+  DELETE_CONTENT_EQUALITY = 2;
+}
+
+message DeleteFile {
+  string path = 1;
+  int64 file_size_bytes = 2;
+  int64 record_count = 3;
+  int64 data_sequence_number = 4;
+  DeleteContent content = 5;
+  // Equality field IDs, ascending. Empty for position deletes.
+  repeated int32 equality_field_ids = 6;
+  // For position deletes scoped to one data file.
+  optional string referenced_data_file = 7;
+  PartitionKey partition = 8;
+}
+
+message OutputSpec {
+  int32 partition_spec_id = 1;
+  PartitionKey partition = 2;
+  int64 target_file_size_bytes = 3;
+  // Replacement files take the planning snapshot's sequence number (ADR 0004).
+  int64 data_sequence_number = 4;
+}
+
+// The immutable result of one accepted attempt.
+message TaskReceipt {
+  string task_id = 1;
+  string attempt_id = 2;
+  int32 generation = 3;
+  // SHA-256 of the task artifact the attempt executed.
+  bytes artifact_sha256 = 4;
+  // Files written under the attempt output prefix. Sorted by `path`. Empty
+  // when every row was deleted.
+  repeated OutputFile outputs = 5;
+  ExecutionMetrics metrics = 6;
+}
+
+message OutputFile {
+  string path = 1;
+  int64 file_size_bytes = 2;
+  int64 record_count = 3;
+  PartitionKey partition = 4;
+  // Per-column metrics for the manifest entry. Sorted by `field_id`.
+  repeated ColumnMetrics columns = 5;
+  // Parquet row-group start offsets, ascending.
+  repeated int64 split_offsets = 6;
+}
+
+message ColumnMetrics {
+  int32 field_id = 1;
+  int64 column_size_bytes = 2;
+  int64 value_count = 3;
+  int64 null_value_count = 4;
+  optional int64 nan_value_count = 5;
+  // Iceberg single-value serialization of the bounds.
+  optional bytes lower_bound = 6;
+  optional bytes upper_bound = 7;
+}
+
+message ExecutionMetrics {
+  int64 rows_read = 1;
+  int64 rows_deleted = 2;
+  int64 rows_written = 3;
+  int64 bytes_read = 4;
+  int64 bytes_written = 5;
+}

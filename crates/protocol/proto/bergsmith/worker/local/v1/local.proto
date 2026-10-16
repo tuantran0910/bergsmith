@@ -1,0 +1,66 @@
+// The supervisor–subprocess service (ADR 0008).
+//
+// The supervisor serves it on a Unix domain socket in a per-attempt
+// directory with mode 0700; the task subprocess is the only client. Both
+// sides are always the same build, so this interface evolves with the
+// worker binary rather than across versions.
+syntax = "proto3";
+
+package bergsmith.worker.local.v1;
+
+import "bergsmith/artifact/v1/artifact.proto";
+import "bergsmith/cluster/v1/cluster.proto";
+import "bergsmith/common/v1/common.proto";
+
+service LocalTaskService {
+  // Returns the verified artifact, limits, output prefix, and current credentials.
+  rpc GetTask(GetTaskRequest) returns (GetTaskResponse);
+  // Streams progress and output-inventory updates.
+  rpc ReportProgress(stream ReportProgressRequest) returns (ReportProgressResponse);
+  // Streams cancellation requests and refreshed credentials.
+  rpc WatchControl(WatchControlRequest) returns (stream WatchControlResponse);
+  // Delivers the immutable receipt. The supervisor persists it locally
+  // before reporting it to the coordinator.
+  rpc ReportResult(ReportResultRequest) returns (ReportResultResponse);
+  // Delivers a typed failure.
+  rpc ReportFailure(ReportFailureRequest) returns (ReportFailureResponse);
+}
+
+message GetTaskRequest {}
+
+message GetTaskResponse {
+  string attempt_id = 1;
+  int32 generation = 2;
+  // Already verified against the grant's SHA-256 by the supervisor.
+  bergsmith.artifact.v1.TaskArtifact artifact = 3;
+  bergsmith.cluster.v1.ResourceLimits limits = 4;
+  string output_prefix = 5;
+  bergsmith.cluster.v1.StorageCredentials credentials = 6;
+}
+
+message ReportProgressRequest {
+  bergsmith.cluster.v1.AttemptProgress progress = 1;
+}
+
+message ReportProgressResponse {}
+
+message WatchControlRequest {}
+
+message WatchControlResponse {
+  oneof control {
+    bergsmith.cluster.v1.Cancel cancel = 1;
+    bergsmith.cluster.v1.StorageCredentials refreshed_credentials = 2;
+  }
+}
+
+message ReportResultRequest {
+  bergsmith.artifact.v1.TaskReceipt receipt = 1;
+}
+
+message ReportResultResponse {}
+
+message ReportFailureRequest {
+  bergsmith.common.v1.Failure failure = 1;
+}
+
+message ReportFailureResponse {}

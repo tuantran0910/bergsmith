@@ -30,6 +30,13 @@ arrow-schema = "58.4.0"
 parquet = { version = "58.4.0", default-features = false, features = ["arrow", "async"] }
 
 futures = "0.3.34"
+prost = "0.14.4"
+prost-types = "0.14.4"
+protox = "0.10.0"
+sha2 = "0.11.1"
+tonic = { version = "0.14.6", default-features = false, features = ["codegen"] }
+tonic-prost = "0.14.6"
+tonic-prost-build = { version = "0.14.6", default-features = false }
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }
 sqlx = { version = "0.9.0", default-features = false, features = ["chrono", "json", "macros", "migrate", "postgres", "runtime-tokio", "uuid"] }

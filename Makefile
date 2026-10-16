@@ -2,6 +2,9 @@ CARGO ?= cargo
 COVERAGE_MIN ?= 80
 COVERAGE_IGNORE := '(^|/)bin/'
 COMPOSE := docker compose --file deploy/docker/compose.yaml
+BUF := docker run --rm --volume "$(CURDIR)":/workspace --workdir /workspace bufbuild/buf:1.50.0
+# The ref protobuf changes are checked against for breaking changes.
+PROTO_BASE ?= main
 
 # Tests that need PostgreSQL read DATABASE_URL. When it is not set, the test
 # targets start the Compose database first; set it to use your own server.
@@ -11,7 +14,8 @@ DB_PREREQ := db-up
 endif
 export DATABASE_URL
 
-.PHONY: help fmt fmt-check check clippy test doc coverage coverage-html deny machete ci db-up db-down
+.PHONY: help fmt fmt-check check clippy test doc coverage coverage-html deny machete ci db-up db-down \
+	proto-lint proto-breaking
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -55,4 +59,14 @@ deny: ## Check advisories, licenses, bans, and sources
 machete: ## Find unused dependencies
 	$(CARGO) machete
 
-ci: fmt-check check clippy test doc coverage deny machete ## Run every quality gate
+proto-lint: ## Lint protobuf files (buf, via Docker)
+	$(BUF) lint
+
+proto-breaking: ## Check protobuf changes against PROTO_BASE (buf, via Docker)
+	@if git cat-file -e $(PROTO_BASE):buf.yaml 2>/dev/null; then \
+		$(BUF) breaking --against '.git#ref=$(PROTO_BASE)'; \
+	else \
+		echo "$(PROTO_BASE) has no buf.yaml yet; nothing to compare against"; \
+	fi
+
+ci: fmt-check proto-lint proto-breaking check clippy test doc coverage deny machete ## Run every quality gate
