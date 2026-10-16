@@ -38,7 +38,7 @@ bin/
   coordinator/   bergsmith-coordinator binary
   worker/        bergsmith-worker binary
 deploy/          Docker (images, Compose) and k8s assets
-docs/            ADRs and support matrix
+docs/            ADRs, support matrix, and operator docs
 ```
 
 ## Development
