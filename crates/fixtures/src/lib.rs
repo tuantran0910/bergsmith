@@ -9,12 +9,14 @@
 //! - [`live_rows`] computes the multiset of live rows from those files with
 //!   its own reader and delete rules, independently of iceberg-rust's reader
 //!   and delete filter.
+//! - [`spike`] holds the 11 acceptance fixtures with their expected rows.
 
 mod declare;
 mod encode;
 mod error;
 mod generate;
 mod oracle;
+pub mod spike;
 mod value;
 
 pub use declare::{Commit, FileSpec, TableSpec};
