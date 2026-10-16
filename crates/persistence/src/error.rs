@@ -1,7 +1,7 @@
 //! Errors returned by the persistence layer.
 
 use bergsmith_common::ids::{AttemptId, CatalogConnectionId, JobId, TableId, TaskId};
-use bergsmith_common::job::JobState;
+use bergsmith_common::job::{JobState, JobTransitionError};
 use bergsmith_common::task::{AttemptTransitionError, TaskTransitionError};
 
 /// PostgreSQL `unique_violation`.
@@ -66,6 +66,19 @@ pub enum PersistenceError {
         /// The identity of the table that was observed under the alias.
         observed: TableId,
     },
+    /// Another writer changed the job after the caller read it.
+    #[error("job {job} is at revision {actual}, not the expected {expected}")]
+    RevisionConflict {
+        /// The job.
+        job: JobId,
+        /// The revision the caller read.
+        expected: i64,
+        /// The current revision.
+        actual: i64,
+    },
+    /// The job lifecycle forbids the change.
+    #[error(transparent)]
+    JobTransition(#[from] JobTransitionError),
     /// The job's state does not allow the operation.
     #[error("job {job} is {state} and cannot {operation}")]
     JobNotInState {
