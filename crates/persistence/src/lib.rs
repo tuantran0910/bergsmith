@@ -6,8 +6,11 @@
 //! their own transaction (a savepoint when one is already open). No
 //! transaction is ever held across network, gRPC, or object-store I/O.
 
+pub mod attempts;
 mod database;
 mod error;
+pub mod jobs;
+pub mod plans;
 pub mod tables;
 pub mod tenancy;
 

@@ -73,6 +73,12 @@ impl JobState {
         }
     }
 
+    /// Parses a persisted name produced by [`Self::as_str`].
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|state| state.as_str() == name)
+    }
+
     /// Returns whether the state is terminal. Terminal jobs never transition.
     #[must_use]
     pub const fn is_terminal(self) -> bool {
@@ -254,6 +260,14 @@ mod tests {
         ]
         .into_iter()
         .collect()
+    }
+
+    #[test]
+    fn persisted_names_round_trip() {
+        for state in JobState::ALL {
+            assert_eq!(JobState::from_name(state.as_str()), Some(state));
+        }
+        assert_eq!(JobState::from_name("planning"), None);
     }
 
     #[test]

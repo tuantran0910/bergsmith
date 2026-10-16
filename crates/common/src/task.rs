@@ -57,6 +57,12 @@ impl TaskState {
         }
     }
 
+    /// Parses a persisted name produced by [`Self::as_str`].
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|state| state.as_str() == name)
+    }
+
     /// Returns whether the state is terminal. `Accepted` stays permanent even
     /// if the job is later cancelled or needs replanning.
     #[must_use]
@@ -144,6 +150,12 @@ impl AttemptState {
         }
     }
 
+    /// Parses a persisted name produced by [`Self::as_str`].
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|state| state.as_str() == name)
+    }
+
     /// Returns whether the state is terminal. Expired, failed, and cancelled
     /// attempts can never become authoritative again.
     #[must_use]
@@ -192,6 +204,18 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+
+    #[test]
+    fn persisted_names_round_trip() {
+        for state in TaskState::ALL {
+            assert_eq!(TaskState::from_name(state.as_str()), Some(state));
+        }
+        for state in AttemptState::ALL {
+            assert_eq!(AttemptState::from_name(state.as_str()), Some(state));
+        }
+        assert_eq!(TaskState::from_name("Granted"), None);
+        assert_eq!(AttemptState::from_name("Pending"), None);
+    }
 
     #[test]
     fn retry_budget_counts_the_original_attempt() {
