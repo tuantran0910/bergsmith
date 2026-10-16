@@ -6,3 +6,4 @@
 
 pub mod database;
 pub mod inventory;
+pub mod publication;

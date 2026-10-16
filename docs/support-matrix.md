@@ -44,7 +44,7 @@ Nothing is certified yet. Update a row only when its acceptance tests pass
 
 | Behavior | Status |
 |---|---|
-| Conservative conflict rejection (`ReplanRequired`) | Planned |
+| Conservative conflict rejection (`ReplanRequired`) | Planned; concurrent append, delete, schema, spec, and sort changes rejected by Lakekeeper (BS-007) |
 | Commit-aligned job start and per-job duration budget | Planned |
 | Compatible rebasing onto concurrent appends | Deferred |
 
@@ -52,7 +52,7 @@ Nothing is certified yet. Update a row only when its acceptance tests pass
 
 | Catalog | Status |
 |---|---|
-| Lakekeeper v0.14.0 | Planned (first certification target); connection, listing, and credential vending verified in BS-005; conditional commits, stale-baseline rejection, snapshot evidence, and idempotent replay verified in BS-006 |
+| Lakekeeper v0.14.0 | Planned (first certification target); connection, listing, and credential vending verified in BS-005; conditional commits, stale-baseline rejection, snapshot evidence, and idempotent replay verified in BS-006; conflict, lost-response, cancellation-boundary, and output-prefix fixtures pass (BS-007); refuses `write.data.path` |
 | Other Iceberg REST catalogs | Later, through compatibility tests |
 
 ## Storage

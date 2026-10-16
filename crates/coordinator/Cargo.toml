@@ -11,10 +11,15 @@ bergsmith-catalog.workspace = true
 bergsmith-common.workspace = true
 bergsmith-persistence.workspace = true
 sqlx.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 bergsmith-storage.workspace = true
-tokio = { workspace = true, features = ["macros", "rt"] }
+iceberg.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt"] }
+url.workspace = true
 uuid.workspace = true
 
 [lints]
