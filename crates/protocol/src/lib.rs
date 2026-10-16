@@ -4,6 +4,7 @@
 //!
 //! Compatibility rules are in `crates/protocol/README.md`.
 
+pub mod convert;
 pub mod hashing;
 mod redact;
 
