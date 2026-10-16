@@ -89,6 +89,12 @@ pub enum PersistenceError {
         /// What was attempted.
         operation: &'static str,
     },
+    /// The coordinator no longer holds leadership under this epoch.
+    #[error("coordinator epoch {epoch} no longer holds leadership")]
+    LeadershipLost {
+        /// The epoch the caller held.
+        epoch: i64,
+    },
     /// Cancellation was requested before the commit send could be authorized.
     #[error("job {job} has a cancellation request and cannot publish")]
     CancellationRequested {

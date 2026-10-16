@@ -11,7 +11,7 @@ use bergsmith_persistence::cancellation::{
 };
 use bergsmith_persistence::jobs::{self, JobEventKind, Transition};
 use sqlx::PgPool;
-use support::{force_job_state, job, sqlstate, tenant};
+use support::{force_job_state, job, leader, sqlstate, tenant};
 
 fn cancel(job_id: JobId, reason: &str) -> CancelJob {
     CancelJob {
@@ -21,10 +21,12 @@ fn cancel(job_id: JobId, reason: &str) -> CancelJob {
     }
 }
 
+/// Authorizes at revision 0 under epoch 1, the first leader in a fresh database.
 fn authorize(job_id: JobId) -> SendAuthorization {
     SendAuthorization {
         job_id,
         expected_revision: 0,
+        coordinator_epoch: 1,
     }
 }
 
@@ -32,6 +34,7 @@ fn authorize(job_id: JobId) -> SendAuthorization {
 async fn cancellation_before_send_authorization_moves_the_job_to_cancelling(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let tenant = tenant(&mut conn, "acme").await;
+    assert_eq!(leader(&mut conn).await, 1);
 
     for state in [
         JobState::Planning,
@@ -84,6 +87,7 @@ async fn cancellation_before_send_authorization_moves_the_job_to_cancelling(pool
 async fn cancellation_requests_are_idempotent_and_keep_the_first_request(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let tenant = tenant(&mut conn, "acme").await;
+    assert_eq!(leader(&mut conn).await, 1);
     let id = job(&mut conn, &tenant).await;
     let first = cancellation::request_cancellation(&mut conn, &cancel(id, "first"))
         .await
@@ -106,6 +110,7 @@ async fn cancellation_requests_are_idempotent_and_keep_the_first_request(pool: P
 async fn cancellation_after_send_authorization_is_too_late(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let tenant = tenant(&mut conn, "acme").await;
+    assert_eq!(leader(&mut conn).await, 1);
     let id = job(&mut conn, &tenant).await;
     force_job_state(&mut conn, id, JobState::Committing).await;
     cancellation::authorize_send(&mut conn, authorize(id))
@@ -129,6 +134,7 @@ async fn cancellation_after_send_authorization_is_too_late(pool: PgPool) {
 async fn cancellation_of_an_unknown_outcome_is_recorded_but_unresolved(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let tenant = tenant(&mut conn, "acme").await;
+    assert_eq!(leader(&mut conn).await, 1);
     let id = job(&mut conn, &tenant).await;
     force_job_state(&mut conn, id, JobState::CommitOutcomeUnknown).await;
 
@@ -148,6 +154,7 @@ async fn cancellation_of_an_unknown_outcome_is_recorded_but_unresolved(pool: PgP
 async fn cancellation_never_modifies_terminal_jobs(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let tenant = tenant(&mut conn, "acme").await;
+    assert_eq!(leader(&mut conn).await, 1);
 
     for terminal in JobState::ALL.into_iter().filter(|s| s.is_terminal()) {
         let id = job(&mut conn, &tenant).await;
@@ -172,6 +179,7 @@ async fn cancellation_never_modifies_terminal_jobs(pool: PgPool) {
 async fn send_authorization_records_the_boundary_without_a_new_revision(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let tenant = tenant(&mut conn, "acme").await;
+    assert_eq!(leader(&mut conn).await, 1);
     let id = job(&mut conn, &tenant).await;
     force_job_state(&mut conn, id, JobState::Committing).await;
 
@@ -194,6 +202,7 @@ async fn send_authorization_records_the_boundary_without_a_new_revision(pool: Pg
 async fn send_authorization_checks_revision_state_and_prior_authorization(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let tenant = tenant(&mut conn, "acme").await;
+    assert_eq!(leader(&mut conn).await, 1);
     let ready = job(&mut conn, &tenant).await;
     force_job_state(&mut conn, ready, JobState::ReadyToCommit).await;
     let committing = job(&mut conn, &tenant).await;
@@ -207,6 +216,7 @@ async fn send_authorization_checks_revision_state_and_prior_authorization(pool: 
         SendAuthorization {
             job_id: committing,
             expected_revision: 7,
+            coordinator_epoch: 1,
         },
     )
     .await
@@ -233,6 +243,7 @@ async fn send_authorization_checks_revision_state_and_prior_authorization(pool: 
 async fn send_authorization_is_refused_after_cancellation(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let tenant = tenant(&mut conn, "acme").await;
+    assert_eq!(leader(&mut conn).await, 1);
     let id = job(&mut conn, &tenant).await;
     force_job_state(&mut conn, id, JobState::Committing).await;
     cancellation::request_cancellation(&mut conn, &cancel(id, "stop"))
@@ -244,6 +255,7 @@ async fn send_authorization_is_refused_after_cancellation(pool: PgPool) {
         SendAuthorization {
             job_id: id,
             expected_revision: 1,
+            coordinator_epoch: 1,
         },
     )
     .await
@@ -262,6 +274,7 @@ async fn send_authorization_is_refused_after_cancellation(pool: PgPool) {
 async fn cancellation_and_send_authorization_race_to_one_consistent_outcome(pool: PgPool) {
     let mut setup = pool.acquire().await.unwrap();
     let tenant = tenant(&mut setup, "acme").await;
+    assert_eq!(leader(&mut setup).await, 1);
     let id = job(&mut setup, &tenant).await;
     force_job_state(&mut setup, id, JobState::Committing).await;
     drop(setup);
@@ -286,6 +299,7 @@ async fn cancellation_and_send_authorization_race_to_one_consistent_outcome(pool
 async fn after_send_authorization_endings_need_proof_and_cancelling_is_closed(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let tenant = tenant(&mut conn, "acme").await;
+    assert_eq!(leader(&mut conn).await, 1);
     let id = job(&mut conn, &tenant).await;
     force_job_state(&mut conn, id, JobState::Committing).await;
     cancellation::authorize_send(&mut conn, authorize(id))
@@ -327,6 +341,7 @@ async fn after_send_authorization_endings_need_proof_and_cancelling_is_closed(po
 async fn the_schema_keeps_boundaries_monotonic(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let tenant = tenant(&mut conn, "acme").await;
+    assert_eq!(leader(&mut conn).await, 1);
     let authorized = job(&mut conn, &tenant).await;
     force_job_state(&mut conn, authorized, JobState::Committing).await;
     cancellation::authorize_send(&mut conn, authorize(authorized))

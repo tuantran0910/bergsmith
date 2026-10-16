@@ -11,6 +11,7 @@ pub mod cancellation;
 mod database;
 mod error;
 pub mod jobs;
+pub mod leadership;
 pub mod plans;
 pub mod tables;
 pub mod tenancy;
