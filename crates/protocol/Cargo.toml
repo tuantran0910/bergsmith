@@ -21,10 +21,10 @@ prost-types.workspace = true
 protox.workspace = true
 tonic-prost-build.workspace = true
 
-# The generated code in OUT_DIR uses these crates, which cargo-machete
-# cannot see.
+# The generated services in OUT_DIR use `tonic_prost::ProstCodec`, which
+# cargo-machete cannot see.
 [package.metadata.cargo-machete]
-ignored = ["tonic", "tonic-prost"]
+ignored = ["tonic-prost"]
 
 [lints]
 workspace = true

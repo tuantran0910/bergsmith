@@ -6,6 +6,7 @@
 
 pub mod convert;
 pub mod hashing;
+pub mod identity;
 mod redact;
 
 /// Generated protobuf messages and tonic services, laid out by package.
