@@ -79,15 +79,16 @@ Everything used to build, run, or deploy Bergsmith outside `cargo` lives under
 | `make deny` | Advisories, licenses, bans, sources |
 | `make machete` | Unused dependencies |
 | `make ci` | Every gate above, in CI order |
-| `make db-up` / `make db-down` | Start or discard the test PostgreSQL (Docker Compose) |
+| `make services-up` / `make services-down` | Start or discard PostgreSQL and RustFS (Docker Compose) |
 | `make proto-lint` / `make proto-breaking` | buf lint and breaking-change checks (Docker) |
 
 Required tools: rustup (the toolchain comes from `rust-toolchain.toml`),
 `cargo-nextest`, `cargo-llvm-cov`, `cargo-deny`, `cargo-machete`, and Docker.
 
-Tests that need PostgreSQL read `DATABASE_URL`. When it is unset, `make test`
-and `make coverage` start the Compose database on port 55432 first. Set
-`DATABASE_URL` to use your own server; its role must be allowed to create
+Integration tests use the Compose services in `deploy/docker/`, which `make
+test` and `make coverage` start first. They read `DATABASE_URL` and
+`BERGSMITH_TEST_S3_ENDPOINT`; override them
+to use your own servers. The PostgreSQL role must be allowed to create
 databases, because `#[sqlx::test]` gives each test a fresh one.
 
 ## 4. Definition of done

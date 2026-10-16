@@ -46,3 +46,5 @@ one command, and CI must not need a live database to compile.
 - Follow-up: BS-013 adds worker sessions (the attempt foreign key) and the
   leadership check on grants. BS-012 extends publications with commit intents.
   TLS for PostgreSQL connections is enabled when packaging (BS-020).
+- Note (BS-005): `make test` now always starts the Compose services
+  (`make services-up`); `DATABASE_URL` only selects the server.

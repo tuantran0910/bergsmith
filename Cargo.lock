@@ -549,6 +549,7 @@ dependencies = [
  "parquet",
  "thiserror",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
