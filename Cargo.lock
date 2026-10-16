@@ -535,6 +535,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "bergsmith-fixtures"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "bytes",
+ "futures",
+ "iceberg",
+ "parquet",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "bergsmith-maintenance"
 version = "0.1.0"
 
