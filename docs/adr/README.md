@@ -22,3 +22,4 @@ record's status; never rewrite an accepted decision.
 | [0013](0013-bergsmith-owned-catalog-client.md) | Bergsmith owns its catalog HTTP calls | Accepted |
 | [0014](0014-object-store-and-development-storage.md) | Object store over FileIO, and RustFS for development | Accepted |
 | [0015](0015-commit-adapter-capture.md) | Build commits with a capture-only catalog | Accepted |
+| [0016](0016-native-fixtures-and-oracle.md) | Native fixtures and an independent live-row oracle | Accepted |
