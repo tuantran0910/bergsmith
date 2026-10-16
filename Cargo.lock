@@ -480,6 +480,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -539,10 +540,14 @@ version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
+ "async-trait",
+ "bergsmith-common",
+ "bytes",
  "futures",
  "iceberg",
  "iceberg-storage-opendal",
  "parquet",
+ "thiserror",
  "tokio",
 ]
 
@@ -2601,6 +2606,7 @@ dependencies = [
  "opendal-layer-logging",
  "opendal-layer-retry",
  "opendal-layer-timeout",
+ "opendal-service-fs",
  "opendal-service-s3",
 ]
 
@@ -2685,6 +2691,20 @@ checksum = "1d11d53e67473e8914eacb2e14d586779ae57e1a84759ad25232ef339db77d8a"
 dependencies = [
  "opendal-core",
  "tokio",
+]
+
+[[package]]
+name = "opendal-service-fs"
+version = "0.59.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec5c16fe91b77c0364f66546a1c32b2999e9c3c3c75c2e908a282268e0890bac"
+dependencies = [
+ "bytes",
+ "log",
+ "opendal-core",
+ "serde",
+ "tokio",
+ "xattr",
 ]
 
 [[package]]
@@ -5012,6 +5032,16 @@ name = "writeable"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
+
+[[package]]
+name = "xattr"
+version = "1.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
+dependencies = [
+ "libc",
+ "rustix",
+]
 
 [[package]]
 name = "yoke"

@@ -1,8 +1,20 @@
-//! Backend-neutral object storage: typed locations, storage profiles, credential
-//! sources, and the `ObjectStore` trait.
+//! Backend-neutral object storage: typed locations, storage profiles,
+//! catalog-vended credentials, and the [`ObjectStore`].
 //!
-//! Table I/O goes through iceberg-rust `FileIO`. Its `list` and `delete_prefix`
-//! treat a path as a directory, never as a raw key prefix; the behavior this
-//! crate relies on is pinned by `tests/file_io_smoke.rs`.
-//!
-//! Implemented in BS-005.
+//! Table I/O goes through iceberg-rust `FileIO`, built from a
+//! [`StorageProfile`] by [`ObjectStore::open`]. Its `list` and
+//! `delete_prefix` treat a path as a directory, never as a raw key prefix;
+//! `tests/file_io_smoke.rs` and the contract suite pin that behavior.
+
+pub mod credentials;
+pub mod location;
+pub mod object_store;
+pub mod profile;
+
+pub use credentials::{CredentialCell, CredentialError, CredentialKind, StorageCredential};
+pub use location::{Backend, Location, LocationError, Scheme};
+pub use object_store::{ObjectEntry, ObjectStore, StorageError};
+pub use profile::{
+    AzureProfile, BackendCapabilities, GcsProfile, IncompleteUploads, ProfileError, S3Profile,
+    StorageProfile, StorageProfiles, capabilities,
+};
