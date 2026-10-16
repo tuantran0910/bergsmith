@@ -7,10 +7,15 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+bergsmith-catalog.workspace = true
+bergsmith-common.workspace = true
 bergsmith-persistence.workspace = true
+sqlx.workspace = true
 
 [dev-dependencies]
-sqlx.workspace = true
+bergsmith-storage.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+uuid.workspace = true
 
 [lints]
 workspace = true
