@@ -89,6 +89,18 @@ pub enum PersistenceError {
         /// What was attempted.
         operation: &'static str,
     },
+    /// Cancellation was requested before the commit send could be authorized.
+    #[error("job {job} has a cancellation request and cannot publish")]
+    CancellationRequested {
+        /// The job.
+        job: JobId,
+    },
+    /// A commit send was already authorized for the job.
+    #[error("job {job} already authorized a commit request")]
+    PublicationAlreadyAuthorized {
+        /// The job.
+        job: JobId,
+    },
     /// The task lifecycle forbids the change.
     #[error(transparent)]
     TaskTransition(#[from] TaskTransitionError),
