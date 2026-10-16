@@ -8,5 +8,10 @@ publish.workspace = true
 
 [dependencies]
 
+[dev-dependencies]
+iceberg.workspace = true
+iceberg-catalog-rest.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+
 [lints]
 workspace = true

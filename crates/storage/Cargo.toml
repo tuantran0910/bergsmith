@@ -8,5 +8,14 @@ publish.workspace = true
 
 [dependencies]
 
+[dev-dependencies]
+arrow-array.workspace = true
+arrow-schema.workspace = true
+futures.workspace = true
+iceberg.workspace = true
+iceberg-storage-opendal = { workspace = true, features = ["opendal-memory"] }
+parquet.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+
 [lints]
 workspace = true
