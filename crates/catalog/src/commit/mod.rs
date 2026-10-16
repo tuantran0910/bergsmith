@@ -9,6 +9,7 @@
 
 mod baseline;
 mod capture;
+mod drift;
 mod error;
 mod evidence;
 mod proposal;
@@ -18,6 +19,7 @@ mod send;
 mod tests;
 
 pub use baseline::Baseline;
+pub use drift::{BaselineChange, PLAN_RELEVANT_PROPERTIES};
 pub use error::ProposalError;
 pub use evidence::{EvidenceMismatch, ExpectedSnapshot, SnapshotEvidence};
 pub use proposal::{

@@ -67,6 +67,12 @@ impl Baseline {
         &self.table
     }
 
+    /// The baseline metadata file, if the table was not staged.
+    #[must_use]
+    pub fn metadata_location(&self) -> Option<&str> {
+        self.table.metadata_location()
+    }
+
     /// The iceberg-rust identifier of the table.
     pub(crate) fn identifier(&self) -> &TableIdent {
         self.table.identifier()
