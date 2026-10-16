@@ -7,13 +7,19 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+async-trait.workspace = true
+bergsmith-common.workspace = true
+bytes.workspace = true
+futures.workspace = true
+iceberg.workspace = true
+# S3 comes from the workspace default; memory and the local filesystem serve
+# tests and local development.
+iceberg-storage-opendal = { workspace = true, features = ["opendal-fs", "opendal-memory"] }
+thiserror.workspace = true
 
 [dev-dependencies]
 arrow-array.workspace = true
 arrow-schema.workspace = true
-futures.workspace = true
-iceberg.workspace = true
-iceberg-storage-opendal = { workspace = true, features = ["opendal-memory"] }
 parquet.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 

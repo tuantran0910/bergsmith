@@ -29,10 +29,15 @@ arrow-array = "58.4.0"
 arrow-schema = "58.4.0"
 parquet = { version = "58.4.0", default-features = false, features = ["arrow", "async"] }
 
+async-trait = "0.1.92"
+bytes = "1.12.1"
 futures = "0.3.34"
+mockito = "1.7.2"
 prost = "0.14.4"
 prost-types = "0.14.4"
 protox = "0.10.0"
+# TLS for catalog HTTPS. Feature unification also gives iceberg-rust's reqwest TLS.
+reqwest = { version = "0.12.28", default-features = false, features = ["http2", "json", "rustls-tls-native-roots"] }
 sha2 = "0.11.1"
 tonic = { version = "0.14.6", default-features = false, features = ["codegen"] }
 tonic-prost = "0.14.6"
@@ -46,7 +51,9 @@ serde_json = "1.0.154"
 thiserror = "2.0.21"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+url = "2.5.8"
 uuid = { version = "1.28.0", features = ["serde", "v7"] }
+zeroize = "1.9.1"
 
 [workspace.lints.rust]
 missing_docs = "warn"
