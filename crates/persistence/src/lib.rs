@@ -1,11 +1,15 @@
 //! PostgreSQL repositories and migrations for the durable execution ledger.
 //!
 //! Only the coordinator depends on this crate; workers never touch the
-//! database. Repositories keep each transaction short and never hold one
-//! across network, gRPC, or object-store I/O.
+//! database. Repository functions take a `&mut PgConnection`, so callers can
+//! compose them inside one transaction. Functions that must be atomic open
+//! their own transaction (a savepoint when one is already open). No
+//! transaction is ever held across network, gRPC, or object-store I/O.
 
 mod database;
 mod error;
+pub mod tables;
+pub mod tenancy;
 
 pub use database::{Database, DatabaseConfig, DatabaseUrl, MIGRATOR};
 pub use error::PersistenceError;

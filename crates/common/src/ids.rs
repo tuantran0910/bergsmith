@@ -80,6 +80,19 @@ define_id!(
     OrganizationId
 );
 define_id!(
+    /// Identifies a principal: a person or a service account.
+    PrincipalId
+);
+define_id!(
+    /// Identifies a connection to an Iceberg REST catalog.
+    CatalogConnectionId
+);
+define_id!(
+    /// Identifies a canonical table. Catalog aliases that name the same table
+    /// resolve to one `TableId`, so they share coordination.
+    TableId
+);
+define_id!(
     /// Identifies a maintenance job.
     JobId
 );
@@ -149,5 +162,8 @@ mod tests {
         let text = Uuid::now_v7().to_string();
         assert!(text.parse::<OrganizationId>().is_ok());
         assert!(text.parse::<WorkerSessionId>().is_ok());
+        assert!(text.parse::<PrincipalId>().is_ok());
+        assert!(text.parse::<CatalogConnectionId>().is_ok());
+        assert!(text.parse::<TableId>().is_ok());
     }
 }
