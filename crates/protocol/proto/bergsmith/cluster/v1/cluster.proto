@@ -1,0 +1,232 @@
+// The coordinator–worker service.
+//
+// Workers pull work; the coordinator never pushes. Every request carries the
+// worker session from RegisterWorker, and every call is authenticated with
+// the worker pool's service token (ADR 0012). Requests that change state are
+// idempotent: repeating one returns the original result.
+syntax = "proto3";
+
+package bergsmith.cluster.v1;
+
+import "bergsmith/artifact/v1/artifact.proto";
+import "bergsmith/common/v1/common.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+service ClusterService {
+  // Authenticates the worker, negotiates protocol, pool, and capabilities,
+  // and opens a session.
+  rpc RegisterWorker(RegisterWorkerRequest) returns (RegisterWorkerResponse);
+  // Long-polls for one eligible task. Repeating a request ID returns the
+  // original grant or its disposition and never allocates another task.
+  rpc RequestTask(RequestTaskRequest) returns (RequestTaskResponse);
+  // Renews attempt leases; returns cancellation or drain instructions and
+  // refreshed storage credentials.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  // Validates and durably accepts an immutable receipt.
+  rpc ReportTaskResult(ReportTaskResultRequest) returns (ReportTaskResultResponse);
+  // Records a typed failure; the response carries the authoritative disposition.
+  rpc ReportTaskFailure(ReportTaskFailureRequest) returns (ReportTaskFailureResponse);
+  // Resolves a lost acknowledgment without repeating execution.
+  rpc GetAttemptStatus(GetAttemptStatusRequest) returns (GetAttemptStatusResponse);
+  // Stops new assignments while existing attempts finish or stop.
+  rpc DrainWorker(DrainWorkerRequest) returns (DrainWorkerResponse);
+}
+
+message RegisterWorkerRequest {
+  // Stable name of the worker instance, for diagnostics.
+  string worker_name = 1;
+  // The pool the worker's service token belongs to.
+  string pool = 2;
+  // Highest `bergsmith.cluster` protocol revision the worker speaks.
+  uint32 protocol_revision = 3;
+  // Capability names the worker supports, sorted.
+  repeated string capabilities = 4;
+  Capacity capacity = 5;
+  // The worker build, such as `0.1.0+abc1234`.
+  string build_version = 6;
+}
+
+message Capacity {
+  uint32 max_concurrent_tasks = 1;
+  uint64 memory_bytes = 2;
+  uint32 cpu_millis = 3;
+}
+
+message RegisterWorkerResponse {
+  string worker_session_id = 1;
+  // The protocol revision both sides will use.
+  uint32 protocol_revision = 2;
+  google.protobuf.Duration heartbeat_interval = 3;
+  google.protobuf.Duration long_poll_timeout = 4;
+}
+
+message RequestTaskRequest {
+  string worker_session_id = 1;
+  // Unique per poll; repeat it to recover a lost response.
+  string request_id = 2;
+}
+
+message RequestTaskResponse {
+  oneof result {
+    TaskGrant grant = 1;
+    NoTask no_task = 2;
+  }
+}
+
+// No task was available before the long-poll timeout.
+message NoTask {
+  google.protobuf.Duration retry_after = 1;
+}
+
+// A durable grant: persisted by the coordinator before it is returned.
+message TaskGrant {
+  string job_id = 1;
+  string plan_id = 2;
+  string task_id = 3;
+  string attempt_id = 4;
+  string worker_session_id = 5;
+  // Attempt number for the task, from 1.
+  int32 generation = 6;
+  google.protobuf.Timestamp lease_expires_at = 7;
+  ArtifactRef artifact = 8;
+  // Identifies the planning baseline the task was derived from.
+  string input_state_id = 9;
+  // The capability profile a worker needs to run the task.
+  string capability_profile = 10;
+  // The only prefix the attempt may write under:
+  // `<data-location>/bergsmith/<job_id>/<attempt_id>/`.
+  string output_prefix = 11;
+  ResourceLimits limits = 12;
+  // Catalog-vended, table-scoped storage credentials.
+  StorageCredentials credentials = 13;
+}
+
+// Where to fetch the task artifact and how to verify it.
+message ArtifactRef {
+  string uri = 1;
+  // SHA-256 of the artifact (see `bergsmith_protocol::hashing`).
+  bytes sha256 = 2;
+}
+
+message ResourceLimits {
+  uint64 memory_bytes = 1;
+  uint32 cpu_millis = 2;
+  google.protobuf.Duration max_duration = 3;
+  uint64 max_output_bytes = 4;
+}
+
+// Short-lived storage credentials vended by the catalog. Never logged,
+// persisted, or written to artifacts; the generated type redacts `Debug`.
+message StorageCredentials {
+  // The location prefix the credentials are scoped to.
+  string prefix = 1;
+  // FileIO properties such as `s3.access-key-id`. Values are secret.
+  map<string, string> properties = 2;
+  google.protobuf.Timestamp expires_at = 3;
+}
+
+message HeartbeatRequest {
+  string worker_session_id = 1;
+  // Every attempt the worker is executing.
+  repeated AttemptLease attempts = 2;
+}
+
+message AttemptLease {
+  string attempt_id = 1;
+  int32 generation = 2;
+  AttemptProgress progress = 3;
+}
+
+message AttemptProgress {
+  int64 rows_read = 1;
+  int64 rows_written = 2;
+  int64 bytes_written = 3;
+  // Output objects started so far, for the coordinator's output inventory.
+  repeated string output_paths = 4;
+}
+
+message HeartbeatResponse {
+  repeated AttemptDirective directives = 1;
+  // Stop asking for new tasks.
+  bool drain = 2;
+}
+
+message AttemptDirective {
+  string attempt_id = 1;
+  oneof directive {
+    // Keep running; the lease now lasts until this time.
+    google.protobuf.Timestamp lease_expires_at = 2;
+    // Stop cooperatively, then terminate after the grace period.
+    Cancel cancel = 3;
+    // The attempt is no longer authoritative; stop and discard its result.
+    Fenced fenced = 4;
+  }
+  // Replacement credentials, when the current ones are close to expiry.
+  StorageCredentials refreshed_credentials = 5;
+}
+
+message Cancel {
+  string reason = 1;
+  google.protobuf.Duration grace_period = 2;
+}
+
+message Fenced {}
+
+message ReportTaskResultRequest {
+  string worker_session_id = 1;
+  bergsmith.artifact.v1.TaskReceipt receipt = 2;
+  // SHA-256 of `receipt` (see `bergsmith_protocol::hashing`).
+  bytes receipt_sha256 = 3;
+}
+
+// The coordinator's answer to a result report.
+enum ResultOutcome {
+  RESULT_OUTCOME_UNSPECIFIED = 0;
+  // The receipt is durable and eligible for publication while the job may publish.
+  RESULT_OUTCOME_ACCEPTED = 1;
+  // The identical receipt was accepted earlier.
+  RESULT_OUTCOME_ALREADY_ACCEPTED = 2;
+  // The attempt is no longer authoritative.
+  RESULT_OUTCOME_STALE_ATTEMPT = 3;
+  // The job was cancelled before the result was accepted.
+  RESULT_OUTCOME_CANCELLED = 4;
+  // The receipt failed validation.
+  RESULT_OUTCOME_INVALID_RESULT = 5;
+}
+
+message ReportTaskResultResponse {
+  ResultOutcome outcome = 1;
+  bergsmith.common.v1.JobState job_state = 2;
+}
+
+message ReportTaskFailureRequest {
+  string worker_session_id = 1;
+  string attempt_id = 2;
+  int32 generation = 3;
+  bergsmith.common.v1.Failure failure = 4;
+}
+
+message ReportTaskFailureResponse {
+  // The coordinator's authoritative classification.
+  bergsmith.common.v1.FailureDisposition disposition = 1;
+  bergsmith.common.v1.JobState job_state = 2;
+}
+
+message GetAttemptStatusRequest {
+  string worker_session_id = 1;
+  string attempt_id = 2;
+}
+
+message GetAttemptStatusResponse {
+  bergsmith.common.v1.AttemptState attempt_state = 1;
+  // Set when a result for the attempt was reported.
+  ResultOutcome result_outcome = 2;
+  bergsmith.common.v1.JobState job_state = 3;
+}
+
+message DrainWorkerRequest {
+  string worker_session_id = 1;
+}
+
+message DrainWorkerResponse {}

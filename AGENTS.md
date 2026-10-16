@@ -43,6 +43,8 @@ Dependency direction is enforced by `deny.toml`:
   `bergsmith-catalog`.
 - `bergsmith-common` depends on no other workspace crate.
 - Binaries hold no logic that a library crate could test.
+- Protobuf changes follow the compatibility rules in
+  `crates/protocol/README.md`.
 
 ### Deployment assets
 
@@ -78,6 +80,7 @@ Everything used to build, run, or deploy Bergsmith outside `cargo` lives under
 | `make machete` | Unused dependencies |
 | `make ci` | Every gate above, in CI order |
 | `make db-up` / `make db-down` | Start or discard the test PostgreSQL (Docker Compose) |
+| `make proto-lint` / `make proto-breaking` | buf lint and breaking-change checks (Docker) |
 
 Required tools: rustup (the toolchain comes from `rust-toolchain.toml`),
 `cargo-nextest`, `cargo-llvm-cov`, `cargo-deny`, `cargo-machete`, and Docker.

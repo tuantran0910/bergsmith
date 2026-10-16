@@ -24,6 +24,16 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - run: make fmt-check
 
+  proto:
+    name: Protobuf lint and breaking changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: make proto-lint
+      - run: make proto-breaking PROTO_BASE=origin/${{ github.base_ref || 'main' }}
+
   lint:
     name: Check, clippy, docs
     runs-on: ubuntu-latest
