@@ -89,6 +89,12 @@ pub enum PersistenceError {
         /// What was attempted.
         operation: &'static str,
     },
+    /// An idempotency key was reused for a different operation or request.
+    #[error("idempotency key {key:?} was already used for a different request")]
+    IdempotencyKeyReused {
+        /// The key.
+        key: String,
+    },
     /// The coordinator no longer holds leadership under this epoch.
     #[error("coordinator epoch {epoch} no longer holds leadership")]
     LeadershipLost {
