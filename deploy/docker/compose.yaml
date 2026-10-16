@@ -1,6 +1,12 @@
-# Development and test services. `make db-up` starts PostgreSQL for the test
-# suite; the full development stack (Lakekeeper, RustFS, OIDC) arrives in BS-005
-# and BS-020. Development only: never use these settings in production.
+# Development and test services, started by `make services-up`:
+#
+#   postgres     Bergsmith's execution ledger           127.0.0.1:55432
+#   rustfs       S3-compatible object store with STS    127.0.0.1:59000
+#
+# Lakekeeper arrives with the catalog client; the OIDC development provider
+# with BS-017. Every credential here is
+# a fake development value. Development only: never use these settings in
+# production.
 name: bergsmith
 
 services:
@@ -10,7 +16,8 @@ services:
       POSTGRES_USER: bergsmith
       POSTGRES_PASSWORD: bergsmith
       POSTGRES_DB: bergsmith
-    # `#[sqlx::test]` opens a database per test; leave headroom for parallel runs.
+    # `#[sqlx::test]` opens a database per test; leave headroom for parallel
+    # runs. fsync=off is for tests only.
     command: ["postgres", "-c", "max_connections=300", "-c", "fsync=off"]
     ports:
       - "127.0.0.1:55432:5432"
@@ -21,3 +28,44 @@ services:
       retries: 30
     tmpfs:
       - /var/lib/postgresql/data
+
+  rustfs:
+    image: rustfs/rustfs:1.0.1
+    environment:
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: ":9000"
+    ports:
+      - "127.0.0.1:59000:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -o /dev/null http://localhost:9000/ || exit 1"]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+    # RustFS runs as a non-root user.
+    tmpfs:
+      - /data:mode=1777
+
+  # Creates the buckets the tests use, with the lifecycle rule Bergsmith
+  # requires for incomplete multipart uploads.
+  rustfs-init:
+    image: amazon/aws-cli:2.27.0
+    environment:
+      AWS_ACCESS_KEY_ID: rustfsadmin
+      AWS_SECRET_ACCESS_KEY: rustfsadmin
+      AWS_DEFAULT_REGION: us-east-1
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        for bucket in warehouse storage-contract; do
+          aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket "$$bucket" 2>/dev/null \
+            || aws --endpoint-url http://rustfs:9000 s3api create-bucket --bucket "$$bucket"
+          aws --endpoint-url http://rustfs:9000 s3api put-bucket-lifecycle-configuration \
+            --bucket "$$bucket" --lifecycle-configuration \
+            '{"Rules":[{"ID":"abort-incomplete-uploads","Status":"Enabled","Filter":{"Prefix":""},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}}]}'
+        done
+    depends_on:
+      rustfs:
+        condition: service_healthy

@@ -59,8 +59,9 @@ Nothing is certified yet. Update a row only when its acceptance tests pass
 
 | Backend | Status |
 |---|---|
-| Amazon S3 with catalog-vended credentials | Planned |
-| S3-compatible stores (RustFS for development) | Planned; STS support to be verified |
+| Amazon S3 with catalog-vended credentials | Planned; contract suite not yet run against AWS |
+| S3-compatible stores: RustFS 1.0.1 with STS | Certified (storage contract suite, BS-005) |
+| Local filesystem and memory (tests and development) | Certified (storage contract suite, BS-005) |
 | Google Cloud Storage | Later (M9) |
 | Azure Blob Storage / ADLS Gen2 | Later (M9) |
 

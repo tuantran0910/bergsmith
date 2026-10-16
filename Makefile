@@ -10,16 +10,14 @@ BUF := docker run --rm --user "$$(id -u):$$(id -g)" --env BUF_CACHE_DIR=/tmp/buf
 # The ref protobuf changes are checked against for breaking changes.
 PROTO_BASE ?= main
 
-# Tests that need PostgreSQL read DATABASE_URL. When it is not set, the test
-# targets start the Compose database first; set it to use your own server.
-ifeq ($(origin DATABASE_URL),undefined)
-DATABASE_URL := postgres://bergsmith:bergsmith@127.0.0.1:55432/bergsmith
-DB_PREREQ := db-up
-endif
-export DATABASE_URL
+# Integration tests reach the Compose services through these variables.
+DATABASE_URL ?= postgres://bergsmith:bergsmith@127.0.0.1:55432/bergsmith
+BERGSMITH_TEST_S3_ENDPOINT ?= http://127.0.0.1:59000
+export DATABASE_URL BERGSMITH_TEST_S3_ENDPOINT
+NEXTEST_PROFILE ?= default
 
-.PHONY: help fmt fmt-check check clippy test doc coverage coverage-html deny machete ci db-up db-down \
-	proto-lint proto-breaking
+.PHONY: help fmt fmt-check check clippy test doc coverage coverage-html deny machete ci \
+	services-up services-down proto-lint proto-breaking
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -36,24 +34,24 @@ check: ## Type-check every target
 clippy: ## Lint with warnings as errors
 	$(CARGO) clippy --workspace --all-targets --locked -- -D warnings
 
-db-up: ## Start the test PostgreSQL (Docker Compose)
-	$(COMPOSE) up --detach --wait postgres
+services-up: ## Start PostgreSQL and RustFS (Docker Compose)
+	$(COMPOSE) up --detach --wait postgres rustfs
 
-db-down: ## Stop the test PostgreSQL and discard its data
+services-down: ## Stop the test services and discard their data
 	$(COMPOSE) down
 
-test: $(DB_PREREQ) ## Run the test suite
-	$(CARGO) nextest run --workspace --locked
+test: services-up ## Run the test suite
+	$(CARGO) nextest run --workspace --locked --profile $(NEXTEST_PROFILE)
 
 doc: ## Build docs with warnings as errors
 	RUSTDOCFLAGS="-D warnings" $(CARGO) doc --workspace --no-deps --locked
 
-coverage: $(DB_PREREQ) ## Enforce the line-coverage threshold
+coverage: services-up ## Enforce the line-coverage threshold
 	$(CARGO) llvm-cov nextest --workspace --locked \
 		--ignore-filename-regex $(COVERAGE_IGNORE) \
 		--fail-under-lines $(COVERAGE_MIN)
 
-coverage-html: $(DB_PREREQ) ## Write an HTML coverage report to target/llvm-cov/html
+coverage-html: services-up ## Write an HTML coverage report to target/llvm-cov/html
 	$(CARGO) llvm-cov nextest --workspace --locked \
 		--ignore-filename-regex $(COVERAGE_IGNORE) --html
 

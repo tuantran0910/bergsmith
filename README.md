@@ -49,8 +49,8 @@ Prerequisites:
   installs on first use.
 - `cargo install --locked cargo-nextest cargo-llvm-cov cargo-deny cargo-machete`
   (or `cargo binstall` the same tools).
-- Docker, for the test PostgreSQL that `make test` starts (`make db-down`
-  stops it).
+- Docker, for the PostgreSQL and RustFS services that `make test`
+  starts (`make services-down` stops them).
 
 Common commands:
 
