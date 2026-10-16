@@ -13,9 +13,11 @@ use crate::PersistenceError;
 macro_rules! job_columns {
     () => {
         "id, organization_id, table_identity_id, state, state_revision, state_reason, \
-         retry_of_job_id, created_by, created_at, updated_at"
+         retry_of_job_id, created_by, created_at, updated_at, cancellation_requested_at, \
+         cancellation_requested_by, cancellation_reason, publication_started_at"
     };
 }
+pub(crate) use job_columns;
 
 /// A maintenance job as persisted.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,6 +43,23 @@ pub struct Job {
     pub created_at: DateTime<Utc>,
     /// When the job row last changed (database time).
     pub updated_at: DateTime<Utc>,
+    /// The first cancellation request, if any. Requests are monotonic: a
+    /// recorded request never changes.
+    pub cancellation: Option<CancellationRequest>,
+    /// When the first outbound commit request was authorized. Once set,
+    /// cancellation can no longer prevent publication.
+    pub publication_started_at: Option<DateTime<Utc>>,
+}
+
+/// A recorded cancellation request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CancellationRequest {
+    /// When the first request was recorded (database time).
+    pub requested_at: DateTime<Utc>,
+    /// Who asked, if a principal did.
+    pub requested_by: Option<PrincipalId>,
+    /// Operator-supplied reason, if any.
+    pub reason: Option<String>,
 }
 
 /// Fields for a new job. Jobs always start in [`JobState::Planning`].
@@ -128,6 +147,10 @@ pub(crate) struct JobRow {
     created_by: Option<Uuid>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    cancellation_requested_at: Option<DateTime<Utc>>,
+    cancellation_requested_by: Option<Uuid>,
+    cancellation_reason: Option<String>,
+    publication_started_at: Option<DateTime<Utc>>,
 }
 
 impl TryFrom<JobRow> for Job {
@@ -145,6 +168,14 @@ impl TryFrom<JobRow> for Job {
             created_by: row.created_by.map(PrincipalId::from_uuid),
             created_at: row.created_at,
             updated_at: row.updated_at,
+            cancellation: row
+                .cancellation_requested_at
+                .map(|requested_at| CancellationRequest {
+                    requested_at,
+                    requested_by: row.cancellation_requested_by.map(PrincipalId::from_uuid),
+                    reason: row.cancellation_reason,
+                }),
+            publication_started_at: row.publication_started_at,
         })
     }
 }
@@ -372,7 +403,7 @@ pub async fn transition_job(
     current.state.validate_transition(
         transition.to,
         PublicationContext {
-            send_authorized: false,
+            send_authorized: current.publication_started_at.is_some(),
             non_publication_proven: transition.non_publication_proven,
         },
     )?;
