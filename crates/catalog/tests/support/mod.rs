@@ -11,6 +11,7 @@
 
 pub(crate) mod commit;
 pub(crate) mod proxy;
+pub(crate) mod sink;
 
 use bergsmith_catalog::{CatalogConnection, ConnectionConfig, TableName};
 use serde_json::json;

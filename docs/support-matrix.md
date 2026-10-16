@@ -45,7 +45,7 @@ Nothing is certified yet. Update a row only when its acceptance tests pass
 | Behavior | Status |
 |---|---|
 | Conservative conflict rejection (`ReplanRequired`) | Planned; concurrent append, delete, schema, spec, and sort changes rejected by Lakekeeper (BS-007) |
-| Commit-aligned job start and per-job duration budget | Planned |
+| Commit-aligned job start and per-job duration budget | Planned; conflict rate measured against a synthetic sink ([M1 measurement](measurements/m1-conflict-rate.md)) |
 | Compatible rebasing onto concurrent appends | Deferred |
 
 ## Catalogs
