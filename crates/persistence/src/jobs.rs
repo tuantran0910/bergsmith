@@ -1,7 +1,7 @@
 //! Jobs and their append-only event history.
 
 use bergsmith_common::ids::{JobId, OrganizationId, PrincipalId, TableId};
-use bergsmith_common::job::JobState;
+use bergsmith_common::job::{JobState, PublicationContext};
 use chrono::{DateTime, Utc};
 use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
@@ -321,6 +321,90 @@ pub async fn job_events(
     .into_iter()
     .map(JobEvent::try_from)
     .collect()
+}
+
+/// A requested state change for a job.
+#[derive(Clone, Debug)]
+pub struct Transition {
+    /// The job to change.
+    pub job_id: JobId,
+    /// The revision the caller read. The change applies only if it is still current.
+    pub expected_revision: i64,
+    /// The requested state.
+    pub to: JobState,
+    /// Typed reason for the new state, if any.
+    pub reason: Option<String>,
+    /// Principal causing the change, if any.
+    pub actor: Option<PrincipalId>,
+    /// Conclusive evidence shows no authorized commit request published or can
+    /// still publish. Required for a non-success ending after send
+    /// authorization.
+    pub non_publication_proven: bool,
+}
+
+/// Applies a revision-checked state transition and records its event in the
+/// same transaction.
+///
+/// The job row is locked, its revision compared with `expected_revision`, and
+/// the change validated with [`JobState::validate_transition`] before it is
+/// written. The revision then increases by one.
+///
+/// # Errors
+///
+/// - [`PersistenceError::RevisionConflict`] when another writer changed the
+///   job since the caller read it.
+/// - [`PersistenceError::JobTransition`] when the lifecycle rules forbid the
+///   change, including any change to a terminal job.
+/// - [`PersistenceError::NotFound`] when the job does not exist.
+pub async fn transition_job(
+    conn: &mut PgConnection,
+    transition: &Transition,
+) -> Result<Job, PersistenceError> {
+    let mut tx = conn.begin().await?;
+    let current = lock_job(&mut tx, transition.job_id).await?;
+    if current.state_revision != transition.expected_revision {
+        return Err(PersistenceError::RevisionConflict {
+            job: current.id,
+            expected: transition.expected_revision,
+            actual: current.state_revision,
+        });
+    }
+    current.state.validate_transition(
+        transition.to,
+        PublicationContext {
+            send_authorized: false,
+            non_publication_proven: transition.non_publication_proven,
+        },
+    )?;
+
+    let job: Job = sqlx::query_as::<_, JobRow>(concat!(
+        "UPDATE jobs SET state = $2, state_revision = state_revision + 1, state_reason = $3,
+             updated_at = now()
+         WHERE id = $1
+         RETURNING ",
+        job_columns!()
+    ))
+    .bind(current.id.as_uuid())
+    .bind(transition.to.as_str())
+    .bind(&transition.reason)
+    .fetch_one(&mut *tx)
+    .await?
+    .try_into()?;
+    append_event(
+        &mut tx,
+        &EventRecord {
+            job_id: job.id,
+            kind: JobEventKind::Transitioned,
+            from_state: Some(current.state),
+            to_state: job.state,
+            state_revision: job.state_revision,
+            reason: transition.reason.as_deref(),
+            actor: transition.actor,
+        },
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(job)
 }
 
 #[cfg(test)]
