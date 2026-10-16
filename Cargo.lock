@@ -509,9 +509,12 @@ version = "0.1.0"
 name = "bergsmith-persistence"
 version = "0.1.0"
 dependencies = [
+ "bergsmith-common",
+ "chrono",
  "sqlx",
  "thiserror",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
