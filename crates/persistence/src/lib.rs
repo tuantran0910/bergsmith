@@ -10,6 +10,7 @@ pub mod attempts;
 pub mod cancellation;
 mod database;
 mod error;
+pub mod idempotency;
 pub mod jobs;
 pub mod leadership;
 pub mod plans;
