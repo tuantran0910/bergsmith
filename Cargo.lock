@@ -525,6 +525,8 @@ dependencies = [
  "prost",
  "prost-types",
  "protox",
+ "sha2 0.11.1",
+ "thiserror",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",

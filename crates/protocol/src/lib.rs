@@ -4,6 +4,7 @@
 //!
 //! Compatibility rules are in `crates/protocol/README.md`.
 
+pub mod hashing;
 mod redact;
 
 /// Generated protobuf messages and tonic services, laid out by package.
