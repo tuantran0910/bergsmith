@@ -1,0 +1,461 @@
+//! Commit building against real Iceberg metadata and manifests in memory
+//! storage. Each "publication" applies the captured updates to the metadata,
+//! as a catalog would.
+
+use bergsmith_common::ids::{JobId, PublicationId};
+use bergsmith_storage::{Location, ObjectStore, StorageProfile};
+use iceberg::spec::{
+    DataContentType, DataFile, DataFileBuilder, DataFileFormat, ManifestStatus, NestedField,
+    PrimitiveType, Schema, Struct, TableMetadata, TableMetadataBuilder, Type,
+};
+use iceberg::transaction::ApplyTransactionAction;
+use iceberg::{TableCreation, TableRequirement};
+
+use super::*;
+use crate::connection::{LoadedTable, TableName};
+
+const LOCATION: &str = "memory://warehouse/db/t";
+
+fn store() -> ObjectStore {
+    ObjectStore::open(&StorageProfile::Memory, None).unwrap()
+}
+
+fn name() -> TableName {
+    TableName {
+        namespace: vec!["db".to_owned()],
+        name: "t".to_owned(),
+    }
+}
+
+fn empty_table() -> TableMetadata {
+    let schema = Schema::builder()
+        .with_fields([NestedField::required(1, "id", Type::Primitive(PrimitiveType::Long)).into()])
+        .build()
+        .unwrap();
+    let creation = TableCreation::builder()
+        .name("t".to_owned())
+        .location(LOCATION.to_owned())
+        .schema(schema)
+        .build();
+    TableMetadataBuilder::from_table_creation(creation)
+        .unwrap()
+        .build()
+        .unwrap()
+        .metadata
+}
+
+fn baseline(store: &ObjectStore, metadata: &TableMetadata) -> Baseline {
+    let loaded = LoadedTable {
+        name: name(),
+        metadata_location: Some(format!("{LOCATION}/metadata/v1.metadata.json")),
+        metadata: metadata.clone(),
+        location: Location::parse(LOCATION).unwrap(),
+        credentials: Vec::new(),
+    };
+    Baseline::new(&loaded, store.file_io().clone()).unwrap()
+}
+
+fn data_file(name: &str, records: u64) -> DataFile {
+    DataFileBuilder::default()
+        .content(DataContentType::Data)
+        .file_path(format!("{LOCATION}/data/{name}.parquet"))
+        .file_format(DataFileFormat::Parquet)
+        .file_size_in_bytes(records * 10)
+        .record_count(records)
+        .partition_spec_id(0)
+        .partition(Struct::empty())
+        .build()
+        .unwrap()
+}
+
+/// Applies a request's updates, checking its requirements first, as a
+/// catalog would.
+fn publish(metadata: &TableMetadata, request: &CommitRequest) -> TableMetadata {
+    let decoded = request.decode().unwrap();
+    for requirement in &decoded.requirements {
+        requirement.check(Some(metadata)).unwrap();
+    }
+    let mut builder = metadata.clone().into_builder(None);
+    for update in decoded.updates {
+        builder = update.apply(builder).unwrap();
+    }
+    builder.build().unwrap().metadata
+}
+
+async fn append(
+    store: &ObjectStore,
+    metadata: &TableMetadata,
+    files: &[DataFile],
+) -> TableMetadata {
+    let request = baseline(store, metadata)
+        .prepare_with(|transaction| {
+            transaction
+                .fast_append()
+                .add_data_files(files.to_vec())
+                .apply(transaction)
+        })
+        .await
+        .unwrap();
+    publish(metadata, &request)
+}
+
+fn proposal(
+    metadata: &TableMetadata,
+    removed: Vec<DataFile>,
+    added: Vec<DataFile>,
+) -> RewriteProposal {
+    RewriteProposal {
+        job_id: JobId::generate(),
+        publication_id: PublicationId::generate(),
+        snapshot_id: new_snapshot_id(metadata),
+        removed,
+        added,
+    }
+}
+
+/// An empty table plus one append of `a` and `b`.
+async fn appended(store: &ObjectStore) -> TableMetadata {
+    append(
+        store,
+        &empty_table(),
+        &[data_file("a", 1), data_file("b", 2)],
+    )
+    .await
+}
+
+#[tokio::test]
+async fn baselines_assert_every_standard_requirement() {
+    let store = store();
+    let metadata = appended(&store).await;
+    let main = metadata.current_snapshot_id();
+
+    let requirements = baseline(&store, &metadata).requirements().to_vec();
+
+    assert_eq!(
+        requirements,
+        [
+            TableRequirement::UuidMatch {
+                uuid: metadata.uuid()
+            },
+            TableRequirement::RefSnapshotIdMatch {
+                r#ref: "main".to_owned(),
+                snapshot_id: main,
+            },
+            TableRequirement::CurrentSchemaIdMatch {
+                current_schema_id: 0
+            },
+            TableRequirement::LastAssignedFieldIdMatch {
+                last_assigned_field_id: 1
+            },
+            TableRequirement::DefaultSpecIdMatch { default_spec_id: 0 },
+            TableRequirement::LastAssignedPartitionIdMatch {
+                last_assigned_partition_id: metadata.last_partition_id()
+            },
+            TableRequirement::DefaultSortOrderIdMatch {
+                default_sort_order_id: 0
+            },
+        ]
+    );
+    assert!(main.is_some());
+}
+
+#[tokio::test]
+async fn an_empty_table_asserts_that_main_does_not_exist() {
+    let store = store();
+    let empty = empty_table();
+
+    let request = baseline(&store, &empty)
+        .prepare_with(|transaction| {
+            transaction
+                .fast_append()
+                .add_data_files([data_file("a", 1)])
+                .apply(transaction)
+        })
+        .await
+        .unwrap();
+
+    assert!(request.decode().unwrap().requirements.contains(
+        &TableRequirement::RefSnapshotIdMatch {
+            r#ref: "main".to_owned(),
+            snapshot_id: None,
+        }
+    ));
+}
+
+#[tokio::test]
+async fn a_rewrite_replaces_files_in_an_explicit_snapshot() {
+    let store = store();
+    let metadata = appended(&store).await;
+    let main = metadata.current_snapshot().unwrap().clone();
+    let baseline = baseline(&store, &metadata);
+    let proposal = proposal(
+        &metadata,
+        vec![data_file("a", 1), data_file("b", 2)],
+        vec![data_file("c", 3)],
+    );
+    let (snapshot_id, job_id, publication_id) = (
+        proposal.snapshot_id,
+        proposal.job_id,
+        proposal.publication_id,
+    );
+    let hash = proposal.proposal_hash(&baseline).unwrap();
+
+    let prepared = proposal.prepare(&baseline).await.unwrap();
+    let published = publish(&metadata, &prepared.request);
+
+    let snapshot = published.snapshot_by_id(snapshot_id).unwrap();
+    assert_eq!(published.current_snapshot_id(), Some(snapshot_id));
+    assert_eq!(snapshot.parent_snapshot_id(), Some(main.snapshot_id()));
+    let summary = &snapshot.summary().additional_properties;
+    assert_eq!(summary[JOB_ID_PROPERTY], job_id.to_string());
+    assert_eq!(summary[PUBLICATION_ID_PROPERTY], publication_id.to_string());
+    assert_eq!(summary[PROPOSAL_HASH_PROPERTY], hash.to_hex());
+    assert_eq!(
+        prepared.request.decode().unwrap().requirements,
+        baseline.requirements()
+    );
+    assert_eq!(prepared.expected.proposal_hash, hash);
+    assert_eq!(prepared.expected.manifest_list, snapshot.manifest_list());
+
+    // Live files after the rewrite: only `c`, at the baseline's data
+    // sequence number rather than the new snapshot's.
+    let published_baseline = self::baseline(&store, &published);
+    let table = published_baseline.table();
+    let manifests = table.manifest_list_reader(snapshot).load().await.unwrap();
+    let mut live = Vec::new();
+    for manifest in manifests.entries() {
+        for entry in manifest
+            .load_manifest(table.file_io())
+            .await
+            .unwrap()
+            .entries()
+        {
+            if entry.status() != ManifestStatus::Deleted {
+                live.push((
+                    entry.data_file().file_path().to_owned(),
+                    entry.sequence_number(),
+                ));
+            }
+        }
+    }
+    assert_eq!(
+        live,
+        [(
+            format!("{LOCATION}/data/c.parquet"),
+            Some(main.sequence_number())
+        )]
+    );
+    assert!(snapshot.sequence_number() > main.sequence_number());
+}
+
+#[tokio::test]
+async fn requirements_stay_on_the_baseline_after_the_table_advances() {
+    let store = store();
+    let metadata = appended(&store).await;
+    let baseline = baseline(&store, &metadata);
+    let advanced = append(&store, &metadata, &[data_file("late", 1)]).await;
+
+    let prepared = proposal(&metadata, vec![data_file("a", 1)], vec![data_file("c", 1)])
+        .prepare(&baseline)
+        .await
+        .unwrap();
+    let requirements = prepared.request.decode().unwrap().requirements;
+
+    assert_eq!(requirements, baseline.requirements());
+    let stale = requirements
+        .iter()
+        .find(|requirement| requirement.check(Some(&advanced)).is_err());
+    assert!(
+        matches!(stale, Some(TableRequirement::RefSnapshotIdMatch { snapshot_id, .. })
+            if *snapshot_id == metadata.current_snapshot_id()),
+        "{stale:?}"
+    );
+}
+
+#[tokio::test]
+async fn removing_a_file_that_is_not_live_fails() {
+    let store = store();
+    let metadata = appended(&store).await;
+
+    let error = proposal(&metadata, vec![data_file("missing", 1)], Vec::new())
+        .prepare(&baseline(&store, &metadata))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, ProposalError::Iceberg(_)), "{error}");
+}
+
+#[tokio::test]
+async fn invalid_proposals_are_rejected_before_building() {
+    let store = store();
+    let metadata = appended(&store).await;
+    let empty = empty_table();
+    let existing = metadata.current_snapshot_id().unwrap();
+
+    let nothing_removed = proposal(&metadata, Vec::new(), vec![data_file("c", 1)])
+        .prepare(&baseline(&store, &metadata))
+        .await
+        .unwrap_err();
+    let mut reused = proposal(&metadata, vec![data_file("a", 1)], Vec::new());
+    reused.snapshot_id = existing;
+    let reused = reused
+        .prepare(&baseline(&store, &metadata))
+        .await
+        .unwrap_err();
+    let no_main = proposal(&empty, vec![data_file("a", 1)], Vec::new())
+        .prepare(&baseline(&store, &empty))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(nothing_removed, ProposalError::NothingRemoved));
+    assert!(matches!(reused, ProposalError::SnapshotIdInUse(id) if id == existing));
+    assert!(matches!(no_main, ProposalError::NoMainSnapshot));
+}
+
+#[tokio::test]
+async fn a_rewrite_with_no_outputs_removes_the_files() {
+    let store = store();
+    let metadata = appended(&store).await;
+    let prepared = proposal(&metadata, vec![data_file("a", 1)], Vec::new())
+        .prepare(&baseline(&store, &metadata))
+        .await
+        .unwrap();
+
+    let published = publish(&metadata, &prepared.request);
+
+    assert_eq!(
+        published.current_snapshot_id(),
+        Some(prepared.expected.snapshot_id)
+    );
+}
+
+#[tokio::test]
+async fn proposal_hashes_ignore_file_order_and_cover_every_field() {
+    let store = store();
+    let metadata = appended(&store).await;
+    let baseline = baseline(&store, &metadata);
+    let original = proposal(
+        &metadata,
+        vec![data_file("a", 1), data_file("b", 2)],
+        vec![data_file("c", 3)],
+    );
+    let hash = |p: &RewriteProposal| p.proposal_hash(&baseline).unwrap();
+
+    let mut reordered = original.clone();
+    reordered.removed.reverse();
+    assert_eq!(hash(&reordered), hash(&original));
+
+    let mut variants = Vec::new();
+    let mut changed = original.clone();
+    changed.job_id = JobId::generate();
+    variants.push(changed);
+    let mut changed = original.clone();
+    changed.publication_id = PublicationId::generate();
+    variants.push(changed);
+    let mut changed = original.clone();
+    changed.snapshot_id += 1;
+    variants.push(changed);
+    let mut changed = original.clone();
+    changed.added = vec![data_file("c", 4)];
+    variants.push(changed);
+    let mut changed = original.clone();
+    changed.removed.pop();
+    variants.push(changed);
+    let mut changed = original.clone();
+    std::mem::swap(&mut changed.removed, &mut changed.added);
+    variants.push(changed);
+    for variant in &variants {
+        assert_ne!(hash(variant), hash(&original), "{variant:?}");
+    }
+
+    let advanced = append(&store, &metadata, &[data_file("late", 1)]).await;
+    let other_baseline = self::baseline(&store, &advanced);
+    assert_ne!(
+        original.proposal_hash(&other_baseline).unwrap(),
+        hash(&original)
+    );
+    assert!(matches!(
+        original.proposal_hash(&self::baseline(&store, &empty_table())),
+        Err(ProposalError::NoMainSnapshot)
+    ));
+}
+
+#[tokio::test]
+async fn evidence_recognizes_only_the_exact_published_snapshot() {
+    let store = store();
+    let metadata = appended(&store).await;
+    let prepared = proposal(&metadata, vec![data_file("a", 1)], vec![data_file("c", 1)])
+        .prepare(&baseline(&store, &metadata))
+        .await
+        .unwrap();
+    let expected = prepared.expected.clone();
+    let published = publish(&metadata, &prepared.request);
+    let sequence_number = published
+        .snapshot_by_id(expected.snapshot_id)
+        .unwrap()
+        .sequence_number();
+    let advanced = append(&store, &published, &[data_file("late", 1)]).await;
+
+    assert_eq!(expected.find_in(&metadata), SnapshotEvidence::Absent);
+    assert_eq!(
+        expected.find_in(&published),
+        SnapshotEvidence::Published {
+            sequence_number,
+            main_head: true
+        }
+    );
+    assert_eq!(
+        expected.find_in(&advanced),
+        SnapshotEvidence::Published {
+            sequence_number,
+            main_head: false
+        }
+    );
+
+    let mismatch = |change: fn(&mut ExpectedSnapshot)| {
+        let mut other = expected.clone();
+        change(&mut other);
+        other.find_in(&published)
+    };
+    assert_eq!(
+        mismatch(|e| e.table_uuid = uuid::Uuid::nil()),
+        SnapshotEvidence::Mismatch(EvidenceMismatch::TableUuid(published.uuid()))
+    );
+    assert_eq!(
+        mismatch(|e| e.parent_snapshot_id = None),
+        SnapshotEvidence::Mismatch(EvidenceMismatch::ParentSnapshot(
+            metadata.current_snapshot_id()
+        ))
+    );
+    assert!(matches!(
+        mismatch(|e| e.manifest_list = "other".to_owned()),
+        SnapshotEvidence::Mismatch(EvidenceMismatch::ManifestList(_))
+    ));
+    assert!(matches!(
+        mismatch(|e| e.job_id = JobId::generate()),
+        SnapshotEvidence::Mismatch(EvidenceMismatch::SummaryProperty {
+            key: JOB_ID_PROPERTY,
+            found: Some(_)
+        })
+    ));
+    assert!(matches!(
+        mismatch(|e| e.proposal_hash = bergsmith_common::digest::Sha256Digest::of(b"x", b"")),
+        SnapshotEvidence::Mismatch(EvidenceMismatch::SummaryProperty {
+            key: PROPOSAL_HASH_PROPERTY,
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn actions_that_change_nothing_are_rejected() {
+    let store = store();
+    let metadata = appended(&store).await;
+
+    let error = baseline(&store, &metadata)
+        .prepare_with(Ok)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, ProposalError::NoChanges), "{error}");
+}

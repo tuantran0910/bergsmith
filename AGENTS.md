@@ -200,8 +200,10 @@ Breaking one of these is a correctness bug, whatever the tests say.
    publish metadata, and never delete source files.
 2. The coordinator never reads table rows.
 3. Only the coordinator publishes, through the standard REST commit with the
-   original planning-baseline requirements. Never call iceberg-rust's
-   `Transaction::commit`; it reloads the table and re-applies actions.
+   original planning-baseline requirements. Never run iceberg-rust's
+   `Transaction::commit` against a real catalog; it reloads the table and
+   re-applies actions. Commits are built with the capture catalog in
+   `crates/catalog` (ADR 0015).
 4. No commit is sent without the send-authorization transaction, and no
    network call happens inside that transaction.
 5. An ambiguous commit is never resolved as failed or cancelled without

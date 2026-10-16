@@ -19,6 +19,32 @@ impl fmt::Display for CatalogErrorModel {
     }
 }
 
+/// The standard REST error response.
+#[derive(serde::Deserialize)]
+pub(crate) struct ErrorEnvelope {
+    error: ErrorBody,
+}
+
+#[derive(serde::Deserialize)]
+struct ErrorBody {
+    #[serde(rename = "type", default)]
+    kind: String,
+    #[serde(default)]
+    message: String,
+}
+
+impl ErrorEnvelope {
+    /// The error model in `body`, if it is a standard error response.
+    pub(crate) fn decode(body: &[u8]) -> Option<CatalogErrorModel> {
+        serde_json::from_slice::<Self>(body)
+            .ok()
+            .map(|envelope| CatalogErrorModel {
+                kind: envelope.error.kind,
+                message: envelope.error.message,
+            })
+    }
+}
+
 /// An error from a catalog call. Messages never include credentials.
 #[derive(Debug, thiserror::Error)]
 pub enum CatalogError {
@@ -72,6 +98,10 @@ pub enum CatalogError {
     /// The catalog vended no credentials for a table loaded with delegation.
     #[error("catalog vended no storage credentials for the table")]
     NoVendedCredentials,
+    /// An idempotency key was given for a catalog that does not advertise
+    /// `idempotency-key-lifetime`.
+    #[error("catalog does not support idempotency keys")]
+    IdempotencyUnsupported,
 }
 
 impl CatalogError {
