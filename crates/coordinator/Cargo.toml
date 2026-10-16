@@ -7,6 +7,10 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+bergsmith-persistence.workspace = true
+
+[dev-dependencies]
+sqlx.workspace = true
 
 [lints]
 workspace = true

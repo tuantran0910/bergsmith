@@ -37,6 +37,7 @@ crates/
 bin/
   coordinator/   bergsmith-coordinator binary
   worker/        bergsmith-worker binary
+deploy/          Docker (images, Compose) and k8s assets
 docs/            ADRs and support matrix
 ```
 
@@ -48,6 +49,8 @@ Prerequisites:
   installs on first use.
 - `cargo install --locked cargo-nextest cargo-llvm-cov cargo-deny cargo-machete`
   (or `cargo binstall` the same tools).
+- Docker, for the test PostgreSQL that `make test` starts (`make db-down`
+  stops it).
 
 Common commands:
 
