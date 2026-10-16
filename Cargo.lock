@@ -522,6 +522,7 @@ dependencies = [
 name = "bergsmith-protocol"
 version = "0.1.0"
 dependencies = [
+ "bergsmith-common",
  "prost",
  "prost-types",
  "protox",
