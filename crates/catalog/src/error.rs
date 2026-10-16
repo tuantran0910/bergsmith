@@ -98,6 +98,9 @@ pub enum CatalogError {
     /// The catalog vended no credentials for a table loaded with delegation.
     #[error("catalog vended no storage credentials for the table")]
     NoVendedCredentials,
+    /// The table's data location is outside its table location.
+    #[error("table data location {0} is outside the table location")]
+    DataLocationOutsideTable(String),
     /// An idempotency key was given for a catalog that does not advertise
     /// `idempotency-key-lifetime`.
     #[error("catalog does not support idempotency keys")]

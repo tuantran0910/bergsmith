@@ -13,6 +13,9 @@ use uuid::Uuid;
 use crate::client::{ConnectionConfig, HttpClient};
 use crate::error::CatalogError;
 
+/// The table property that overrides where data files go.
+const WRITE_DATA_PATH: &str = "write.data.path";
+
 /// Header that asks the catalog to vend storage credentials.
 const ACCESS_DELEGATION: &str = "X-Iceberg-Access-Delegation";
 
@@ -103,6 +106,31 @@ pub struct ObservedTable {
 }
 
 impl LoadedTable {
+    /// Where the table's data files go: `write.data.path`, or
+    /// `<table-location>/data` when it is unset. Attempt outputs go under
+    /// [`Location::attempt_output_prefix`] of this location.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::InvalidLocation`] for an unparsable `write.data.path`,
+    /// and [`CatalogError::DataLocationOutsideTable`] when it is outside the
+    /// table location, where table-scoped credentials cannot reach it.
+    pub fn data_location(&self) -> Result<Location, CatalogError> {
+        let location = match self.metadata.properties().get(WRITE_DATA_PATH) {
+            Some(path) => Location::parse(path.trim_end_matches('/'))
+                .map_err(CatalogError::InvalidLocation)?,
+            None => self
+                .location
+                .child("data")
+                .map_err(CatalogError::InvalidLocation)?,
+        };
+        if location.is_within(&self.location) {
+            Ok(location)
+        } else {
+            Err(CatalogError::DataLocationOutsideTable(location.to_string()))
+        }
+    }
+
     /// The identity to record for this observation.
     #[must_use]
     pub fn observation(&self) -> ObservedTable {

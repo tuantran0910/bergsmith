@@ -459,3 +459,144 @@ async fn actions_that_change_nothing_are_rejected() {
 
     assert!(matches!(error, ProposalError::NoChanges), "{error}");
 }
+
+fn loaded(metadata: &TableMetadata, metadata_location: &str) -> LoadedTable {
+    LoadedTable {
+        name: name(),
+        metadata_location: Some(metadata_location.to_owned()),
+        metadata: metadata.clone(),
+        location: Location::parse(LOCATION).unwrap(),
+        credentials: Vec::new(),
+    }
+}
+
+fn apply_json(metadata: &TableMetadata, updates: serde_json::Value) -> TableMetadata {
+    let updates: Vec<iceberg::TableUpdate> = serde_json::from_value(updates).unwrap();
+    let mut builder = metadata.clone().into_builder(None);
+    for update in updates {
+        builder = update.apply(builder).unwrap();
+    }
+    builder.build().unwrap().metadata
+}
+
+#[tokio::test]
+async fn an_unchanged_reload_shows_no_drift() {
+    let store = store();
+    let metadata = appended(&store).await;
+
+    let changes = baseline(&store, &metadata).changes(&loaded(
+        &metadata,
+        &format!("{LOCATION}/metadata/v1.metadata.json"),
+    ));
+
+    assert_eq!(changes, []);
+}
+
+#[tokio::test]
+async fn every_observed_baseline_change_is_reported() {
+    let store = store();
+    let metadata = appended(&store).await;
+    let main = metadata.current_snapshot_id();
+    let advanced = append(&store, &metadata, &[data_file("late", 1)]).await;
+    let reshaped = apply_json(
+        &advanced,
+        serde_json::json!([
+            {"action": "add-schema", "schema": {"type": "struct", "schema-id": 1, "fields": [
+                {"id": 1, "name": "id", "required": true, "type": "long"},
+                {"id": 2, "name": "extra", "required": false, "type": "string"}]}},
+            {"action": "set-current-schema", "schema-id": -1},
+            {"action": "add-spec", "spec": {"fields": [
+                {"source-id": 1, "field-id": 1000, "name": "id_bucket", "transform": "bucket[4]"}]}},
+            {"action": "set-default-spec", "spec-id": -1},
+            {"action": "add-sort-order", "sort-order": {"order-id": 1, "fields": [
+                {"source-id": 1, "transform": "identity", "direction": "asc",
+                 "null-order": "nulls-first"}]}},
+            {"action": "set-default-sort-order", "sort-order-id": -1},
+            {"action": "set-properties", "updates": {
+                "write.data.path": format!("{LOCATION}/elsewhere"), "owner": "someone"}}
+        ]),
+    );
+
+    let changes = baseline(&store, &metadata).changes(&loaded(
+        &reshaped,
+        &format!("{LOCATION}/metadata/v2.metadata.json"),
+    ));
+
+    assert_eq!(
+        changes,
+        [
+            BaselineChange::MetadataLocation,
+            BaselineChange::MainSnapshot {
+                from: main,
+                to: advanced.current_snapshot_id()
+            },
+            BaselineChange::CurrentSchema,
+            BaselineChange::LastColumnId,
+            BaselineChange::DefaultSpec,
+            BaselineChange::LastPartitionId,
+            BaselineChange::DefaultSortOrder,
+            BaselineChange::Property("write.data.path"),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_replaced_table_and_format_upgrade_are_reported() {
+    let store = store();
+    let metadata = empty_table();
+    let location = format!("{LOCATION}/metadata/v1.metadata.json");
+    let upgraded = apply_json(
+        &metadata,
+        serde_json::json!([{"action": "upgrade-format-version", "format-version": 3}]),
+    );
+    let replaced = empty_table();
+
+    let baseline = baseline(&store, &metadata);
+
+    assert_eq!(
+        baseline.changes(&loaded(&upgraded, &location)),
+        [BaselineChange::FormatVersion]
+    );
+    assert_eq!(
+        baseline.changes(&loaded(&replaced, &location)),
+        [BaselineChange::TableUuid]
+    );
+}
+
+#[test]
+fn data_files_go_under_the_table_unless_write_data_path_says_otherwise() {
+    let metadata = empty_table();
+    let custom = apply_json(
+        &metadata,
+        serde_json::json!([{"action": "set-properties",
+            "updates": {"write.data.path": format!("{LOCATION}/custom/")}}]),
+    );
+    let outside = apply_json(
+        &metadata,
+        serde_json::json!([{"action": "set-properties",
+            "updates": {"write.data.path": "memory://other/data"}}]),
+    );
+    let invalid = apply_json(
+        &metadata,
+        serde_json::json!([{"action": "set-properties",
+            "updates": {"write.data.path": "no-scheme"}}]),
+    );
+    let location = |metadata: &TableMetadata| loaded(metadata, "m").data_location();
+
+    assert_eq!(
+        location(&metadata).unwrap(),
+        Location::parse(&format!("{LOCATION}/data")).unwrap()
+    );
+    assert_eq!(
+        location(&custom).unwrap(),
+        Location::parse(&format!("{LOCATION}/custom")).unwrap()
+    );
+    assert!(matches!(
+        location(&outside),
+        Err(crate::CatalogError::DataLocationOutsideTable(_))
+    ));
+    assert!(matches!(
+        location(&invalid),
+        Err(crate::CatalogError::InvalidLocation(_))
+    ));
+}
