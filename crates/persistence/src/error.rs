@@ -1,6 +1,8 @@
 //! Errors returned by the persistence layer.
 
-use bergsmith_common::ids::{CatalogConnectionId, TableId};
+use bergsmith_common::ids::{AttemptId, CatalogConnectionId, JobId, TableId, TaskId};
+use bergsmith_common::job::JobState;
+use bergsmith_common::task::{AttemptTransitionError, TaskTransitionError};
 
 /// PostgreSQL `unique_violation`.
 const UNIQUE_VIOLATION: &str = "23505";
@@ -63,6 +65,40 @@ pub enum PersistenceError {
         existing: TableId,
         /// The identity of the table that was observed under the alias.
         observed: TableId,
+    },
+    /// The job's state does not allow the operation.
+    #[error("job {job} is {state} and cannot {operation}")]
+    JobNotInState {
+        /// The job.
+        job: JobId,
+        /// Its current state.
+        state: JobState,
+        /// What was attempted.
+        operation: &'static str,
+    },
+    /// The task lifecycle forbids the change.
+    #[error(transparent)]
+    TaskTransition(#[from] TaskTransitionError),
+    /// The attempt lifecycle forbids the change.
+    #[error(transparent)]
+    AttemptTransition(#[from] AttemptTransitionError),
+    /// The task has started every execution attempt it is allowed.
+    #[error("task {task} has no execution attempts left")]
+    RetryBudgetExhausted {
+        /// The task.
+        task: TaskId,
+    },
+    /// The caller's attempt generation is no longer current.
+    #[error("attempt {attempt} is not the current generation")]
+    StaleAttempt {
+        /// The attempt.
+        attempt: AttemptId,
+    },
+    /// An attempt resubmitted its accepted receipt with different content.
+    #[error("task {task} already accepted a receipt with different content")]
+    ReceiptConflict {
+        /// The task.
+        task: TaskId,
     },
     /// A stored value could not be decoded, which means the schema and the
     /// code disagree.
