@@ -507,8 +507,13 @@ dependencies = [
 name = "bergsmith-coordinator"
 version = "0.1.0"
 dependencies = [
+ "bergsmith-catalog",
+ "bergsmith-common",
  "bergsmith-persistence",
+ "bergsmith-storage",
  "sqlx",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
