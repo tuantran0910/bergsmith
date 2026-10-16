@@ -228,6 +228,19 @@ pub(crate) async fn grant(
     .await
 }
 
+/// Takes coordinator leadership under a fresh holder and returns its epoch.
+pub(crate) async fn leader(conn: &mut PgConnection) -> i64 {
+    bergsmith_persistence::leadership::acquire_leadership(
+        conn,
+        &Uuid::now_v7().to_string(),
+        Duration::from_secs(60),
+    )
+    .await
+    .expect("leadership query succeeds")
+    .expect("leadership is free")
+    .epoch
+}
+
 /// Returns the SQLSTATE of a raw query error.
 pub(crate) fn sqlstate(error: &sqlx::Error) -> String {
     error

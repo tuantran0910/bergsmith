@@ -14,6 +14,7 @@ use crate::jobs::{
     EventRecord, Job, JobEventKind, JobRow, Transition, append_event, job_columns, lock_job,
     transition_job,
 };
+use crate::leadership::ensure_leadership;
 
 /// A request to cancel a job.
 #[derive(Clone, Debug)]
@@ -60,6 +61,9 @@ pub struct SendAuthorization {
     pub job_id: JobId,
     /// The revision the publisher read; it must still be current.
     pub expected_revision: i64,
+    /// The publishing coordinator's leadership epoch; it must still hold a
+    /// live lease.
+    pub coordinator_epoch: i64,
 }
 
 /// Records a cancellation request and applies it if it is not too late.
@@ -157,13 +161,15 @@ async fn record_request(
 /// Durably authorizes the first outbound commit request for a job.
 ///
 /// This is the short transaction that must commit immediately before the
-/// request is sent, and no network call may happen inside it. It checks the
-/// expected revision, that the job is `Committing`, that no cancellation was
+/// request is sent, and no network call may happen inside it. It checks
+/// leadership, the expected revision, that the job is `Committing`, that no cancellation was
 /// requested, and that no send was authorized before, then records
 /// `publication_started_at`. It does not change the job's state or revision.
 ///
 /// # Errors
 ///
+/// - [`PersistenceError::LeadershipLost`] when the coordinator's epoch no
+///   longer holds a live leadership lease.
 /// - [`PersistenceError::RevisionConflict`] when the job changed since the
 ///   publisher read it.
 /// - [`PersistenceError::JobNotInState`] unless the job is `Committing`.
@@ -176,6 +182,7 @@ pub async fn authorize_send(
     authorization: SendAuthorization,
 ) -> Result<Job, PersistenceError> {
     let mut tx = conn.begin().await?;
+    ensure_leadership(&mut tx, authorization.coordinator_epoch).await?;
     let job = lock_job(&mut tx, authorization.job_id).await?;
     if job.state_revision != authorization.expected_revision {
         return Err(PersistenceError::RevisionConflict {
