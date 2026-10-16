@@ -1,0 +1,12 @@
+[package]
+name = "bergsmith-worker"
+description = "Bergsmith worker: registration, execution supervision, and result reporting"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

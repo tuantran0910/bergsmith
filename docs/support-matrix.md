@@ -1,0 +1,72 @@
+# Support matrix
+
+Status values:
+
+- **Planned:** in the MVP scope, not yet implemented.
+- **Certified:** implemented and its acceptance tests pass.
+- **Later:** after the MVP (milestone in brackets).
+- **Unsupported:** rejected during preview with an explanation.
+
+Nothing is certified yet. Update a row only when its acceptance tests pass
+(see `.private/BERGSMITH_PROJECT_PLAN.md` §5).
+
+## Table formats and features
+
+| Capability | Status |
+|---|---|
+| Iceberg format v2 | Planned |
+| Iceberg format v3 (deletion vectors, row lineage) | Later (M9) |
+| Parquet data and delete files | Planned |
+| ORC or Avro data files | Unsupported |
+| Branch `main` | Planned |
+| Other branches and tags | Unsupported |
+| Encrypted tables | Later (M9) |
+| Partitioned tables, including old partition specs | Planned |
+| Schema evolution (renamed and added columns) | Planned |
+| Nested types | Planned; pending acceptance tests |
+
+## Maintenance operations
+
+| Operation | Status |
+|---|---|
+| Whole-file binpack compaction within existing partitions | Planned |
+| Position delete application | Planned |
+| Equality delete application, including null keys | Planned |
+| Floating-point equality-delete keys | Unsupported |
+| Sorted rewrite | Later (M9) |
+| Repartitioning | Unsupported |
+| Manifest rewrite | Later (M7) |
+| Dangling-delete removal | Later (M7) |
+| Snapshot expiration | Later (M7) |
+| Orphan file cleanup | Later (M7) |
+
+## Concurrency
+
+| Behavior | Status |
+|---|---|
+| Conservative conflict rejection (`ReplanRequired`) | Planned |
+| Commit-aligned job start and per-job duration budget | Planned |
+| Compatible rebasing onto concurrent appends | Deferred |
+
+## Catalogs
+
+| Catalog | Status |
+|---|---|
+| Lakekeeper v0.14.0 | Planned (first certification target) |
+| Other Iceberg REST catalogs | Later, through compatibility tests |
+
+## Storage
+
+| Backend | Status |
+|---|---|
+| Amazon S3 with catalog-vended credentials | Planned |
+| S3-compatible stores (RustFS for development) | Planned; STS support to be verified |
+| Google Cloud Storage | Later (M9) |
+| Azure Blob Storage / ADLS Gen2 | Later (M9) |
+
+## Deployment
+
+| Target | Status |
+|---|---|
+| Docker Compose | Planned |
+| Kubernetes and Helm | Later (M8) |
