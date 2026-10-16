@@ -315,8 +315,16 @@ impl CatalogConnection {
         vended(entries, &table.location, &HashMap::new())
     }
 
+    pub(crate) fn client(&self) -> &HttpClient {
+        &self.client
+    }
+
     /// `<base>/v1[/<prefix>]/namespaces/<namespace>/<rest...>`.
-    fn namespace_url(&self, namespace: &[String], rest: &[&str]) -> Result<Url, CatalogError> {
+    pub(crate) fn namespace_url(
+        &self,
+        namespace: &[String],
+        rest: &[&str],
+    ) -> Result<Url, CatalogError> {
         let encoded = namespace.join("\u{1f}");
         let mut segments: Vec<&str> = vec!["v1"];
         if let Some(prefix) = &self.prefix {

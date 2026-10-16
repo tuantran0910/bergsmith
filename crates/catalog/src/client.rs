@@ -1,5 +1,6 @@
 //! The HTTP client for one catalog connection: authentication, timeouts,
-//! and JSON requests. It never retries; callers decide per operation.
+//! and JSON requests. It never retries and never follows redirects, so a
+//! request is sent at most once; callers decide per operation.
 
 use std::time::{Duration, Instant};
 
@@ -10,7 +11,7 @@ use serde::de::DeserializeOwned;
 use tokio::sync::Mutex;
 use url::Url;
 
-use crate::error::{CatalogError, CatalogErrorModel};
+use crate::error::{CatalogError, ErrorEnvelope};
 
 /// How the connection authenticates to the catalog.
 #[derive(Clone, Debug)]
@@ -85,19 +86,6 @@ struct TokenResponse {
     expires_in: Option<u64>,
 }
 
-#[derive(serde::Deserialize)]
-struct ErrorEnvelope {
-    error: ErrorBody,
-}
-
-#[derive(serde::Deserialize)]
-struct ErrorBody {
-    #[serde(rename = "type", default)]
-    kind: String,
-    #[serde(default)]
-    message: String,
-}
-
 impl HttpClient {
     pub(crate) fn new(config: &ConnectionConfig) -> Result<Self, CatalogError> {
         let mut headers = HeaderMap::new();
@@ -106,6 +94,10 @@ impl HttpClient {
             .connect_timeout(config.connect_timeout)
             .timeout(config.request_timeout)
             .default_headers(headers)
+            // A redirected commit would be sent twice, and reqwest's default
+            // retry of refused HTTP/2 streams is still a second send.
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
             .build()
             .map_err(|source| CatalogError::Transport {
                 operation: "build HTTP client",
@@ -116,6 +108,20 @@ impl HttpClient {
             auth: config.auth.clone(),
             token: Mutex::new(None),
         })
+    }
+
+    /// A request with authentication applied, for callers that send it and
+    /// classify the response themselves.
+    ///
+    /// # Errors
+    ///
+    /// Errors from fetching an OAuth2 token; nothing has been sent.
+    pub(crate) async fn authorized(
+        &self,
+        method: Method,
+        url: Url,
+    ) -> Result<RequestBuilder, CatalogError> {
+        self.authorize(self.http.request(method, url)).await
     }
 
     /// Sends a request and decodes a JSON response.
@@ -142,12 +148,7 @@ impl HttpClient {
             return Err(CatalogError::Status {
                 operation,
                 status: status.as_u16(),
-                model: serde_json::from_slice::<ErrorEnvelope>(&body)
-                    .ok()
-                    .map(|envelope| CatalogErrorModel {
-                        kind: envelope.error.kind,
-                        message: envelope.error.message,
-                    }),
+                model: ErrorEnvelope::decode(&body),
             });
         }
         serde_json::from_slice(&body).map_err(|source| CatalogError::Decode { operation, source })

@@ -1,6 +1,6 @@
 # 0005. Commit through Bergsmith's own CommitTableRequest client
 
-- Status: Accepted
+- Status: Superseded by [0015](0015-commit-adapter-capture.md)
 - Date: 2026-10-16
 - Plan reference: `.private/BERGSMITH_PROJECT_PLAN.md` §3 Pinned integration baseline; §3 Standard catalog commit adapter
 
