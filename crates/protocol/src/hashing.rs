@@ -11,70 +11,13 @@
 //! leaves existing digests unchanged until the field is used. Changing a
 //! field's number or type changes digests and is a breaking change.
 
-use std::fmt;
-
+pub use bergsmith_common::digest::{DigestLengthError, Sha256Digest};
 use prost::Message;
-use sha2::{Digest as _, Sha256};
 
 use crate::artifact::{DeleteFile, OutputFile, PartitionKey, TaskArtifact, TaskReceipt};
 
 const ARTIFACT_DOMAIN: &[u8] = b"bergsmith.artifact.v1.TaskArtifact";
 const RECEIPT_DOMAIN: &[u8] = b"bergsmith.artifact.v1.TaskReceipt";
-
-/// A SHA-256 digest.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Sha256Digest([u8; 32]);
-
-impl Sha256Digest {
-    /// Wraps 32 digest bytes, such as an `ArtifactRef.sha256` field.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DigestLengthError`] unless `bytes` is exactly 32 bytes long.
-    pub fn from_slice(bytes: &[u8]) -> Result<Self, DigestLengthError> {
-        <[u8; 32]>::try_from(bytes)
-            .map(Self)
-            .map_err(|_| DigestLengthError { len: bytes.len() })
-    }
-
-    /// The digest bytes.
-    #[must_use]
-    pub const fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-
-    /// The digest as 64 lowercase hex characters, the form persisted in
-    /// PostgreSQL.
-    #[must_use]
-    pub fn to_hex(&self) -> String {
-        const DIGITS: &[u8; 16] = b"0123456789abcdef";
-        let mut hex = String::with_capacity(64);
-        for byte in self.0 {
-            hex.push(char::from(DIGITS[usize::from(byte >> 4)]));
-            hex.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
-        }
-        hex
-    }
-}
-
-impl fmt::Debug for Sha256Digest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Sha256Digest({})", self.to_hex())
-    }
-}
-
-impl fmt::Display for Sha256Digest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_hex())
-    }
-}
-
-/// Bytes that are not a 32-byte SHA-256 digest.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("a SHA-256 digest has 32 bytes, got {len}")]
-pub struct DigestLengthError {
-    len: usize,
-}
 
 /// Returns the canonical digest of a task artifact, whatever the order of
 /// its repeated fields.
@@ -140,11 +83,7 @@ fn digest(domain: &[u8], message: &impl Message) -> Sha256Digest {
 
 /// `SHA-256(domain || 0x00 || bytes)`.
 pub(crate) fn domain_digest(domain: &[u8], bytes: &[u8]) -> Sha256Digest {
-    let mut hasher = Sha256::new();
-    hasher.update(domain);
-    hasher.update([0]);
-    hasher.update(bytes);
-    Sha256Digest(hasher.finalize().into())
+    Sha256Digest::of(domain, bytes)
 }
 
 #[cfg(test)]

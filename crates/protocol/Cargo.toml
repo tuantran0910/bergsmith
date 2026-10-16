@@ -10,7 +10,6 @@ publish.workspace = true
 bergsmith-common.workspace = true
 prost.workspace = true
 prost-types.workspace = true
-sha2.workspace = true
 thiserror.workspace = true
 tonic.workspace = true
 tonic-prost.workspace = true
