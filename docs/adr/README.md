@@ -19,4 +19,5 @@ record's status; never rewrite an accepted decision.
 | [0010](0010-commit-aligned-scheduling.md) | Commit-aligned job start and per-job duration budget | Accepted |
 | [0011](0011-execution-ledger-in-postgresql.md) | Execution ledger schema and access in PostgreSQL | Accepted |
 | [0012](0012-worker-service-identity.md) | Worker identity: TLS with pool-scoped bearer tokens | Accepted |
+| [0013](0013-bergsmith-owned-catalog-client.md) | Bergsmith owns its catalog HTTP calls | Accepted |
 | [0014](0014-object-store-and-development-storage.md) | Object store over FileIO, and RustFS for development | Accepted |

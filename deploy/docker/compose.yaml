@@ -2,9 +2,12 @@
 #
 #   postgres     Bergsmith's execution ledger           127.0.0.1:55432
 #   rustfs       S3-compatible object store with STS    127.0.0.1:59000
+#   lakekeeper   Iceberg REST catalog that vends        127.0.0.1:58181
+#                RustFS credentials through STS
 #
-# Lakekeeper arrives with the catalog client; the OIDC development provider
-# with BS-017. Every credential here is
+# Tests bootstrap Lakekeeper and create their own warehouses.
+#
+# The OIDC development provider arrives with BS-017. Every credential here is
 # a fake development value. Development only: never use these settings in
 # production.
 name: bergsmith
@@ -69,3 +72,51 @@ services:
     depends_on:
       rustfs:
         condition: service_healthy
+
+  catalog-db:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_USER: lakekeeper
+      POSTGRES_PASSWORD: lakekeeper
+      POSTGRES_DB: lakekeeper
+    command: ["postgres", "-c", "fsync=off"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lakekeeper -d lakekeeper"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  lakekeeper-migrate:
+    image: quay.io/lakekeeper/catalog:v0.14.0
+    command: ["migrate"]
+    environment: &lakekeeper-env
+      LAKEKEEPER__PG_DATABASE_URL_READ: postgres://lakekeeper:lakekeeper@catalog-db:5432/lakekeeper
+      LAKEKEEPER__PG_DATABASE_URL_WRITE: postgres://lakekeeper:lakekeeper@catalog-db:5432/lakekeeper
+      LAKEKEEPER__PG_ENCRYPTION_KEY: development-only-not-a-real-key
+      LAKEKEEPER__BASE_URI: http://127.0.0.1:58181
+      # Parallel tests create warehouses concurrently; the default pools are
+      # too small for that.
+      LAKEKEEPER__PG_READ_POOL_CONNECTIONS: "40"
+      LAKEKEEPER__PG_WRITE_POOL_CONNECTIONS: "40"
+    depends_on:
+      catalog-db:
+        condition: service_healthy
+
+  lakekeeper:
+    image: quay.io/lakekeeper/catalog:v0.14.0
+    command: ["serve"]
+    environment: *lakekeeper-env
+    ports:
+      - "127.0.0.1:58181:8181"
+    healthcheck:
+      test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+    depends_on:
+      lakekeeper-migrate:
+        condition: service_completed_successfully
+      rustfs-init:
+        condition: service_completed_successfully

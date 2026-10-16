@@ -52,7 +52,7 @@ Nothing is certified yet. Update a row only when its acceptance tests pass
 
 | Catalog | Status |
 |---|---|
-| Lakekeeper v0.14.0 | Planned (first certification target) |
+| Lakekeeper v0.14.0 | Planned (first certification target); connection, listing, and credential vending verified in BS-005 |
 | Other Iceberg REST catalogs | Later, through compatibility tests |
 
 ## Storage
@@ -69,5 +69,5 @@ Nothing is certified yet. Update a row only when its acceptance tests pass
 
 | Target | Status |
 |---|---|
-| Docker Compose | Planned |
+| Docker Compose | Planned; development and test services in `deploy/docker/` |
 | Kubernetes and Helm | Later (M8) |

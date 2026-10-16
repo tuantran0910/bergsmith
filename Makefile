@@ -13,7 +13,8 @@ PROTO_BASE ?= main
 # Integration tests reach the Compose services through these variables.
 DATABASE_URL ?= postgres://bergsmith:bergsmith@127.0.0.1:55432/bergsmith
 BERGSMITH_TEST_S3_ENDPOINT ?= http://127.0.0.1:59000
-export DATABASE_URL BERGSMITH_TEST_S3_ENDPOINT
+BERGSMITH_TEST_CATALOG_URL ?= http://127.0.0.1:58181
+export DATABASE_URL BERGSMITH_TEST_S3_ENDPOINT BERGSMITH_TEST_CATALOG_URL
 NEXTEST_PROFILE ?= default
 
 .PHONY: help fmt fmt-check check clippy test doc coverage coverage-html deny machete ci \
@@ -34,8 +35,8 @@ check: ## Type-check every target
 clippy: ## Lint with warnings as errors
 	$(CARGO) clippy --workspace --all-targets --locked -- -D warnings
 
-services-up: ## Start PostgreSQL and RustFS (Docker Compose)
-	$(COMPOSE) up --detach --wait postgres rustfs
+services-up: ## Start PostgreSQL, RustFS, and Lakekeeper (Docker Compose)
+	$(COMPOSE) up --detach --wait postgres rustfs lakekeeper
 
 services-down: ## Stop the test services and discard their data
 	$(COMPOSE) down

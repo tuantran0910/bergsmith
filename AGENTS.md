@@ -79,15 +79,15 @@ Everything used to build, run, or deploy Bergsmith outside `cargo` lives under
 | `make deny` | Advisories, licenses, bans, sources |
 | `make machete` | Unused dependencies |
 | `make ci` | Every gate above, in CI order |
-| `make services-up` / `make services-down` | Start or discard PostgreSQL and RustFS (Docker Compose) |
+| `make services-up` / `make services-down` | Start or discard PostgreSQL, RustFS, and Lakekeeper (Docker Compose) |
 | `make proto-lint` / `make proto-breaking` | buf lint and breaking-change checks (Docker) |
 
 Required tools: rustup (the toolchain comes from `rust-toolchain.toml`),
 `cargo-nextest`, `cargo-llvm-cov`, `cargo-deny`, `cargo-machete`, and Docker.
 
 Integration tests use the Compose services in `deploy/docker/`, which `make
-test` and `make coverage` start first. They read `DATABASE_URL` and
-`BERGSMITH_TEST_S3_ENDPOINT`; override them
+test` and `make coverage` start first. They read `DATABASE_URL`,
+`BERGSMITH_TEST_S3_ENDPOINT`, and `BERGSMITH_TEST_CATALOG_URL`; override them
 to use your own servers. The PostgreSQL role must be allowed to create
 databases, because `#[sqlx::test]` gives each test a fresh one.
 
