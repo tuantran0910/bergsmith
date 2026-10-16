@@ -34,6 +34,7 @@ metadata authority.
 | `crates/coordinator` | Coordinator services |
 | `crates/worker` | Worker supervisor and task subprocess |
 | `bin/coordinator`, `bin/worker` | Thin binaries: startup wiring only |
+| `deploy/` | Container, Compose, and Kubernetes assets (see below) |
 | `docs/` | ADRs, support matrix, operator documentation |
 
 Dependency direction is enforced by `deny.toml`:
@@ -42,6 +43,25 @@ Dependency direction is enforced by `deny.toml`:
   `bergsmith-catalog`.
 - `bergsmith-common` depends on no other workspace crate.
 - Binaries hold no logic that a library crate could test.
+
+### Deployment assets
+
+Everything used to build, run, or deploy Bergsmith outside `cargo` lives under
+`deploy/`. Nothing deployment-related goes in the repository root.
+
+| Path | Contents |
+|---|---|
+| `deploy/docker/` | Dockerfiles, image build context, and Docker Compose files for development and tests |
+| `deploy/k8s/` | Kubernetes manifests and the Helm chart (milestone M8) |
+
+- Pin every image by an exact version tag (or digest), never `latest`.
+- Never commit secrets. Development credentials are allowed only in the
+  `deploy/docker/` Compose files and must be obviously fake. Mark
+  development-only settings (such as `fsync=off`) with a comment.
+- Wrap Compose and image commands in `Makefile` targets so paths are not
+  repeated in scripts and CI.
+- Kubernetes assets keep coordinator migrations a separate job
+  (`bergsmith-coordinator migrate`); replicas never migrate at startup.
 
 ## 3. Commands
 
@@ -57,9 +77,15 @@ Dependency direction is enforced by `deny.toml`:
 | `make deny` | Advisories, licenses, bans, sources |
 | `make machete` | Unused dependencies |
 | `make ci` | Every gate above, in CI order |
+| `make db-up` / `make db-down` | Start or discard the test PostgreSQL (Docker Compose) |
 
 Required tools: rustup (the toolchain comes from `rust-toolchain.toml`),
-`cargo-nextest`, `cargo-llvm-cov`, `cargo-deny`, `cargo-machete`.
+`cargo-nextest`, `cargo-llvm-cov`, `cargo-deny`, `cargo-machete`, and Docker.
+
+Tests that need PostgreSQL read `DATABASE_URL`. When it is unset, `make test`
+and `make coverage` start the Compose database on port 55432 first. Set
+`DATABASE_URL` to use your own server; its role must be allowed to create
+databases, because `#[sqlx::test]` gives each test a fresh one.
 
 ## 4. Definition of done
 
