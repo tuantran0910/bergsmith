@@ -9,6 +9,9 @@
     reason = "fixtures fail the test on setup errors"
 )]
 
+pub(crate) mod commit;
+pub(crate) mod proxy;
+
 use bergsmith_catalog::{CatalogConnection, ConnectionConfig, TableName};
 use serde_json::json;
 use url::Url;
@@ -112,8 +115,17 @@ impl Warehouse {
             .expect("connects to the warehouse")
     }
 
+    /// Connects to this warehouse through `root` instead of Lakekeeper.
+    pub(crate) async fn connect_via(&self, root: &Url) -> CatalogConnection {
+        let mut config = self.config();
+        config.uri = root.join("catalog").expect("valid URL");
+        CatalogConnection::connect(&config)
+            .await
+            .expect("connects to the warehouse")
+    }
+
     /// The warehouse's REST prefix, from `GET /v1/config`.
-    async fn prefix(&self) -> String {
+    pub(crate) async fn prefix(&self) -> String {
         let mut url = server().join("catalog/v1/config").expect("valid URL");
         url.query_pairs_mut().append_pair("warehouse", &self.name);
         let config: serde_json::Value = http()
