@@ -13,11 +13,12 @@ iceberg.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["time"] }
 uuid.workspace = true
 
 [dev-dependencies]
 bergsmith-fixtures.workspace = true
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 
 [lints]
 workspace = true
