@@ -22,5 +22,5 @@ mod value;
 pub use declare::{Commit, FileSpec, TableSpec};
 pub use error::{FixtureError, Result};
 pub use generate::Fixture;
-pub use oracle::live_rows;
+pub use oracle::{live_rows, read_data_files};
 pub use value::{Row, RowMultiset, Value};

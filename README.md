@@ -5,7 +5,8 @@ compacts small files and applies position and equality deletes natively in
 Rust, then publishes the result through standard Iceberg REST conditional
 commits.
 
-**Status:** foundation (milestone M0). Nothing is certified yet; see
+**Status:** native planning and local execution (milestone M2). End-to-end
+platform certification is pending; see
 [`docs/support-matrix.md`](docs/support-matrix.md).
 
 ## How it works
@@ -60,6 +61,11 @@ make test       # run tests
 make ci         # run every quality gate: fmt, check, clippy, tests, docs,
                 # coverage (>= 80% lines), cargo-deny, cargo-machete
 ```
+
+The [local execution command](docs/operations/local-execution.md) runs a verified
+filesystem plan and writes receipts without a coordinator or catalog publication.
+The [native executor benchmark](docs/measurements/bs-010-executor.md) records
+independent row checks, execution time and process RSS for all eleven spike fixtures.
 
 Read [`AGENTS.md`](AGENTS.md) before contributing. It covers code conventions,
 testing rules, architecture invariants, and git conventions.

@@ -20,9 +20,11 @@ NEXTEST_PROFILE ?= default
 export NEXTEST_PROFILE
 # Extra report flags for `make coverage`, e.g. `--lcov --output-path lcov.info`.
 COVERAGE_REPORT ?=
+BENCH_DIR ?= .private/executor-benchmark
+BENCH_ITERATIONS ?= 3
 
 .PHONY: help fmt fmt-check check clippy test doc coverage coverage-html deny machete ci \
-	services-up services-down proto-lint proto-breaking
+	services-up services-down proto-lint proto-breaking bench-executor
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -65,6 +67,12 @@ deny: ## Check advisories, licenses, bans, and sources
 
 machete: ## Find unused dependencies
 	$(CARGO) machete
+
+bench-executor: ## Measure native local execution against all 11 oracle fixtures
+	$(CARGO) build --release --locked --bin bergsmith-worker
+	$(CARGO) run --release --locked -p bergsmith-maintenance --example executor_bench -- \
+		--worker target/release/bergsmith-worker --directory "$(BENCH_DIR)" \
+		--iterations "$(BENCH_ITERATIONS)"
 
 proto-lint: ## Lint protobuf files (buf, via Docker)
 	$(BUF) lint

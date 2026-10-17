@@ -557,17 +557,26 @@ dependencies = [
 name = "bergsmith-maintenance"
 version = "0.1.0"
 dependencies = [
+ "arrow-array",
+ "async-trait",
  "bergsmith-common",
  "bergsmith-fixtures",
  "bergsmith-protocol",
  "bergsmith-storage",
+ "bytes",
+ "clap",
  "futures",
  "iceberg",
+ "parquet",
  "proptest",
+ "prost",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "typetag",
  "uuid",
 ]
 
@@ -619,11 +628,28 @@ dependencies = [
 [[package]]
 name = "bergsmith-worker"
 version = "0.1.0"
+dependencies = [
+ "bergsmith-common",
+ "bergsmith-fixtures",
+ "bergsmith-maintenance",
+ "bergsmith-protocol",
+ "bergsmith-storage",
+ "iceberg",
+ "prost",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
 
 [[package]]
 name = "bergsmith-worker-bin"
 version = "0.1.0"
 dependencies = [
+ "bergsmith-worker",
+ "clap",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]
