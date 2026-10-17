@@ -9,4 +9,5 @@ pub mod disposition;
 pub mod ids;
 pub mod job;
 pub mod secret;
+pub mod table;
 pub mod task;

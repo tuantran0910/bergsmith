@@ -12,16 +12,7 @@ use iceberg::spec::{MAIN_BRANCH, TableMetadata};
 use crate::commit::baseline::Baseline;
 use crate::connection::LoadedTable;
 
-/// Table properties whose change invalidates a plan: they decide where and
-/// how files are written, or whether the table is encrypted.
-pub const PLAN_RELEVANT_PROPERTIES: [&str; 6] = [
-    "write.data.path",
-    "write.format.default",
-    "write.object-storage.enabled",
-    "write.object-storage.path",
-    "write.metadata.path",
-    "encryption.key-id",
-];
+pub use bergsmith_common::table::PLAN_RELEVANT_PROPERTIES;
 
 /// One difference between the baseline and the reloaded table.
 #[derive(Clone, Debug, PartialEq, Eq)]
