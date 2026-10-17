@@ -78,7 +78,7 @@ Everything used to build, run, or deploy Bergsmith outside `cargo` lives under
 | `make coverage-html` | HTML report in `target/llvm-cov/html` |
 | `make deny` | Advisories, licenses, bans, sources |
 | `make machete` | Unused dependencies |
-| `make ci` | Every gate above, in CI order |
+| `make ci` | Every gate above, in CI order (coverage runs the tests, and clippy type-checks every target) |
 | `make services-up` / `make services-down` | Start or discard PostgreSQL, RustFS, and Lakekeeper (Docker Compose) |
 | `make proto-lint` / `make proto-breaking` | buf lint and breaking-change checks (Docker) |
 
