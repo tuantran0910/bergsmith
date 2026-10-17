@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use bytes::Bytes;
 use iceberg::io::FileIO;
 use iceberg::spec::{
-    DataContentType, DataFile, DataFileBuilder, DataFileFormat, FormatVersion, MAIN_BRANCH,
+    DataContentType, DataFile, DataFileBuilder, DataFileFormat, Datum, FormatVersion, MAIN_BRANCH,
     ManifestFile, ManifestListWriter, ManifestWriterBuilder, Operation, Schema, SchemaRef,
     Snapshot, SortOrder, Summary, TableMetadata, TableMetadataBuilder, UNASSIGNED_SEQUENCE_NUMBER,
 };
@@ -301,6 +301,7 @@ impl Writer<'_> {
                 file.partition.len()
             )));
         }
+        let mut path_bounds = None;
         let (content, batch, equality_ids) = match &file.content {
             Content::Data(rows) => (
                 DataContentType::Data,
@@ -308,10 +309,18 @@ impl Writer<'_> {
                 None,
             ),
             Content::PositionDeletes(deletes) => {
-                let resolved = deletes
+                let resolved: Vec<(String, i64)> = deletes
                     .iter()
                     .map(|(name, pos)| Ok((self.data_path(name)?.to_owned(), *pos)))
                     .collect::<Result<_>>()?;
+                // Writers record full `file_path` bounds, so readers can
+                // tell which data files a position delete may touch.
+                path_bounds = resolved
+                    .iter()
+                    .map(|(path, _)| path)
+                    .min()
+                    .zip(resolved.iter().map(|(path, _)| path).max())
+                    .map(|(lower, upper)| (lower.clone(), upper.clone()));
                 (
                     DataContentType::PositionDeletes,
                     encode::position_deletes_batch(resolved)?,
@@ -327,6 +336,12 @@ impl Writer<'_> {
                 )
             }
         };
+        let bound = |path: Option<String>| -> HashMap<i32, Datum> {
+            path.map(|path| (encode::FILE_PATH_FIELD_ID, Datum::string(path)))
+                .into_iter()
+                .collect()
+        };
+        let (lower, upper) = path_bounds.unzip();
         let bytes = encode::parquet_bytes(&batch, file.row_group_rows)?;
         let size = bytes.len() as u64;
         write(self.file_io, &path, bytes).await?;
@@ -345,6 +360,8 @@ impl Writer<'_> {
             .record_count(batch.num_rows() as u64)
             .file_size_in_bytes(size)
             .equality_ids(equality_ids)
+            .lower_bounds(bound(lower))
+            .upper_bounds(bound(upper))
             .build()
             .map_err(|error| FixtureError::Declaration(error.to_string()))
     }
