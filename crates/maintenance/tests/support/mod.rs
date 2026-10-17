@@ -67,3 +67,30 @@ pub(crate) fn with_properties(
         .unwrap()
         .metadata
 }
+
+/// Previews `fixture` with `config` and `selection`.
+pub(crate) async fn preview_with(
+    fixture: &bergsmith_fixtures::Fixture,
+    metadata: &TableMetadata,
+    config: bergsmith_maintenance::PlannerConfig,
+    selection: &[bergsmith_maintenance::PartitionPredicate],
+) -> Result<bergsmith_maintenance::Preview, bergsmith_maintenance::PlanError> {
+    bergsmith_maintenance::Planner::new(config)
+        .unwrap()
+        .preview(bergsmith_maintenance::PlanInput {
+            metadata,
+            metadata_location: Some(fixture.metadata_location()),
+            file_io: fixture.file_io(),
+            selection,
+        })
+        .await
+}
+
+/// A configuration in which every file is at least the minimum size, so
+/// only files with deletes are candidates.
+pub(crate) fn deletes_only() -> bergsmith_maintenance::PlannerConfig {
+    bergsmith_maintenance::PlannerConfig {
+        min_file_size_bytes: 1,
+        ..bergsmith_maintenance::PlannerConfig::default()
+    }
+}

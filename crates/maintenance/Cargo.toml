@@ -11,12 +11,12 @@ bergsmith-common.workspace = true
 bergsmith-storage.workspace = true
 iceberg.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
 bergsmith-fixtures.workspace = true
-serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]
