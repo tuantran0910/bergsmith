@@ -4,6 +4,7 @@
 //! The planner (BS-009) reads table metadata and manifests, never rows. The
 //! executor and delete application follow in BS-010 and BS-011.
 
+mod align;
 mod baseline;
 mod binpack;
 mod budget;
@@ -17,6 +18,9 @@ mod partition;
 mod planner;
 mod selection;
 
+pub use align::{
+    AlignedStart, Alignment, AlignmentConfig, HeadObserver, ObservedHead, align_start,
+};
 pub use baseline::PlanningBaseline;
 pub use budget::{BinDisposition, DeferReason, Estimate};
 pub use config::PlannerConfig;
