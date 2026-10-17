@@ -1,9 +1,9 @@
 //! Which delete files apply to a data file, decided from metadata.
 //!
 //! The v2 rules: a delete applies when its partition equals the data
-//! file's (same spec and values) or its spec is unpartitioned; a position
-//! delete when the data sequence number is <= the delete's, an equality
-//! delete when it is strictly less. A position delete that names its data
+//! file's (same spec and values), or an equality delete's spec is unpartitioned.
+//! A position delete applies when the data sequence number is <= the delete's,
+//! an equality delete when it is strictly less. A position delete that names its data
 //! file, or whose `file_path` bounds exclude a path, does not apply to other
 //! files. Including a delete that turns out not to match is safe: the
 //! executor matches deletes by path and key.
@@ -14,7 +14,7 @@ use crate::inventory::{DeleteEntry, DeleteKind, FileEntry};
 use crate::partition::{BoundSpec, PartitionKey, Specs};
 
 pub(crate) struct DeleteIndex<'a> {
-    /// Deletes of unpartitioned specs, which may apply to any file.
+    /// Equality deletes of unpartitioned specs, which may apply to any file.
     global: Vec<&'a DeleteEntry>,
     by_partition: BTreeMap<&'a PartitionKey, Vec<&'a DeleteEntry>>,
 }
@@ -26,9 +26,10 @@ impl<'a> DeleteIndex<'a> {
             by_partition: BTreeMap::new(),
         };
         for delete in deletes {
-            let unpartitioned = specs
-                .get(delete.file.partition.spec_id())
-                .is_ok_and(BoundSpec::is_unpartitioned);
+            let unpartitioned = matches!(delete.kind, DeleteKind::Equality { .. })
+                && specs
+                    .get(delete.file.partition.spec_id())
+                    .is_ok_and(BoundSpec::is_unpartitioned);
             if unpartitioned {
                 index.global.push(delete);
             } else {

@@ -47,4 +47,8 @@ deny = [
 unknown-registry = "deny"
 unknown-git = "deny"
 # The pinned iceberg-rust fork (ADR 0003). Every crate uses one `rev`.
-allow-git = ["https://github.com/risingwavelabs/iceberg-rust.git"]
+allow-git = [
+    "https://github.com/risingwavelabs/iceberg-rust.git",
+    # BS-011 per-spec additions; immutable patch pin documented in ADR 0021.
+    "https://github.com/thealtoclef/rw-iceberg-rust.git",
+]

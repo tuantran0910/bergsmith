@@ -2,6 +2,13 @@
 resolver = "3"
 members = ["crates/*", "bin/*"]
 
+# Per-spec replacement manifests (risingwavelabs/iceberg-rust#262, ADR 0021).
+# Redirect all three packages together to preserve one iceberg-rust revision.
+[patch."https://github.com/risingwavelabs/iceberg-rust.git"]
+iceberg = { git = "https://github.com/thealtoclef/rw-iceberg-rust.git", rev = "eb162a1e109dbd2961d1fcd3e93cc8c770120bb9" }
+iceberg-catalog-rest = { git = "https://github.com/thealtoclef/rw-iceberg-rust.git", rev = "eb162a1e109dbd2961d1fcd3e93cc8c770120bb9" }
+iceberg-storage-opendal = { git = "https://github.com/thealtoclef/rw-iceberg-rust.git", rev = "eb162a1e109dbd2961d1fcd3e93cc8c770120bb9" }
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"

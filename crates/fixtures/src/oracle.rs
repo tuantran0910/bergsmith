@@ -117,10 +117,12 @@ pub async fn live_rows(
     let mut live = RowMultiset::new();
     for file in data {
         let rows = read_rows(file_io, &file.path, &columns).await?;
-        let deleted = deleted_positions(file, &positions, metadata);
+        let deleted = deleted_positions(file, &positions);
         let keys: Vec<&EqualityDeletes> = equality
             .iter()
-            .filter(|delete| delete.file.seq > file.seq && in_scope(delete.file, file, metadata))
+            .filter(|delete| {
+                delete.file.seq > file.seq && equality_in_scope(delete.file, file, metadata)
+            })
             .collect();
         for (position, row) in (0_i64..).zip(rows) {
             let deleted_by_key = keys
@@ -244,13 +246,16 @@ fn select<'a>(data: &'a [TableFile], paths: &BTreeSet<String>) -> Result<Vec<&'a
     Ok(selected)
 }
 
-/// Whether a delete file can apply to a data file by partition: the same
-/// spec and partition, or a delete in an unpartitioned spec.
-fn in_scope(delete: &TableFile, data: &TableFile, metadata: &TableMetadata) -> bool {
+/// Equality deletes alone can apply globally from an unpartitioned spec.
+fn equality_in_scope(delete: &TableFile, data: &TableFile, metadata: &TableMetadata) -> bool {
     let global = metadata
         .partition_spec_by_id(delete.spec_id)
         .is_some_and(|spec| spec.is_unpartitioned());
-    global || (delete.spec_id == data.spec_id && delete.partition == data.partition)
+    global || same_partition(delete, data)
+}
+
+fn same_partition(delete: &TableFile, data: &TableFile) -> bool {
+    delete.spec_id == data.spec_id && delete.partition == data.partition
 }
 
 /// A position-delete file's positions, by data file path.
@@ -296,14 +301,10 @@ async fn position_deletes<'a>(
 
 /// The positions deleted from `data`: from position-delete files with a
 /// data sequence number at least the data file's, in partition scope.
-fn deleted_positions(
-    data: &TableFile,
-    deletes: &[PositionDeletes<'_>],
-    metadata: &TableMetadata,
-) -> BTreeSet<i64> {
+fn deleted_positions(data: &TableFile, deletes: &[PositionDeletes<'_>]) -> BTreeSet<i64> {
     deletes
         .iter()
-        .filter(|delete| delete.file.seq >= data.seq && in_scope(delete.file, data, metadata))
+        .filter(|delete| delete.file.seq >= data.seq && same_partition(delete.file, data))
         .filter_map(|delete| delete.positions.get(&data.path))
         .flatten()
         .copied()
