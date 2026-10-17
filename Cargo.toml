@@ -35,6 +35,9 @@ bytes = "1.12.1"
 futures = "0.3.34"
 mockito = "1.7.2"
 prost = "0.14.4"
+# Property tests only; no process forking. Failing cases are saved under
+# `proptest-regressions/`.
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 prost-types = "0.14.4"
 protox = "0.10.0"
 # TLS for catalog HTTPS. Feature unification also gives iceberg-rust's reqwest TLS.
@@ -54,7 +57,7 @@ thiserror = "2.0.21"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 url = "2.5.8"
-uuid = { version = "1.28.0", features = ["serde", "v7"] }
+uuid = { version = "1.28.0", features = ["serde", "v7", "v8"] }
 zeroize = "1.9.1"
 
 [workspace.lints.rust]

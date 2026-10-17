@@ -6,4 +6,5 @@
 
 pub mod database;
 pub mod inventory;
+pub mod planning;
 pub mod publication;

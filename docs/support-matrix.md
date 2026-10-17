@@ -20,7 +20,8 @@ Nothing is certified yet. Update a row only when its acceptance tests pass
 | ORC or Avro data files | Unsupported |
 | Branch `main` | Planned |
 | Other branches and tags | Unsupported |
-| Encrypted tables | Later (M9) |
+| Encrypted tables | Later (M9); rejected at preview |
+| Tables with a default sort order | Unsupported until sorting (M9); rejected at preview |
 | Partitioned tables, including old partition specs | Planned |
 | Schema evolution (renamed and added columns) | Planned |
 | Nested types | Planned; pending acceptance tests |
@@ -29,10 +30,11 @@ Nothing is certified yet. Update a row only when its acceptance tests pass
 
 | Operation | Status |
 |---|---|
-| Whole-file binpack compaction within existing partitions | Planned |
+| Whole-file binpack compaction within existing partitions | Planned; deterministic planner implemented (BS-009, ADR 0017), executor pending |
 | Position delete application | Planned |
 | Equality delete application, including null keys | Planned |
-| Floating-point equality-delete keys | Unsupported |
+| Floating-point equality-delete keys | Unsupported; rejected at preview |
+| Equality-delete keys on nested or dropped fields | Unsupported; rejected at preview |
 | Sorted rewrite | Later (M9) |
 | Repartitioning | Unsupported |
 | Manifest rewrite | Later (M7) |
@@ -45,7 +47,7 @@ Nothing is certified yet. Update a row only when its acceptance tests pass
 | Behavior | Status |
 |---|---|
 | Conservative conflict rejection (`ReplanRequired`) | Planned; concurrent append, delete, schema, spec, and sort changes rejected by Lakekeeper (BS-007) |
-| Commit-aligned job start and per-job duration budget | Planned; conflict rate measured against a synthetic sink ([M1 measurement](measurements/m1-conflict-rate.md)) |
+| Commit-aligned job start and per-job duration budget | Planned; conflict rate measured against a synthetic sink ([M1 measurement](measurements/m1-conflict-rate.md)); start alignment and budget admission implemented (BS-009), throughput not yet measured |
 | Compatible rebasing onto concurrent appends | Deferred |
 
 ## Catalogs

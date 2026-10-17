@@ -15,6 +15,7 @@ mod error;
 mod hex;
 mod inventory;
 mod partition;
+mod plan;
 mod planner;
 mod selection;
 
@@ -27,5 +28,6 @@ pub use config::PlannerConfig;
 pub use eligibility::{KeyProblem, Rejection, SkipReason};
 pub use error::PlanError;
 pub use partition::{PartitionKey, PartitionValue};
-pub use planner::{BinPreview, FileTally, PlanInput, Planner, Preview};
+pub use plan::{PlanDocument, PlanIds, PlannedDelete, PlannedFile, PlannedTask};
+pub use planner::{BinPreview, FileTally, NoOpReason, PlanInput, PlanOutcome, Planner, Preview};
 pub use selection::PartitionPredicate;

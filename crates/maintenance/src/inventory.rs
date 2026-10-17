@@ -119,22 +119,27 @@ impl Inventory {
                 }
             }
         }
-        inventory.data.sort_by(|a, b| a.path.cmp(&b.path));
-        inventory
-            .deletes
-            .sort_by(|a, b| a.file.path.cmp(&b.file.path));
-        let paths = inventory
-            .data
+        Self::from_entries(inventory.data, inventory.deletes)
+    }
+
+    /// An inventory of `data` and `deletes` in any order.
+    pub(crate) fn from_entries(
+        mut data: Vec<FileEntry>,
+        mut deletes: Vec<DeleteEntry>,
+    ) -> Result<Self, PlanError> {
+        data.sort_by(|a, b| a.path.cmp(&b.path));
+        deletes.sort_by(|a, b| a.file.path.cmp(&b.file.path));
+        let paths = data
             .iter()
             .map(|file| &file.path)
-            .chain(inventory.deletes.iter().map(|delete| &delete.file.path));
+            .chain(deletes.iter().map(|delete| &delete.file.path));
         let mut seen = std::collections::BTreeSet::new();
         for path in paths {
             if !seen.insert(path) {
                 return Err(PlanError::DuplicateFile { path: path.clone() });
             }
         }
-        Ok(inventory)
+        Ok(Self { data, deletes })
     }
 }
 

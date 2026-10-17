@@ -9,11 +9,13 @@ publish.workspace = true
 [dependencies]
 bergsmith-catalog.workspace = true
 bergsmith-common.workspace = true
+bergsmith-maintenance.workspace = true
 bergsmith-persistence.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+bergsmith-fixtures.workspace = true
 bergsmith-storage.workspace = true
 iceberg.workspace = true
 reqwest.workspace = true
