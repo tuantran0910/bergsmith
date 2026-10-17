@@ -2,7 +2,11 @@ CARGO ?= cargo
 COVERAGE_MIN ?= 80
 COVERAGE_IGNORE := '(^|/)bin/'
 COMPOSE := docker compose --file deploy/docker/compose.yaml
-BUF := docker run --rm --volume "$(CURDIR)":/workspace --workdir /workspace bufbuild/buf:1.50.0
+# buf runs as the invoking user: `buf breaking` clones `.git`, and git refuses
+# a repository owned by another user ("dubious ownership"). The cache moves
+# to /tmp because that user has no home directory in the image.
+BUF := docker run --rm --user "$$(id -u):$$(id -g)" --env BUF_CACHE_DIR=/tmp/buf \
+	--volume "$(CURDIR)":/workspace --workdir /workspace bufbuild/buf:1.50.0
 # The ref protobuf changes are checked against for breaking changes.
 PROTO_BASE ?= main
 
