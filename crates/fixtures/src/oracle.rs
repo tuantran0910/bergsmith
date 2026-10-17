@@ -25,6 +25,40 @@ use crate::error::{FixtureError, Result};
 use crate::generate::Fixture;
 use crate::value::{Row, RowMultiset, Value};
 
+/// Reads replacement Parquet files independently of iceberg-rust's reader.
+///
+/// Projects by field ID into `metadata`'s current schema, without reapplying
+/// deletes (the executor has already applied them). Used to compare replacement
+/// rows with [`live_rows`] of the selected original files.
+///
+/// # Errors
+///
+/// The same schema and file-reading errors as [`live_rows`], or
+/// [`FixtureError::Content`] if a descriptor's record count is wrong.
+pub async fn read_data_files(
+    metadata: &TableMetadata,
+    file_io: &FileIO,
+    files: &[iceberg::spec::DataFile],
+) -> Result<RowMultiset> {
+    let columns = current_columns(metadata)?;
+    let mut result = RowMultiset::new();
+    for file in files {
+        if file.file_format() != DataFileFormat::Parquet {
+            return Err(FixtureError::Unsupported(
+                "replacement is not parquet".into(),
+            ));
+        }
+        let rows = read_rows(file_io, file.file_path(), &columns).await?;
+        if rows.len() as u64 != file.record_count() {
+            return Err(FixtureError::Content(
+                "replacement record count does not match parquet".into(),
+            ));
+        }
+        result.extend(rows);
+    }
+    Ok(result)
+}
+
 impl Fixture {
     /// The live rows of every data file in the current snapshot.
     ///

@@ -7,6 +7,21 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+bergsmith-common.workspace = true
+bergsmith-maintenance.workspace = true
+bergsmith-protocol.workspace = true
+bergsmith-storage.workspace = true
+iceberg.workspace = true
+prost.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "time"] }
+uuid.workspace = true
+
+[dev-dependencies]
+bergsmith-fixtures.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]
 workspace = true

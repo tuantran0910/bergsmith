@@ -417,7 +417,7 @@ fn task_id(plan: PlanId, ordinal: u32) -> TaskId {
     TaskId::from_uuid(Uuid::new_v8(bytes))
 }
 
-fn partition(key: &PartitionKey) -> artifact::PartitionKey {
+pub(crate) fn partition(key: &PartitionKey) -> artifact::PartitionKey {
     artifact::PartitionKey {
         spec_id: key.spec_id(),
         values: key

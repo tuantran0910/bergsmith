@@ -30,9 +30,9 @@ Nothing is certified yet. Update a row only when its acceptance tests pass
 
 | Operation | Status |
 |---|---|
-| Whole-file binpack compaction within existing partitions | Planned; deterministic planner implemented (BS-009, ADR 0017), executor pending |
-| Position delete application | Planned |
-| Equality delete application, including null keys | Planned |
+| Whole-file binpack compaction within existing partitions | Planned; native local executor passes all 11 spike fixtures with oracle checks, rolling metrics and resource failures (BS-010, ADRs 0018–0019); distributed publication pending |
+| Position delete application | Planned; native rewrite fixtures pass (BS-010), extended sequence and manifest certification pending (BS-011) |
+| Equality delete application, including null keys | Planned; nullable single/composite and 50,000-key fixtures pass (BS-010), extended certification pending (BS-011) |
 | Floating-point equality-delete keys | Unsupported; rejected at preview |
 | Equality-delete keys on nested or dropped fields | Unsupported; rejected at preview |
 | Sorted rewrite | Later (M9) |
@@ -47,7 +47,7 @@ Nothing is certified yet. Update a row only when its acceptance tests pass
 | Behavior | Status |
 |---|---|
 | Conservative conflict rejection (`ReplanRequired`) | Planned; concurrent append, delete, schema, spec, and sort changes rejected by Lakekeeper (BS-007) |
-| Commit-aligned job start and per-job duration budget | Planned; conflict rate measured against a synthetic sink ([M1 measurement](measurements/m1-conflict-rate.md)); start alignment and budget admission implemented (BS-009), throughput not yet measured |
+| Commit-aligned job start and per-job duration budget | Planned; conflict rate measured against a synthetic sink ([M1 measurement](measurements/m1-conflict-rate.md)); start alignment and budget admission implemented (BS-009); [native fixture measurements](measurements/bs-010-executor.md) fit the budget, large-group throughput remains unvalidated |
 | Compatible rebasing onto concurrent appends | Deferred |
 
 ## Catalogs

@@ -24,3 +24,5 @@ record's status; never rewrite an accepted decision.
 | [0015](0015-commit-adapter-capture.md) | Build commits with a capture-only catalog | Accepted |
 | [0016](0016-native-fixtures-and-oracle.md) | Native fixtures and an independent live-row oracle | Accepted |
 | [0017](0017-deterministic-planner.md) | A deterministic, metadata-only planner | Accepted |
+| [0018](0018-verified-executor-scans.md) | Verify planned identities before native row scans | Accepted |
+| [0019](0019-bounded-native-rewrites.md) | Bounded native rewrites, receipts and local execution | Accepted |
