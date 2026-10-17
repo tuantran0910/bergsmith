@@ -24,6 +24,25 @@ pub struct PlannerConfig {
     /// The most live manifest entries planning reads before refusing the
     /// table, which bounds planner memory.
     pub max_manifest_entries: u64,
+    /// The most input bytes one job rewrites.
+    pub max_job_input_bytes: u64,
+    /// The most source files one job rewrites.
+    pub max_job_files: u64,
+    /// How many tasks of one job may run at once.
+    pub max_concurrent_groups: u32,
+    /// A bin without deletes needs at least this many files.
+    pub min_input_files: u64,
+    /// A bin without deletes must remove at least this many files.
+    pub min_files_removed: u64,
+    /// Expected rewrite throughput of one task. BS-010 replaces the
+    /// default with a measured value.
+    pub throughput_bytes_per_second: u64,
+    /// Fixed cost of one task: scheduling, opening files, and closing
+    /// writers.
+    pub task_overhead_millis: u64,
+    /// The longest a job is expected to take, so it fits between two
+    /// commits of a streaming writer (ADR 0010).
+    pub duration_budget_millis: u64,
 }
 
 impl Default for PlannerConfig {
@@ -34,6 +53,14 @@ impl Default for PlannerConfig {
             min_file_size_bytes: target / 4 * 3,
             max_group_input_bytes: 2 * GIB,
             max_manifest_entries: 1_000_000,
+            max_job_input_bytes: 100 * GIB,
+            max_job_files: 10_000,
+            max_concurrent_groups: 3,
+            min_input_files: 5,
+            min_files_removed: 2,
+            throughput_bytes_per_second: 64 * MIB,
+            task_overhead_millis: 2_000,
+            duration_budget_millis: 180_000,
         }
     }
 }
@@ -54,6 +81,12 @@ impl PlannerConfig {
         }
         if self.max_group_input_bytes < self.target_file_size_bytes {
             return invalid("the group input limit must be at least the target file size");
+        }
+        if self.max_concurrent_groups == 0 {
+            return invalid("at least one group must be able to run");
+        }
+        if self.throughput_bytes_per_second == 0 {
+            return invalid("the throughput must be positive");
         }
         Ok(())
     }
