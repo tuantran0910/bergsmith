@@ -17,10 +17,13 @@ use bergsmith_fixtures::{Commit, FileSpec, Fixture, FixtureError, TableSpec, Val
 use futures::TryStreamExt;
 use iceberg::TableIdent;
 use iceberg::spec::{
-    DataContentType, FormatVersion, ManifestList, NestedField, PrimitiveType, Schema, Transform,
-    Type, UnboundPartitionSpec,
+    DataContentType, Datum, FormatVersion, ManifestList, NestedField, PrimitiveType, Schema,
+    Transform, Type, UnboundPartitionSpec,
 };
 use iceberg::table::StaticTable;
+
+/// The reserved field ID of a position delete's `file_path` column.
+const FILE_PATH_FIELD_ID: i32 = 2_147_483_546;
 
 fn schema(fields: impl IntoIterator<Item = NestedField>) -> Schema {
     Schema::builder()
@@ -188,6 +191,44 @@ async fn added_files_inherit_their_commit_sequence_number() {
                 (Some(2), DataContentType::EqualityDeletes)
             ),
         ])
+    );
+}
+
+#[tokio::test]
+async fn position_deletes_record_their_path_bounds() {
+    let fixture = with_shared_deletes().generate().await.unwrap();
+    let file_io = fixture.file_io();
+    let snapshot = fixture.metadata().current_snapshot().unwrap();
+    let list = file_io
+        .new_input(snapshot.manifest_list())
+        .unwrap()
+        .read()
+        .await
+        .unwrap();
+    let list = ManifestList::parse_with_version(&list, FormatVersion::V2).unwrap();
+
+    let mut bounds = Vec::new();
+    for manifest in list.entries() {
+        for entry in manifest.load_manifest(file_io).await.unwrap().entries() {
+            let file = entry.data_file();
+            let bound = |bounds: &std::collections::HashMap<i32, Datum>| {
+                bounds.get(&FILE_PATH_FIELD_ID).cloned()
+            };
+            bounds.push((
+                file.content_type(),
+                bound(file.lower_bounds()),
+                bound(file.upper_bounds()),
+            ));
+        }
+    }
+
+    let path = |name| Some(Datum::string(fixture.path_of(name).unwrap()));
+    assert!(bounds.contains(&(DataContentType::PositionDeletes, path("a"), path("c"))));
+    assert!(
+        bounds
+            .iter()
+            .filter(|(content, ..)| *content != DataContentType::PositionDeletes)
+            .all(|(_, lower, upper)| lower.is_none() && upper.is_none())
     );
 }
 
