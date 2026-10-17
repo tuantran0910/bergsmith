@@ -514,6 +514,7 @@ dependencies = [
  "bergsmith-fixtures",
  "bergsmith-maintenance",
  "bergsmith-persistence",
+ "bergsmith-protocol",
  "bergsmith-storage",
  "iceberg",
  "reqwest 0.12.28",
@@ -1945,7 +1946,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.0"
-source = "git+https://github.com/risingwavelabs/iceberg-rust.git?rev=f501ff0c245b4b625fe52feaf6125c69f7132557#f501ff0c245b4b625fe52feaf6125c69f7132557"
+source = "git+https://github.com/thealtoclef/rw-iceberg-rust.git?rev=eb162a1e109dbd2961d1fcd3e93cc8c770120bb9#eb162a1e109dbd2961d1fcd3e93cc8c770120bb9"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2004,7 +2005,7 @@ dependencies = [
 [[package]]
 name = "iceberg-catalog-rest"
 version = "0.10.0"
-source = "git+https://github.com/risingwavelabs/iceberg-rust.git?rev=f501ff0c245b4b625fe52feaf6125c69f7132557#f501ff0c245b4b625fe52feaf6125c69f7132557"
+source = "git+https://github.com/thealtoclef/rw-iceberg-rust.git?rev=eb162a1e109dbd2961d1fcd3e93cc8c770120bb9#eb162a1e109dbd2961d1fcd3e93cc8c770120bb9"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2026,7 +2027,7 @@ dependencies = [
 [[package]]
 name = "iceberg-storage-opendal"
 version = "0.10.0"
-source = "git+https://github.com/risingwavelabs/iceberg-rust.git?rev=f501ff0c245b4b625fe52feaf6125c69f7132557#f501ff0c245b4b625fe52feaf6125c69f7132557"
+source = "git+https://github.com/thealtoclef/rw-iceberg-rust.git?rev=eb162a1e109dbd2961d1fcd3e93cc8c770120bb9#eb162a1e109dbd2961d1fcd3e93cc8c770120bb9"
 dependencies = [
  "anyhow",
  "async-trait",

@@ -7,8 +7,9 @@ Status values:
 - **Later:** after the MVP (milestone in brackets).
 - **Unsupported:** rejected during preview with an explanation.
 
-Nothing is certified yet. Update a row only when its acceptance tests pass
-(see `.private/BERGSMITH_PROJECT_PLAN.md` §5).
+Certification is scoped to the tested backend or execution path. Native local
+rewrite certification does not certify distributed publication or recovery.
+Update a row only when its acceptance tests pass (see the project plan §5).
 
 ## Table formats and features
 
@@ -31,8 +32,9 @@ Nothing is certified yet. Update a row only when its acceptance tests pass
 | Operation | Status |
 |---|---|
 | Whole-file binpack compaction within existing partitions | Planned; native local executor passes all 11 spike fixtures with oracle checks, rolling metrics and resource failures (BS-010, ADRs 0018–0019); distributed publication pending |
-| Position delete application | Planned; native rewrite fixtures pass (BS-010), extended sequence and manifest certification pending (BS-011) |
-| Equality delete application, including null keys | Planned; nullable single/composite and 50,000-key fixtures pass (BS-010), extended certification pending (BS-011) |
+| Position delete application | Certified for native local rewrites (BS-011): physical positions, equal-sequence applicability, partition/spec scope, retained shared deletes, and capture-publication manifest checks; distributed acceptance/recovery pending |
+| Equality delete application, including null keys | Certified for native local rewrites (BS-011): nullable single/composite keys, duplicate survivors, strict sequence applicability, global equality scope, 50,000-key fixture, and later-delete checks; distributed acceptance/recovery pending |
+| Zero-output replacement | Certified for native execution and capture-publication (BS-011): empty receipts remove selected sources while retaining deletes and untouched data; durable acceptance pending BS-012 |
 | Floating-point equality-delete keys | Unsupported; rejected at preview |
 | Equality-delete keys on nested or dropped fields | Unsupported; rejected at preview |
 | Sorted rewrite | Later (M9) |

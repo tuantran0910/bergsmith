@@ -133,6 +133,9 @@ impl RewriteProposal {
                     .add_data_files(self.added)
                     .set_snapshot_id(snapshot_id)
                     .set_new_data_file_sequence_number(sequence_number)
+                    // Rewrite authority covers selected data files only. Retain
+                    // every delete, including obsolete ones, for later cleanup.
+                    .set_enable_delete_filter_manager(false)
                     .set_check_file_existence(true);
                 action.set_snapshot_properties(summary);
                 action.set_commit_uuid(commit_uuid);

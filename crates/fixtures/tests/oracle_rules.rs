@@ -172,6 +172,23 @@ async fn an_unpartitioned_delete_applies_to_every_partition() {
 }
 
 #[tokio::test]
+async fn an_unpartitioned_position_delete_does_not_apply_across_specs() {
+    let table = TableSpec::new(tagged())
+        .partitioned_by(identity(TAG, "tag"))
+        .commit(
+            Commit::new()
+                .file(FileSpec::data("x", rows(0..2, "x")).partition([Value::string("x")])),
+        )
+        .commit(
+            Commit::new()
+                .evolve_spec(UnboundPartitionSpec::builder().build())
+                .file(FileSpec::position_deletes("p", [("x", 0)])),
+        );
+
+    assert_eq!(live(table).await, multiset(rows(0..2, "x")));
+}
+
+#[tokio::test]
 async fn a_partitioned_equality_delete_skips_other_specs() {
     let table = TableSpec::new(tagged())
         .commit(Commit::new().file(FileSpec::data("plain", rows(0..2, "x"))))

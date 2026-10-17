@@ -16,6 +16,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 bergsmith-fixtures.workspace = true
+bergsmith-protocol.workspace = true
 bergsmith-storage.workspace = true
 iceberg.workspace = true
 reqwest.workspace = true
