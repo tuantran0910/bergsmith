@@ -41,6 +41,12 @@ impl PartitionKey {
         }
     }
 
+    /// Moves the key to another spec, for tests.
+    #[cfg(test)]
+    pub(crate) const fn set_spec_id(&mut self, spec_id: i32) {
+        self.spec_id = spec_id;
+    }
+
     /// The partition spec ID.
     #[must_use]
     pub const fn spec_id(&self) -> i32 {
