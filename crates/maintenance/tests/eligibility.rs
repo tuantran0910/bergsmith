@@ -502,6 +502,14 @@ fn inconsistent_configurations_are_refused() {
             max_group_input_bytes: base.target_file_size_bytes - 1,
             ..base.clone()
         },
+        PlannerConfig {
+            max_concurrent_groups: 0,
+            ..base.clone()
+        },
+        PlannerConfig {
+            throughput_bytes_per_second: 0,
+            ..base.clone()
+        },
     ];
 
     for config in cases {

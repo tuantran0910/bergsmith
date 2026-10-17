@@ -7,6 +7,7 @@ use iceberg::spec::TableMetadata;
 
 use crate::baseline::PlanningBaseline;
 use crate::binpack::{self, Bin, Item};
+use crate::budget::{self, BinDisposition, BinSize, Estimate};
 use crate::config::PlannerConfig;
 use crate::deletes::DeleteIndex;
 use crate::eligibility::{self, Candidate, Rejection, SkipReason};
@@ -60,6 +61,8 @@ pub struct Preview {
     pub skipped: BTreeMap<SkipReason, FileTally>,
     /// The candidates packed into bins, in canonical order.
     pub bins: Vec<BinPreview>,
+    /// The admitted work.
+    pub estimate: Estimate,
 }
 
 /// One bin of candidates: the input of one possible task.
@@ -72,6 +75,12 @@ pub struct BinPreview {
     pub ordinal: usize,
     /// The data files in the bin.
     pub input: FileTally,
+    /// Whether any of its files has an applicable delete.
+    pub has_deletes: bool,
+    /// Data files rewriting the bin is expected to remove.
+    pub files_removed: u64,
+    /// Whether the bin becomes a task of this job.
+    pub disposition: BinDisposition,
 }
 
 /// Plans maintenance of one table at a time.
@@ -112,6 +121,7 @@ impl Planner {
             candidates: FileTally::default(),
             skipped: BTreeMap::new(),
             bins: Vec::new(),
+            estimate: Estimate::default(),
         };
         for (file, decision) in assessment.inventory.data.iter().zip(&assessment.decisions) {
             match decision {
@@ -119,16 +129,24 @@ impl Planner {
                 Err(reason) => preview.skipped.entry(*reason).or_default().add(file.size),
             }
         }
-        preview.bins = self
-            .bins(&assessment)
-            .into_iter()
-            .map(|bin| BinPreview {
+        let bins = self.bins(&assessment);
+        let sizes = assessment.sizes(&bins);
+        let (dispositions, estimate) = budget::admit(&sizes, &self.config);
+        preview.estimate = estimate;
+        preview.bins = bins
+            .iter()
+            .zip(&sizes)
+            .zip(dispositions)
+            .map(|((bin, size), disposition)| BinPreview {
                 partition: bin.key.clone(),
                 ordinal: bin.ordinal,
                 input: FileTally {
-                    files: bin.items.len() as u64,
-                    bytes: bin.bytes,
+                    files: size.files,
+                    bytes: size.bytes,
                 },
+                has_deletes: size.has_deletes,
+                files_removed: budget::files_removed(*size, &self.config),
+                disposition,
             })
             .collect();
         Ok(preview)
@@ -187,6 +205,27 @@ impl Planner {
         }
         assessment.inventory = inventory;
         Ok(assessment)
+    }
+}
+
+impl Assessment {
+    /// The size of each bin.
+    fn sizes(&self, bins: &[Bin<'_>]) -> Vec<BinSize> {
+        bins.iter()
+            .map(|bin| BinSize {
+                files: bin.items.len() as u64,
+                bytes: bin.bytes,
+                has_deletes: bin.items.iter().any(|&data| self.has_deletes(data)),
+            })
+            .collect()
+    }
+
+    /// Whether the data file at `data` is a candidate with deletes.
+    fn has_deletes(&self, data: usize) -> bool {
+        self.decisions
+            .get(data)
+            .and_then(|decision| decision.as_ref().ok())
+            .is_some_and(|candidate| !candidate.deletes.is_empty())
     }
 }
 

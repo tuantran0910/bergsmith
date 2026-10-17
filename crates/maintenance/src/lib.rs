@@ -6,6 +6,7 @@
 
 mod baseline;
 mod binpack;
+mod budget;
 mod config;
 mod deletes;
 mod eligibility;
@@ -17,6 +18,7 @@ mod planner;
 mod selection;
 
 pub use baseline::PlanningBaseline;
+pub use budget::{BinDisposition, DeferReason, Estimate};
 pub use config::PlannerConfig;
 pub use eligibility::{KeyProblem, Rejection, SkipReason};
 pub use error::PlanError;
