@@ -9,6 +9,9 @@ publish.workspace = true
 [[bin]]
 name = "bergsmith-worker"
 path = "src/main.rs"
+# Shares its name with the library crate; documenting both writes to the
+# same `target/doc/<name>` directory and fails nondeterministically.
+doc = false
 
 [dependencies]
 tracing.workspace = true
