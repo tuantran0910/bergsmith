@@ -60,3 +60,7 @@ make ci         # run every quality gate: fmt, check, clippy, tests, docs,
 
 Read [`AGENTS.md`](AGENTS.md) before contributing. It covers code conventions,
 testing rules, architecture invariants, and git conventions.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
