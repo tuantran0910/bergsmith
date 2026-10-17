@@ -65,6 +65,10 @@ pub enum PlanError {
         /// The configured limit.
         limit: u64,
     },
+    /// A plan does not decode, does not match its hash, or holds a value
+    /// its artifacts cannot represent.
+    #[error("corrupt plan: {0}")]
+    CorruptPlan(String),
     /// Reading or parsing metadata, a manifest list, or a manifest failed.
     #[error("reading table metadata failed: {0}")]
     Iceberg(#[from] iceberg::Error),

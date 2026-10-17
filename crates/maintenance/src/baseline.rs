@@ -87,6 +87,26 @@ impl PlanningBaseline {
         }))
     }
 
+    /// A baseline of snapshot 1 at `file:///t`, for tests.
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> Self {
+        Self {
+            table_uuid: Uuid::from_u128(1),
+            metadata_location: "file:///t/metadata/v1.metadata.json".into(),
+            format_version: 2,
+            snapshot_id: 1,
+            sequence_number: 5,
+            schema_id: 0,
+            last_column_id: 2,
+            default_spec_id: 1,
+            last_partition_id: 1000,
+            default_sort_order_id: 0,
+            location: "file:///t".into(),
+            data_location: "file:///t/data".into(),
+            properties: BTreeMap::new(),
+        }
+    }
+
     /// The Iceberg `table-uuid`.
     #[must_use]
     pub const fn table_uuid(&self) -> Uuid {
