@@ -15,7 +15,11 @@ DATABASE_URL ?= postgres://bergsmith:bergsmith@127.0.0.1:55432/bergsmith
 BERGSMITH_TEST_S3_ENDPOINT ?= http://127.0.0.1:59000
 BERGSMITH_TEST_CATALOG_URL ?= http://127.0.0.1:58181
 export DATABASE_URL BERGSMITH_TEST_S3_ENDPOINT BERGSMITH_TEST_CATALOG_URL
+# Read by nextest directly, so it also applies under `cargo llvm-cov nextest`.
 NEXTEST_PROFILE ?= default
+export NEXTEST_PROFILE
+# Extra report flags for `make coverage`, e.g. `--lcov --output-path lcov.info`.
+COVERAGE_REPORT ?=
 
 .PHONY: help fmt fmt-check check clippy test doc coverage coverage-html deny machete ci \
 	services-up services-down proto-lint proto-breaking
@@ -42,7 +46,7 @@ services-down: ## Stop the test services and discard their data
 	$(COMPOSE) down
 
 test: services-up ## Run the test suite
-	$(CARGO) nextest run --workspace --locked --profile $(NEXTEST_PROFILE)
+	$(CARGO) nextest run --workspace --locked
 
 doc: ## Build docs with warnings as errors
 	RUSTDOCFLAGS="-D warnings" $(CARGO) doc --workspace --no-deps --locked
@@ -50,7 +54,7 @@ doc: ## Build docs with warnings as errors
 coverage: services-up ## Enforce the line-coverage threshold
 	$(CARGO) llvm-cov nextest --workspace --locked \
 		--ignore-filename-regex $(COVERAGE_IGNORE) \
-		--fail-under-lines $(COVERAGE_MIN)
+		--fail-under-lines $(COVERAGE_MIN) $(COVERAGE_REPORT)
 
 coverage-html: services-up ## Write an HTML coverage report to target/llvm-cov/html
 	$(CARGO) llvm-cov nextest --workspace --locked \
@@ -72,4 +76,6 @@ proto-breaking: ## Check protobuf changes against PROTO_BASE (buf, via Docker)
 		echo "$(PROTO_BASE) has no buf.yaml yet; nothing to compare against"; \
 	fi
 
-ci: fmt-check proto-lint proto-breaking check clippy test doc coverage deny machete ## Run every quality gate
+# `coverage` runs the whole test suite and `clippy` type-checks every target,
+# so `test` and `check` would only repeat them.
+ci: fmt-check proto-lint proto-breaking clippy doc coverage deny machete ## Run every quality gate
