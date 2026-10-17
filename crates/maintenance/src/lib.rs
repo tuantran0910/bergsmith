@@ -5,6 +5,7 @@
 //! executor and delete application follow in BS-010 and BS-011.
 
 mod baseline;
+mod binpack;
 mod config;
 mod deletes;
 mod eligibility;
@@ -20,5 +21,5 @@ pub use config::PlannerConfig;
 pub use eligibility::{KeyProblem, Rejection, SkipReason};
 pub use error::PlanError;
 pub use partition::{PartitionKey, PartitionValue};
-pub use planner::{FileTally, PlanInput, Planner, Preview};
+pub use planner::{BinPreview, FileTally, PlanInput, Planner, Preview};
 pub use selection::PartitionPredicate;

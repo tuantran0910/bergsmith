@@ -6,12 +6,13 @@ use iceberg::io::FileIO;
 use iceberg::spec::TableMetadata;
 
 use crate::baseline::PlanningBaseline;
+use crate::binpack::{self, Bin, Item};
 use crate::config::PlannerConfig;
 use crate::deletes::DeleteIndex;
 use crate::eligibility::{self, Candidate, Rejection, SkipReason};
 use crate::error::PlanError;
 use crate::inventory::Inventory;
-use crate::partition::Specs;
+use crate::partition::{PartitionKey, Specs};
 use crate::selection::{PartitionPredicate, Selection};
 
 /// The table to plan, exactly as it was loaded.
@@ -57,6 +58,20 @@ pub struct Preview {
     pub candidates: FileTally,
     /// Data files left alone, by reason.
     pub skipped: BTreeMap<SkipReason, FileTally>,
+    /// The candidates packed into bins, in canonical order.
+    pub bins: Vec<BinPreview>,
+}
+
+/// One bin of candidates: the input of one possible task.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct BinPreview {
+    /// The `(spec, partition)` group.
+    pub partition: PartitionKey,
+    /// Position among the group's bins, from 0.
+    pub ordinal: usize,
+    /// The data files in the bin.
+    pub input: FileTally,
 }
 
 /// Plans maintenance of one table at a time.
@@ -92,10 +107,11 @@ impl Planner {
     pub async fn preview(&self, input: PlanInput<'_>) -> Result<Preview, PlanError> {
         let assessment = self.assess(input).await?;
         let mut preview = Preview {
-            baseline: assessment.baseline,
-            rejections: assessment.rejections,
+            baseline: assessment.baseline.clone(),
+            rejections: assessment.rejections.clone(),
             candidates: FileTally::default(),
             skipped: BTreeMap::new(),
+            bins: Vec::new(),
         };
         for (file, decision) in assessment.inventory.data.iter().zip(&assessment.decisions) {
             match decision {
@@ -103,7 +119,39 @@ impl Planner {
                 Err(reason) => preview.skipped.entry(*reason).or_default().add(file.size),
             }
         }
+        preview.bins = self
+            .bins(&assessment)
+            .into_iter()
+            .map(|bin| BinPreview {
+                partition: bin.key.clone(),
+                ordinal: bin.ordinal,
+                input: FileTally {
+                    files: bin.items.len() as u64,
+                    bytes: bin.bytes,
+                },
+            })
+            .collect();
         Ok(preview)
+    }
+
+    /// The candidates of `assessment`, packed. Item identifiers are
+    /// inventory data indices.
+    fn bins<'a>(&self, assessment: &'a Assessment) -> Vec<Bin<'a>> {
+        let items: Vec<Item<'a>> = assessment
+            .decisions
+            .iter()
+            .filter_map(|decision| decision.as_ref().ok())
+            .map(|candidate| {
+                let file = &assessment.inventory.data[candidate.data];
+                Item {
+                    id: candidate.data,
+                    key: &file.partition,
+                    path: &file.path,
+                    size: file.size,
+                }
+            })
+            .collect();
+        binpack::first_fit_decreasing(&items, self.config.max_group_input_bytes)
     }
 
     async fn assess(&self, input: PlanInput<'_>) -> Result<Assessment, PlanError> {
