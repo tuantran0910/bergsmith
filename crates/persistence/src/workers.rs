@@ -657,6 +657,9 @@ fn classify_failure(reason: &str, generation: i32) -> FailureDisposition {
         "StorageOperationTimedOut"
         | "TransientNativeExecutionFailed"
         | "TransientMetadataReadFailed"
+        | "TaskSubprocessCrashed"
+        | "StorageAuthorizationExpired"
+        | "WorkerExecutionInterrupted"
             if generation < 3 =>
         {
             FailureDisposition::RetryTask
@@ -688,6 +691,9 @@ mod tests {
                 "StorageOperationTimedOut",
                 "TransientNativeExecutionFailed",
                 "TransientMetadataReadFailed",
+                "TaskSubprocessCrashed",
+                "StorageAuthorizationExpired",
+                "WorkerExecutionInterrupted",
             ] {
                 assert_eq!(
                     classify_failure(reason, generation),

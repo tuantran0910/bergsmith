@@ -771,6 +771,7 @@ fn draft_grant(
             output_prefix: prefix.to_string(),
             limits: Some(offer.limits),
             credentials: None,
+            metadata_location: plan.baseline().metadata_location().to_owned(),
         },
     ))
 }

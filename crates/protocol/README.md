@@ -38,6 +38,12 @@ ended returns its durable disposition rather than another task. Revision 1
 workers must upgrade before registration; an unknown response variant must never
 be interpreted as permission to execute or to retry execution with a fresh poll.
 
+BS-015 adds `TaskGrant.metadata_location` without changing revision 2 or hashed
+messages. It identifies the original planning metadata file. Existing peers can
+ignore it; the new worker refuses an omitted location before execution. The
+same-build local `GetTaskResponse` also carries that location, artifact digest,
+and non-secret worker-pool S3 routing settings.
+
 ## Hashed messages
 
 `TaskArtifact` and `TaskReceipt` are identified by SHA-256 digests

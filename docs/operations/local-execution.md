@@ -57,7 +57,8 @@ Omitted fields use these defaults; unknown fields and zero budgets are rejected:
 Delete memory is a conservative admission reservation from footer sizes and key
 counts. Decoded batches are checked by retained Arrow memory. These component
 budgets do not impose a total process RSS cap. Distributed process supervision
-and hard process memory enforcement are BS-015. Native blocking work cannot be
+and Linux hard process memory enforcement are available through the
+[distributed worker runtime](workers.md) (BS-015). Native blocking work cannot be
 assumed to stop when a future's deadline expires. The executor does not sort or
 spill.
 
