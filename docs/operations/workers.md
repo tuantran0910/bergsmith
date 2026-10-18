@@ -49,9 +49,107 @@ See [ADR 0024](../adr/0024-worker-receipt-fencing-and-task-envelopes.md).
 
 BS-013 provides the RPC service and explicit task-offer interface. BS-014 adds
 [durable admission, retry timers, and queue reconstruction](scheduling.md);
-BS-015 adds worker runtime loops and subprocess enforcement. A drained or expired worker is not
+BS-015 provides worker runtime loops and subprocess enforcement. A drained or expired worker is not
 proof that its process has stopped writing. Preserve its registered output prefix
 under the retention rules in [publication.md](publication.md).
 
 The TLS RPC test suite generates ephemeral certificates with OpenSSL; OpenSSL
 must be available in development and CI. No private test key is checked in.
+
+## Running a supervisor
+
+Run `bergsmith-worker run --config /etc/bergsmith/worker.json --token-file
+/run/secrets/worker-token`. The configuration is JSON with these fields:
+
+```json
+{
+  "endpoint": "https://coordinator.example:7443",
+  "ca_certificate": "/etc/bergsmith/coordinator-ca.pem",
+  "worker_name": "worker-1",
+  "pool": "default",
+  "capabilities": ["native-v2"],
+  "memory_bytes": 2147483648,
+  "cpu_millis": 1000,
+  "state_directory": "/var/lib/bergsmith/worker",
+  "cgroup_root": "/sys/fs/cgroup/bergsmith-worker",
+  "s3_region": "us-east-1",
+  "s3_endpoint": "https://objects.example",
+  "s3_path_style": true
+}
+```
+
+Use the coordinator's configured capability profile names, sorted without
+duplicates. Omit `ca_certificate` to use system roots. Omit `s3_endpoint` for AWS.
+Omitting `s3_region` selects filesystem storage for development. These are
+connection settings; storage authentication always comes from grants and
+heartbeat refreshes. The pool token file contains a `bsw1` service token and
+should be readable only by the worker account. No secret belongs in this JSON.
+
+The state directory's parent must exist. The worker creates the directory with
+mode `0700`, refuses a public directory, and takes an exclusive lock. Use a
+short path: per-attempt UUID directories and `task.sock` must fit the operating
+system's Unix socket path limit. The same directory must survive process
+restarts. Never share it between concurrently running worker instances.
+
+Linux requires a writable, delegated cgroup v2 subtree with the `memory`, `cpu`,
+and `pids` controllers enabled for child cgroups. The service manager or container
+runtime must provide that delegation; the worker does not change host controller
+configuration. Each task gets `memory.max`, zero swap, `cpu.max`, and a 128-PID
+ceiling before local `GetTask` is served. Missing controllers or failed limit
+installation refuse execution. Production packaging is tracked separately.
+The single-threaded bootstrap joins that cgroup and re-executes before starting
+the native task runtime, so startup heap allocations are charged to its budget.
+Its dedicated launching thread remains alive for the child process's lifetime.
+
+Development platforms use CPU/core rlimits, a bound on additional virtual data
+growth, and 100-ms RSS sampling. A sampled RSS bound can overshoot between
+samples and does not provide Linux's hard memory isolation. CPU rlimits bound
+total CPU seconds; only Linux also limits CPU bandwidth. See
+[ADR 0026](../adr/0026-durable-worker-supervision.md).
+
+The worker binary launches `exec --socket <path> --parent-pid <pid>` itself.
+Subprocess environments are cleared and standard input/output/error use null devices.
+Tokens and storage credentials are not passed on command lines. The private
+socket supplies only the task's storage credentials. Storage credential refresh
+updates existing readers and writers; expiry stops the attempt. Running progress
+counters are currently finalized when the native result completes.
+
+SIGINT or SIGTERM stops admission and requests cooperative cancellation. The
+supervisor escalates to SIGTERM after the grace period and SIGKILL two seconds
+later, targeting the entire task process group. Lease expiry and fencing also
+stop execution. Linux additionally kills the task when its supervisor dies.
+Local worker shutdown records `WorkerExecutionInterrupted` as retryable before
+notifying the child. It follows the execution retry budget instead of being
+classified as permanent cancellation.
+
+## Reporting and restart recovery
+
+Each attempt directory retains `result.pb` or `failure.pb`, followed by `ack.pb`
+when the coordinator returns an authoritative disposition. These are immutable,
+atomically published, synced protobuf files. An exact local replay is harmless;
+a conflicting result cannot overwrite the existing record. Credentials never
+enter these files. Completed output files remain under their registered attempt
+prefix for publication or coordinator retention cleanup.
+Cancellation of a local RPC does not cancel its completion writer or release
+its exclusive completion guard. Recovery rejects conflicting completion files.
+An ordered pending index is rebuilt once on startup; normal polling and reporting
+inspect outstanding records without repeatedly traversing acknowledged history.
+
+TODO (BS-020): define an archival or retention policy for acknowledged worker
+journal records. Retained history consumes disk and increases the one-time
+startup recovery scan. Preserve unacknowledged reports and crash-safe recovery
+when bounding that history.
+
+On restart the worker reports unacknowledged records with their original session
+and receipt digest before requesting more execution. A timeout retries the same
+request, with reporting backoff capped at 30 seconds. Acknowledgments include refusals such as stale attempt, cancellation,
+and invalid result; none authorizes rerunning that attempt. Corrupt journals or
+unknown dispositions stop the worker and retain the evidence for inspection.
+When failure reporting rejects a fenced or expired attempt, the worker queries
+`GetAttemptStatus` and acknowledges only a conclusive ended disposition. A live
+or unresolved status keeps the report pending.
+Keep the state directory when restarting, and do not edit journal files.
+
+Run `cargo test -p bergsmith-worker -p bergsmith-worker-bin` for supervisor,
+private RPC, journal recovery, and real task-subprocess regression tests. The
+full distributed recovery/release suite follows in BS-016.

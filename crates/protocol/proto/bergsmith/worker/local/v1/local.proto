@@ -36,6 +36,12 @@ message GetTaskResponse {
   bergsmith.cluster.v1.ResourceLimits limits = 4;
   string output_prefix = 5;
   bergsmith.cluster.v1.StorageCredentials credentials = 6;
+  string metadata_location = 7;
+  bytes artifact_sha256 = 8;
+  // Non-secret worker-pool storage routing, never catalog access.
+  string s3_region = 9;
+  optional string s3_endpoint = 10;
+  bool s3_path_style = 11;
 }
 
 message ReportProgressRequest {

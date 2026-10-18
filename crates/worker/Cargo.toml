@@ -12,12 +12,25 @@ bergsmith-maintenance.workspace = true
 bergsmith-protocol.workspace = true
 bergsmith-storage.workspace = true
 iceberg.workspace = true
+futures.workspace = true
+hyper-util.workspace = true
 prost.workspace = true
+prost-types.workspace = true
+rustix.workspace = true
+rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "time", "net", "process", "sync", "signal", "rt"] }
+tokio-stream.workspace = true
+tonic = { workspace = true, features = ["transport", "router", "tls-aws-lc", "tls-native-roots"] }
+tower.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
 uuid.workspace = true
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+sysinfo.workspace = true
 
 [dev-dependencies]
 bergsmith-fixtures.workspace = true

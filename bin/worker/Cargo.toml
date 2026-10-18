@@ -20,5 +20,18 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+[dev-dependencies]
+bergsmith-common.workspace = true
+bergsmith-fixtures.workspace = true
+bergsmith-maintenance.workspace = true
+bergsmith-protocol.workspace = true
+bergsmith-storage.workspace = true
+futures.workspace = true
+prost-types.workspace = true
+tempfile.workspace = true
+tokio-stream.workspace = true
+tonic = { workspace = true, features = ["transport", "router"] }
+uuid.workspace = true
+
 [lints]
 workspace = true

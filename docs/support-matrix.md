@@ -49,8 +49,9 @@ Update a row only when its acceptance tests pass (see the project plan §5).
 | Behavior | Status |
 |---|---|
 | Conservative conflict rejection (`ReplanRequired`) | Planned; concurrent append, delete, schema, spec, and sort changes rejected by Lakekeeper (BS-007) |
-| Durable coordinator publication and recovery | Certified for native files + PostgreSQL + controlled REST crash fixtures (BS-012, ADR 0022); real Lakekeeper send/cancellation-boundary fixtures also pass; worker process supervision remains BS-015 |
-| Worker sessions, durable pulls, lease fencing, and result acknowledgments | Certified for TLS/tonic + PostgreSQL + native receipt fixtures (BS-013, ADRs 0023–0024); worker runtime remains BS-015 |
+| Durable coordinator publication and recovery | Certified for native files + PostgreSQL + controlled REST crash fixtures (BS-012, ADR 0022); real Lakekeeper send/cancellation-boundary fixtures also pass; complete distributed recovery suite remains BS-016 |
+| Worker sessions, durable pulls, lease fencing, and result acknowledgments | Certified for TLS/tonic + PostgreSQL + native receipt fixtures (BS-013, ADRs 0023–0024); runtime, private RPC, native subprocess and journal regression tests added in BS-015; distributed lifecycle certification remains BS-016 |
+| Worker process supervision and credential refresh | Implemented (BS-015, ADR 0026): independent heartbeat/reporting, immutable reporting recovery, cancellation escalation, Linux cgroups and parent-death protection; macOS uses rlimits plus sampled RSS; Linux cgroup enforcement requires delegated-host acceptance before certification |
 | Durable admission, bounded scheduling, retry timers, and startup/periodic reconciliation | Certified for native Iceberg/TLS/PostgreSQL restart, budget, expiry, retention, and conflict fixtures (BS-014, ADR 0025); coordinator library orchestration, with production packaging following later |
 | Commit-aligned job start and per-job duration budget | Planned; conflict rate measured against a synthetic sink ([M1 measurement](measurements/m1-conflict-rate.md)); start alignment and budget admission implemented (BS-009); [native fixture measurements](measurements/bs-010-executor.md) fit the budget, large-group throughput remains unvalidated |
 | Compatible rebasing onto concurrent appends | Deferred |
