@@ -434,6 +434,12 @@ pub async fn transition_job(
         },
     )
     .await?;
+    if job.state.is_terminal() {
+        sqlx::query("DELETE FROM publication_barriers WHERE job_id = $1")
+            .bind(job.id.as_uuid())
+            .execute(&mut *tx)
+            .await?;
+    }
     tx.commit().await?;
     Ok(job)
 }

@@ -14,6 +14,7 @@ pub mod idempotency;
 pub mod jobs;
 pub mod leadership;
 pub mod plans;
+pub mod publications;
 pub mod tables;
 pub mod tenancy;
 

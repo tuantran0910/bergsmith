@@ -174,3 +174,84 @@ async fn holders_must_be_named(pool: PgPool) {
 
     assert!(matches!(error, PersistenceError::InvalidValue { .. }));
 }
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn send_authorization_rechecks_leadership_after_waiting_for_its_row(pool: PgPool) {
+    authorization_rechecks_after_wait(&pool, false).await;
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn send_authorization_rechecks_leadership_after_waiting_for_the_job(pool: PgPool) {
+    authorization_rechecks_after_wait(&pool, true).await;
+}
+
+#[expect(
+    clippy::unwrap_used,
+    reason = "lock-wait fixtures fail the test on setup errors"
+)]
+async fn authorization_rechecks_after_wait(pool: &PgPool, block_job: bool) {
+    use sqlx::Connection;
+    let mut blocker = pool.acquire().await.unwrap();
+    let tenant = tenant(&mut blocker, "acme").await;
+    let job_id = job(&mut blocker, &tenant).await;
+    force_job_state(&mut blocker, job_id, JobState::Committing).await;
+    acquire_leadership(&mut blocker, "a", LEASE)
+        .await
+        .unwrap()
+        .unwrap();
+    let blocker_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *blocker)
+        .await
+        .unwrap();
+    let mut waiter = pool.acquire().await.unwrap();
+    let waiter_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *waiter)
+        .await
+        .unwrap();
+    let mut tx = blocker.begin().await.unwrap();
+    sqlx::query("SET LOCAL lock_timeout = '5s'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    if block_job {
+        sqlx::query("SELECT id FROM jobs WHERE id = $1 FOR UPDATE")
+            .bind(job_id.as_uuid())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    } else {
+        sqlx::query("SELECT singleton FROM coordinator_leadership FOR UPDATE")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    let authorization = SendAuthorization {
+        job_id,
+        expected_revision: 0,
+        coordinator_epoch: 1,
+    };
+    let (authorized, ()) = tokio::join!(
+        cancellation::authorize_send(&mut waiter, authorization),
+        async {
+            support::wait_until_blocked(&mut tx, waiter_pid, blocker_pid).await;
+            let expired: bool = sqlx::query_scalar(
+                    "UPDATE coordinator_leadership SET lease_expires_at = s.xact_start + (clock_timestamp() - s.xact_start) / 2
+                     FROM pg_stat_activity s WHERE s.pid = $1
+                     RETURNING lease_expires_at > s.xact_start AND lease_expires_at < clock_timestamp()"
+                ).bind(waiter_pid).fetch_one(&mut *tx).await.unwrap();
+            assert!(expired);
+            tx.commit().await.unwrap();
+        }
+    );
+    assert!(matches!(
+        authorized.unwrap_err(),
+        PersistenceError::LeadershipLost { epoch: 1 }
+    ));
+    let started: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT publication_started_at FROM jobs WHERE id = $1")
+            .bind(job_id.as_uuid())
+            .fetch_one(&mut *waiter)
+            .await
+            .unwrap();
+    assert!(started.is_none());
+}

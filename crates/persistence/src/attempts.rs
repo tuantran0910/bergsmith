@@ -183,29 +183,29 @@ async fn lock_task(conn: &mut PgConnection, id: TaskId) -> Result<Task, Persiste
 }
 
 /// Locks an attempt and reports whether its lease is still live by database time.
-async fn lock_attempt(
+pub(crate) async fn lock_attempt(
     conn: &mut PgConnection,
     id: AttemptId,
 ) -> Result<(Attempt, bool), PersistenceError> {
-    #[derive(sqlx::FromRow)]
-    struct Locked {
-        #[sqlx(flatten)]
-        attempt: AttemptRow,
-        lease_live: bool,
-    }
-    let locked = sqlx::query_as::<_, Locked>(concat!(
+    let locked = sqlx::query_as::<_, AttemptRow>(concat!(
         "SELECT ",
         attempt_columns!(),
-        ", lease_expires_at > now() AS lease_live FROM attempts WHERE id = $1 FOR UPDATE"
+        " FROM attempts WHERE id = $1 FOR UPDATE"
     ))
     .bind(id.as_uuid())
-    .fetch_optional(conn)
+    .fetch_optional(&mut *conn)
     .await?
     .ok_or_else(|| PersistenceError::NotFound {
         entity: "attempt",
         id: id.to_string(),
     })?;
-    Ok((locked.attempt.try_into()?, locked.lease_live))
+    // Sample database wall time only after every serialization lock has been
+    // acquired. now() would retain the outer transaction's pre-wait timestamp.
+    let lease_live: bool = sqlx::query_scalar("SELECT $1::timestamptz > clock_timestamp()")
+        .bind(locked.lease_expires_at)
+        .fetch_one(conn)
+        .await?;
+    Ok((locked.try_into()?, lease_live))
 }
 
 async fn set_task_state(

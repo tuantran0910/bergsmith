@@ -182,8 +182,8 @@ pub async fn authorize_send(
     authorization: SendAuthorization,
 ) -> Result<Job, PersistenceError> {
     let mut tx = conn.begin().await?;
-    ensure_leadership(&mut tx, authorization.coordinator_epoch).await?;
     let job = lock_job(&mut tx, authorization.job_id).await?;
+    ensure_leadership(&mut tx, authorization.coordinator_epoch).await?;
     if job.state_revision != authorization.expected_revision {
         return Err(PersistenceError::RevisionConflict {
             job: job.id,
@@ -206,7 +206,7 @@ pub async fn authorize_send(
     }
 
     let authorized: Job = sqlx::query_as::<_, JobRow>(concat!(
-        "UPDATE jobs SET publication_started_at = now(), updated_at = now() WHERE id = $1
+        "UPDATE jobs SET publication_started_at = clock_timestamp(), updated_at = now() WHERE id = $1
          RETURNING ",
         job_columns!()
     ))

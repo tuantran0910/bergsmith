@@ -11,19 +11,24 @@ bergsmith-catalog.workspace = true
 bergsmith-common.workspace = true
 bergsmith-maintenance.workspace = true
 bergsmith-persistence.workspace = true
+bergsmith-protocol.workspace = true
+bergsmith-storage.workspace = true
+iceberg.workspace = true
+parquet.workspace = true
+prost.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["time"] }
+uuid.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 bergsmith-fixtures.workspace = true
-bergsmith-protocol.workspace = true
-bergsmith-storage.workspace = true
-iceberg.workspace = true
+mockito.workspace = true
 reqwest.workspace = true
-serde_json.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt"] }
 url.workspace = true
-uuid.workspace = true
 
 [lints]
 workspace = true
