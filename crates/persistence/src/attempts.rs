@@ -13,7 +13,7 @@ use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 
 use crate::PersistenceError;
-use crate::jobs::lock_job;
+use crate::jobs::{Job, lock_job};
 use crate::plans::{Task, TaskRow, task_columns};
 
 /// One execution attempt of a task.
@@ -276,8 +276,8 @@ pub async fn grant_attempt(
     let lease_ms = i64::try_from(grant.lease.as_millis()).unwrap_or(i64::MAX);
 
     let attempt: Attempt = sqlx::query_as::<_, AttemptRow>(concat!(
-        "INSERT INTO attempts (id, task_id, generation, state, worker_session_id, lease_expires_at)
-         VALUES ($1, $2, $3, $4, $5, now() + $6 * interval '1 millisecond')
+        "INSERT INTO attempts (id, task_id, generation, state, worker_session_id, granted_at, lease_expires_at)
+         VALUES ($1, $2, $3, $4, $5, clock_timestamp(), clock_timestamp() + $6 * interval '1 millisecond')
          RETURNING ",
         attempt_columns!()
     ))
@@ -372,39 +372,16 @@ pub async fn accept_receipt(
     let job_id = job_of_task(&mut tx, task_id).await?;
     let job = lock_job(&mut tx, job_id).await?;
     let task = lock_task(&mut tx, task_id).await?;
-    let (attempt, lease_live) = lock_attempt(&mut tx, submission.attempt_id).await?;
+    let (attempt, _) = lock_attempt(&mut tx, submission.attempt_id).await?;
     let respond = |outcome| Acceptance {
         outcome,
         job_state: job.state,
     };
 
-    let accepted: Option<(Uuid, String)> =
-        sqlx::query_as("SELECT attempt_id, content_hash FROM receipts WHERE task_id = $1")
-            .bind(task.id.as_uuid())
-            .fetch_optional(&mut *tx)
-            .await?;
-    if let Some((accepted_attempt, accepted_hash)) = accepted {
-        if accepted_attempt != *attempt.id.as_uuid() {
-            return Ok(respond(AcceptOutcome::StaleAttempt));
-        }
-        if accepted_hash != submission.content_hash {
-            return Err(PersistenceError::ReceiptConflict { task: task.id });
-        }
-        return Ok(respond(AcceptOutcome::AlreadyAccepted));
-    }
-
-    if matches!(job.state, JobState::Cancelling | JobState::Cancelled) {
-        return Ok(respond(AcceptOutcome::Cancelled));
-    }
-    let authoritative = job.state == JobState::Running
-        && attempt.generation == submission.generation
-        && !attempt.state.is_terminal()
-        && lease_live;
-    if !authoritative {
-        return Ok(respond(AcceptOutcome::StaleAttempt));
+    if let Some(outcome) = receipt_outcome(&mut tx, submission, &job, &task, &attempt).await? {
+        return Ok(respond(outcome));
     }
     task.state.validate_transition(TaskState::Accepted)?;
-
     sqlx::query(
         "INSERT INTO receipts (attempt_id, task_id, content, content_hash) VALUES ($1, $2, $3, $4)",
     )
@@ -419,6 +396,73 @@ pub async fn accept_receipt(
     set_task_state(&mut tx, task.id, TaskState::Accepted, None).await?;
     tx.commit().await?;
     Ok(respond(AcceptOutcome::Accepted))
+}
+
+/// Resolves a receipt's existing acceptance or fencing without accepting new output.
+/// All reads serialize with acceptance, cancellation, and session replacement.
+/// `None` means the caller must verify output and use atomic acceptance afterward.
+///
+/// # Errors
+/// Returns receipt conflicts and database errors. Callers authenticate ownership first.
+pub async fn receipt_status(
+    conn: &mut PgConnection,
+    submission: &ReceiptSubmission,
+) -> Result<Option<Acceptance>, PersistenceError> {
+    let mut tx = conn.begin().await?;
+    let task_id = task_of_attempt(&mut tx, submission.attempt_id).await?;
+    let job_id = job_of_task(&mut tx, task_id).await?;
+    let job = lock_job(&mut tx, job_id).await?;
+    let task = lock_task(&mut tx, task_id).await?;
+    let (attempt, _) = lock_attempt(&mut tx, submission.attempt_id).await?;
+    let outcome = receipt_outcome(&mut tx, submission, &job, &task, &attempt).await?;
+    tx.commit().await?;
+    Ok(outcome.map(|outcome| Acceptance {
+        outcome,
+        job_state: job.state,
+    }))
+}
+
+async fn receipt_outcome(
+    conn: &mut PgConnection,
+    submission: &ReceiptSubmission,
+    job: &Job,
+    task: &Task,
+    attempt: &Attempt,
+) -> Result<Option<AcceptOutcome>, PersistenceError> {
+    let accepted: Option<(Uuid, String)> =
+        sqlx::query_as("SELECT attempt_id, content_hash FROM receipts WHERE task_id = $1")
+            .bind(task.id.as_uuid())
+            .fetch_optional(&mut *conn)
+            .await?;
+    if let Some((accepted_attempt, accepted_hash)) = accepted {
+        if accepted_attempt != *attempt.id.as_uuid() {
+            return Ok(Some(AcceptOutcome::StaleAttempt));
+        }
+        if accepted_hash != submission.content_hash {
+            return Err(PersistenceError::ReceiptConflict { task: task.id });
+        }
+        return Ok(Some(AcceptOutcome::AlreadyAccepted));
+    }
+
+    if matches!(job.state, JobState::Cancelling | JobState::Cancelled) {
+        return Ok(Some(AcceptOutcome::Cancelled));
+    }
+    let session_live =
+        crate::workers::attempt_session_is_live(conn, attempt.worker_session_id).await?;
+    // Registration can block the session check. Decide expiry after that wait.
+    let lease_live: bool = sqlx::query_scalar("SELECT $1::timestamptz > clock_timestamp()")
+        .bind(attempt.lease_expires_at)
+        .fetch_one(&mut *conn)
+        .await?;
+    let authoritative = job.state == JobState::Running
+        && attempt.generation == submission.generation
+        && !attempt.state.is_terminal()
+        && lease_live
+        && session_live;
+    if !authoritative {
+        return Ok(Some(AcceptOutcome::StaleAttempt));
+    }
+    Ok(None)
 }
 
 /// Reads one attempt.

@@ -52,6 +52,8 @@ prost-types = "0.14.4"
 protox = "0.10.0"
 # TLS for catalog HTTPS. Feature unification also gives iceberg-rust's reqwest TLS.
 reqwest = { version = "0.12.28", default-features = false, features = ["http2", "json", "rustls-tls-native-roots"] }
+# Explicit TLS startup provider: upstream clients enable both ring and AWS-LC.
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 sha2 = "0.11.1"
 tempfile = "3.27.0"
 tonic = { version = "0.14.6", default-features = false, features = ["codegen"] }

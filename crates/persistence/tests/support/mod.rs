@@ -216,16 +216,63 @@ pub(crate) async fn grant(
     conn: &mut PgConnection,
     task: TaskId,
 ) -> Result<Attempt, PersistenceError> {
+    let worker_session_id = worker_session(conn, task).await;
     attempts::grant_attempt(
         conn,
         &NewGrant {
             attempt_id: AttemptId::generate(),
             task_id: task,
-            worker_session_id: WorkerSessionId::generate(),
+            worker_session_id,
             lease: Duration::from_secs(90),
         },
     )
     .await
+}
+
+/// Creates a service-bound session for a task's tenant.
+pub(crate) async fn worker_session(conn: &mut PgConnection, task: TaskId) -> WorkerSessionId {
+    let organization: Uuid = sqlx::query_scalar(
+        "SELECT organization_id FROM jobs JOIN tasks ON tasks.job_id = jobs.id WHERE tasks.id = $1",
+    )
+    .bind(task.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .expect("task tenant");
+    let principal = PrincipalId::generate();
+    tenancy::create_principal(
+        conn,
+        &NewPrincipal {
+            id: principal,
+            organization_id: OrganizationId::from_uuid(organization),
+            kind: PrincipalKind::Service,
+            issuer: "bergsmith:test".into(),
+            subject: principal.to_string(),
+            display_name: "test worker".into(),
+        },
+    )
+    .await
+    .expect("service principal");
+    let id = WorkerSessionId::generate();
+    bergsmith_persistence::workers::register(
+        conn,
+        &bergsmith_persistence::workers::Identity {
+            organization: OrganizationId::from_uuid(organization),
+            principal,
+            pool: "test".into(),
+        },
+        &bergsmith_persistence::workers::Registration {
+            id,
+            worker_name: "test".into(),
+            capabilities: vec!["native-v1".into()],
+            memory_bytes: i64::MAX,
+            cpu_millis: i32::MAX,
+            build_version: "test".into(),
+        },
+        Duration::from_secs(90),
+    )
+    .await
+    .expect("worker session");
+    id
 }
 
 /// Takes coordinator leadership under a fresh holder and returns its epoch.

@@ -177,7 +177,7 @@ pub enum ExecutorError {
 impl ExecutorError {
     /// Stable machine-readable reason for reporting and operator diagnostics.
     #[must_use]
-    pub const fn reason_code(&self) -> &'static str {
+    pub fn reason_code(&self) -> &'static str {
         match self {
             Self::ResourceLimit(limit) => limit.reason_code(),
             Self::InvalidLimits => "InvalidExecutionLimits",
@@ -189,7 +189,11 @@ impl ExecutorError {
             Self::FileIdentity { .. } | Self::DeleteInventory => "PlannedFileIdentityMismatch",
             Self::Unsupported(_) => "UnsupportedTaskInput",
             Self::InvalidData(_) | Self::Parquet(_) => "InvalidTaskData",
+            Self::Metadata(PlanError::Iceberg(error)) if error.retryable() => {
+                "TransientMetadataReadFailed"
+            }
             Self::Metadata(_) => "MetadataVerificationFailed",
+            Self::Iceberg(error) if error.retryable() => "TransientNativeExecutionFailed",
             Self::Iceberg(_) => "NativeExecutionFailed",
             Self::Location(_) => "InvalidStorageLocation",
             Self::Timeout => "PreparationTimeLimitExceeded",
@@ -513,17 +517,24 @@ mod tests {
             D::ReplanRequired
         );
         assert_eq!(ExecutorError::OperationTimeout.disposition(), D::RetryTask);
-        for error in [
-            ExecutorError::Iceberg(
-                iceberg::Error::new(iceberg::ErrorKind::Unexpected, "temporary")
-                    .with_retryable(true),
+        for (error, reason) in [
+            (
+                ExecutorError::Iceberg(
+                    iceberg::Error::new(iceberg::ErrorKind::Unexpected, "temporary")
+                        .with_retryable(true),
+                ),
+                "TransientNativeExecutionFailed",
             ),
-            ExecutorError::Metadata(PlanError::Iceberg(
-                iceberg::Error::new(iceberg::ErrorKind::Unexpected, "temporary")
-                    .with_retryable(true),
-            )),
+            (
+                ExecutorError::Metadata(PlanError::Iceberg(
+                    iceberg::Error::new(iceberg::ErrorKind::Unexpected, "temporary")
+                        .with_retryable(true),
+                )),
+                "TransientMetadataReadFailed",
+            ),
         ] {
             assert_eq!(error.disposition(), D::RetryTask);
+            assert_eq!(error.to_failure().reason_code, reason);
         }
     }
 }

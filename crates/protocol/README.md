@@ -30,6 +30,14 @@ the mechanical part in CI; the rest is review discipline.
   may change freely between releases; it still follows the numbering rules so
   buf can check it.
 
+## Worker protocol revision
+
+The BS-013 worker service negotiates cluster protocol revision **2**. Revision 2
+adds `RequestTaskResponse.disposition`: a repeated poll whose original attempt
+ended returns its durable disposition rather than another task. Revision 1
+workers must upgrade before registration; an unknown response variant must never
+be interpreted as permission to execute or to retry execution with a fresh poll.
+
 ## Hashed messages
 
 `TaskArtifact` and `TaskReceipt` are identified by SHA-256 digests

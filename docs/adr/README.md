@@ -26,3 +26,8 @@ record's status; never rewrite an accepted decision.
 | [0017](0017-deterministic-planner.md) | A deterministic, metadata-only planner | Accepted |
 | [0018](0018-verified-executor-scans.md) | Verify planned identities before native row scans | Accepted |
 | [0019](0019-bounded-native-rewrites.md) | Bounded native rewrites, receipts and local execution | Accepted |
+| [0020](0020-delete-scope-and-retention.md) | Delete scope and retention during native rewrites | Accepted |
+| [0021](0021-per-spec-manifest-dependency-patch.md) | Pin the per-spec manifest dependency patch | Accepted |
+| [0022](0022-durable-publication.md) | Durable publication and conservative recovery | Accepted |
+| [0023](0023-worker-sessions-and-durable-pulls.md) | Worker sessions and durable pull assignments | Accepted; failure classification superseded by 0024 |
+| [0024](0024-worker-receipt-fencing-and-task-envelopes.md) | Atomic receipt replay, task envelopes, and dispatch reservations | Accepted |
