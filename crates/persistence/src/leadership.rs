@@ -131,18 +131,27 @@ pub async fn release_leadership(
 }
 
 /// Checks, inside the caller's transaction, that `epoch` still holds a live
-/// lease, and holds a share lock so leadership cannot change before commit.
+/// lease after the row lock is acquired, and holds a share lock so leadership
+/// cannot change before commit. Callers lock their job before this row and
+/// recheck the lease if further blocking work precedes their durable decision.
 pub(crate) async fn ensure_leadership(
     conn: &mut PgConnection,
     epoch: i64,
 ) -> Result<(), PersistenceError> {
-    let live: Option<bool> = sqlx::query_scalar(
-        "SELECT lease_expires_at > now() FROM coordinator_leadership WHERE epoch = $1 FOR SHARE",
+    let deadline: Option<DateTime<Utc>> = sqlx::query_scalar(
+        "SELECT lease_expires_at FROM coordinator_leadership WHERE epoch = $1 FOR SHARE",
     )
     .bind(epoch)
-    .fetch_optional(conn)
+    .fetch_optional(&mut *conn)
     .await?;
-    if live == Some(true) {
+    let Some(deadline) = deadline else {
+        return Err(PersistenceError::LeadershipLost { epoch });
+    };
+    let live: bool = sqlx::query_scalar("SELECT $1::timestamptz > clock_timestamp()")
+        .bind(deadline)
+        .fetch_one(conn)
+        .await?;
+    if live {
         Ok(())
     } else {
         Err(PersistenceError::LeadershipLost { epoch })

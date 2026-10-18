@@ -431,6 +431,54 @@ fn outcome(acceptance: Acceptance) -> AcceptOutcome {
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_receipt_waiting_for_the_job_lock_rechecks_lease_expiry(pool: PgPool) {
+    use sqlx::Connection;
+    let (job_id, attempt) = running_attempt(&pool, "acme").await;
+    let mut blocker = pool.acquire().await.unwrap();
+    let blocker_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *blocker)
+        .await
+        .unwrap();
+    let mut waiter = pool.acquire().await.unwrap();
+    let waiter_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *waiter)
+        .await
+        .unwrap();
+    let mut tx = blocker.begin().await.unwrap();
+    sqlx::query("SELECT id FROM jobs WHERE id = $1 FOR UPDATE")
+        .bind(job_id.as_uuid())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let submission = receipt(&attempt, 'a');
+    let (accepted, ()) = tokio::join!(attempts::accept_receipt(&mut waiter, &submission), async {
+        support::wait_until_blocked(&mut tx, waiter_pid, blocker_pid).await;
+        // Put expiry strictly after the waiter's transaction began and before
+        // it resumes. No sleeps or wall-clock ordering assumptions are needed.
+        let expired: bool = sqlx::query_scalar(
+                "UPDATE attempts SET lease_expires_at = s.xact_start + (clock_timestamp() - s.xact_start) / 2
+                 FROM pg_stat_activity s WHERE attempts.id = $1 AND s.pid = $2
+                 RETURNING lease_expires_at > s.xact_start AND lease_expires_at < clock_timestamp()"
+            ).bind(attempt.id.as_uuid()).bind(waiter_pid).fetch_one(&mut *tx).await.unwrap();
+        assert!(expired);
+        tx.commit().await.unwrap();
+    });
+    assert_eq!(accepted.unwrap().outcome, AcceptOutcome::StaleAttempt);
+    assert_eq!(
+        attempts::attempt(&mut waiter, attempt.id)
+            .await
+            .unwrap()
+            .state,
+        AttemptState::Granted
+    );
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM receipts")
+        .fetch_one(&mut *waiter)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
 async fn an_authoritative_receipt_is_accepted_once(pool: PgPool) {
     let (_, attempt) = running_attempt(&pool, "acme").await;
     let mut conn = pool.acquire().await.unwrap();

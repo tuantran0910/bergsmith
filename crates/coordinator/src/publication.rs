@@ -3,8 +3,8 @@
 //! The first send of a job's commit is authorized by a short database
 //! transaction that commits before any network call (see
 //! [`authorize_send`]). Once it commits, cancellation can no longer prevent
-//! publication. Durable intents and outcome recovery build on this in
-//! BS-012.
+//! publication. [`crate::durable_publication`] owns intent construction and
+//! outcome recovery; this lower-level sender binds every request to its intent.
 
 use bergsmith_catalog::{
     CatalogConnection, CatalogError, CommitOutcome, CommitRequest, IdempotencyKey,
@@ -59,6 +59,26 @@ pub async fn send_first_commit(
     request: &CommitRequest,
     idempotency_key: Option<IdempotencyKey>,
 ) -> Result<SentCommit, PublicationError> {
+    let intent = bergsmith_persistence::publications::intent(conn, authorization.job_id)
+        .await
+        .map_err(PublicationError::NotAuthorized)?;
+    if intent.request_body != request.body()
+        || intent.request_hash != request.sha256().to_hex()
+        || idempotency_key.is_some()
+        || intent.content.get("namespace") != Some(&serde_json::json!(request.table().namespace))
+        || intent
+            .content
+            .get("table_name")
+            .and_then(serde_json::Value::as_str)
+            != Some(request.table().name.as_str())
+    {
+        return Err(PublicationError::NotAuthorized(
+            PersistenceError::InvalidValue {
+                entity: "publication request",
+                constraint: "request must match the immutable intent and replay policy".into(),
+            },
+        ));
+    }
     let job = authorize_send(conn, authorization)
         .await
         .map_err(PublicationError::NotAuthorized)?;

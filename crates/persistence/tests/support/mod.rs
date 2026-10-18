@@ -261,3 +261,23 @@ pub(crate) async fn running_attempt(pool: &sqlx::PgPool, slug: &str) -> (JobId, 
     let attempt = grant(&mut conn, task).await.expect("task is granted");
     (id, attempt)
 }
+
+/// Waits for PostgreSQL to confirm a row-lock waiter, without timing sleeps.
+pub(crate) async fn wait_until_blocked(conn: &mut PgConnection, waiter: i32, blocker: i32) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let is_waiting: bool = sqlx::query_scalar("SELECT $2 = ANY(pg_blocking_pids($1))")
+                .bind(waiter)
+                .bind(blocker)
+                .fetch_one(&mut *conn)
+                .await
+                .expect("lock wait is observable");
+            if is_waiting {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the operation waits for the held row lock");
+}

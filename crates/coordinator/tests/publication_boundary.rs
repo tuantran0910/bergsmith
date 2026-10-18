@@ -101,12 +101,7 @@ async fn fixture(pool: &PgPool) -> Fixture {
     )
     .await
     .unwrap();
-    for state in [
-        JobState::Queued,
-        JobState::Running,
-        JobState::ReadyToCommit,
-        JobState::Committing,
-    ] {
+    for state in [JobState::Queued, JobState::Running, JobState::ReadyToCommit] {
         job = transition(&mut db, &job, state, false).await.unwrap();
     }
     let epoch = acquire_leadership(&mut db, "test", Duration::from_secs(60))
@@ -114,6 +109,21 @@ async fn fixture(pool: &PgPool) -> Fixture {
         .unwrap()
         .unwrap()
         .epoch;
+    job = bergsmith_persistence::publications::create_intent(
+        &mut db,
+        &bergsmith_persistence::publications::Intent {
+            job_id: job.id,
+            publication_id: prepared.expected.publication_id,
+            content: serde_json::json!({"namespace": prepared.request.table().namespace, "table_name": prepared.request.table().name}),
+            request_body: prepared.request.body().to_vec(),
+            request_hash: prepared.request.sha256().to_hex(),
+        },
+        job.state_revision,
+        epoch,
+        &[],
+    )
+    .await
+    .unwrap();
     Fixture {
         db,
         warehouse,
