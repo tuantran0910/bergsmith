@@ -31,3 +31,4 @@ record's status; never rewrite an accepted decision.
 | [0022](0022-durable-publication.md) | Durable publication and conservative recovery | Accepted |
 | [0023](0023-worker-sessions-and-durable-pulls.md) | Worker sessions and durable pull assignments | Accepted; failure classification superseded by 0024 |
 | [0024](0024-worker-receipt-fencing-and-task-envelopes.md) | Atomic receipt replay, task envelopes, and dispatch reservations | Accepted |
+| [0025](0025-durable-admission-and-reconciliation.md) | Durable admission, retry timers, and scheduling reconciliation | Accepted |

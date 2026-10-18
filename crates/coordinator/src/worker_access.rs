@@ -9,6 +9,7 @@ use bergsmith_catalog::{CatalogConnection, TableName};
 use bergsmith_common::ids::JobId;
 use bergsmith_protocol::cluster::StorageCredentials;
 use bergsmith_storage::{CredentialCell, CredentialKind, ObjectStore, StorageProfile};
+use futures::StreamExt;
 use tonic::Status;
 
 use crate::workers::{TaskAccess, WorkerAccess};
@@ -97,4 +98,176 @@ impl WorkerAccess for CatalogWorkerAccess {
             credentials,
         })
     }
+}
+
+#[async_trait]
+impl crate::scheduling::SchedulingAccess for CatalogWorkerAccess {
+    async fn validate(
+        &self,
+        job: &bergsmith_persistence::jobs::Job,
+        plan: &bergsmith_maintenance::PlanDocument,
+    ) -> Result<crate::scheduling::Eligibility, Status> {
+        use crate::scheduling::Eligibility;
+        let binding = self
+            .bindings
+            .get(&job.id)
+            .ok_or_else(|| Status::unavailable("missing scheduler table binding"))?;
+        let vend = matches!(binding.profile, StorageProfile::S3(_));
+        let loaded = match binding.catalog.load_table(&binding.table, vend).await {
+            Ok(loaded) => loaded,
+            Err(error) if error.is_not_found() => {
+                return Ok(Eligibility::ReplanRequired("PlanningTableMissing"));
+            }
+            Err(
+                bergsmith_catalog::CatalogError::Status {
+                    status: 401 | 403, ..
+                }
+                | bergsmith_catalog::CatalogError::Authentication { .. },
+            ) => {
+                return Ok(Eligibility::PermanentFailure("ExecutionAuthorityRevoked"));
+            }
+            Err(_) => return Err(Status::unavailable("scheduler catalog access unavailable")),
+        };
+        let captured = bergsmith_maintenance::PlanningBaseline::capture(
+            &loaded.metadata,
+            loaded.metadata_location.as_deref(),
+        )
+        .map_err(|_| Status::unavailable("scheduler table metadata unavailable"))?;
+        if captured.as_ref() != Some(plan.baseline()) {
+            return Ok(Eligibility::ReplanRequired("PlanningBaselineMismatch"));
+        }
+        let store = ObjectStore::open(
+            &binding.profile,
+            vend.then(|| CredentialCell::new(loaded.credentials)),
+        )
+        .map_err(|_| Status::unavailable("scheduler object store unavailable"))?;
+        let metadata = bergsmith_storage::Location::parse(plan.baseline().metadata_location())
+            .map_err(|_| Status::failed_precondition("invalid planned metadata location"))?;
+        if !store
+            .exists(&metadata)
+            .await
+            .map_err(|_| Status::unavailable("scheduler retention check unavailable"))?
+        {
+            return Ok(Eligibility::ReplanRequired("PlanningMetadataNotRetained"));
+        }
+        let snapshot = loaded
+            .metadata
+            .snapshot_by_id(plan.baseline().snapshot_id())
+            .ok_or_else(|| Status::failed_precondition("missing baseline snapshot"))?;
+        let manifest = bergsmith_storage::Location::parse(snapshot.manifest_list())
+            .map_err(|_| Status::failed_precondition("invalid manifest list location"))?;
+        if !store
+            .exists(&manifest)
+            .await
+            .map_err(|_| Status::unavailable("scheduler retention check unavailable"))?
+        {
+            return Ok(Eligibility::ReplanRequired("PlanningMetadataNotRetained"));
+        }
+        let mut files = BTreeMap::new();
+        for task in plan.tasks() {
+            for file in task.sources() {
+                files.insert(file.path(), file.file_size_bytes());
+            }
+            for file in task.deletes() {
+                files.insert(file.path(), file.file_size_bytes());
+            }
+        }
+        // Only existence and object metadata are read; coordinator never reads rows.
+        // Ordered bounded concurrency preserves deterministic failure selection
+        // while avoiding one network round trip per input in sequence.
+        let files: Vec<_> = files
+            .into_iter()
+            .map(|(path, size)| (path.to_owned(), size))
+            .collect();
+        let mut checks = futures::stream::iter(files)
+            .map(|(path, size)| {
+                let store = store.clone();
+                async move { validate_source(&store, &path, size).await }
+            })
+            .buffered(16);
+        while let Some(result) = checks.next().await {
+            let result = result?;
+            if result != Eligibility::Valid {
+                return Ok(result);
+            }
+        }
+        validate_manifests(&store, &manifest).await
+    }
+
+    async fn recover_publication(
+        &self,
+        pool: &sqlx::PgPool,
+        job: &bergsmith_persistence::jobs::Job,
+    ) -> Result<(), Status> {
+        let binding = self
+            .bindings
+            .get(&job.id)
+            .ok_or_else(|| Status::unavailable("missing publication recovery binding"))?;
+        let mut conn = pool
+            .acquire()
+            .await
+            .map_err(|_| Status::unavailable("publication ledger unavailable"))?;
+        crate::durable_publication::reconcile(&mut conn, job, &binding.catalog)
+            .await
+            .map_err(|_| Status::unavailable("publication recovery unavailable"))?;
+        Ok(())
+    }
+}
+
+async fn validate_source(
+    store: &ObjectStore,
+    path: &str,
+    expected_size: u64,
+) -> Result<crate::scheduling::Eligibility, Status> {
+    use crate::scheduling::Eligibility;
+    let location = bergsmith_storage::Location::parse(path)
+        .map_err(|_| Status::failed_precondition("invalid planned input location"))?;
+    if !store
+        .exists(&location)
+        .await
+        .map_err(|_| Status::unavailable("scheduler input check unavailable"))?
+    {
+        return Ok(Eligibility::PermanentFailure("PlannedSourceMissing"));
+    }
+    let input = store
+        .file_io()
+        .new_input(path)
+        .map_err(|_| Status::unavailable("scheduler input metadata unavailable"))?;
+    let actual = input
+        .metadata()
+        .await
+        .map_err(|_| Status::unavailable("scheduler input metadata unavailable"))?;
+    Ok(if actual.size == expected_size {
+        Eligibility::Valid
+    } else {
+        Eligibility::PermanentFailure("PlannedSourceIntegrityFailure")
+    })
+}
+
+async fn validate_manifests(
+    store: &ObjectStore,
+    manifest: &bergsmith_storage::Location,
+) -> Result<crate::scheduling::Eligibility, Status> {
+    use crate::scheduling::Eligibility;
+    let bytes = store
+        .read(manifest)
+        .await
+        .map_err(|_| Status::unavailable("scheduler manifest list unavailable"))?;
+    let Ok(manifests) =
+        iceberg::spec::ManifestList::parse_with_version(&bytes, iceberg::spec::FormatVersion::V2)
+    else {
+        return Ok(Eligibility::PermanentFailure("PlanningMetadataCorrupt"));
+    };
+    for entry in manifests.entries() {
+        let path = bergsmith_storage::Location::parse(&entry.manifest_path)
+            .map_err(|_| Status::failed_precondition("invalid manifest location"))?;
+        if !store
+            .exists(&path)
+            .await
+            .map_err(|_| Status::unavailable("scheduler retention check unavailable"))?
+        {
+            return Ok(Eligibility::ReplanRequired("PlanningMetadataNotRetained"));
+        }
+    }
+    Ok(Eligibility::Valid)
 }

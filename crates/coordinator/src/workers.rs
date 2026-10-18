@@ -1,10 +1,11 @@
 //! Authenticated worker RPCs, durable pull grants, and immutable reporting.
 //!
-//! The scheduler offers eligible tasks explicitly. Automatic admission and queue
-//! reconstruction belong to BS-014; native subprocess supervision to BS-015.
+//! The scheduling module adds durable admission and queue reconstruction (BS-014)
+//! around this service. Native subprocess supervision belongs to BS-015.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -123,6 +124,8 @@ pub struct WorkerService {
     queue: Arc<Mutex<VecDeque<ReadyOffer>>>,
     changed: Arc<Notify>,
     polls: PollRegistry,
+    admission: Arc<OnceLock<bergsmith_persistence::scheduling::AdmissionLimits>>,
+    dispatch_ready: Arc<AtomicBool>,
 }
 
 type PollKey = (WorkerSessionId, Uuid);
@@ -196,6 +199,12 @@ fn database(error: impl Into<PersistenceError>) -> Status {
             "execution ledger unavailable",
             FailureDisposition::RetrySameRequest,
         ),
+        PersistenceError::AdmissionUnavailable => (
+            tonic::Code::Unavailable,
+            "AdmissionCapacityUnavailable",
+            "scheduler admission capacity unavailable",
+            FailureDisposition::RetrySameRequest,
+        ),
         PersistenceError::NotFound { .. } => (
             tonic::Code::NotFound,
             "WorkerExecutionEntityMissing",
@@ -221,6 +230,19 @@ fn id<T: std::str::FromStr>(value: &str) -> Result<T, Status> {
     value
         .parse()
         .map_err(|_| Status::invalid_argument("invalid identifier"))
+}
+
+fn scheduler_not_ready() -> Status {
+    let failure = bergsmith_protocol::common::Failure {
+        reason_code: "SchedulerNotReady".into(),
+        disposition: bergsmith_protocol::common::FailureDisposition::RetrySameRequest.into(),
+        message: "scheduler reconciliation is not ready".into(),
+    };
+    Status::with_details(
+        tonic::Code::Unavailable,
+        "scheduler reconciliation is not ready",
+        failure.encode_to_vec().into(),
+    )
 }
 
 fn timestamp(value: DateTime<Utc>) -> prost_types::Timestamp {
@@ -273,7 +295,49 @@ impl WorkerService {
             queue: Arc::new(Mutex::new(VecDeque::new())),
             changed: Arc::new(Notify::new()),
             polls: Arc::new(Mutex::new(BTreeMap::new())),
+            admission: Arc::new(OnceLock::new()),
+            dispatch_ready: Arc::new(AtomicBool::new(true)),
         })
+    }
+
+    pub(crate) fn managed(
+        self,
+        limits: bergsmith_persistence::scheduling::AdmissionLimits,
+    ) -> Result<Self, Status> {
+        self.admission
+            .set(limits)
+            .map_err(|_| Status::failed_precondition("worker service already has a scheduler"))?;
+        self.set_dispatch_ready(false);
+        Ok(self)
+    }
+
+    pub(crate) fn scheduler_context(&self) -> (PgPool, i64) {
+        (self.pool.clone(), self.epoch)
+    }
+
+    pub(crate) fn set_dispatch_ready(&self, ready: bool) {
+        self.dispatch_ready.store(ready, Ordering::Release);
+        self.changed.notify_waiters();
+    }
+
+    pub(crate) fn reset_ready_queue(&self) -> usize {
+        let mut queue = self
+            .queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        queue.retain(|entry| entry.reserved_by.is_some());
+        self.config.queue_capacity.saturating_sub(queue.len())
+    }
+
+    /// Returns cached task identifiers for diagnostics; membership is never authority.
+    #[must_use]
+    pub fn ready_tasks(&self) -> Vec<TaskId> {
+        self.queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|entry| entry.offer.task)
+            .collect()
     }
 
     fn poll_gate(&self, key: PollKey) -> PollGate {
@@ -325,56 +389,29 @@ impl WorkerService {
     /// # Errors
     /// Rejects invalid envelopes, artifacts, unknown tasks, and a full ready queue.
     pub async fn offer(&self, offer: TaskOffer) -> Result<(), Status> {
-        if offer.pool.is_empty()
-            || offer.capability.is_empty()
-            || offer.limits.memory_bytes == 0
-            || offer.limits.cpu_millis == 0
-            || offer.limits.max_output_bytes == 0
-            || !offer.limits.max_duration.as_ref().is_some_and(|d| {
-                d.seconds >= 0
-                    && (0..1_000_000_000).contains(&d.nanos)
-                    && (d.seconds > 0 || d.nanos > 0)
-            })
-        {
-            return Err(Status::invalid_argument("invalid task offer"));
-        }
+        self.validate_offer(&offer).await?;
+        self.enqueue_registered(offer).await
+    }
+
+    // Registered refs were validated atomically once. Refill never reloads a
+    // whole plan or fetches catalog credentials for each cached task.
+    pub(crate) async fn enqueue_registered(&self, offer: TaskOffer) -> Result<(), Status> {
+        validate_offer_shape(&offer)?;
         let mut conn = self.pool.acquire().await.map_err(database)?;
-        let task = plans::task(&mut conn, offer.task).await.map_err(database)?;
-        jobs::job(&mut conn, offer.organization, task.job_id)
-            .await
-            .map_err(database)?;
-        let plan = planning::load_plan(&mut conn, task.job_id)
-            .await
-            .map_err(|_| Status::failed_precondition("invalid stored plan"))?
-            .ok_or_else(|| Status::failed_precondition("missing stored plan"))?;
-        let planned = plan
-            .tasks()
-            .iter()
-            .find(|t| t.task_id() == task.id)
-            .ok_or_else(|| Status::failed_precondition("task absent from plan"))?;
-        let artifact = plan
-            .artifact_of(planned)
-            .map_err(|_| Status::failed_precondition("invalid task artifact"))?;
-        if offer.artifact.sha256 != artifact_digest(&artifact).as_bytes() {
-            return Err(Status::invalid_argument("task artifact digest mismatch"));
+        if self.admission.get().is_some() {
+            let stored = bergsmith_persistence::scheduling::dispatch_spec(&mut conn, offer.task)
+                .await
+                .map_err(database)?;
+            if stored.as_ref() != Some(&crate::scheduling::dispatch_spec(&offer)?) {
+                return Err(Status::failed_precondition(
+                    "offer differs from durable dispatch configuration",
+                ));
+            }
+        } else {
+            ledger::bind_envelope(&mut conn, offer.task, &offer.limits.encode_to_vec())
+                .await
+                .map_err(database)?;
         }
-        drop(conn);
-        let location = Location::parse(&offer.artifact.uri)
-            .map_err(|_| Status::invalid_argument("invalid artifact URI"))?;
-        let access = self.access(task.job_id).await?;
-        let bytes = tokio::time::timeout(Duration::from_secs(30), access.store.read(&location))
-            .await
-            .map_err(|_| Status::unavailable("task artifact read timed out"))?
-            .map_err(|_| Status::unavailable("task artifact unavailable"))?;
-        let actual = bergsmith_protocol::artifact::TaskArtifact::decode(bytes)
-            .map_err(|_| Status::invalid_argument("invalid task artifact"))?;
-        if artifact_digest(&actual) != artifact_digest(&artifact) {
-            return Err(Status::invalid_argument("task artifact content mismatch"));
-        }
-        let mut conn = self.pool.acquire().await.map_err(database)?;
-        ledger::bind_envelope(&mut conn, offer.task, &offer.limits.encode_to_vec())
-            .await
-            .map_err(database)?;
         drop(conn);
         let mut queue = self
             .queue
@@ -395,6 +432,72 @@ impl WorkerService {
         });
         drop(queue);
         self.changed.notify_waiters();
+        Ok(())
+    }
+
+    pub(crate) async fn validate_offer(&self, offer: &TaskOffer) -> Result<JobId, Status> {
+        let mut conn = self.pool.acquire().await.map_err(database)?;
+        let task = plans::task(&mut conn, offer.task).await.map_err(database)?;
+        drop(conn);
+        self.validate_offers(task.job_id, std::slice::from_ref(offer))
+            .await?;
+        Ok(task.job_id)
+    }
+
+    pub(crate) async fn validate_offers(
+        &self,
+        job: JobId,
+        offers: &[TaskOffer],
+    ) -> Result<(), Status> {
+        let first = offers
+            .first()
+            .ok_or_else(|| Status::invalid_argument("missing task offers"))?;
+        let mut conn = self.pool.acquire().await.map_err(database)?;
+        jobs::job(&mut conn, first.organization, job)
+            .await
+            .map_err(database)?;
+        let plan = planning::load_plan(&mut conn, job)
+            .await
+            .map_err(|_| Status::failed_precondition("invalid stored plan"))?
+            .ok_or_else(|| Status::failed_precondition("missing stored plan"))?;
+        drop(conn);
+        let tasks: BTreeMap<_, _> = plan
+            .tasks()
+            .iter()
+            .map(|task| (task.task_id(), task))
+            .collect();
+        let mut expected = Vec::with_capacity(offers.len());
+        for offer in offers {
+            validate_offer_shape(offer)?;
+            if offer.organization != first.organization {
+                return Err(Status::invalid_argument("task offer organization mismatch"));
+            }
+            let task = tasks
+                .get(&offer.task)
+                .ok_or_else(|| Status::failed_precondition("task absent from plan"))?;
+            let artifact = plan
+                .artifact_of(task)
+                .map_err(|_| Status::failed_precondition("invalid task artifact"))?;
+            let digest = artifact_digest(&artifact);
+            if offer.artifact.sha256 != digest.as_bytes() {
+                return Err(Status::invalid_argument("task artifact digest mismatch"));
+            }
+            expected.push((offer, digest));
+        }
+        let access = self.access(job).await?;
+        for (offer, digest) in expected {
+            let location = Location::parse(&offer.artifact.uri)
+                .map_err(|_| Status::invalid_argument("invalid artifact URI"))?;
+            let bytes = tokio::time::timeout(Duration::from_secs(30), access.store.read(&location))
+                .await
+                .map_err(|_| Status::unavailable("task artifact read timed out"))?
+                .map_err(|_| Status::unavailable("task artifact unavailable"))?;
+            let actual = bergsmith_protocol::artifact::TaskArtifact::decode(bytes)
+                .map_err(|_| Status::invalid_argument("invalid task artifact"))?;
+            if artifact_digest(&actual) != digest {
+                return Err(Status::invalid_argument("task artifact content mismatch"));
+            }
+        }
         Ok(())
     }
 
@@ -542,24 +645,28 @@ impl WorkerService {
             .map_err(|_| Status::failed_precondition("invalid stored plan"))?
             .ok_or_else(|| Status::failed_precondition("missing stored plan"))?;
         let (attempt_id, grant) = draft_grant(offer, &task, &plan, session)?;
-        let poll = ledger::grant(
-            &mut conn,
-            identity,
-            &attempts::NewGrant {
-                attempt_id,
-                task_id: task.id,
-                worker_session_id: session,
-                lease: self.config.lease,
-            },
-            request,
-            self.epoch,
-            &ledger::GrantPayload {
-                grant_bytes: &grant.encode_to_vec(),
-                output_prefix: &grant.output_prefix,
-                envelope_bytes: &offer.limits.encode_to_vec(),
-            },
-        )
-        .await
+        let new = attempts::NewGrant {
+            attempt_id,
+            task_id: task.id,
+            worker_session_id: session,
+            lease: self.config.lease,
+        };
+        let payload = ledger::GrantPayload {
+            grant_bytes: &grant.encode_to_vec(),
+            output_prefix: &grant.output_prefix,
+            envelope_bytes: &offer.limits.encode_to_vec(),
+        };
+        let poll = if let Some(limits) = self.admission.get() {
+            if !self.dispatch_ready.load(Ordering::Acquire) {
+                return Err(scheduler_not_ready());
+            }
+            ledger::grant_admitted(
+                &mut conn, identity, &new, request, self.epoch, &payload, *limits,
+            )
+            .await
+        } else {
+            ledger::grant(&mut conn, identity, &new, request, self.epoch, &payload).await
+        }
         .map_err(database)?;
         reservation.consumed = poll.attempt_id == Some(*attempt_id.as_uuid());
         Ok(Some(poll))
@@ -586,6 +693,9 @@ impl WorkerService {
             {
                 drop(conn);
                 return self.replay(identity, session_id, poll).await;
+            }
+            if !self.dispatch_ready.load(Ordering::Acquire) {
+                return Err(scheduler_not_ready());
             }
             let busy: bool = sqlx::query_scalar(
                 "SELECT EXISTS(SELECT 1 FROM attempts
@@ -983,6 +1093,24 @@ fn invalid_output(error: &results::ResultError) -> bool {
         ),
         _ => false,
     }
+}
+
+fn validate_offer_shape(offer: &TaskOffer) -> Result<(), Status> {
+    if offer.pool.is_empty()
+        || offer.capability.is_empty()
+        || offer.capability.len() > 200
+        || offer.limits.memory_bytes == 0
+        || offer.limits.cpu_millis == 0
+        || offer.limits.max_output_bytes == 0
+        || !offer.limits.max_duration.as_ref().is_some_and(|d| {
+            d.seconds >= 0
+                && (0..1_000_000_000).contains(&d.nanos)
+                && (d.seconds > 0 || d.nanos > 0)
+        })
+    {
+        return Err(Status::invalid_argument("invalid task offer"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

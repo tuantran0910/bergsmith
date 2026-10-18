@@ -14,6 +14,9 @@ const CHECK_VIOLATION: &str = "23514";
 /// An error from a repository or from database setup.
 #[derive(Debug, thiserror::Error)]
 pub enum PersistenceError {
+    /// Admission or execution resource budgets currently prevent dispatch.
+    #[error("scheduler admission capacity is unavailable")]
+    AdmissionUnavailable,
     /// The database rejected or failed a query.
     #[error("database operation failed")]
     Database(#[source] sqlx::Error),

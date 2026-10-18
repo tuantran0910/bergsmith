@@ -434,7 +434,19 @@ pub async fn transition_job(
         },
     )
     .await?;
+    if job.state.is_terminal() || job.state == JobState::Cancelling {
+        sqlx::query("UPDATE attempts SET state='Cancelled',finished_at=now() WHERE task_id IN (SELECT id FROM tasks WHERE job_id=$1) AND state IN ('Granted','Running')")
+            .bind(job.id.as_uuid()).execute(&mut *tx).await?;
+        sqlx::query("UPDATE tasks SET state='Cancelled',retry_not_before=NULL,updated_at=now() WHERE job_id=$1 AND state IN ('Pending','Leased','RetryWaiting')")
+            .bind(job.id.as_uuid()).execute(&mut *tx).await?;
+    }
     if job.state.is_terminal() {
+        sqlx::query(
+            "UPDATE execution_admissions SET released=true WHERE job_id=$1 AND NOT released",
+        )
+        .bind(job.id.as_uuid())
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("DELETE FROM publication_barriers WHERE job_id = $1")
             .bind(job.id.as_uuid())
             .execute(&mut *tx)

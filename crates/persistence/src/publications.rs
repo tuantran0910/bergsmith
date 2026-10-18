@@ -113,6 +113,7 @@ pub async fn create_intent(
 ) -> Result<Job, PersistenceError> {
     let mut tx = conn.begin().await?;
     let job = lock_job(&mut tx, intent.job_id).await?;
+    crate::scheduling::authorize_publication(&mut tx, &job).await?;
     ensure_leadership(&mut tx, epoch).await?;
     if job.state_revision != expected_revision {
         return Err(PersistenceError::RevisionConflict {

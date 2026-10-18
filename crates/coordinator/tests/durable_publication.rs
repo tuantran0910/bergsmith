@@ -867,3 +867,66 @@ async fn mismatched_retained_snapshot_never_resolves_publication(pool: PgPool) {
     );
     assert_eq!(run.barrier(&mut conn).await, 1);
 }
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn scheduler_startup_recovers_native_publication_evidence_without_resending(pool: PgPool) {
+    use bergsmith_coordinator::scheduling::{Scheduler, SchedulerConfig};
+    use bergsmith_coordinator::worker_access::{CatalogWorkerAccess, WorkerTableBinding};
+    use bergsmith_coordinator::workers::{WorkerConfig, WorkerService};
+    use std::sync::Arc;
+    let mut conn = pool.acquire().await.unwrap();
+    let mut run = setup(&mut conn, false).await;
+    run.execute(&mut conn, true).await;
+    run.prepare(&mut conn).await;
+    run.authorize(&mut conn).await;
+    assert_eq!(run.barrier(&mut conn).await, 1);
+    run.expose_publication(&mut conn).await;
+    let never_send = run
+        .server
+        .mock("POST", TABLE_PATH)
+        .expect(0)
+        .create_async()
+        .await;
+    let job_id = run.job.id;
+    let provider = Arc::new(CatalogWorkerAccess::new(std::collections::BTreeMap::from(
+        [(
+            job_id,
+            WorkerTableBinding {
+                catalog: Arc::new(run.catalog),
+                table: TableName {
+                    namespace: vec!["db".into()],
+                    name: "t".into(),
+                },
+                profile: StorageProfile::LocalFs,
+            },
+        )],
+    )));
+    let worker = WorkerService::new(
+        pool.clone(),
+        run.epoch,
+        vec![],
+        WorkerConfig::default(),
+        provider.clone(),
+    )
+    .unwrap();
+    let scheduler = Scheduler::new(worker, provider, SchedulerConfig::default()).unwrap();
+    drop(conn);
+    scheduler.reconcile().await.unwrap();
+    let recovered = jobs::job(
+        &mut pool.acquire().await.unwrap(),
+        run.tenant.organization,
+        job_id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(recovered.state, JobState::Succeeded);
+    let barriers: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM publication_barriers WHERE job_id=$1")
+            .bind(job_id.as_uuid())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(barriers, 0);
+    assert!(scheduler.worker_service().ready_tasks().is_empty());
+    never_send.assert_async().await;
+}

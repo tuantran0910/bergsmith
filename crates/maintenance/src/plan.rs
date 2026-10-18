@@ -117,6 +117,12 @@ impl PlannedFile {
 }
 
 impl PlannedDelete {
+    /// The planned delete object's size, checked before admission and retry.
+    #[must_use]
+    pub const fn file_size_bytes(&self) -> u64 {
+        self.file_size_bytes
+    }
+
     pub(crate) fn of(delete: &DeleteEntry) -> Self {
         let (mut equality_field_ids, referenced_data_file) = match &delete.kind {
             DeleteKind::Position { referenced, .. } => (Vec::new(), referenced.clone()),

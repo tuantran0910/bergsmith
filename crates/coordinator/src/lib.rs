@@ -1,8 +1,8 @@
 //! The Bergsmith coordinator: public API, admission, scheduling, leases,
 //! reconciliation, and publication.
 //!
-//! Durable publication and worker RPCs are implemented in BS-012–BS-013;
-//! automatic scheduling and process supervision follow in BS-014–BS-015.
+//! Durable publication, worker RPCs, and scheduling/reconciliation are implemented
+//! in BS-012–BS-014; worker process supervision follows in BS-015.
 //! This crate is the only one allowed to depend on `bergsmith-persistence`
 //! and `bergsmith-catalog`.
 
@@ -12,5 +12,6 @@ pub mod inventory;
 pub mod planning;
 pub mod publication;
 pub mod results;
+pub mod scheduling;
 pub mod worker_access;
 pub mod workers;

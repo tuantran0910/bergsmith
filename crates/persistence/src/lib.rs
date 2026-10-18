@@ -15,6 +15,7 @@ pub mod jobs;
 pub mod leadership;
 pub mod plans;
 pub mod publications;
+pub mod scheduling;
 pub mod tables;
 pub mod tenancy;
 pub mod workers;

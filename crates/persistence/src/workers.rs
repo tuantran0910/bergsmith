@@ -266,12 +266,59 @@ pub async fn grant(
     epoch: i64,
     payload: &GrantPayload<'_>,
 ) -> Result<Poll, PersistenceError> {
+    grant_inner(conn, identity, new, request, epoch, payload, None).await
+}
+
+/// Creates a managed grant with atomic table ownership and attempt-budget checks.
+///
+/// # Errors
+/// Returns the errors of [`grant`] and `AdmissionUnavailable` when capacity is full.
+pub async fn grant_admitted(
+    conn: &mut PgConnection,
+    identity: &Identity,
+    new: &attempts::NewGrant,
+    request: Uuid,
+    epoch: i64,
+    payload: &GrantPayload<'_>,
+    limits: crate::scheduling::AdmissionLimits,
+) -> Result<Poll, PersistenceError> {
+    grant_inner(conn, identity, new, request, epoch, payload, Some(limits)).await
+}
+
+async fn grant_inner(
+    conn: &mut PgConnection,
+    identity: &Identity,
+    new: &attempts::NewGrant,
+    request: Uuid,
+    epoch: i64,
+    payload: &GrantPayload<'_>,
+    limits: Option<crate::scheduling::AdmissionLimits>,
+) -> Result<Poll, PersistenceError> {
     let mut tx = conn.begin().await?;
     let task = plans::task(&mut tx, new.task_id).await?;
     let job = jobs::lock_job(&mut tx, task.job_id).await?;
     let session = lock_session(&mut tx, identity, new.worker_session_id).await?;
     if let Some(previous) = poll(&mut tx, new.worker_session_id, request).await? {
         return Ok(previous);
+    }
+    if limits.is_none()
+        && crate::scheduling::dispatch_spec(&mut tx, new.task_id)
+            .await?
+            .is_some()
+    {
+        return Err(invalid());
+    }
+    if let Some(limits) = limits
+        && !crate::scheduling::authorize_grant(
+            &mut tx,
+            new.task_id,
+            limits,
+            &identity.pool,
+            &session,
+        )
+        .await?
+    {
+        return Err(PersistenceError::AdmissionUnavailable);
     }
     if job.organization_id != identity.organization || session.draining {
         return Err(invalid());
@@ -444,14 +491,19 @@ pub async fn renew(
     lock_session(&mut tx, identity, id).await?;
     leadership::ensure_leadership(&mut tx, epoch).await?;
     let (attempt, live) = attempts::lock_attempt(&mut tx, attempt_id).await?;
-    if generation != attempt.generation || attempt.state.is_terminal() || !live {
+    if generation != attempt.generation || !live {
         return Ok(Renewal::Fenced);
     }
-    if matches!(job.state, JobState::Cancelling | JobState::Cancelled) || job.cancellation.is_some()
+    if (matches!(job.state, JobState::Cancelling | JobState::Cancelled)
+        || job.cancellation.is_some())
+        && matches!(
+            attempt.state,
+            AttemptState::Granted | AttemptState::Running | AttemptState::Cancelled
+        )
     {
         return Ok(Renewal::Cancel);
     }
-    if job.state != JobState::Running {
+    if attempt.state.is_terminal() || job.state != JobState::Running {
         return Ok(Renewal::Fenced);
     }
     let deadline = sqlx::query_scalar(
@@ -547,12 +599,11 @@ pub async fn report_failure(
     }
     let disposition = classify_failure(reason, generation);
     let retry = disposition == FailureDisposition::RetryTask;
-    let retry_at = sqlx::query_scalar::<_, DateTime<Utc>>(
-        "SELECT clock_timestamp() + interval '1 second' WHERE $1",
-    )
-    .bind(retry)
-    .fetch_optional(&mut *tx)
-    .await?;
+    let retry_at = if retry {
+        Some(crate::scheduling::retry_deadline(&mut tx, task.id, generation).await?)
+    } else {
+        None
+    };
     attempts::end_attempt(
         &mut tx,
         &attempts::EndAttempt {
