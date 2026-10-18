@@ -71,6 +71,8 @@ message RequestTaskResponse {
   oneof result {
     TaskGrant grant = 1;
     NoTask no_task = 2;
+    // The original assignment ended; never allocate new work for this poll.
+    GetAttemptStatusResponse disposition = 3;
   }
 }
 

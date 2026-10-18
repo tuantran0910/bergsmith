@@ -34,7 +34,7 @@ Update a row only when its acceptance tests pass (see the project plan §5).
 | Whole-file binpack compaction within existing partitions | Planned; native local executor passes all 11 spike fixtures with oracle checks, rolling metrics and resource failures (BS-010, ADRs 0018–0019); distributed publication pending |
 | Position delete application | Certified for native local rewrites (BS-011): physical positions, equal-sequence applicability, partition/spec scope, retained shared deletes, and capture-publication manifest checks; distributed acceptance/recovery pending |
 | Equality delete application, including null keys | Certified for native local rewrites (BS-011): nullable single/composite keys, duplicate survivors, strict sequence applicability, global equality scope, 50,000-key fixture, and later-delete checks; distributed acceptance/recovery pending |
-| Zero-output replacement | Certified for native execution, capture-publication, and durable coordinator acceptance/recovery (BS-011–BS-012); worker RPC orchestration remains pending |
+| Zero-output replacement | Certified for native execution, capture-publication, durable coordinator acceptance/recovery, and worker result RPCs (BS-011–BS-013) |
 | Floating-point equality-delete keys | Unsupported; rejected at preview |
 | Equality-delete keys on nested or dropped fields | Unsupported; rejected at preview |
 | Sorted rewrite | Later (M9) |
@@ -49,7 +49,8 @@ Update a row only when its acceptance tests pass (see the project plan §5).
 | Behavior | Status |
 |---|---|
 | Conservative conflict rejection (`ReplanRequired`) | Planned; concurrent append, delete, schema, spec, and sort changes rejected by Lakekeeper (BS-007) |
-| Durable coordinator publication and recovery | Certified for native files + PostgreSQL + controlled REST crash fixtures (BS-012, ADR 0022); real Lakekeeper send/cancellation-boundary fixtures also pass; automatic scheduling and worker RPC orchestration remain BS-013–BS-015 |
+| Durable coordinator publication and recovery | Certified for native files + PostgreSQL + controlled REST crash fixtures (BS-012, ADR 0022); real Lakekeeper send/cancellation-boundary fixtures also pass; automatic scheduling and process supervision remain BS-014–BS-015 |
+| Worker sessions, durable pulls, lease fencing, and result acknowledgments | Certified for TLS/tonic + PostgreSQL + native receipt fixtures (BS-013, ADRs 0023–0024); automatic scheduling and worker runtime remain BS-014–BS-015 |
 | Commit-aligned job start and per-job duration budget | Planned; conflict rate measured against a synthetic sink ([M1 measurement](measurements/m1-conflict-rate.md)); start alignment and budget admission implemented (BS-009); [native fixture measurements](measurements/bs-010-executor.md) fit the budget, large-group throughput remains unvalidated |
 | Compatible rebasing onto concurrent appends | Deferred |
 

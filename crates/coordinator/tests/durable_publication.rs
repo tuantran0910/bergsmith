@@ -9,7 +9,7 @@
 mod support;
 
 use bergsmith_catalog::{Baseline, CatalogConnection, ConnectionConfig, LoadedTable, TableName};
-use bergsmith_common::ids::{AttemptId, PlanId, WorkerSessionId};
+use bergsmith_common::ids::{AttemptId, PlanId};
 use bergsmith_common::job::JobState;
 use bergsmith_coordinator::{durable_publication as publication, planning, results};
 use bergsmith_fixtures::{Fixture, live_rows, spike};
@@ -172,12 +172,13 @@ async fn catalog(fixture: &Fixture) -> (ServerGuard, CatalogConnection, Mock) {
 impl Run {
     async fn execute(&mut self, conn: &mut PgConnection, accept: bool) {
         for task in self.plan.tasks() {
+            let worker_session_id = support::worker_session(conn, task.task_id()).await;
             let attempt = attempts::grant_attempt(
                 conn,
                 &attempts::NewGrant {
                     attempt_id: AttemptId::generate(),
                     task_id: task.task_id(),
-                    worker_session_id: WorkerSessionId::generate(),
+                    worker_session_id,
                     lease: Duration::from_secs(90),
                 },
             )

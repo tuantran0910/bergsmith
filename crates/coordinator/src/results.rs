@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Duration;
 
-use bergsmith_common::ids::{AttemptId, JobId};
+use bergsmith_common::ids::{AttemptId, JobId, TaskId};
 use bergsmith_maintenance::{PlanDocument, PlanError};
 use bergsmith_persistence::{PersistenceError, attempts, publications};
 use bergsmith_protocol::artifact::{TaskArtifact, TaskReceipt};
@@ -126,26 +126,56 @@ pub async fn accept_result(
     if attempt.generation != receipt.generation || receipt.task_id != task.id.to_string() {
         return Err(ResultError::Invalid("receipt does not match grant"));
     }
+    let verified = verify_receipt(&plan, &canonical, store, metadata).await?;
+    Ok(publications::accept_outputs(
+        conn,
+        &submission,
+        &verified.prefix.to_string(),
+        &verified.objects,
+    )
+    .await?)
+}
+
+/// Output metadata verified without a database connection.
+pub(crate) struct VerifiedReceipt {
+    pub(crate) prefix: Location,
+    pub(crate) objects: Vec<(String, i64)>,
+}
+
+pub(crate) async fn verify_receipt(
+    plan: &PlanDocument,
+    receipt: &TaskReceipt,
+    store: &ObjectStore,
+    metadata: &TableMetadata,
+) -> Result<VerifiedReceipt, ResultError> {
+    let attempt_id = receipt
+        .attempt_id
+        .parse()
+        .map_err(|_| ResultError::Invalid("invalid attempt id"))?;
+    let task_id: TaskId = receipt
+        .task_id
+        .parse()
+        .map_err(|_| ResultError::Invalid("invalid task id"))?;
     let planned = plan
         .tasks()
         .iter()
-        .find(|t| t.task_id() == task.id)
+        .find(|t| t.task_id() == task_id)
         .ok_or(ResultError::Invalid("task is absent from plan"))?;
     let artifact = plan.artifact_of(planned)?;
     let prefix = Location::parse(plan.baseline().data_location())?
-        .attempt_output_prefix(task.job_id, attempt_id);
+        .attempt_output_prefix(plan.job_id(), attempt_id);
     tokio::time::timeout(
         IO_TIMEOUT,
-        verify(&artifact, &canonical, &prefix, store, metadata),
+        verify(&artifact, receipt, &prefix, store, metadata),
     )
     .await
     .map_err(|_| ResultError::Timeout)??;
-    let objects: Vec<_> = canonical
+    let objects = receipt
         .outputs
         .iter()
         .map(|o| (o.path.clone(), o.file_size_bytes))
         .collect();
-    Ok(publications::accept_outputs(conn, &submission, &prefix.to_string(), &objects).await?)
+    Ok(VerifiedReceipt { prefix, objects })
 }
 
 pub(crate) fn decode(receipt: &publications::AcceptedReceipt) -> Result<TaskReceipt, ResultError> {
