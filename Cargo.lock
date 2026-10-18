@@ -2014,7 +2014,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.0"
-source = "git+https://github.com/thealtoclef/rw-iceberg-rust.git?rev=eb162a1e109dbd2961d1fcd3e93cc8c770120bb9#eb162a1e109dbd2961d1fcd3e93cc8c770120bb9"
+source = "git+https://github.com/thealtoclef/rw-iceberg-rust.git?rev=e7ed9e8db3e09dbf39503296c3dd753b28b8a04e#e7ed9e8db3e09dbf39503296c3dd753b28b8a04e"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2073,7 +2073,7 @@ dependencies = [
 [[package]]
 name = "iceberg-catalog-rest"
 version = "0.10.0"
-source = "git+https://github.com/thealtoclef/rw-iceberg-rust.git?rev=eb162a1e109dbd2961d1fcd3e93cc8c770120bb9#eb162a1e109dbd2961d1fcd3e93cc8c770120bb9"
+source = "git+https://github.com/thealtoclef/rw-iceberg-rust.git?rev=e7ed9e8db3e09dbf39503296c3dd753b28b8a04e#e7ed9e8db3e09dbf39503296c3dd753b28b8a04e"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2095,7 +2095,7 @@ dependencies = [
 [[package]]
 name = "iceberg-storage-opendal"
 version = "0.10.0"
-source = "git+https://github.com/thealtoclef/rw-iceberg-rust.git?rev=eb162a1e109dbd2961d1fcd3e93cc8c770120bb9#eb162a1e109dbd2961d1fcd3e93cc8c770120bb9"
+source = "git+https://github.com/thealtoclef/rw-iceberg-rust.git?rev=e7ed9e8db3e09dbf39503296c3dd753b28b8a04e#e7ed9e8db3e09dbf39503296c3dd753b28b8a04e"
 dependencies = [
  "anyhow",
  "async-trait",
