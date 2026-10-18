@@ -49,8 +49,9 @@ Update a row only when its acceptance tests pass (see the project plan §5).
 | Behavior | Status |
 |---|---|
 | Conservative conflict rejection (`ReplanRequired`) | Planned; concurrent append, delete, schema, spec, and sort changes rejected by Lakekeeper (BS-007) |
-| Durable coordinator publication and recovery | Certified for native files + PostgreSQL + controlled REST crash fixtures (BS-012, ADR 0022); real Lakekeeper send/cancellation-boundary fixtures also pass; automatic scheduling and process supervision remain BS-014–BS-015 |
-| Worker sessions, durable pulls, lease fencing, and result acknowledgments | Certified for TLS/tonic + PostgreSQL + native receipt fixtures (BS-013, ADRs 0023–0024); automatic scheduling and worker runtime remain BS-014–BS-015 |
+| Durable coordinator publication and recovery | Certified for native files + PostgreSQL + controlled REST crash fixtures (BS-012, ADR 0022); real Lakekeeper send/cancellation-boundary fixtures also pass; worker process supervision remains BS-015 |
+| Worker sessions, durable pulls, lease fencing, and result acknowledgments | Certified for TLS/tonic + PostgreSQL + native receipt fixtures (BS-013, ADRs 0023–0024); worker runtime remains BS-015 |
+| Durable admission, bounded scheduling, retry timers, and startup/periodic reconciliation | Certified for native Iceberg/TLS/PostgreSQL restart, budget, expiry, retention, and conflict fixtures (BS-014, ADR 0025); coordinator library orchestration, with production packaging following later |
 | Commit-aligned job start and per-job duration budget | Planned; conflict rate measured against a synthetic sink ([M1 measurement](measurements/m1-conflict-rate.md)); start alignment and budget admission implemented (BS-009); [native fixture measurements](measurements/bs-010-executor.md) fit the budget, large-group throughput remains unvalidated |
 | Compatible rebasing onto concurrent appends | Deferred |
 

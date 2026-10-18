@@ -48,8 +48,8 @@ dispositions cannot make an invalid output or resource-limit failure retryable.
 See [ADR 0024](../adr/0024-worker-receipt-fencing-and-task-envelopes.md).
 
 BS-013 provides the RPC service and explicit task-offer interface. BS-014 adds
-automatic admission, retry timers, and queue reconstruction; BS-015 adds worker
-runtime loops and subprocess enforcement. A drained or expired worker is not
+[durable admission, retry timers, and queue reconstruction](scheduling.md);
+BS-015 adds worker runtime loops and subprocess enforcement. A drained or expired worker is not
 proof that its process has stopped writing. Preserve its registered output prefix
 under the retention rules in [publication.md](publication.md).
 

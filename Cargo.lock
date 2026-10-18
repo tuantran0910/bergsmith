@@ -576,6 +576,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tonic",
+ "tracing",
  "url",
  "uuid",
 ]
