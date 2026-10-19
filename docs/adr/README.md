@@ -32,8 +32,9 @@ record's status; never rewrite an accepted decision.
 | [0023](0023-worker-sessions-and-durable-pulls.md) | Worker sessions and durable pull assignments | Accepted; failure classification superseded by 0024 |
 | [0024](0024-worker-receipt-fencing-and-task-envelopes.md) | Atomic receipt replay, task envelopes, and dispatch reservations | Accepted |
 | [0025](0025-durable-admission-and-reconciliation.md) | Durable admission, retry timers, and scheduling reconciliation | Accepted; refined by 0029 |
-| [0026](0026-durable-worker-supervision.md) | Durable worker supervision and platform resource enforcement | Accepted |
+| [0026](0026-durable-worker-supervision.md) | Durable worker supervision and platform resource enforcement | Accepted; refined by 0030 |
 | [0027](0027-delete-applicability-matches-the-native-reader.md) | Delete applicability matches the native reader's metric proof | Accepted |
 | [0028](0028-executor-failure-classification-and-preparation-bounds.md) | Executor failure classification and preparation bounds | Accepted |
 | [0029](0029-isolated-reconciliation-and-operator-resolution.md) | Isolated reconciliation, publication grace, and operator resolution | Accepted |
+| [0030](0030-worker-report-quarantine-and-supervision-recovery.md) | Worker report quarantine and supervision recovery | Accepted |
 | [0031](0031-worker-renewal-and-grant-boundaries.md) | Worker renewal and grant boundaries | Accepted |

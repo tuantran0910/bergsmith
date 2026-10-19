@@ -111,12 +111,24 @@ Its dedicated launching thread remains alive for the child process's lifetime.
 
 Development platforms use CPU/core rlimits, a bound on additional virtual data
 growth, and 100-ms RSS sampling. A sampled RSS bound can overshoot between
-samples and does not provide Linux's hard memory isolation. CPU rlimits bound
-total CPU seconds; only Linux also limits CPU bandwidth. See
+samples and does not provide Linux's hard memory isolation. Three consecutive
+failed RSS samples stop the task with retryable `ProcessMemoryUsageUnavailable`.
+CPU rlimits bound total CPU seconds; only Linux also limits CPU bandwidth, so
+development platforms size the CPU-time backstop for every available core over
+the task duration, and the duration limit is what stops a busy task. See
 [ADR 0026](../adr/0026-durable-worker-supervision.md).
 
+At startup the Linux worker removes empty `bergsmith-<pid>-*` cgroups left by an
+earlier run. A cgroup that still has members is kept and logged, never killed.
+Each task cgroup is killed through `cgroup.kill` and removed after its members
+exit, including after a partial setup failure.
+
 The worker binary launches `exec --socket <path> --parent-pid <pid>` itself.
-Subprocess environments are cleared and standard input/output/error use null devices.
+Subprocess environments are cleared, and standard input is a null device. The
+subprocess's standard output and error are drained continuously and forwarded
+into the supervisor's log under target `bergsmith_worker::task` with the attempt
+ID, one bounded line (8 KiB) at a time. The subprocess holds no service token
+and does not log its storage credentials.
 Tokens and storage credentials are not passed on command lines. The private
 socket supplies only the task's storage credentials. Storage credential refresh
 updates existing readers and writers; expiry stops the attempt. Running progress
@@ -129,6 +141,19 @@ stop execution. Linux additionally kills the task when its supervisor dies.
 Local worker shutdown records `WorkerExecutionInterrupted` as retryable before
 notifying the child. It follows the execution retry budget instead of being
 classified as permanent cancellation.
+
+Lease deadlines are converted to the worker's monotonic clock on receipt, using
+the coordinator's HTTP `Date` response header as the reference, so worker
+wall-clock skew does not end tasks early. Without that header the worker clock
+is used. Storage credential expiry is checked against the worker clock, which
+is also the clock used to sign storage requests; keep worker clocks synchronized.
+
+Worker-local faults, such as a socket that cannot be bound, a subprocess or
+cgroup that cannot be created, or local journal I/O, are reported as retryable
+`WorkerLocalFailure`. An artifact that does not verify against its grant is
+retryable `TaskArtifactUnverified`. Only a grant that cannot run as issued is
+the permanent `InvalidTaskGrant`. A grant the worker refuses is journaled as a
+failure for that attempt, and the worker keeps polling.
 
 ## Reporting and restart recovery
 
@@ -151,11 +176,14 @@ when bounding that history.
 On restart the worker reports unacknowledged records with their original session
 and receipt digest before requesting more execution. A timeout retries the same
 request, with reporting backoff capped at 30 seconds. Acknowledgments include refusals such as stale attempt, cancellation,
-and invalid result; none authorizes rerunning that attempt. Corrupt journals or
-unknown dispositions stop the worker and retain the evidence for inspection.
-When failure reporting rejects a fenced or expired attempt, the worker queries
-`GetAttemptStatus` and acknowledges only a conclusive ended disposition. A live
-or unresolved status keeps the report pending.
+and invalid result; none authorizes rerunning that attempt. When the coordinator
+definitively rejects a report (for example `FailedPrecondition` or `NotFound`),
+the worker queries `GetAttemptStatus` and acknowledges only a conclusive ended
+disposition. A record that is rejected three times in a row without such a
+disposition, or that is corrupt, is quarantined: `quarantine.pb` records the
+reason (`ReportRejected` or `InvalidJournalRecord`), the record is kept for
+inspection, and polling resumes. Authentication failures and transient errors
+keep the report pending. Conflicting completion files still fail startup.
 Keep the state directory when restarting, and do not edit journal files.
 
 Run `cargo test -p bergsmith-worker -p bergsmith-worker-bin` for supervisor,

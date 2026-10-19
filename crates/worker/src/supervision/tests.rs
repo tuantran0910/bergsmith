@@ -118,6 +118,107 @@ fn credential_expiry_wins_the_race_with_a_native_io_failure() {
 }
 
 #[test]
+fn local_infrastructure_faults_retry_and_only_an_invalid_grant_is_permanent() {
+    use common::FailureDisposition::{PermanentFailure, RetryTask};
+    let bind = std::io::Error::from(std::io::ErrorKind::AddrInUse);
+    let spawn = std::io::Error::from_raw_os_error(rustix::io::Errno::AGAIN.raw_os_error());
+    let cgroup = std::io::Error::from_raw_os_error(rustix::io::Errno::BUSY.raw_os_error());
+    let decode = artifact::TaskArtifact::decode(&[0xff_u8][..]).unwrap_err();
+    let cases = [
+        (WorkerError::Io(bind), "WorkerLocalFailure", RetryTask),
+        (WorkerError::Io(spawn), "WorkerLocalFailure", RetryTask),
+        (WorkerError::Io(cgroup), "WorkerLocalFailure", RetryTask),
+        (
+            WorkerError::Invalid("task launcher stopped"),
+            "WorkerLocalFailure",
+            RetryTask,
+        ),
+        (WorkerError::Decode(decode), "WorkerLocalFailure", RetryTask),
+        (
+            WorkerError::UnverifiedArtifact("artifact differs from grant"),
+            "TaskArtifactUnverified",
+            RetryTask,
+        ),
+        (
+            WorkerError::InvalidGrant("invalid task grant"),
+            "InvalidTaskGrant",
+            PermanentFailure,
+        ),
+        (WorkerError::Timeout, "StorageOperationTimedOut", RetryTask),
+        (
+            WorkerError::Rpc(tonic::Status::unavailable("local socket closed")),
+            "TaskSubprocessCrashed",
+            RetryTask,
+        ),
+    ];
+    for (error, reason, disposition) in cases {
+        let failure = worker_failure(&error, None);
+        assert_eq!(failure.reason_code, reason, "{error}");
+        assert_eq!(failure.disposition, i32::from(disposition), "{error}");
+    }
+}
+
+#[test]
+fn coordinator_lease_deadlines_ignore_worker_clock_skew() {
+    let received = tokio::time::Instant::now();
+    let coordinator = UNIX_EPOCH + Duration::from_secs(1_000_000);
+    let expiry = coordinator + Duration::from_secs(90);
+    // The worker's wall clock runs ten minutes ahead of the coordinator.
+    let ahead = coordinator + Duration::from_secs(600);
+    assert_eq!(
+        local_deadline(expiry, Some(coordinator), ahead, received),
+        received + Duration::from_secs(89)
+    );
+    // ...or behind it: the remaining lease is still measured by the coordinator.
+    let behind = coordinator - Duration::from_secs(600);
+    assert_eq!(
+        local_deadline(expiry, Some(coordinator), behind, received),
+        received + Duration::from_secs(89)
+    );
+    // Without a coordinator time the worker clock is the fallback reference.
+    assert_eq!(local_deadline(expiry, None, ahead, received), received);
+    assert_eq!(
+        local_deadline(expiry, None, coordinator, received),
+        received + Duration::from_secs(90)
+    );
+    assert_eq!(
+        local_deadline(coordinator, Some(expiry), ahead, received),
+        received
+    );
+}
+
+#[test]
+fn http_dates_parse_only_the_imf_fixdate_form() {
+    assert_eq!(
+        http_date("Sun, 06 Nov 1994 08:49:37 GMT"),
+        Some(UNIX_EPOCH + Duration::from_secs(784_111_777))
+    );
+    assert_eq!(http_date("Thu, 01 Jan 1970 00:00:00 GMT"), Some(UNIX_EPOCH));
+    assert_eq!(
+        http_date("Thu, 29 Feb 2024 23:59:59 GMT"),
+        Some(UNIX_EPOCH + Duration::from_secs(1_709_251_199))
+    );
+    for invalid in [
+        "",
+        "Sunday, 06-Nov-94 08:49:37 GMT",
+        "Sun Nov  6 08:49:37 1994",
+        "Sun, 06 Nov 1994 08:49:37 UTC",
+        "Sun, 06 Foo 1994 08:49:37 GMT",
+        "Sun, 32 Nov 1994 08:49:37 GMT",
+        "Sun, 06 Nov 1994 24:49:37 GMT",
+        "Sun, 06 Nov 1969 08:49:37 GMT",
+        "Sun, +6 Nov 1994 08:49:37 GMT",
+        "Sun, 06 Nov 1994 08-49:37 GMT",
+    ] {
+        assert_eq!(http_date(invalid), None, "{invalid}");
+    }
+    let mut metadata = tonic::metadata::MetadataMap::new();
+    assert_eq!(coordinator_time(&metadata), None);
+    metadata.insert("date", "Thu, 01 Jan 1970 00:00:00 GMT".parse().unwrap());
+    assert_eq!(coordinator_time(&metadata), Some(UNIX_EPOCH));
+}
+
+#[test]
 fn journal_is_private_exclusively_locked_and_never_overwrites_a_report() {
     use std::os::unix::fs::PermissionsExt;
     let root = tempfile::tempdir().unwrap();
