@@ -1,6 +1,6 @@
 //! Atomic publication intents, table barriers, and output inventories (BS-012).
 
-use bergsmith_common::ids::{AttemptId, JobId, PublicationId};
+use bergsmith_common::ids::{AttemptId, JobId, PrincipalId, PublicationId};
 use bergsmith_common::job::JobState;
 use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
@@ -48,6 +48,51 @@ pub async fn recoverable_jobs(conn: &mut PgConnection) -> Result<Vec<Job>, Persi
     .into_iter()
     .map(Job::try_from)
     .collect()
+}
+
+/// Like [`recoverable_jobs`], but omits `Committing` jobs whose send was
+/// authorized less than `send_grace` ago, by database time.
+///
+/// A live publisher may still be awaiting that request's response; recovering
+/// it then would mark an in-flight request unknown and could discard its
+/// conclusive result. `send_grace` must exceed the longest bound on one commit
+/// request plus recording its outcome. Startup recovery uses [`recoverable_jobs`].
+///
+/// # Errors
+/// Returns decoding/database errors without changing publication authority.
+pub async fn settled_recoverable_jobs(
+    conn: &mut PgConnection,
+    send_grace: std::time::Duration,
+) -> Result<Vec<Job>, PersistenceError> {
+    use crate::jobs::{JobRow, job_columns};
+    let grace_millis = i64::try_from(send_grace.as_millis()).unwrap_or(i64::MAX);
+    sqlx::query_as::<_, JobRow>(concat!(
+        "SELECT ",
+        job_columns!(),
+        " FROM jobs WHERE (state = 'Committing' AND (publication_started_at IS NULL
+              OR publication_started_at <= clock_timestamp() - $1 * interval '1 millisecond'))
+          OR state = 'CommitOutcomeUnknown'
+          OR (state = 'Cancelling' AND EXISTS (SELECT 1 FROM publication_intents i WHERE i.job_id = jobs.id)) ORDER BY id"
+    ))
+    .bind(grace_millis)
+    .fetch_all(conn)
+    .await?
+    .into_iter()
+    .map(Job::try_from)
+    .collect()
+}
+
+/// Counts jobs whose publication outcome is unknown. Each holds its table
+/// barrier and admission reservations until evidence or an operator resolves it.
+///
+/// # Errors
+/// Returns database errors.
+pub async fn unresolved_count(conn: &mut PgConnection) -> Result<i64, PersistenceError> {
+    Ok(
+        sqlx::query_scalar("SELECT count(*) FROM jobs WHERE state = 'CommitOutcomeUnknown'")
+            .fetch_one(conn)
+            .await?,
+    )
 }
 
 /// An immutable request and its recovery information. Content is coordinator-owned.
@@ -197,15 +242,18 @@ pub async fn intent(conn: &mut PgConnection, job: JobId) -> Result<Intent, Persi
 /// Records the desired non-success state while an authorized publication is unresolved.
 ///
 /// # Errors
-/// Rejects nonterminal/success states and jobs without an unresolved intent.
+/// Rejects lost leadership, nonterminal/success states, and jobs without an
+/// unresolved intent.
 pub async fn pend_disposition(
     conn: &mut PgConnection,
     job_id: JobId,
+    epoch: i64,
     state: JobState,
     reason: &str,
 ) -> Result<(), PersistenceError> {
     let mut tx = conn.begin().await?;
     let job = lock_job(&mut tx, job_id).await?;
+    ensure_leadership(&mut tx, epoch).await?;
     if !matches!(
         state,
         JobState::Failed | JobState::ReplanRequired | JobState::Cancelled
@@ -225,40 +273,54 @@ pub async fn pend_disposition(
     Ok(())
 }
 
+/// The non-success state a proven non-publication applies: cancellation first,
+/// then a recorded pending disposition, then the caller's state.
+async fn non_success_target(
+    conn: &mut PgConnection,
+    job: &Job,
+    to: JobState,
+    reason: &str,
+) -> Result<(JobState, String), PersistenceError> {
+    if !to.is_terminal() || to == JobState::Succeeded {
+        return Ok((to, reason.to_owned()));
+    }
+    if job.cancellation.is_some() {
+        return Ok((JobState::Cancelled, "CancellationRequested".to_owned()));
+    }
+    let pending: Option<(String, String)> = sqlx::query_as(
+        "SELECT state, reason FROM publication_pending_dispositions WHERE job_id = $1",
+    )
+    .bind(job.id.as_uuid())
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(match pending {
+        Some((state, reason)) => (crate::jobs::parse_job_state(&state)?, reason),
+        None => (to, reason.to_owned()),
+    })
+}
+
 /// Applies a confirmed outcome and releases the barrier in the same transaction.
 ///
 /// `non_publication_proven` must cover every authorized sender, including delayed senders.
 /// Unknown outcomes retain the barrier. Cancellation takes priority over pending failure.
+/// The caller's leadership epoch is checked after the job lock, so a fenced
+/// coordinator cannot record an outcome.
 ///
 /// # Errors
-/// Returns revision/transition conflicts without releasing the barrier.
+/// Returns lost leadership or revision/transition conflicts without releasing the barrier.
 pub async fn resolve(
     conn: &mut PgConnection,
     job_id: JobId,
     revision: i64,
+    epoch: i64,
     to: JobState,
     reason: &str,
     non_publication_proven: bool,
 ) -> Result<Job, PersistenceError> {
     let mut tx = conn.begin().await?;
     let job = lock_job(&mut tx, job_id).await?;
-    let pending: Option<(String, String)> = sqlx::query_as(
-        "SELECT state, reason FROM publication_pending_dispositions WHERE job_id = $1",
-    )
-    .bind(job_id.as_uuid())
-    .fetch_optional(&mut *tx)
-    .await?;
-    let (to, reason) = if to.is_terminal() && to != JobState::Succeeded {
-        if job.cancellation.is_some() {
-            (JobState::Cancelled, "CancellationRequested".to_owned())
-        } else if let Some((state, reason)) = pending {
-            (crate::jobs::parse_job_state(&state)?, reason)
-        } else {
-            (to, reason.to_owned())
-        }
-    } else {
-        (to, reason.to_owned())
-    };
+    ensure_leadership(&mut tx, epoch).await?;
+    let (to, reason) = non_success_target(&mut tx, &job, to, reason).await?;
     let updated = transition_job(
         &mut tx,
         &Transition {
@@ -273,6 +335,72 @@ pub async fn resolve(
     .await?;
     // transition_job releases only this job's barrier on a terminal transition;
     // intent, receipts, and object inventory remain durable.
+    ensure_leadership(&mut tx, epoch).await?;
+    tx.commit().await?;
+    Ok(updated)
+}
+
+/// Stable reason recorded when an operator attests non-publication.
+pub const OPERATOR_ATTESTED_NON_PUBLICATION: &str = "OperatorAttestedNonPublication";
+
+/// Ends an unresolved publication on an operator's attestation that no
+/// authorized request published or can still publish.
+///
+/// This is the only path from `CommitOutcomeUnknown` to a non-success state
+/// without a live sender's conclusive response. The caller must first recheck
+/// retained snapshot evidence (see the coordinator's operator resolution).
+/// The transition event records `actor` and [`OPERATOR_ATTESTED_NON_PUBLICATION`]
+/// as the immutable audit record. Cancellation, then any pending disposition,
+/// selects the terminal state; otherwise the job fails. The barrier is released
+/// atomically; intent, receipts, and output inventory remain.
+///
+/// # Errors
+/// Rejects lost leadership, a changed revision, or a job that is not
+/// `CommitOutcomeUnknown`, without changing anything.
+pub async fn attest_non_publication(
+    conn: &mut PgConnection,
+    job_id: JobId,
+    expected_revision: i64,
+    epoch: i64,
+    actor: PrincipalId,
+) -> Result<Job, PersistenceError> {
+    let mut tx = conn.begin().await?;
+    let job = lock_job(&mut tx, job_id).await?;
+    ensure_leadership(&mut tx, epoch).await?;
+    if job.state_revision != expected_revision {
+        return Err(PersistenceError::RevisionConflict {
+            job: job.id,
+            expected: expected_revision,
+            actual: job.state_revision,
+        });
+    }
+    if job.state != JobState::CommitOutcomeUnknown {
+        return Err(PersistenceError::JobNotInState {
+            job: job.id,
+            state: job.state,
+            operation: "attest non-publication",
+        });
+    }
+    let (to, _) = non_success_target(
+        &mut tx,
+        &job,
+        JobState::Failed,
+        OPERATOR_ATTESTED_NON_PUBLICATION,
+    )
+    .await?;
+    let updated = transition_job(
+        &mut tx,
+        &Transition {
+            job_id,
+            expected_revision,
+            to,
+            reason: Some(OPERATOR_ATTESTED_NON_PUBLICATION.to_owned()),
+            actor: Some(actor),
+            non_publication_proven: true,
+        },
+    )
+    .await?;
+    ensure_leadership(&mut tx, epoch).await?;
     tx.commit().await?;
     Ok(updated)
 }

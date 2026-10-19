@@ -118,13 +118,23 @@ impl crate::scheduling::SchedulingAccess for CatalogWorkerAccess {
             Err(error) if error.is_not_found() => {
                 return Ok(Eligibility::ReplanRequired("PlanningTableMissing"));
             }
+            // Only an authenticated principal being forbidden from the table is
+            // revoked execution authority. A rejected or expired coordinator
+            // credential (401/419, or a token endpoint refusal) concerns the
+            // coordinator, not this job: the client discards its cached token
+            // and a later pass checks again, so it stays transient.
+            Err(bergsmith_catalog::CatalogError::Status { status: 403, .. }) => {
+                return Ok(Eligibility::PermanentFailure("ExecutionAuthorityRevoked"));
+            }
             Err(
                 bergsmith_catalog::CatalogError::Status {
-                    status: 401 | 403, ..
+                    status: 401 | 419, ..
                 }
                 | bergsmith_catalog::CatalogError::Authentication { .. },
             ) => {
-                return Ok(Eligibility::PermanentFailure("ExecutionAuthorityRevoked"));
+                return Err(Status::unavailable(
+                    "scheduler catalog authentication rejected",
+                ));
             }
             Err(_) => return Err(Status::unavailable("scheduler catalog access unavailable")),
         };
@@ -198,6 +208,7 @@ impl crate::scheduling::SchedulingAccess for CatalogWorkerAccess {
         &self,
         pool: &sqlx::PgPool,
         job: &bergsmith_persistence::jobs::Job,
+        epoch: i64,
     ) -> Result<(), Status> {
         let binding = self
             .bindings
@@ -207,7 +218,7 @@ impl crate::scheduling::SchedulingAccess for CatalogWorkerAccess {
             .acquire()
             .await
             .map_err(|_| Status::unavailable("publication ledger unavailable"))?;
-        crate::durable_publication::reconcile(&mut conn, job, &binding.catalog)
+        crate::durable_publication::reconcile(&mut conn, job, epoch, &binding.catalog)
             .await
             .map_err(|_| Status::unavailable("publication recovery unavailable"))?;
         Ok(())

@@ -75,15 +75,28 @@ struct Evidence {
     idempotency_key: Option<Uuid>,
 }
 
-/// Reloads and validates the original baseline, verifies all accepted results,
-/// builds the exact request, then atomically persists it and enters `Committing`.
-///
-/// Manifest creation and object verification run outside database transactions.
-/// A failed database write leaves harmless unreferenced metadata; it never sends.
+/// Bounds for publication preparation, applied to each storage step separately.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PublicationConfig {
+    /// Deadline for one bounded step: verifying one task's accepted outputs,
+    /// reading the baseline manifest list, loading one baseline manifest, or
+    /// writing the proposal's manifests. The whole preparation therefore
+    /// scales with the job instead of sharing one fixed deadline.
+    pub operation_timeout: Duration,
+}
+
+impl Default for PublicationConfig {
+    fn default() -> Self {
+        Self {
+            operation_timeout: Duration::from_secs(60),
+        }
+    }
+}
+
+/// [`prepare_publication_with`] using [`PublicationConfig::default`].
 ///
 /// # Errors
-/// Returns baseline drift, invalid receipts, cancellation, stale revision/leadership,
-/// or a table barrier conflict without authorizing a commit.
+/// See [`prepare_publication_with`].
 pub async fn prepare_publication(
     conn: &mut PgConnection,
     job: &Job,
@@ -92,6 +105,44 @@ pub async fn prepare_publication(
     catalog: &CatalogConnection,
     baseline: &Baseline,
     store: &ObjectStore,
+) -> Result<Job, DurablePublicationError> {
+    prepare_publication_with(
+        conn,
+        job,
+        epoch,
+        catalog_connection_id,
+        catalog,
+        baseline,
+        store,
+        PublicationConfig::default(),
+    )
+    .await
+}
+
+/// Reloads and validates the original baseline, verifies all accepted results,
+/// builds the exact request, then atomically persists it and enters `Committing`.
+///
+/// Manifest creation and object verification run outside database transactions.
+/// Every storage step is bounded by `config.operation_timeout`; catalog calls
+/// are bounded by the connection's request timeout. A failed database write
+/// leaves harmless unreferenced metadata; it never sends.
+///
+/// # Errors
+/// Returns baseline drift, invalid receipts, cancellation, stale revision/leadership,
+/// a step timeout, or a table barrier conflict without authorizing a commit.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is an independent durable or external input to one atomic preparation"
+)]
+pub async fn prepare_publication_with(
+    conn: &mut PgConnection,
+    job: &Job,
+    epoch: i64,
+    catalog_connection_id: CatalogConnectionId,
+    catalog: &CatalogConnection,
+    baseline: &Baseline,
+    store: &ObjectStore,
+    config: PublicationConfig,
 ) -> Result<Job, DurablePublicationError> {
     publications::validate_destination(
         conn,
@@ -118,10 +169,15 @@ pub async fn prepare_publication(
     if receipts.len() != plan.tasks().len() || receipts.is_empty() {
         return Err(ResultError::Invalid("every planned task needs an accepted receipt").into());
     }
-    let work = build_proposal(&plan, &receipts, job.id, baseline, store);
-    let prepared = tokio::time::timeout(Duration::from_secs(60), work)
-        .await
-        .map_err(|_| DurablePublicationError::Timeout)??;
+    let prepared = build_proposal(
+        &plan,
+        &receipts,
+        job.id,
+        baseline,
+        store,
+        config.operation_timeout,
+    )
+    .await?;
     let expected = &prepared.expected;
     let evidence = Evidence {
         catalog_connection_id,
@@ -201,8 +257,15 @@ pub async fn publication_connection(
 /// A crash before recording it leaves an authorized request unresolved. No caller
 /// may infer that a restored `Committing` job was never sent.
 ///
+/// The request is authenticated (including any OAuth2 token fetch) before send
+/// authorization. A failure there leaves the job `Committing` and unauthorized,
+/// so a later call may publish the same intent. Once authorized, only a
+/// connection failure proves the request never left; that ends the job `Failed`
+/// (or its pending/cancellation disposition), because authorization is one-shot.
+///
 /// # Errors
-/// Authorization/read/database errors preserve the existing durable intent and barrier.
+/// Authorization/read/database errors, and catalog errors before authorization,
+/// preserve the existing durable intent and barrier.
 pub async fn publish(
     conn: &mut PgConnection,
     job: &Job,
@@ -233,6 +296,7 @@ pub async fn publish(
             conn,
             current.id,
             current.state_revision,
+            epoch,
             JobState::ReplanRequired,
             "PublicationBaselineChanged",
             false,
@@ -273,6 +337,7 @@ pub async fn publish(
             }
         },
         Err(PublicationError::NotAuthorized(error)) => return Err(error.into()),
+        Err(PublicationError::NotPrepared(error)) => return Err(error.into()),
         Err(PublicationError::NotSent { .. }) => (JobState::Failed, "CommitNotSent", true),
     };
     let current = jobs::job(conn, job.organization_id, job.id).await?;
@@ -282,7 +347,16 @@ pub async fn publish(
     if current.state == to {
         return Ok(current);
     }
-    Ok(publications::resolve(conn, current.id, current.state_revision, to, reason, proof).await?)
+    Ok(publications::resolve(
+        conn,
+        current.id,
+        current.state_revision,
+        epoch,
+        to,
+        reason,
+        proof,
+    )
+    .await?)
 }
 
 /// Reconciles a restored authorized job through retained snapshot evidence only.
@@ -291,12 +365,15 @@ pub async fn publish(
 /// was requested. Missing/mismatched evidence remains unknown with its barrier;
 /// catalog failure leaves state and outputs intact for another read-only attempt.
 /// An intent with no authorization can still be sent through [`publish`] or cancelled.
+/// Every durable write is fenced by `epoch`.
 ///
 /// # Errors
-/// Returns catalog, intent, or revision errors without inventing non-publication proof.
+/// Returns catalog, intent, leadership, or revision errors without inventing
+/// non-publication proof.
 pub async fn reconcile(
     conn: &mut PgConnection,
     job: &Job,
+    epoch: i64,
     catalog: &CatalogConnection,
 ) -> Result<Job, DurablePublicationError> {
     let current = jobs::job(conn, job.organization_id, job.id).await?;
@@ -308,6 +385,7 @@ pub async fn reconcile(
             conn,
             current.id,
             current.state_revision,
+            epoch,
             JobState::Cancelled,
             "CancellationRequested",
             false,
@@ -317,11 +395,7 @@ pub async fn reconcile(
     if current.state.is_terminal() || current.publication_started_at.is_none() {
         return Ok(current);
     }
-    let prepared = load_prepared(conn, job.id).await?;
-    let evidence = catalog
-        .snapshot_evidence(prepared.request.table(), &prepared.expected)
-        .await?;
-    let (state, reason) = match evidence {
+    let (state, reason) = match observe(conn, job.id, catalog).await? {
         SnapshotEvidence::Published { .. } => (JobState::Succeeded, "SnapshotEvidenceMatched"),
         SnapshotEvidence::Absent => (JobState::CommitOutcomeUnknown, "SnapshotEvidenceAbsent"),
         SnapshotEvidence::Mismatch(_) => {
@@ -335,11 +409,92 @@ pub async fn reconcile(
         conn,
         current.id,
         current.state_revision,
+        epoch,
         state,
         reason,
         false,
     )
     .await?)
+}
+
+/// Operator resolution of an unknown outcome after external investigation.
+///
+/// The operator attests that no authorized request for this intent published
+/// and that none can still publish, for example from catalog request logs.
+/// Retained evidence is rechecked first, read-only: a matching snapshot always
+/// wins and records `Succeeded`, whatever was attested. Otherwise the job takes
+/// its cancellation or pending disposition, or `Failed`, and the transition
+/// event records `actor` and `OperatorAttestedNonPublication`. Catalog failure
+/// changes nothing. Nothing is ever resent.
+///
+/// # Errors
+/// Rejects a job that is not `CommitOutcomeUnknown`, a changed revision,
+/// lost leadership, or unavailable catalog evidence, without changing state.
+pub async fn attest_non_publication(
+    conn: &mut PgConnection,
+    job: &Job,
+    epoch: i64,
+    catalog: &CatalogConnection,
+    actor: bergsmith_common::ids::PrincipalId,
+) -> Result<Job, DurablePublicationError> {
+    let current = jobs::job(conn, job.organization_id, job.id).await?;
+    if current.state != JobState::CommitOutcomeUnknown
+        || current.state_revision != job.state_revision
+    {
+        return Err(PersistenceError::JobNotInState {
+            job: current.id,
+            state: current.state,
+            operation: "attest non-publication at the inspected revision",
+        }
+        .into());
+    }
+    if let SnapshotEvidence::Published { .. } = observe(conn, job.id, catalog).await? {
+        return Ok(publications::resolve(
+            conn,
+            current.id,
+            current.state_revision,
+            epoch,
+            JobState::Succeeded,
+            "SnapshotEvidenceMatched",
+            false,
+        )
+        .await?);
+    }
+    Ok(
+        publications::attest_non_publication(
+            conn,
+            current.id,
+            current.state_revision,
+            epoch,
+            actor,
+        )
+        .await?,
+    )
+}
+
+/// Reads retained snapshot evidence for a job's immutable intent.
+async fn observe(
+    conn: &mut PgConnection,
+    job: JobId,
+    catalog: &CatalogConnection,
+) -> Result<SnapshotEvidence, DurablePublicationError> {
+    let prepared = load_prepared(conn, job).await?;
+    Ok(catalog
+        .snapshot_evidence(prepared.request.table(), &prepared.expected)
+        .await?)
+}
+
+/// Runs one storage step under its own deadline.
+async fn bounded<T, E>(
+    limit: Duration,
+    step: impl Future<Output = Result<T, E>>,
+) -> Result<T, DurablePublicationError>
+where
+    DurablePublicationError: From<E>,
+{
+    Ok(tokio::time::timeout(limit, step)
+        .await
+        .map_err(|_| DurablePublicationError::Timeout)??)
 }
 
 async fn build_proposal(
@@ -348,6 +503,7 @@ async fn build_proposal(
     job_id: JobId,
     baseline: &Baseline,
     store: &ObjectStore,
+    limit: Duration,
 ) -> Result<PreparedCommit, DurablePublicationError> {
     let mut added = Vec::new();
     for (accepted, task) in receipts.iter().zip(plan.tasks()) {
@@ -357,7 +513,11 @@ async fn build_proposal(
             .map_err(ResultError::from)?
             .attempt_output_prefix(job_id, accepted.attempt_id);
         added.extend(
-            results::verify(&artifact, &receipt, &prefix, store, baseline.metadata()).await?,
+            bounded(
+                limit,
+                results::verify(&artifact, &receipt, &prefix, store, baseline.metadata()),
+            )
+            .await?,
         );
     }
     let selected: BTreeSet<_> = plan
@@ -373,15 +533,12 @@ async fn build_proposal(
         .metadata()
         .snapshot_by_id(plan.baseline().snapshot_id())
         .ok_or(DurablePublicationError::InvalidIntent(job_id))?;
-    let bytes = store
-        .file_io()
-        .new_input(snapshot.manifest_list())?
-        .read()
-        .await?;
+    let input = store.file_io().new_input(snapshot.manifest_list())?;
+    let bytes = bounded(limit, input.read()).await?;
     let list = ManifestList::parse_with_version(&bytes, FormatVersion::V2)?;
     let mut removed = Vec::new();
     for manifest in list.entries() {
-        let loaded = manifest.load_manifest(store.file_io()).await?;
+        let loaded = bounded(limit, manifest.load_manifest(store.file_io())).await?;
         for entry in loaded.entries().iter().filter(|e| e.is_alive()) {
             let file = entry.data_file();
             if file.content_type() == DataContentType::Data && selected.contains(file.file_path()) {
@@ -392,13 +549,12 @@ async fn build_proposal(
     if removed.len() != selected.len() {
         return Err(DurablePublicationError::InvalidIntent(job_id));
     }
-    Ok(RewriteProposal {
+    let proposal = RewriteProposal {
         job_id,
         publication_id: PublicationId::generate(),
         snapshot_id: new_snapshot_id(baseline.metadata()),
         removed,
         added,
-    }
-    .prepare(baseline)
-    .await?)
+    };
+    bounded(limit, proposal.prepare(baseline)).await
 }

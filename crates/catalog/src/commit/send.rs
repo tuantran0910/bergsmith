@@ -171,24 +171,40 @@ impl CommitOutcome {
     }
 }
 
+/// A commit whose authentication is already applied. Nothing has been sent.
+///
+/// Building one fetches any OAuth2 token, so a publisher can prepare it before
+/// durably authorizing the send: token or URL failures then leave no authorized
+/// request behind. Sending consumes it, so it is sent at most once.
+pub struct AuthenticatedCommit<'a> {
+    connection: &'a CatalogConnection,
+    builder: reqwest::RequestBuilder,
+}
+
+impl fmt::Debug for AuthenticatedCommit<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The builder carries the bearer token; never print it.
+        f.debug_struct("AuthenticatedCommit")
+            .finish_non_exhaustive()
+    }
+}
+
 impl CatalogConnection {
-    /// Sends `request` once, with `idempotency_key` if given.
-    ///
-    /// `Ok` means the request may have reached the catalog; the outcome
-    /// says what is known. `Err` means it was not sent.
+    /// Builds an authenticated commit for `request`, with `idempotency_key`
+    /// if given, without sending it.
     ///
     /// # Errors
     ///
     /// [`CatalogError::IdempotencyUnsupported`] when a key is given but the
     /// catalog does not advertise idempotency support,
+    /// [`CatalogError::InvalidUrl`] for an unusable table name, and
     /// [`CatalogError::Authentication`] or [`CatalogError::Transport`] when
-    /// no OAuth2 token could be fetched, and [`CatalogError::Transport`] when
-    /// no connection to the catalog could be established.
-    pub async fn commit(
+    /// no OAuth2 token could be fetched. Nothing has been sent in any case.
+    pub async fn authenticate_commit(
         &self,
         request: &CommitRequest,
         idempotency_key: Option<IdempotencyKey>,
-    ) -> Result<CommitOutcome, CatalogError> {
+    ) -> Result<AuthenticatedCommit<'_>, CatalogError> {
         if idempotency_key.is_some() && self.capabilities().idempotency_key_lifetime.is_none() {
             return Err(CatalogError::IdempotencyUnsupported);
         }
@@ -203,7 +219,46 @@ impl CatalogConnection {
         if let Some(key) = idempotency_key {
             builder = builder.header(IDEMPOTENCY_KEY, key.to_string());
         }
-        let response = match builder.send().await {
+        Ok(AuthenticatedCommit {
+            connection: self,
+            builder,
+        })
+    }
+
+    /// Sends `request` once, with `idempotency_key` if given.
+    ///
+    /// `Ok` means the request may have reached the catalog; the outcome
+    /// says what is known. `Err` means it was not sent.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`authenticate_commit`](Self::authenticate_commit) and
+    /// [`AuthenticatedCommit::send`].
+    pub async fn commit(
+        &self,
+        request: &CommitRequest,
+        idempotency_key: Option<IdempotencyKey>,
+    ) -> Result<CommitOutcome, CatalogError> {
+        self.authenticate_commit(request, idempotency_key)
+            .await?
+            .send()
+            .await
+    }
+}
+
+impl AuthenticatedCommit<'_> {
+    /// Sends the commit once.
+    ///
+    /// `Ok` means the request may have reached the catalog; the outcome
+    /// says what is known. An authentication rejection discards the cached
+    /// OAuth2 token so that a later request fetches a fresh one.
+    ///
+    /// # Errors
+    ///
+    /// [`CatalogError::Transport`] when no connection to the catalog could
+    /// be established, so the request was not sent.
+    pub async fn send(self) -> Result<CommitOutcome, CatalogError> {
+        let response = match self.builder.send().await {
             Ok(response) => response,
             Err(source) if source.is_connect() => {
                 return Err(CatalogError::Transport {
@@ -217,6 +272,9 @@ impl CatalogConnection {
             Err(source) => return Ok(CommitOutcome::Unknown(UnknownOutcome::Transport(source))),
         };
         let status = response.status().as_u16();
+        if matches!(status, 401 | 419) {
+            self.connection.client().invalidate_token().await;
+        }
         // The status is already conclusive; an unreadable body only loses detail.
         let body = response.bytes().await.ok();
         Ok(CommitOutcome::from_response(status, body.as_deref()))

@@ -161,7 +161,7 @@ async fn aliases_share_table_ownership_until_the_owner_is_terminal(pool: PgPool)
             .await
             .unwrap()
     );
-    scheduler::stop(
+    stop_current(
         &mut conn,
         first,
         epoch,
@@ -329,7 +329,7 @@ async fn cancellation_fences_unfinished_work_and_preserves_accepted_receipts(poo
     )
     .await
     .unwrap();
-    scheduler::stop(
+    stop_current(
         &mut conn,
         job,
         epoch,
@@ -360,7 +360,7 @@ async fn cancellation_fences_unfinished_work_and_preserves_accepted_receipts(poo
             .state,
         bergsmith_common::task::AttemptState::Accepted
     );
-    scheduler::stop(&mut conn, job, epoch, JobState::Cancelled, "repeat")
+    stop_current(&mut conn, job, epoch, JobState::Cancelled, "repeat")
         .await
         .unwrap();
 }
@@ -449,7 +449,7 @@ async fn execution_ownership_and_publication_creation_cannot_bypass_each_other(p
         error,
         bergsmith_persistence::PersistenceError::AdmissionUnavailable
     ));
-    scheduler::stop(&mut conn, owner, epoch, JobState::Failed, "Stopped")
+    stop_current(&mut conn, owner, epoch, JobState::Failed, "Stopped")
         .await
         .unwrap();
     let (next, _) = configured(&mut conn, &tenant, 1).await;
@@ -463,7 +463,7 @@ async fn execution_ownership_and_publication_creation_cannot_bypass_each_other(p
         .await
         .unwrap()
     );
-    scheduler::stop(&mut conn, publication, epoch, JobState::Failed, "Stopped")
+    stop_current(&mut conn, publication, epoch, JobState::Failed, "Stopped")
         .await
         .unwrap();
     assert!(
@@ -527,7 +527,7 @@ async fn global_tenant_and_pool_job_budgets_each_apply_independently(pool: PgPoo
                 .await
                 .unwrap()
         );
-        scheduler::stop(&mut conn, first, epoch, JobState::Failed, "Stopped")
+        stop_current(&mut conn, first, epoch, JobState::Failed, "Stopped")
             .await
             .unwrap();
     }
@@ -569,8 +569,160 @@ async fn memory_cpu_and_attempt_budgets_each_apply_independently(pool: PgPool) {
             grant(&mut conn, tasks[1], epoch, limits).await.unwrap_err(),
             bergsmith_persistence::PersistenceError::AdmissionUnavailable
         ));
-        scheduler::stop(&mut conn, job, epoch, JobState::Failed, "Stopped")
+        stop_current(&mut conn, job, epoch, JobState::Failed, "Stopped")
             .await
             .unwrap();
     }
+}
+
+/// Stops a job at whatever revision it currently has.
+async fn stop_current(
+    conn: &mut PgConnection,
+    job: JobId,
+    epoch: i64,
+    state: JobState,
+    reason: &str,
+) -> Result<bool, bergsmith_persistence::PersistenceError> {
+    let revision: i64 = sqlx::query_scalar("SELECT state_revision FROM jobs WHERE id=$1")
+        .bind(job.as_uuid())
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+    scheduler::stop(conn, job, revision, epoch, state, reason).await
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_stop_decided_on_an_older_revision_leaves_the_moved_job_unchanged(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let (job, _) = configured(&mut conn, &tenant, 1).await;
+    let epoch = support::leader(&mut conn).await;
+    let validated = jobs::job(&mut conn, tenant.organization, job)
+        .await
+        .unwrap();
+    // Cancellation wins while external validation runs.
+    cancellation::request_cancellation(
+        &mut conn,
+        &cancellation::CancelJob {
+            job_id: job,
+            requested_by: None,
+            reason: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        !scheduler::stop(
+            &mut conn,
+            job,
+            validated.state_revision,
+            epoch,
+            JobState::ReplanRequired,
+            "PlanningBaselineMismatch",
+        )
+        .await
+        .unwrap()
+    );
+    let current = jobs::job(&mut conn, tenant.organization, job)
+        .await
+        .unwrap();
+    assert_eq!(current.state, JobState::Cancelling);
+    assert!(
+        scheduler::stop(
+            &mut conn,
+            job,
+            current.state_revision,
+            epoch,
+            JobState::Cancelled,
+            "CancellationRequested",
+        )
+        .await
+        .unwrap()
+    );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn retry_timers_cover_every_job_whose_retries_reconciliation_releases(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let (job, tasks) = configured(&mut conn, &tenant, 1).await;
+    let epoch = support::leader(&mut conn).await;
+    sqlx::query("UPDATE tasks SET state='RetryWaiting',retry_not_before=clock_timestamp()-interval '1 second' WHERE id=$1")
+        .bind(tasks[0].as_uuid()).execute(&mut *conn).await.unwrap();
+    // The job is still Queued: reconciliation would release this retry, so
+    // the timer listing must report it.
+    let timers = scheduler::retry_timers(&mut conn).await.unwrap();
+    assert_eq!(timers.len(), 1);
+    assert_eq!(timers[0].0, *tasks[0].as_uuid());
+    scheduler::reconcile_execution(&mut conn, job, epoch)
+        .await
+        .unwrap();
+    assert!(scheduler::retry_timers(&mut conn).await.unwrap().is_empty());
+}
+
+async fn need(
+    conn: &mut PgConnection,
+    organization: OrganizationId,
+    job: JobId,
+    limits: scheduler::AdmissionLimits,
+) -> scheduler::ValidationNeed {
+    let current = jobs::job(conn, organization, job).await.unwrap();
+    scheduler::validation_need(conn, &current, limits)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn validation_is_needed_only_to_admit_or_release_a_due_retry(pool: PgPool) {
+    use scheduler::ValidationNeed;
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let org = tenant.organization;
+    let (job, tasks) = configured(&mut conn, &tenant, 1).await;
+    let epoch = support::leader(&mut conn).await;
+    let limits = scheduler::AdmissionLimits::default();
+    let one = scheduler::AdmissionLimits { jobs: 1, ..limits };
+    assert_eq!(
+        need(&mut conn, org, job, one).await,
+        ValidationNeed::Admission
+    );
+    assert!(scheduler::admit(&mut conn, job, epoch, one).await.unwrap());
+    // Another job waits for a full global budget without being validated.
+    let (blocked, _) = configured(&mut conn, &tenant, 1).await;
+    assert_eq!(
+        need(&mut conn, org, blocked, one).await,
+        ValidationNeed::None
+    );
+    assert_eq!(need(&mut conn, org, job, one).await, ValidationNeed::None);
+    let poll = grant(&mut conn, tasks[0], epoch, limits).await.unwrap();
+    sqlx::query("UPDATE attempts SET granted_at=clock_timestamp()-interval '2 minutes',lease_expires_at=clock_timestamp()-interval '1 minute' WHERE id=$1")
+        .bind(poll.attempt_id.unwrap()).execute(&mut *conn).await.unwrap();
+    // Repair fences the expired attempt and schedules a future retry without
+    // releasing it.
+    scheduler::repair_attempts(&mut conn, job, epoch)
+        .await
+        .unwrap();
+    assert_eq!(
+        plans::task(&mut conn, tasks[0]).await.unwrap().state,
+        bergsmith_common::task::TaskState::RetryWaiting
+    );
+    assert_eq!(need(&mut conn, org, job, one).await, ValidationNeed::None);
+    sqlx::query(
+        "UPDATE tasks SET retry_not_before=clock_timestamp()-interval '1 second' WHERE id=$1",
+    )
+    .bind(tasks[0].as_uuid())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    scheduler::repair_attempts(&mut conn, job, epoch)
+        .await
+        .unwrap();
+    assert_eq!(
+        plans::task(&mut conn, tasks[0]).await.unwrap().state,
+        bergsmith_common::task::TaskState::RetryWaiting
+    );
+    assert_eq!(
+        need(&mut conn, org, job, one).await,
+        ValidationNeed::RetryRelease
+    );
 }

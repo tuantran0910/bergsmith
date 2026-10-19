@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 struct Checks {
     outcome: AtomicU8,
     recovered: AtomicUsize,
+    validations: AtomicUsize,
     started: tokio::sync::Notify,
     proceed: tokio::sync::Notify,
 }
@@ -22,6 +23,7 @@ impl SchedulingAccess for Checks {
         plan: &bergsmith_maintenance::PlanDocument,
     ) -> Result<Eligibility, Status> {
         assert!(!plan.tasks().is_empty());
+        self.validations.fetch_add(1, Ordering::AcqRel);
         match self.outcome.load(Ordering::Acquire) {
             1 => Ok(Eligibility::ReplanRequired("PlanningBaselineMismatch")),
             2 => Ok(Eligibility::PermanentFailure("PlannedSourceMissing")),
@@ -34,7 +36,7 @@ impl SchedulingAccess for Checks {
             _ => Ok(Eligibility::Valid),
         }
     }
-    async fn recover_publication(&self, _: &PgPool, _: &jobs::Job) -> Result<(), Status> {
+    async fn recover_publication(&self, _: &PgPool, _: &jobs::Job, _: i64) -> Result<(), Status> {
         self.recovered.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
@@ -212,7 +214,10 @@ async fn a_catalog_timeout_cannot_release_a_retry_or_create_replacement_executio
         .await
         .unwrap();
     checks.outcome.store(3, Ordering::Release);
-    assert!(scheduler.reconcile().await.is_err());
+    // A catalog failure for one job is isolated: the pass completes and keeps
+    // dispatch open for other work, but this job's retry stays unreleased.
+    scheduler.reconcile().await.unwrap();
+    assert!(scheduler.worker_service().ready_tasks().is_empty());
     assert_eq!(
         scheduling_ledger::retry_timers(&mut pool.acquire().await.unwrap())
             .await
@@ -246,6 +251,18 @@ async fn a_retry_baseline_conflict_fences_the_job_without_reusing_accepted_outpu
     scheduler.reconcile().await.unwrap();
     let grant = granted(run.pull(Uuid::now_v7()).await);
     let receipt = run.execute(&grant).await;
+    // The lease expires before the receipt is reported; the retry it creates
+    // is released only after validation, which finds the baseline changed.
+    sqlx::query("UPDATE attempts SET granted_at=clock_timestamp()-interval '2 minutes',lease_expires_at=clock_timestamp()-interval '1 minute' WHERE id=$1")
+        .bind(Uuid::parse_str(&grant.attempt_id).unwrap()).execute(&pool).await.unwrap();
+    scheduler.reconcile().await.unwrap();
+    sqlx::query(
+        "UPDATE tasks SET retry_not_before=clock_timestamp()-interval '1 second' WHERE id=$1",
+    )
+    .bind(run.offer.task.as_uuid())
+    .execute(&pool)
+    .await
+    .unwrap();
     checks.outcome.store(1, Ordering::Release);
     scheduler.reconcile().await.unwrap();
     assert_eq!(
@@ -443,24 +460,7 @@ async fn bounded_refill_rotates_across_native_tasks_and_restarts_deterministical
         .unwrap()
         .unwrap();
     assert!(plan.tasks().len() > 1);
-    let root = Location::parse(run.access.fixture.metadata().location()).unwrap();
-    let mut offers = Vec::new();
-    for task in plan.tasks() {
-        let artifact = plan.artifact_of(task).unwrap();
-        let location = root.child(&format!("{}.pb", task.task_id())).unwrap();
-        run.access
-            .store
-            .write(&location, artifact.encode_to_vec().into())
-            .await
-            .unwrap();
-        let mut offer = run.offer.clone();
-        offer.task = task.task_id();
-        offer.artifact = wire::ArtifactRef {
-            uri: location.to_string(),
-            sha256: artifact_digest(&artifact).as_bytes().to_vec(),
-        };
-        offers.push(offer);
-    }
+    let offers = task_offers(&run, &plan).await;
     let access = Arc::new(CountedAccess {
         inner: run.access.clone(),
         calls: AtomicUsize::new(0),
@@ -498,6 +498,43 @@ async fn bounded_refill_rotates_across_native_tasks_and_restarts_deterministical
         restarted.worker_service().ready_tasks(),
         vec![first.unwrap()]
     );
+}
+
+async fn multi_task_run(pool: &PgPool) -> (Run, bergsmith_maintenance::PlanDocument) {
+    let fixture = spike::original_spec_with_a_different_default()
+        .unwrap()
+        .generate()
+        .await
+        .unwrap();
+    let run = setup_with_fixture(pool, fixture).await;
+    let plan = planning::load_plan(&mut pool.acquire().await.unwrap(), run.job)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(plan.tasks().len() > 1);
+    (run, plan)
+}
+
+async fn task_offers(run: &Run, plan: &bergsmith_maintenance::PlanDocument) -> Vec<TaskOffer> {
+    let root = Location::parse(run.access.fixture.metadata().location()).unwrap();
+    let mut offers = Vec::new();
+    for task in plan.tasks() {
+        let artifact = plan.artifact_of(task).unwrap();
+        let location = root.child(&format!("{}.pb", task.task_id())).unwrap();
+        run.access
+            .store
+            .write(&location, artifact.encode_to_vec().into())
+            .await
+            .unwrap();
+        let mut offer = run.offer.clone();
+        offer.task = task.task_id();
+        offer.artifact = wire::ArtifactRef {
+            uri: location.to_string(),
+            sha256: artifact_digest(&artifact).as_bytes().to_vec(),
+        };
+        offers.push(offer);
+    }
+    offers
 }
 
 struct CountedAccess {
@@ -683,14 +720,15 @@ async fn missing_planning_metadata_requires_a_new_plan_instead_of_a_retry(pool: 
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
 async fn healthy_periodic_validation_does_not_close_previously_validated_dispatch(pool: PgPool) {
-    let mut run = setup(&pool).await;
+    let (mut run, plan) = multi_task_run(&pool).await;
+    let offers = task_offers(&run, &plan).await;
     let checks = Arc::new(Checks::default());
     let scheduler = scheduler(&run, checks.clone(), SchedulerConfig::default());
-    scheduler
-        .register(run.job, std::slice::from_ref(&run.offer))
-        .await
-        .unwrap();
+    scheduler.register(run.job, &offers).await.unwrap();
     scheduler.reconcile().await.unwrap();
+    // A due retry on one task makes the next pass validate the job again.
+    sqlx::query("UPDATE tasks SET state='RetryWaiting',retry_not_before=clock_timestamp()-interval '1 second' WHERE id=$1")
+        .bind(offers[0].task.as_uuid()).execute(&pool).await.unwrap();
     checks.outcome.store(4, Ordering::Release);
     let (pass, poll) = tokio::join!(scheduler.reconcile(), async {
         checks.started.notified().await;
@@ -709,6 +747,61 @@ async fn healthy_periodic_validation_does_not_close_previously_validated_dispatc
     });
     pass.unwrap();
     assert_eq!(granted(poll.unwrap().into_inner()).generation, 1);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn an_admitted_job_is_not_revalidated_on_every_pass(pool: PgPool) {
+    let run = setup(&pool).await;
+    let checks = Arc::new(Checks::default());
+    let scheduler = scheduler(&run, checks.clone(), SchedulerConfig::default());
+    scheduler
+        .register(run.job, std::slice::from_ref(&run.offer))
+        .await
+        .unwrap();
+    for _ in 0..5 {
+        scheduler.reconcile().await.unwrap();
+    }
+    // Admission validated the plan once; periodic passes only repair durable
+    // state until a retry becomes due.
+    assert_eq!(checks.validations.load(Ordering::Acquire), 1);
+    assert_eq!(
+        scheduler.worker_service().ready_tasks(),
+        vec![run.offer.task]
+    );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn one_jobs_validation_failure_or_timeout_keeps_dispatch_open(pool: PgPool) {
+    let (mut run, plan) = multi_task_run(&pool).await;
+    let offers = task_offers(&run, &plan).await;
+    let checks = Arc::new(Checks::default());
+    let scheduler = scheduler(
+        &run,
+        checks.clone(),
+        SchedulerConfig {
+            validation_timeout: Duration::from_millis(1),
+            ..SchedulerConfig::default()
+        },
+    );
+    scheduler.register(run.job, &offers).await.unwrap();
+    scheduler.reconcile().await.unwrap();
+    sqlx::query("UPDATE tasks SET state='RetryWaiting',retry_not_before=clock_timestamp()-interval '1 second' WHERE id=$1")
+        .bind(offers[0].task.as_uuid()).execute(&pool).await.unwrap();
+    for outcome in [3, 4] {
+        // 3: catalog unavailable; 4: validation never finishes within its deadline.
+        checks.outcome.store(outcome, Ordering::Release);
+        scheduler.reconcile().await.unwrap();
+        assert_eq!(
+            bergsmith_persistence::plans::task(&mut pool.acquire().await.unwrap(), offers[0].task)
+                .await
+                .unwrap()
+                .state,
+            bergsmith_common::task::TaskState::RetryWaiting
+        );
+    }
+    // Dispatch stayed open for the job's other pending tasks.
+    let grant = granted(run.pull(Uuid::now_v7()).await);
+    assert_ne!(grant.task_id, offers[0].task.to_string());
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
@@ -735,9 +828,14 @@ async fn exact_registration_replays_survive_terminal_jobs_and_unreadable_artifac
         .fetch_one(&mut *conn)
         .await
         .unwrap();
+    let revision = jobs::job(&mut conn, run.tenant.organization, run.job)
+        .await
+        .unwrap()
+        .state_revision;
     scheduling_ledger::stop(
         &mut conn,
         run.job,
+        revision,
         epoch,
         JobState::Failed,
         "StoppedAfterAcceptance",

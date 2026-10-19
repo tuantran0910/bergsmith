@@ -291,28 +291,12 @@ pub async fn admit(
     }
     guard(&mut tx).await?;
     leadership::ensure_leadership(&mut tx, epoch).await?;
-    if sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM execution_admissions WHERE job_id=$1 AND NOT released)",
-    )
-    .bind(job_id.as_uuid())
-    .fetch_one(&mut *tx)
-    .await?
-    {
+    if is_admitted(&mut tx, job_id).await? {
         return Ok(true);
     }
-    let pool: String = sqlx::query_scalar("SELECT d.pool FROM dispatch_specs d JOIN tasks t ON t.id=d.task_id WHERE t.job_id=$1 LIMIT 1")
-        .bind(job_id.as_uuid()).fetch_optional(&mut *tx).await?.ok_or_else(|| invalid("missing_dispatch_configuration"))?;
-    let blocked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM execution_admissions WHERE table_identity_id=$1 AND NOT released) OR EXISTS(SELECT 1 FROM publication_barriers WHERE table_identity_id=$1 AND job_id<>$2) OR EXISTS(SELECT 1 FROM jobs WHERE table_identity_id=$1 AND id<>$2 AND state IN ('Running','ReadyToCommit','Committing','CommitOutcomeUnknown','Cancelling'))")
-        .bind(job.table_id.as_uuid()).bind(job_id.as_uuid()).fetch_one(&mut *tx).await?;
-    let counts: (i64,i64,i64) = sqlx::query_as("SELECT count(*), count(*) FILTER (WHERE j.organization_id=$1), count(*) FILTER (WHERE a.pool=$2) FROM execution_admissions a JOIN jobs j ON j.id=a.job_id WHERE NOT a.released")
-        .bind(job.organization_id.as_uuid()).bind(&pool).fetch_one(&mut *tx).await?;
-    if blocked
-        || counts.0 >= limits.jobs
-        || counts.1 >= limits.organization_jobs
-        || counts.2 >= limits.pool_jobs
-    {
+    let Some(pool) = admission_open(&mut tx, &job, limits).await? else {
         return Ok(false);
-    }
+    };
     sqlx::query(
         "INSERT INTO execution_admissions (job_id,table_identity_id,pool) VALUES ($1,$2,$3)",
     )
@@ -324,6 +308,80 @@ pub async fn admit(
     leadership::ensure_leadership(&mut tx, epoch).await?;
     tx.commit().await?;
     Ok(true)
+}
+
+async fn is_admitted(conn: &mut PgConnection, job_id: JobId) -> Result<bool, PersistenceError> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM execution_admissions WHERE job_id=$1 AND NOT released)",
+    )
+    .bind(job_id.as_uuid())
+    .fetch_one(conn)
+    .await?)
+}
+
+/// The job's pool when its table and every job budget have room, else `None`.
+async fn admission_open(
+    conn: &mut PgConnection,
+    job: &jobs::Job,
+    limits: AdmissionLimits,
+) -> Result<Option<String>, PersistenceError> {
+    let pool: String = sqlx::query_scalar("SELECT d.pool FROM dispatch_specs d JOIN tasks t ON t.id=d.task_id WHERE t.job_id=$1 LIMIT 1")
+        .bind(job.id.as_uuid()).fetch_optional(&mut *conn).await?.ok_or_else(|| invalid("missing_dispatch_configuration"))?;
+    let blocked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM execution_admissions WHERE table_identity_id=$1 AND NOT released) OR EXISTS(SELECT 1 FROM publication_barriers WHERE table_identity_id=$1 AND job_id<>$2) OR EXISTS(SELECT 1 FROM jobs WHERE table_identity_id=$1 AND id<>$2 AND state IN ('Running','ReadyToCommit','Committing','CommitOutcomeUnknown','Cancelling'))")
+        .bind(job.table_id.as_uuid()).bind(job.id.as_uuid()).fetch_one(&mut *conn).await?;
+    let counts: (i64,i64,i64) = sqlx::query_as("SELECT count(*), count(*) FILTER (WHERE j.organization_id=$1), count(*) FILTER (WHERE a.pool=$2) FROM execution_admissions a JOIN jobs j ON j.id=a.job_id WHERE NOT a.released")
+        .bind(job.organization_id.as_uuid()).bind(&pool).fetch_one(&mut *conn).await?;
+    Ok((!blocked
+        && counts.0 < limits.jobs
+        && counts.1 < limits.organization_jobs
+        && counts.2 < limits.pool_jobs)
+        .then_some(pool))
+}
+
+/// What a nonterminal job's next reconciliation step needs from external validation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ValidationNeed {
+    /// Nothing would be admitted or released; skip catalog/storage validation.
+    None,
+    /// The job is unadmitted and its table and budgets currently have room.
+    Admission,
+    /// The admitted job has retries whose durable deadline has passed.
+    RetryRelease,
+}
+
+/// Decides, without locks or writes, whether reconciliation must validate `job`,
+/// a recently read snapshot.
+///
+/// Validation precedes every admission and retry release; an admitted job with
+/// no due retries keeps its earlier validation. A job blocked by its table or
+/// budgets is not validated until it could actually be admitted. [`admit`] and
+/// [`reconcile_execution`] recheck everything inside their transactions.
+///
+/// # Errors
+/// Returns database errors or a missing dispatch configuration.
+pub async fn validation_need(
+    conn: &mut PgConnection,
+    job: &jobs::Job,
+    limits: AdmissionLimits,
+) -> Result<ValidationNeed, PersistenceError> {
+    let job_id = job.id;
+    if !matches!(job.state, JobState::Queued | JobState::Running) || job.cancellation.is_some() {
+        return Ok(ValidationNeed::None);
+    }
+    if !is_admitted(conn, job_id).await? {
+        return Ok(if admission_open(conn, job, limits).await?.is_some() {
+            ValidationNeed::Admission
+        } else {
+            ValidationNeed::None
+        });
+    }
+    let due: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tasks WHERE job_id=$1 AND state='RetryWaiting' AND retry_not_before<=clock_timestamp())")
+        .bind(job_id.as_uuid()).fetch_one(conn).await?;
+    Ok(if due {
+        ValidationNeed::RetryRelease
+    } else {
+        ValidationNeed::None
+    })
 }
 
 /// Serializes publication-barrier creation with execution-table admission.
@@ -428,12 +486,15 @@ pub async fn ready_after(
 
 /// Returns persisted retry timers, including timers not due yet.
 ///
+/// Covers exactly the jobs whose retries [`reconcile_execution`] may release:
+/// dispatchable (`Queued` or `Running`) jobs without a cancellation request.
+///
 /// # Errors
 /// Returns database errors.
 pub async fn retry_timers(
     conn: &mut PgConnection,
 ) -> Result<Vec<(Uuid, DateTime<Utc>)>, PersistenceError> {
-    Ok(sqlx::query_as("SELECT t.id,t.retry_not_before FROM tasks t JOIN jobs j ON j.id=t.job_id WHERE t.state='RetryWaiting' AND j.state='Running' AND j.cancellation_requested_at IS NULL ORDER BY t.retry_not_before,t.id").fetch_all(conn).await?)
+    Ok(sqlx::query_as("SELECT t.id,t.retry_not_before FROM tasks t JOIN jobs j ON j.id=t.job_id WHERE t.state='RetryWaiting' AND j.state IN ('Queued','Running') AND j.cancellation_requested_at IS NULL ORDER BY t.retry_not_before,t.id").fetch_all(conn).await?)
 }
 
 /// Chooses a retry deadline once, using a job's immutable policy and database time.
@@ -468,6 +529,32 @@ pub async fn reconcile_execution(
     conn: &mut PgConnection,
     job_id: JobId,
     epoch: i64,
+) -> Result<(), PersistenceError> {
+    repair(conn, job_id, epoch, true).await
+}
+
+/// Fences expired or session-lost attempts and schedules their durable retry
+/// deadlines, without releasing any retry. An exhausted budget fails the job.
+///
+/// This needs no external validation: it only ends execution that can no
+/// longer be authoritative. Releasing a due retry still requires
+/// [`reconcile_execution`] after validation.
+///
+/// # Errors
+/// Rejects lost leadership.
+pub async fn repair_attempts(
+    conn: &mut PgConnection,
+    job_id: JobId,
+    epoch: i64,
+) -> Result<(), PersistenceError> {
+    repair(conn, job_id, epoch, false).await
+}
+
+async fn repair(
+    conn: &mut PgConnection,
+    job_id: JobId,
+    epoch: i64,
+    release: bool,
 ) -> Result<(), PersistenceError> {
     let mut tx = conn.begin().await?;
     let job = jobs::lock_job(&mut tx, job_id).await?;
@@ -524,8 +611,10 @@ pub async fn reconcile_execution(
             return Ok(());
         }
     }
-    sqlx::query("UPDATE tasks SET state='Pending',retry_not_before=NULL,updated_at=now() WHERE job_id=$1 AND state='RetryWaiting' AND retry_not_before<=clock_timestamp()")
-        .bind(job_id.as_uuid()).execute(&mut *tx).await?;
+    if release {
+        sqlx::query("UPDATE tasks SET state='Pending',retry_not_before=NULL,updated_at=now() WHERE job_id=$1 AND state='RetryWaiting' AND retry_not_before<=clock_timestamp()")
+            .bind(job_id.as_uuid()).execute(&mut *tx).await?;
+    }
     leadership::ensure_leadership(&mut tx, epoch).await?;
     tx.commit().await?;
     Ok(())
@@ -554,25 +643,32 @@ async fn stop_locked(
 
 /// Finishes cancellation or validation failure without inventing publication proof.
 ///
+/// The stop applies only if the job is still at `expected_revision`, the
+/// revision whose state the caller's decision was based on. A job that moved
+/// meanwhile (for example to `ReadyToCommit`, `Committing`, or `Cancelling`)
+/// is left unchanged and `Ok(false)` is returned; a later pass decides again
+/// from its new state. Terminal jobs are never changed.
+///
 /// # Errors
 /// Rejects stale leadership and invalid lifecycle transitions; authorized publications stay unresolved.
 pub async fn stop(
     conn: &mut PgConnection,
     job_id: JobId,
+    expected_revision: i64,
     epoch: i64,
     state: JobState,
     reason: &str,
-) -> Result<(), PersistenceError> {
+) -> Result<bool, PersistenceError> {
     let mut tx = conn.begin().await?;
     let job = jobs::lock_job(&mut tx, job_id).await?;
     leadership::ensure_leadership(&mut tx, epoch).await?;
-    if job.state.is_terminal() {
-        return Ok(());
+    if job.state.is_terminal() || job.state_revision != expected_revision {
+        return Ok(false);
     }
     stop_locked(&mut tx, &job, state, reason).await?;
     leadership::ensure_leadership(&mut tx, epoch).await?;
     tx.commit().await?;
-    Ok(())
+    Ok(true)
 }
 
 /// Checks leadership inside a short transaction before external reconciliation work.

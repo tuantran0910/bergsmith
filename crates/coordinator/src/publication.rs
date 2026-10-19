@@ -30,8 +30,13 @@ pub enum PublicationError {
     /// requested first. Nothing was authorized or sent.
     #[error("the commit send was not authorized")]
     NotAuthorized(#[source] PersistenceError),
-    /// The send was authorized, but the request was never sent: no OAuth2
-    /// token could be fetched or no connection could be established.
+    /// The request could not be prepared, for example because no OAuth2
+    /// token could be fetched. Nothing was authorized or sent, so the same
+    /// intent may still be published later.
+    #[error("the commit request could not be prepared")]
+    NotPrepared(#[source] CatalogError),
+    /// The send was authorized, but the request was never sent: no
+    /// connection to the catalog could be established.
     #[error("the authorized commit for job {} was not sent", .job.id)]
     NotSent {
         /// The job with `publication_started_at` set.
@@ -44,14 +49,18 @@ pub enum PublicationError {
 
 /// Authorizes the first send of a job's commit, then sends it once.
 ///
-/// The authorization transaction commits before the request leaves, so no
-/// database transaction is held across the catalog call.
+/// Everything that can fail before the request leaves, other than connecting
+/// (intent binding, URL construction, and fetching an OAuth2 token), happens
+/// before authorization, so those failures leave the job unauthorized and
+/// retryable. The authorization transaction commits before the request
+/// leaves, so no database transaction is held across the catalog call.
 ///
 /// # Errors
 ///
 /// [`PublicationError::NotAuthorized`] with the error of [`authorize_send`],
-/// and [`PublicationError::NotSent`] when the authorized request could not
-/// be sent.
+/// [`PublicationError::NotPrepared`] when the request could not be
+/// authenticated, and [`PublicationError::NotSent`] when the authorized
+/// request could not be sent.
 pub async fn send_first_commit(
     conn: &mut PgConnection,
     authorization: SendAuthorization,
@@ -79,10 +88,14 @@ pub async fn send_first_commit(
             },
         ));
     }
+    let prepared = catalog
+        .authenticate_commit(request, idempotency_key)
+        .await
+        .map_err(PublicationError::NotPrepared)?;
     let job = authorize_send(conn, authorization)
         .await
         .map_err(PublicationError::NotAuthorized)?;
-    match catalog.commit(request, idempotency_key).await {
+    match prepared.send().await {
         Ok(outcome) => Ok(SentCommit { job, outcome }),
         Err(source) => Err(PublicationError::NotSent {
             job: Box::new(job),

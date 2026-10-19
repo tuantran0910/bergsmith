@@ -381,7 +381,7 @@ async fn crash_after_intent_before_authorization_can_still_cancel(pool: PgPool) 
     let mut run = setup(&mut conn, false).await;
     run.execute(&mut conn, true).await;
     run.prepare(&mut conn).await;
-    run.job = publication::reconcile(&mut conn, &run.job, &run.catalog)
+    run.job = publication::reconcile(&mut conn, &run.job, run.epoch, &run.catalog)
         .await
         .unwrap();
     assert_eq!(run.job.state, JobState::Committing);
@@ -394,7 +394,7 @@ async fn crash_after_intent_before_authorization_can_still_cancel(pool: PgPool) 
     );
     let pending = publications::recoverable_jobs(&mut conn).await.unwrap();
     assert_eq!(pending[0].state, JobState::Cancelling);
-    run.job = publication::reconcile(&mut conn, &pending[0], &run.catalog)
+    run.job = publication::reconcile(&mut conn, &pending[0], run.epoch, &run.catalog)
         .await
         .unwrap();
     assert_eq!(run.job.state, JobState::Cancelled);
@@ -421,7 +421,7 @@ async fn crash_after_authorization_retains_barrier_until_matching_evidence(pool:
     let restored = publications::recoverable_jobs(&mut conn).await.unwrap();
     assert_eq!(restored.len(), 1);
     assert_eq!(restored[0].id, run.job.id);
-    run.job = publication::reconcile(&mut conn, &run.job, &run.catalog)
+    run.job = publication::reconcile(&mut conn, &run.job, run.epoch, &run.catalog)
         .await
         .unwrap();
     assert_eq!(run.job.state, JobState::CommitOutcomeUnknown);
@@ -434,14 +434,21 @@ async fn crash_after_authorization_retains_barrier_until_matching_evidence(pool:
             .disposition,
         publications::OutputDisposition::PublicationUnresolved
     );
-    publications::pend_disposition(&mut conn, run.job.id, JobState::Failed, "ExecutionFailed")
-        .await
-        .unwrap();
+    publications::pend_disposition(
+        &mut conn,
+        run.job.id,
+        run.epoch,
+        JobState::Failed,
+        "ExecutionFailed",
+    )
+    .await
+    .unwrap();
     assert!(
         publications::resolve(
             &mut conn,
             run.job.id,
             run.job.state_revision,
+            run.epoch,
             JobState::Failed,
             "Unproven",
             false
@@ -450,7 +457,7 @@ async fn crash_after_authorization_retains_barrier_until_matching_evidence(pool:
         .is_err()
     );
     run.expose_publication(&mut conn).await;
-    run.job = publication::reconcile(&mut conn, &run.job, &run.catalog)
+    run.job = publication::reconcile(&mut conn, &run.job, run.epoch, &run.catalog)
         .await
         .unwrap();
     assert_eq!(run.job.state, JobState::Succeeded);
@@ -476,7 +483,7 @@ async fn unknown_response_is_not_replayed_and_missing_history_does_not_fail(pool
         .unwrap();
     assert_eq!(run.job.state, JobState::CommitOutcomeUnknown);
     for _ in 0..2 {
-        run.job = publication::reconcile(&mut conn, &run.job, &run.catalog)
+        run.job = publication::reconcile(&mut conn, &run.job, run.epoch, &run.catalog)
             .await
             .unwrap();
     }
@@ -495,7 +502,7 @@ async fn unknown_response_is_not_replayed_and_missing_history_does_not_fail(pool
         .create_async()
         .await;
     assert!(
-        publication::reconcile(&mut conn, &run.job, &run.catalog)
+        publication::reconcile(&mut conn, &run.job, run.epoch, &run.catalog)
             .await
             .is_err()
     );
@@ -541,7 +548,7 @@ async fn zero_output_receipt_still_publishes_source_removal(pool: PgPool) {
     run.prepare(&mut conn).await;
     run.authorize(&mut conn).await;
     run.expose_publication(&mut conn).await;
-    run.job = publication::reconcile(&mut conn, &run.job, &run.catalog)
+    run.job = publication::reconcile(&mut conn, &run.job, run.epoch, &run.catalog)
         .await
         .unwrap();
     assert_eq!(run.job.state, JobState::Succeeded);
@@ -857,7 +864,7 @@ async fn mismatched_retained_snapshot_never_resolves_publication(pool: PgPool) {
         )
         .create_async()
         .await;
-    run.job = publication::reconcile(&mut conn, &run.job, &run.catalog)
+    run.job = publication::reconcile(&mut conn, &run.job, run.epoch, &run.catalog)
         .await
         .unwrap();
     assert_eq!(run.job.state, JobState::CommitOutcomeUnknown);
@@ -929,4 +936,417 @@ async fn scheduler_startup_recovers_native_publication_evidence_without_resendin
     assert_eq!(barriers, 0);
     assert!(scheduler.worker_service().ready_tasks().is_empty());
     never_send.assert_async().await;
+}
+
+/// A second connection to the run's mock catalog, optionally with OAuth2.
+async fn reconnect(run: &mut Run, auth: bergsmith_catalog::Auth) -> CatalogConnection {
+    let config = run
+        .server
+        .mock("GET", "/v1/config")
+        .with_body(r#"{"defaults":{},"overrides":{}}"#)
+        .create_async()
+        .await;
+    let mut settings = ConnectionConfig::new(url::Url::parse(&run.server.url()).unwrap());
+    settings.auth = auth;
+    let catalog = CatalogConnection::connect(&settings).await.unwrap();
+    config.assert_async().await;
+    catalog
+}
+
+fn recovery_scheduler(
+    pool: &PgPool,
+    run: &Run,
+    catalog: CatalogConnection,
+    config: bergsmith_coordinator::scheduling::SchedulerConfig,
+) -> bergsmith_coordinator::scheduling::Scheduler {
+    use bergsmith_coordinator::scheduling::Scheduler;
+    use bergsmith_coordinator::worker_access::{CatalogWorkerAccess, WorkerTableBinding};
+    use bergsmith_coordinator::workers::{WorkerConfig, WorkerService};
+    use std::sync::Arc;
+    let provider = Arc::new(CatalogWorkerAccess::new(std::collections::BTreeMap::from(
+        [(
+            run.job.id,
+            WorkerTableBinding {
+                catalog: Arc::new(catalog),
+                table: TableName {
+                    namespace: vec!["db".into()],
+                    name: "t".into(),
+                },
+                profile: StorageProfile::LocalFs,
+            },
+        )],
+    )));
+    let worker = WorkerService::new(
+        pool.clone(),
+        run.epoch,
+        vec![],
+        WorkerConfig::default(),
+        provider.clone(),
+    )
+    .unwrap();
+    Scheduler::new(worker, provider, config).unwrap()
+}
+
+async fn current(pool: &PgPool, run: &Run) -> jobs::Job {
+    jobs::job(
+        &mut pool.acquire().await.unwrap(),
+        run.tenant.organization,
+        run.job.id,
+    )
+    .await
+    .unwrap()
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn periodic_recovery_leaves_an_in_flight_send_to_its_live_publisher(pool: PgPool) {
+    use bergsmith_coordinator::scheduling::SchedulerConfig;
+    let mut conn = pool.acquire().await.unwrap();
+    let mut run = setup(&mut conn, false).await;
+    run.execute(&mut conn, true).await;
+    run.prepare(&mut conn).await;
+    let catalog = reconnect(&mut run, bergsmith_catalog::Auth::None).await;
+    let scheduler = recovery_scheduler(&pool, &run, catalog, SchedulerConfig::default());
+    // Startup pass: the intent is not yet authorized, so nothing changes.
+    scheduler.reconcile().await.unwrap();
+    assert_eq!(current(&pool, &run).await.state, JobState::Committing);
+    // The live publisher authorizes and is awaiting the catalog's response.
+    run.authorize(&mut conn).await;
+    scheduler.reconcile().await.unwrap();
+    let in_flight = current(&pool, &run).await;
+    assert_eq!(in_flight.state, JobState::Committing);
+    // The publisher's conclusive rejection is then recorded, not lost.
+    let resolved = publications::resolve(
+        &mut conn,
+        in_flight.id,
+        in_flight.state_revision,
+        run.epoch,
+        JobState::ReplanRequired,
+        "CommitRejected",
+        true,
+    )
+    .await
+    .unwrap();
+    assert_eq!(resolved.state, JobState::ReplanRequired);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn startup_recovery_marks_an_authorized_send_unknown_and_a_lost_rejection_proves_nothing(
+    pool: PgPool,
+) {
+    use bergsmith_coordinator::scheduling::SchedulerConfig;
+    let mut conn = pool.acquire().await.unwrap();
+    let mut run = setup(&mut conn, false).await;
+    run.execute(&mut conn, true).await;
+    run.prepare(&mut conn).await;
+    run.authorize(&mut conn).await;
+    // The request is rejected conclusively, but the coordinator crashes
+    // before recording the response.
+    let prepared = publication::load_prepared(&mut conn, run.job.id)
+        .await
+        .unwrap();
+    let rejected = run
+        .server
+        .mock("POST", TABLE_PATH)
+        .with_status(409)
+        .expect(1)
+        .create_async()
+        .await;
+    assert!(matches!(
+        run.catalog.commit(&prepared.request, None).await.unwrap(),
+        bergsmith_catalog::CommitOutcome::Rejected(_)
+    ));
+    rejected.assert_async().await;
+    let catalog = reconnect(&mut run, bergsmith_catalog::Auth::None).await;
+    let scheduler = recovery_scheduler(&pool, &run, catalog, SchedulerConfig::default());
+    scheduler.reconcile().await.unwrap();
+    let unknown = current(&pool, &run).await;
+    assert_eq!(unknown.state, JobState::CommitOutcomeUnknown);
+    assert_eq!(scheduler.unresolved_publications(), 1);
+    assert_eq!(run.barrier(&mut conn).await, 1);
+    // Nothing automatic resolves it: later passes keep the barrier.
+    scheduler.reconcile().await.unwrap();
+    assert_eq!(
+        current(&pool, &run).await.state,
+        JobState::CommitOutcomeUnknown
+    );
+    // An operator who has established non-publication resolves it, audited.
+    let operator = run.tenant.user;
+    let failed =
+        publication::attest_non_publication(&mut conn, &unknown, run.epoch, &run.catalog, operator)
+            .await
+            .unwrap();
+    assert_eq!(failed.state, JobState::Failed);
+    assert_eq!(
+        failed.state_reason.as_deref(),
+        Some(publications::OPERATOR_ATTESTED_NON_PUBLICATION)
+    );
+    assert_eq!(run.barrier(&mut conn).await, 0);
+    let events = jobs::job_events(&mut conn, run.job.id).await.unwrap();
+    let last = events.last().unwrap();
+    assert_eq!(last.actor, Some(operator));
+    assert_eq!(
+        last.reason.as_deref(),
+        Some(publications::OPERATOR_ATTESTED_NON_PUBLICATION)
+    );
+    scheduler.reconcile().await.unwrap();
+    assert_eq!(scheduler.unresolved_publications(), 0);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn operator_attestation_never_overrides_matching_publication_evidence(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let mut run = setup(&mut conn, false).await;
+    run.execute(&mut conn, true).await;
+    run.prepare(&mut conn).await;
+    run.authorize(&mut conn).await;
+    run.job = publication::reconcile(&mut conn, &run.job, run.epoch, &run.catalog)
+        .await
+        .unwrap();
+    assert_eq!(run.job.state, JobState::CommitOutcomeUnknown);
+    let operator = run.tenant.user;
+    // A stale inspected revision is refused.
+    let stale = jobs::Job {
+        state_revision: run.job.state_revision - 1,
+        ..run.job.clone()
+    };
+    assert!(
+        publication::attest_non_publication(&mut conn, &stale, run.epoch, &run.catalog, operator)
+            .await
+            .is_err()
+    );
+    run.expose_publication(&mut conn).await;
+    let job =
+        publication::attest_non_publication(&mut conn, &run.job, run.epoch, &run.catalog, operator)
+            .await
+            .unwrap();
+    assert_eq!(job.state, JobState::Succeeded);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_fenced_epoch_cannot_record_publication_outcomes(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let mut run = setup(&mut conn, false).await;
+    run.execute(&mut conn, true).await;
+    run.prepare(&mut conn).await;
+    run.authorize(&mut conn).await;
+    run.job = publication::reconcile(&mut conn, &run.job, run.epoch, &run.catalog)
+        .await
+        .unwrap();
+    assert_eq!(run.job.state, JobState::CommitOutcomeUnknown);
+    let holder: String = sqlx::query_scalar("SELECT holder FROM coordinator_leadership")
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+    bergsmith_persistence::leadership::release_leadership(&mut conn, &holder, run.epoch)
+        .await
+        .unwrap();
+    let fenced = run.epoch;
+    let next = support::leader(&mut conn).await;
+    assert_ne!(next, fenced);
+    let lost = |error: &PersistenceError| matches!(error, PersistenceError::LeadershipLost { .. });
+    let error = publications::pend_disposition(
+        &mut conn,
+        run.job.id,
+        fenced,
+        JobState::Failed,
+        "ExecutionFailed",
+    )
+    .await
+    .unwrap_err();
+    assert!(lost(&error), "{error}");
+    let error = publications::resolve(
+        &mut conn,
+        run.job.id,
+        run.job.state_revision,
+        fenced,
+        JobState::Failed,
+        "CommitRejected",
+        true,
+    )
+    .await
+    .unwrap_err();
+    assert!(lost(&error), "{error}");
+    let operator = run.tenant.user;
+    let error = publications::attest_non_publication(
+        &mut conn,
+        run.job.id,
+        run.job.state_revision,
+        fenced,
+        operator,
+    )
+    .await
+    .unwrap_err();
+    assert!(lost(&error), "{error}");
+    run.expose_publication(&mut conn).await;
+    assert!(
+        publication::reconcile(&mut conn, &run.job, fenced, &run.catalog)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        current(&pool, &run).await.state,
+        JobState::CommitOutcomeUnknown
+    );
+    assert_eq!(run.barrier(&mut conn).await, 1);
+    publications::pend_disposition(
+        &mut conn,
+        run.job.id,
+        next,
+        JobState::Failed,
+        "ExecutionFailed",
+    )
+    .await
+    .unwrap();
+    let job = publication::reconcile(&mut conn, &run.job, next, &run.catalog)
+        .await
+        .unwrap();
+    assert_eq!(job.state, JobState::Succeeded);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_connection_failure_after_authorization_fails_and_releases_the_barrier(pool: PgPool) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut conn = pool.acquire().await.unwrap();
+    let mut run = setup(&mut conn, false).await;
+    run.execute(&mut conn, true).await;
+    run.prepare(&mut conn).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let table = json!({
+        "metadata-location": run.fixture.metadata_location(),
+        "metadata": run.fixture.metadata(),
+    })
+    .to_string();
+    let server = tokio::spawn(async move {
+        let mut listener = Some(listener);
+        for (path, body) in [
+            ("/v1/config", r#"{"defaults":{},"overrides":{}}"#.to_owned()),
+            (TABLE_PATH, table),
+        ] {
+            let (mut stream, _) = listener.as_ref().unwrap().accept().await.unwrap();
+            let mut headers = Vec::new();
+            while !headers.ends_with(b"\r\n\r\n") {
+                assert!(headers.len() < 16 * 1024);
+                headers.push(stream.read_u8().await.unwrap());
+            }
+            assert!(
+                String::from_utf8(headers)
+                    .unwrap()
+                    .starts_with(&format!("GET {path}"))
+            );
+            if path == TABLE_PATH {
+                // Stop accepting connections before the baseline reply is
+                // delivered. The complete reply still reaches the client;
+                // its subsequent authorized POST cannot establish a connection.
+                drop(listener.take());
+            }
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            stream.shutdown().await.unwrap();
+        }
+    });
+    let catalog = CatalogConnection::connect(&ConnectionConfig::new(
+        url::Url::parse(&format!("http://{address}")).unwrap(),
+    ))
+    .await
+    .unwrap();
+    let failed = publication::publish(&mut conn, &run.job, run.epoch, &catalog)
+        .await
+        .unwrap();
+    assert_eq!(failed.state, JobState::Failed);
+    assert_eq!(failed.state_reason.as_deref(), Some("CommitNotSent"));
+    assert!(failed.publication_started_at.is_some());
+    assert_eq!(run.barrier(&mut conn).await, 0);
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_token_failure_before_authorization_leaves_the_intent_publishable(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let mut run = setup(&mut conn, false).await;
+    run.execute(&mut conn, true).await;
+    run.prepare(&mut conn).await;
+    // Zero-lifetime tokens are fetched for every request: connect, the
+    // baseline reload, then the commit, whose token fetch fails.
+    let token_url = url::Url::parse(&format!("{}/oauth/token", run.server.url())).unwrap();
+    let issued = run
+        .server
+        .mock("POST", "/oauth/token")
+        .with_body(r#"{"access_token":"t","token_type":"bearer","expires_in":0}"#)
+        .expect(2)
+        .create_async()
+        .await;
+    let refused = run
+        .server
+        .mock("POST", "/oauth/token")
+        .with_status(503)
+        .expect(1)
+        .create_async()
+        .await;
+    let catalog = reconnect(
+        &mut run,
+        bergsmith_catalog::Auth::OAuth2 {
+            token_url,
+            client_id: "bergsmith".into(),
+            client_secret: bergsmith_common::secret::Secret::new("s3cret"),
+            scope: None,
+        },
+    )
+    .await;
+    let never = run
+        .server
+        .mock("POST", TABLE_PATH)
+        .expect(0)
+        .create_async()
+        .await;
+    let error = publication::publish(&mut conn, &run.job, run.epoch, &catalog)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            publication::DurablePublicationError::Catalog(
+                bergsmith_catalog::CatalogError::Authentication { status: 503 }
+            )
+        ),
+        "{error}"
+    );
+    issued.assert_async().await;
+    refused.assert_async().await;
+    never.assert_async().await;
+    let unchanged = current(&pool, &run).await;
+    assert_eq!(unchanged.state, JobState::Committing);
+    assert!(unchanged.publication_started_at.is_none());
+    // A restart recovery leaves the unauthorized intent publishable, and the
+    // same intent then publishes once.
+    run.job = publication::reconcile(&mut conn, &unchanged, run.epoch, &run.catalog)
+        .await
+        .unwrap();
+    assert!(run.job.publication_started_at.is_none());
+    never.remove_async().await;
+    let commit = run
+        .server
+        .mock("POST", TABLE_PATH)
+        .with_status(200)
+        .with_body("{}")
+        .expect(1)
+        .create_async()
+        .await;
+    run.job = publication::publish(&mut conn, &run.job, run.epoch, &run.catalog)
+        .await
+        .unwrap();
+    assert_eq!(run.job.state, JobState::Succeeded);
+    commit.assert_async().await;
 }

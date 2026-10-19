@@ -28,5 +28,6 @@ pub use proposal::{
 };
 pub use request::CommitRequest;
 pub use send::{
-    CommitOutcome, CommitRejection, Committed, IdempotencyKey, RejectionKind, UnknownOutcome,
+    AuthenticatedCommit, CommitOutcome, CommitRejection, Committed, IdempotencyKey, RejectionKind,
+    UnknownOutcome,
 };
