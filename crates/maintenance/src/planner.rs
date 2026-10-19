@@ -302,8 +302,11 @@ impl Planner {
         assessment.rejections = eligibility::file_rejections(&inventory, schema);
         if assessment.rejections.is_empty() {
             let index = DeleteIndex::new(&inventory.deletes, specs);
-            assessment.decisions =
-                eligibility::classify(&inventory, &index, selection, &self.config);
+            assessment.rejections = eligibility::scope_rejections(&inventory, &index);
+            if assessment.rejections.is_empty() {
+                assessment.decisions =
+                    eligibility::classify(&inventory, &index, selection, &self.config);
+            }
         }
         assessment.inventory = inventory;
     }
@@ -474,6 +477,7 @@ mod tests {
             records: size / 10,
             sequence_number,
             partition,
+            key_metrics: BTreeMap::new(),
         };
         let data = table
             .data

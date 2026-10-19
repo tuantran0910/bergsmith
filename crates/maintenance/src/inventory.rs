@@ -2,13 +2,17 @@
 //!
 //! Only the fields planning needs are kept, so memory grows with the number
 //! of live files, which [`PlannerConfig::max_manifest_entries`] bounds.
+//! Column metrics are kept only for fields that a live equality delete is
+//! keyed on, because they decide which equality deletes may apply.
 //!
 //! [`PlannerConfig::max_manifest_entries`]: crate::PlannerConfig::max_manifest_entries
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use iceberg::io::FileIO;
 use iceberg::spec::{
-    DataContentType, DataFileFormat, Datum, FormatVersion, ManifestList, PrimitiveLiteral,
-    TableMetadata,
+    DataContentType, DataFile, DataFileFormat, Datum, FormatVersion, ManifestContentType,
+    ManifestList, PrimitiveLiteral, TableMetadata,
 };
 
 use crate::baseline::PlanningBaseline;
@@ -28,6 +32,45 @@ pub(crate) struct FileEntry {
     /// The data sequence number, after inheritance.
     pub(crate) sequence_number: i64,
     pub(crate) partition: PartitionKey,
+    /// Recorded metrics of equality key fields, by field ID. A field without
+    /// any recorded metric is absent.
+    pub(crate) key_metrics: BTreeMap<i32, KeyMetrics>,
+}
+
+impl FileEntry {
+    /// The recorded metrics of `field_id`; all unknown when none are recorded.
+    pub(crate) fn metrics(&self, field_id: i32) -> KeyMetrics {
+        self.key_metrics.get(&field_id).cloned().unwrap_or_default()
+    }
+}
+
+/// What a manifest entry records about one column. Missing metrics are
+/// unknown and never prove anything.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct KeyMetrics {
+    /// The column's `null_value_counts` entry.
+    pub(crate) nulls: Option<u64>,
+    /// The column's lower bound.
+    pub(crate) lower: Option<Datum>,
+    /// The column's upper bound.
+    pub(crate) upper: Option<Datum>,
+}
+
+impl KeyMetrics {
+    /// The metrics `file` records for `field_id`, or `None` if it records none.
+    fn of(file: &DataFile, field_id: i32) -> Option<Self> {
+        let metrics = Self {
+            nulls: file.null_value_counts().get(&field_id).copied(),
+            lower: file.lower_bounds().get(&field_id).cloned(),
+            upper: file.upper_bounds().get(&field_id).cloned(),
+        };
+        (metrics != Self::default()).then_some(metrics)
+    }
+
+    /// Whether the column may hold a null: unless a zero null count is recorded.
+    pub(crate) fn may_contain_null(&self) -> bool {
+        self.nulls.is_none_or(|count| count > 0)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,7 +120,14 @@ impl Inventory {
         let list = ManifestList::parse_with_version(&list, FormatVersion::V2)?;
         let mut inventory = Self::default();
         let mut entries: u64 = 0;
-        for manifest_file in list.entries() {
+        // Read delete manifests first, so every data entry keeps the metrics
+        // of all live equality key fields and nothing else.
+        let (delete_manifests, data_manifests): (Vec<_>, Vec<_>) = list
+            .entries()
+            .iter()
+            .partition(|manifest| manifest.content == ManifestContentType::Deletes);
+        let mut key_fields = BTreeSet::new();
+        for manifest_file in delete_manifests.into_iter().chain(data_manifests) {
             let manifest = manifest_file.load_manifest(file_io).await?;
             for entry in manifest.entries().iter().filter(|entry| entry.is_alive()) {
                 entries += 1;
@@ -92,6 +142,15 @@ impl Inventory {
                             path: file.file_path().to_owned(),
                         })?;
                 let spec_id = file.partition_spec_id();
+                let equality_ids = file.equality_ids().unwrap_or_default();
+                let fields: Vec<i32> = match file.content_type() {
+                    DataContentType::Data => key_fields.iter().copied().collect(),
+                    DataContentType::PositionDeletes => Vec::new(),
+                    DataContentType::EqualityDeletes => {
+                        key_fields.extend(equality_ids.iter().copied());
+                        equality_ids.clone()
+                    }
+                };
                 let common = FileEntry {
                     path: file.file_path().to_owned(),
                     format: file.file_format(),
@@ -99,6 +158,10 @@ impl Inventory {
                     records: file.record_count(),
                     sequence_number,
                     partition: specs.key(spec_id, file.partition())?,
+                    key_metrics: fields
+                        .into_iter()
+                        .filter_map(|id| Some((id, KeyMetrics::of(file, id)?)))
+                        .collect(),
                 };
                 match file.content_type() {
                     DataContentType::Data => inventory.data.push(common),
@@ -113,7 +176,7 @@ impl Inventory {
                     DataContentType::EqualityDeletes => inventory.deletes.push(DeleteEntry {
                         file: common,
                         kind: DeleteKind::Equality {
-                            field_ids: file.equality_ids().unwrap_or_default(),
+                            field_ids: equality_ids,
                         },
                     }),
                 }
@@ -133,7 +196,7 @@ impl Inventory {
             .iter()
             .map(|file| &file.path)
             .chain(deletes.iter().map(|delete| &delete.file.path));
-        let mut seen = std::collections::BTreeSet::new();
+        let mut seen = BTreeSet::new();
         for path in paths {
             if !seen.insert(path) {
                 return Err(PlanError::DuplicateFile { path: path.clone() });

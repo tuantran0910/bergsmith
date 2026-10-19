@@ -3,12 +3,14 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use bergsmith_common::disposition::FailureDisposition;
 use bergsmith_common::ids::AttemptId;
 use bergsmith_maintenance::{
     AttemptContext, ExecutionInput, ExecutionLimits, ExecutionRequest, Executor, ExecutorError,
-    NativeExecutor, PlanDocument, PlanError, PlanningBaseline,
+    NativeExecutor, PlanDocument, PlanError, PlanningBaseline, ResourceLimit, deadline,
 };
 use bergsmith_storage::{Backend, Location, ObjectStore, StorageError, StorageProfile};
+use iceberg::spec::TableMetadata;
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
@@ -89,6 +91,39 @@ pub enum LocalError {
     BaselineMismatch,
 }
 
+impl LocalError {
+    /// Stable machine-readable reason for logs and operator diagnostics.
+    ///
+    /// Execution failures keep the executor's own reason code.
+    #[must_use]
+    pub fn reason_code(&self) -> &'static str {
+        match self {
+            Self::Io(_) => "LocalFileOperationFailed",
+            Self::Json(_) => "InvalidLocalInput",
+            Self::Plan(_) => "PlanVerificationFailed",
+            Self::Execution(error) => error.reason_code(),
+            Self::Storage(_) => "LocalStorageUnavailable",
+            Self::Iceberg(_) => "MetadataReadFailed",
+            Self::Location(_) => "InvalidStorageLocation",
+            Self::NonLocal => "NonLocalStorage",
+            Self::BaselineMismatch => "PlanningBaselineMismatch",
+        }
+    }
+
+    /// Suggested disposition, as the executor would report it.
+    ///
+    /// A changed baseline needs a new plan; execution failures keep the
+    /// executor's suggestion. Everything else needs operator action.
+    #[must_use]
+    pub fn disposition(&self) -> FailureDisposition {
+        match self {
+            Self::Execution(error) => error.disposition(),
+            Self::BaselineMismatch => FailureDisposition::ReplanRequired,
+            _ => FailureDisposition::PermanentFailure,
+        }
+    }
+}
+
 /// Executes every task in a verified plan, sequentially in the current process.
 ///
 /// Receipts are protobuf files created exclusively under a new receipt directory.
@@ -105,10 +140,14 @@ pub async fn run(request: LocalRequest) -> Result<LocalRun, LocalError> {
     let start = Instant::now();
     let content = serde_json::from_slice(&tokio::fs::read(&request.plan_file).await?)?;
     let plan = PlanDocument::from_persisted(content, &request.plan_sha256)?;
-    let limits: ExecutionLimits = match &request.limits_file {
+    let mut limits: ExecutionLimits = match &request.limits_file {
         Some(path) => serde_json::from_slice(&tokio::fs::read(path).await?)?,
         None => ExecutionLimits::default(),
     };
+    // Read the inventory the plan was built from, unless explicitly bounded.
+    limits
+        .manifest_entries
+        .get_or_insert(plan.config().max_manifest_entries);
     limits.validate()?;
     let baseline = plan.baseline();
     for path in [
@@ -121,16 +160,7 @@ pub async fn run(request: LocalRequest) -> Result<LocalRun, LocalError> {
         }
     }
     let storage = ObjectStore::open(&StorageProfile::LocalFs, None)?;
-    let bytes = tokio::time::timeout(Duration::from_millis(limits.io_timeout_ms), async {
-        storage
-            .file_io()
-            .new_input(baseline.metadata_location())?
-            .read()
-            .await
-    })
-    .await
-    .map_err(|_| ExecutorError::OperationTimeout)??;
-    let metadata = serde_json::from_slice(&bytes)?;
+    let metadata = read_metadata(&storage, baseline.metadata_location(), &limits).await?;
     if PlanningBaseline::capture(&metadata, Some(baseline.metadata_location()))?.as_ref()
         != Some(baseline)
     {
@@ -188,6 +218,26 @@ pub async fn run(request: LocalRequest) -> Result<LocalRun, LocalError> {
     )
     .await?;
     Ok(run)
+}
+
+/// Reads the pinned metadata file within one storage-operation deadline,
+/// refusing files larger than one whole metadata read may allocate.
+async fn read_metadata(
+    storage: &ObjectStore,
+    location: &str,
+    limits: &ExecutionLimits,
+) -> Result<TableMetadata, LocalError> {
+    let input = storage.file_io().new_input(location)?;
+    let read = async {
+        if input.metadata().await?.size > limits.read_request_bytes {
+            return Err(ExecutorError::ResourceLimit(ResourceLimit::ReadBuffer));
+        }
+        Ok(input.read().await?)
+    };
+    let bytes = deadline::within(Duration::from_millis(limits.io_timeout_ms), read)
+        .await
+        .ok_or(ExecutorError::OperationTimeout)??;
+    Ok(serde_json::from_slice(&bytes)?)
 }
 
 async fn create(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {

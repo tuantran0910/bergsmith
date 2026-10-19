@@ -655,6 +655,7 @@ fn classify_failure(reason: &str, generation: i32) -> FailureDisposition {
     match reason {
         "PlanningBaselineMismatch" => FailureDisposition::ReplanRequired,
         "StorageOperationTimedOut"
+        | "PreparationTimeLimitExceeded"
         | "TransientNativeExecutionFailed"
         | "TransientMetadataReadFailed"
         | "TaskSubprocessCrashed"
@@ -687,8 +688,13 @@ mod tests {
                 classify_failure("UnknownWorkerReason", generation),
                 FailureDisposition::PermanentFailure
             );
+            assert_eq!(
+                classify_failure("TaskDurationExceeded", generation),
+                FailureDisposition::PermanentFailure
+            );
             for reason in [
                 "StorageOperationTimedOut",
+                "PreparationTimeLimitExceeded",
                 "TransientNativeExecutionFailed",
                 "TransientMetadataReadFailed",
                 "TaskSubprocessCrashed",

@@ -15,6 +15,7 @@ mod declare;
 mod encode;
 mod error;
 mod generate;
+mod metrics;
 mod oracle;
 pub mod spike;
 mod value;

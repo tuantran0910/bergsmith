@@ -104,6 +104,10 @@ message TaskGrant {
   StorageCredentials credentials = 13;
   // Immutable planning metadata; workers never load the current catalog head.
   string metadata_location = 14;
+  // Preparation inventory bound from the immutable plan. Zero in legacy
+  // grants means the historical 1,000,000-entry default. Older workers may
+  // apply that more conservative default instead of a raised bound.
+  uint64 max_manifest_entries = 15;
 }
 
 // Where to fetch the task artifact and how to verify it.

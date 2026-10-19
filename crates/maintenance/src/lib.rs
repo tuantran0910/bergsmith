@@ -11,7 +11,7 @@ mod baseline;
 mod binpack;
 mod budget;
 mod config;
-mod deadline;
+pub mod deadline;
 mod deletes;
 mod eligibility;
 mod error;

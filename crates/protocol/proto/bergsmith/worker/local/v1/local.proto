@@ -42,6 +42,9 @@ message GetTaskResponse {
   string s3_region = 9;
   optional string s3_endpoint = 10;
   bool s3_path_style = 11;
+  // Preparation inventory bound from the durable grant; zero uses the
+  // historical default for a grant issued before this field existed.
+  uint64 max_manifest_entries = 12;
 }
 
 message ReportProgressRequest {

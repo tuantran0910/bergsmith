@@ -25,10 +25,7 @@ use parquet::basic::Compression;
 use parquet::file::properties::{EnabledStatistics, WriterProperties};
 
 use crate::execution_io::IoState;
-use crate::{
-    ExecutionInput, ExecutionLimits, Executor, ExecutorError, NativeExecutor, PreparedScan,
-    ResourceLimit,
-};
+use crate::{ExecutionInput, ExecutionLimits, ExecutorError, PreparedScan, ResourceLimit};
 
 /// The durable identity of one grant, before result acceptance.
 #[derive(Clone, Copy, Debug)]
@@ -99,7 +96,19 @@ pub(crate) async fn execute(
     let expected = Location::parse(baseline.data_location())?
         .attempt_output_prefix(job_id, request.attempt.attempt_id);
     if &expected != request.output_prefix {
-        return Err(ExecutorError::OutputPrefix);
+        // A well-formed prefix for this attempt under another data root was
+        // derived from a baseline whose data location differs from the
+        // supplied metadata's, for example after a `write.data.path` change.
+        return Err(
+            if request
+                .output_prefix
+                .is_attempt_output_prefix(job_id, request.attempt.attempt_id)
+            {
+                ExecutorError::BaselineMismatch
+            } else {
+                ExecutorError::OutputPrefix
+            },
+        );
     }
     let state = IoState::new(
         request.input.file_io.clone(),
@@ -119,15 +128,17 @@ async fn run(
     file_io: &FileIO,
     state: &Arc<IoState>,
 ) -> Result<ExecutionResult, ExecutorError> {
-    let prepared = NativeExecutor
-        .prepare(ExecutionInput {
+    let prepared = crate::executor::prepare_within(
+        ExecutionInput {
             artifact: request.input.artifact,
             artifact_sha256: request.input.artifact_sha256,
             metadata: request.input.metadata,
             metadata_location: request.input.metadata_location,
             file_io,
-        })
-        .await?;
+        },
+        request.limits.manifest_entries(),
+    )
+    .await?;
     preflight(&prepared, file_io, &request.limits).await?;
     let first = prepared
         .files()

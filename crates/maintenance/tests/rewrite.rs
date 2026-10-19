@@ -400,7 +400,14 @@ async fn rolling_recomputes_each_files_metrics_and_refuses_attempt_reuse() {
             limits: ExecutionLimits::default(),
         })
         .await;
-    assert!(retry.is_err());
+    // The guard refuses to reopen the earlier attempt's existing objects.
+    let error = retry.err().unwrap();
+    assert!(
+        matches!(&error, ExecutorError::Iceberg(native) if !native.retryable()),
+        "{error:?}"
+    );
+    assert_eq!(error.reason_code(), "NativeExecutionFailed");
+    assert_eq!(error.disposition(), FailureDisposition::PermanentFailure);
     assert_preserved(&before);
 }
 
@@ -861,4 +868,423 @@ async fn unsupported_keys_are_refused_by_both_planner_and_worker_before_writes()
         assert_eq!(error.disposition(), FailureDisposition::PermanentFailure);
         assert_eq!(original, originals(fixture.root()));
     }
+}
+
+/// Two data files with disjoint key ranges, as engines record metrics, and
+/// equality deletes that the reader's metric proof scopes to one of them.
+fn metric_scoped_deletes() -> (
+    bergsmith_fixtures::TableSpec,
+    bergsmith_fixtures::RowMultiset,
+) {
+    use bergsmith_fixtures::{Commit, FileSpec, TableSpec, Value, row};
+    use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
+    let schema = Schema::builder()
+        .with_fields([
+            NestedField::required(1, "id", Type::Primitive(PrimitiveType::Long)).into(),
+            NestedField::optional(2, "tag", Type::Primitive(PrimitiveType::String)).into(),
+        ])
+        .build()
+        .unwrap();
+    let low = [
+        row![1 => 0_i64, 2 => "a"],
+        row![1 => 1_i64, 2 => Value::Null],
+        row![1 => 2_i64, 2 => "b"],
+    ];
+    let high = [
+        row![1 => 10_i64, 2 => "x"],
+        row![1 => 11_i64, 2 => "y"],
+        row![1 => 12_i64, 2 => "z"],
+    ];
+    let expected = [&low[0], &low[2], &high[0]].into_iter().cloned().collect();
+    let table = TableSpec::new(schema)
+        .with_column_metrics()
+        .commit(
+            Commit::new()
+                .file(FileSpec::data("low", low))
+                .file(FileSpec::data("high", high)),
+        )
+        .commit(
+            Commit::new()
+                // Bounds 11..12 are disjoint from `low`'s ids 0..2.
+                .file(FileSpec::equality_deletes(
+                    "ids",
+                    [1],
+                    [row![1 => 11_i64], row![1 => 12_i64]],
+                ))
+                // Only nulls: no bounds, so neither file is excluded.
+                .file(FileSpec::equality_deletes(
+                    "null-tags",
+                    [2],
+                    [row![2 => Value::Null]],
+                )),
+        );
+    (table, expected)
+}
+
+#[tokio::test]
+async fn equality_deletes_excluded_by_column_metrics_match_the_reader_and_oracle() {
+    let (table, expected) = metric_scoped_deletes();
+    certify_table(table, expected).await;
+}
+
+#[tokio::test]
+async fn identity_partition_columns_missing_from_files_read_their_partition_values() {
+    use bergsmith_fixtures::{Commit, FileSpec, TableSpec, Value, row};
+    use iceberg::spec::{
+        NestedField, PrimitiveType, Schema, Transform, Type, UnboundPartitionSpec,
+    };
+    let schema = Schema::builder()
+        .with_fields([
+            NestedField::required(1, "id", Type::Primitive(PrimitiveType::Long)).into(),
+            NestedField::optional(2, "tag", Type::Primitive(PrimitiveType::String)).into(),
+        ])
+        .build()
+        .unwrap();
+    let spec = UnboundPartitionSpec::builder()
+        .add_partition_field(2, "tag", Transform::Identity)
+        .unwrap()
+        .build();
+    // Hive-style files keep the partition value only in metadata. Readers
+    // use it, not null, both for output rows and for equality keys.
+    let rows = |tag: &'static str| (0..3_i64).map(move |id| row![1 => id, 2 => tag]);
+    let expected = [
+        row![1 => 0_i64, 2 => "x"],
+        row![1 => 2_i64, 2 => "x"],
+        row![1 => 1_i64, 2 => "y"],
+        row![1 => 2_i64, 2 => "y"],
+    ]
+    .into_iter()
+    .collect();
+    certify_table(
+        TableSpec::new(schema)
+            .partitioned_by(spec)
+            .commit(
+                Commit::new()
+                    .file(
+                        FileSpec::data("x", rows("x"))
+                            .partition([Value::string("x")])
+                            .without_fields([2]),
+                    )
+                    .file(FileSpec::data("y", rows("y")).partition([Value::string("y")])),
+            )
+            .commit(
+                Commit::new()
+                    .file(
+                        FileSpec::equality_deletes("x-keys", [1, 2], [row![1 => 1_i64, 2 => "x"]])
+                            .partition([Value::string("x")]),
+                    )
+                    .file(
+                        FileSpec::equality_deletes("y-keys", [1, 2], [row![1 => 0_i64, 2 => "y"]])
+                            .partition([Value::string("y")]),
+                    ),
+            ),
+        expected,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn void_spec_equality_deletes_for_other_specs_are_refused_before_writes() {
+    use bergsmith_fixtures::{Commit, FileSpec, TableSpec, Value, row};
+    use bergsmith_maintenance::Rejection;
+    use iceberg::spec::{
+        NestedField, PrimitiveType, Schema, Transform, Type, UnboundPartitionSpec,
+    };
+    let schema = Schema::builder()
+        .with_fields([
+            NestedField::required(1, "id", Type::Primitive(PrimitiveType::Long)).into(),
+            NestedField::required(2, "tag", Type::Primitive(PrimitiveType::String)).into(),
+        ])
+        .build()
+        .unwrap();
+    let spec = |transform, name| {
+        UnboundPartitionSpec::builder()
+            .add_partition_field(2, name, transform)
+            .unwrap()
+            .build()
+    };
+    let fixture = TableSpec::new(schema)
+        .partitioned_by(spec(Transform::Identity, "tag"))
+        .commit(
+            Commit::new().file(
+                FileSpec::data("x", (0..3_i64).map(|id| row![1 => id, 2 => "x"]))
+                    .partition([Value::string("x")]),
+            ),
+        )
+        .commit(
+            Commit::new()
+                .evolve_spec(spec(Transform::Void, "tag_void"))
+                .file(
+                    FileSpec::equality_deletes("void", [1], [row![1 => 1_i64]])
+                        .partition([Value::Null]),
+                ),
+        )
+        .generate()
+        .await
+        .unwrap();
+    // Iceberg applies `void` to `x`; the native reader would not.
+    assert_eq!(fixture.live_rows().await.unwrap().len(), 2);
+    let outcome = Planner::new(PlannerConfig::default())
+        .unwrap()
+        .plan(
+            PlanInput {
+                metadata: fixture.metadata(),
+                metadata_location: Some(fixture.metadata_location()),
+                file_io: fixture.file_io(),
+                selection: &[],
+            },
+            PlanIds {
+                job_id: JobId::generate(),
+                plan_id: PlanId::generate(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome,
+        PlanOutcome::Rejected(vec![Rejection::VoidSpecEqualityDelete {
+            path: fixture.path_of("void").unwrap().into(),
+        }])
+    );
+}
+
+/// Storage whose every operation waits forever, so only deadlines end it.
+mod stalled {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use bytes::Bytes;
+    use futures::stream::BoxStream;
+    use iceberg::Result;
+    use iceberg::io::{
+        FileIO, FileIOBuilder, FileMetadata, FileRead, FileWrite, InputFile, ListEntry, OutputFile,
+        Storage, StorageConfig, StorageFactory,
+    };
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct Stalled;
+
+    pub(super) fn file_io() -> FileIO {
+        FileIOBuilder::new(Arc::new(Stalled)).build()
+    }
+
+    async fn never<T>() -> Result<T> {
+        std::future::pending().await
+    }
+
+    #[typetag::serde(name = "bergsmith-test-stalled-factory")]
+    impl StorageFactory for Stalled {
+        fn build(&self, _: &StorageConfig) -> Result<Arc<dyn Storage>> {
+            Ok(Arc::new(self.clone()))
+        }
+    }
+
+    #[async_trait]
+    #[typetag::serde(name = "bergsmith-test-stalled")]
+    impl Storage for Stalled {
+        async fn exists(&self, _: &str) -> Result<bool> {
+            never().await
+        }
+        async fn metadata(&self, _: &str) -> Result<FileMetadata> {
+            never().await
+        }
+        async fn read(&self, _: &str) -> Result<Bytes> {
+            never().await
+        }
+        async fn reader(&self, _: &str) -> Result<Box<dyn FileRead>> {
+            never().await
+        }
+        async fn write(&self, _: &str, _: Bytes) -> Result<()> {
+            never().await
+        }
+        async fn writer(&self, _: &str) -> Result<Box<dyn FileWrite>> {
+            never().await
+        }
+        async fn delete(&self, _: &str) -> Result<()> {
+            never().await
+        }
+        async fn delete_prefix(&self, _: &str) -> Result<()> {
+            never().await
+        }
+        async fn delete_stream(&self, _: BoxStream<'static, String>) -> Result<()> {
+            never().await
+        }
+        async fn list(&self, _: &str, _: bool) -> Result<BoxStream<'static, Result<ListEntry>>> {
+            never().await
+        }
+        fn new_input(&self, path: &str) -> Result<InputFile> {
+            Ok(InputFile::new(Arc::new(self.clone()), path.to_owned()))
+        }
+        fn new_output(&self, path: &str) -> Result<OutputFile> {
+            Ok(OutputFile::new(Arc::new(self.clone()), path.to_owned()))
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn attempt_duration_and_storage_deadlines_are_enforced_through_execute() {
+    let fixture = spike::small_files_with_duplicates_and_nulls()
+        .unwrap()
+        .generate()
+        .await
+        .unwrap();
+    let artifact = artifacts(&fixture).await.remove(0);
+    let stalled = stalled::file_io();
+    // Storage never answers, so the paused clock advances straight to the
+    // earliest deadline: the outcome does not depend on timing.
+    let run = |limits| {
+        let attempt_id = AttemptId::from_uuid(Uuid::now_v7());
+        let prefix = prefix(&fixture, &artifact, attempt_id);
+        let stalled = &stalled;
+        let artifact = &artifact;
+        let fixture = &fixture;
+        async move {
+            NativeExecutor
+                .execute(ExecutionRequest {
+                    input: ExecutionInput {
+                        artifact,
+                        artifact_sha256: artifact_digest(artifact),
+                        metadata: fixture.metadata(),
+                        metadata_location: fixture.metadata_location(),
+                        file_io: stalled,
+                    },
+                    attempt: AttemptContext {
+                        attempt_id,
+                        generation: 1,
+                    },
+                    output_prefix: &prefix,
+                    limits,
+                })
+                .await
+        }
+    };
+    let duration = run(ExecutionLimits {
+        duration_ms: 1,
+        ..ExecutionLimits::default()
+    })
+    .await
+    .err()
+    .unwrap();
+    assert!(
+        matches!(
+            duration,
+            ExecutorError::ResourceLimit(ResourceLimit::Duration)
+        ),
+        "{duration}"
+    );
+    assert_eq!(duration.reason_code(), "TaskDurationExceeded");
+    assert_eq!(duration.disposition(), FailureDisposition::PermanentFailure);
+    let storage = run(ExecutionLimits {
+        io_timeout_ms: 1,
+        ..ExecutionLimits::default()
+    })
+    .await
+    .err()
+    .unwrap();
+    assert!(
+        matches!(storage, ExecutorError::OperationTimeout),
+        "{storage}"
+    );
+    assert_eq!(storage.reason_code(), "StorageOperationTimedOut");
+    assert_eq!(storage.disposition(), FailureDisposition::RetryTask);
+    // Metadata reads that outlast the preparation deadline suggest a retry.
+    let preparation = NativeExecutor
+        .prepare(ExecutionInput {
+            artifact: &artifact,
+            artifact_sha256: artifact_digest(&artifact),
+            metadata: fixture.metadata(),
+            metadata_location: fixture.metadata_location(),
+            file_io: &stalled,
+        })
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        matches!(preparation, ExecutorError::Timeout),
+        "{preparation}"
+    );
+    assert_eq!(preparation.reason_code(), "PreparationTimeLimitExceeded");
+    assert_eq!(preparation.disposition(), FailureDisposition::RetryTask);
+}
+
+#[tokio::test]
+async fn the_manifest_entry_limit_bounds_preparation() {
+    let fixture = spike::small_files_with_duplicates_and_nulls()
+        .unwrap()
+        .generate()
+        .await
+        .unwrap();
+    let artifact = artifacts(&fixture).await.remove(0);
+    let error = execute(
+        &fixture,
+        &artifact,
+        ExecutionLimits {
+            manifest_entries: Some(1),
+            ..ExecutionLimits::default()
+        },
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(
+        matches!(
+            error,
+            ExecutorError::Metadata(bergsmith_maintenance::PlanError::InventoryTooLarge {
+                limit: 1
+            })
+        ),
+        "{error}"
+    );
+    let result = execute(&fixture, &artifact, ExecutionLimits::default())
+        .await
+        .unwrap();
+    assert!(!result.data_files().is_empty());
+}
+
+#[tokio::test]
+async fn a_changed_data_root_is_a_baseline_mismatch_not_an_output_violation() {
+    let fixture = spike::small_files_with_duplicates_and_nulls()
+        .unwrap()
+        .generate()
+        .await
+        .unwrap();
+    let artifact = artifacts(&fixture).await.remove(0);
+    // A property-only change keeps the snapshot, sequence and schema, but
+    // moves the data root that the caller's planned prefix was built from.
+    let changed =
+        iceberg::spec::TableMetadataBuilder::new_from_metadata(fixture.metadata().clone(), None)
+            .set_properties(std::collections::HashMap::from([(
+                "write.data.path".to_owned(),
+                format!("{}/moved", fixture.metadata().location()),
+            )]))
+            .unwrap()
+            .build()
+            .unwrap()
+            .metadata;
+    let attempt_id = AttemptId::from_uuid(Uuid::now_v7());
+    let planned = prefix(&fixture, &artifact, attempt_id);
+    let before = originals(fixture.root());
+    let error = NativeExecutor
+        .execute(ExecutionRequest {
+            input: ExecutionInput {
+                artifact: &artifact,
+                artifact_sha256: artifact_digest(&artifact),
+                metadata: &changed,
+                metadata_location: fixture.metadata_location(),
+                file_io: fixture.file_io(),
+            },
+            attempt: AttemptContext {
+                attempt_id,
+                generation: 1,
+            },
+            output_prefix: &planned,
+            limits: ExecutionLimits::default(),
+        })
+        .await
+        .err()
+        .unwrap();
+    assert!(matches!(error, ExecutorError::BaselineMismatch), "{error}");
+    assert_eq!(error.disposition(), FailureDisposition::ReplanRequired);
+    assert_eq!(before, originals(fixture.root()));
 }

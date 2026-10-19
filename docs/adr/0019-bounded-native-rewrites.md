@@ -1,6 +1,6 @@
 # 0019. Bounded native rewrites, receipts and local execution
 
-- Status: Accepted
+- Status: Accepted; preparation-timeout disposition superseded by 0028
 - Date: 2026-10-17
 - Plan reference: `.private/BERGSMITH_PROJECT_PLAN.md` §3 Native executor; BS-010.T2–T5
 - Extends ADR 0018; supersedes its initial reader defaults and caller-owned I/O deadlines

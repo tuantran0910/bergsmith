@@ -1,5 +1,6 @@
 //! Table checks and file eligibility (BS-009.T2).
 
+use std::collections::BTreeSet;
 use std::fmt;
 
 use iceberg::spec::{DataFileFormat, FormatVersion, PrimitiveType, Schema, TableMetadata, Type};
@@ -51,6 +52,13 @@ pub enum Rejection {
         /// What is wrong with it.
         problem: KeyProblem,
     },
+    /// An equality delete in a spec whose fields are all void transforms
+    /// applies to data in another spec. Iceberg applies it globally, but the
+    /// native reader scopes it to its own spec (ADR 0027).
+    VoidSpecEqualityDelete {
+        /// The equality delete file.
+        path: String,
+    },
 }
 
 /// What makes an equality key unsupported.
@@ -97,6 +105,11 @@ impl fmt::Display for Rejection {
                     "equality delete {path} is keyed on field {field_id}, which {problem}"
                 )
             }
+            Self::VoidSpecEqualityDelete { path } => write!(
+                f,
+                "equality delete {path} has an all-void partition spec and applies to data in \
+                 other specs, which the native reader does not support"
+            ),
         }
     }
 }
@@ -172,6 +185,26 @@ pub(crate) fn file_rejections(inventory: &Inventory, schema: &Schema) -> Vec<Rej
     rejections.sort();
     rejections.truncate(MAX_FILE_REJECTIONS);
     rejections
+}
+
+/// Rejections for applicable deletes that the native reader would not apply.
+pub(crate) fn scope_rejections(inventory: &Inventory, index: &DeleteIndex<'_>) -> Vec<Rejection> {
+    let mut paths = BTreeSet::new();
+    for file in &inventory.data {
+        paths.extend(
+            index
+                .unattached_void_deletes(file)
+                .into_iter()
+                .map(|delete| delete.file.path.as_str()),
+        );
+    }
+    paths
+        .into_iter()
+        .take(MAX_FILE_REJECTIONS)
+        .map(|path| Rejection::VoidSpecEqualityDelete {
+            path: path.to_owned(),
+        })
+        .collect()
 }
 
 fn key_problem(schema: &Schema, field_id: i32) -> Option<KeyProblem> {

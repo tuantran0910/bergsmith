@@ -87,6 +87,15 @@ async fn run(cancel: bool, expired: bool) -> Supervisor {
 }
 
 async fn run_with_bootstrap(cancel: bool, expired: bool, bootstrap: bool) -> Supervisor {
+    run_with_manifest_limit(cancel, expired, bootstrap, 0).await
+}
+
+async fn run_with_manifest_limit(
+    cancel: bool,
+    expired: bool,
+    bootstrap: bool,
+    max_manifest_entries: u64,
+) -> Supervisor {
     let fixture = spike::small_files_with_duplicates_and_nulls()
         .unwrap()
         .generate()
@@ -124,6 +133,7 @@ async fn run_with_bootstrap(cancel: bool, expired: bool, bootstrap: bool) -> Sup
             artifact_sha256: task.artifact_sha256().unwrap().as_bytes().to_vec(),
             output_prefix: prefix.to_string(),
             metadata_location: fixture.metadata_location().into(),
+            max_manifest_entries,
             limits: Some(cluster::ResourceLimits {
                 memory_bytes: 4 * 1024 * 1024 * 1024,
                 cpu_millis: 1000,
@@ -246,6 +256,16 @@ async fn same_build_subprocess_rewrites_real_parquet_without_catalog_authority()
     assert_eq!(receipt.metrics.as_ref().unwrap().rows_written, 40);
     assert_eq!(receipt.artifact_sha256, supervisor.task.artifact_sha256);
     assert!(supervisor.failure.lock().await.is_none());
+}
+
+#[tokio::test]
+async fn the_real_subprocess_uses_the_granted_preparation_inventory_bound() {
+    let supervisor = run_with_manifest_limit(false, false, false, 1).await;
+    assert!(supervisor.result.lock().await.is_none());
+    assert_eq!(
+        supervisor.failure.lock().await.as_deref(),
+        Some("MetadataVerificationFailed")
+    );
 }
 
 #[tokio::test]

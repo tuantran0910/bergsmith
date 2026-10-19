@@ -37,6 +37,14 @@ pub struct ExecutionLimits {
     pub io_timeout_ms: u64,
     /// Whole attempt deadline, including preparation and output close.
     pub duration_ms: u64,
+    /// The most live manifest entries preparation reads; it bounds inventory
+    /// memory. Unset uses [`PlannerConfig`]'s default `max_manifest_entries`.
+    /// Set it to at least the plan's recorded bound, or preparation of a
+    /// table the planner accepted fails with an inventory error. Local
+    /// execution sets the plan's bound when this is unset.
+    ///
+    /// [`PlannerConfig`]: crate::PlannerConfig
+    pub manifest_entries: Option<u64>,
 }
 
 impl Default for ExecutionLimits {
@@ -54,6 +62,7 @@ impl Default for ExecutionLimits {
             output_files: 10_000,
             io_timeout_ms: 30_000,
             duration_ms: 180_000,
+            manifest_entries: None,
         }
     }
 }
@@ -79,12 +88,20 @@ impl ExecutionLimits {
             || self.output_files == 0
             || self.io_timeout_ms == 0
             || self.duration_ms == 0
+            || self.manifest_entries == Some(0)
             || self.batch_rows > i32::MAX as usize
             || self.writer_row_group_bytes > i32::MAX as usize
         {
             return Err(ExecutorError::InvalidLimits);
         }
         Ok(())
+    }
+
+    /// The effective live manifest entry bound of preparation.
+    #[must_use]
+    pub fn manifest_entries(&self) -> u64 {
+        self.manifest_entries
+            .unwrap_or_else(|| crate::PlannerConfig::default().max_manifest_entries)
     }
 }
 
@@ -183,6 +200,10 @@ mod tests {
             },
             ExecutionLimits {
                 duration_ms: 0,
+                ..ExecutionLimits::default()
+            },
+            ExecutionLimits {
+                manifest_entries: Some(0),
                 ..ExecutionLimits::default()
             },
             ExecutionLimits {

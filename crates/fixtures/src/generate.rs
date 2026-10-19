@@ -16,6 +16,7 @@ use uuid::Uuid;
 use crate::declare::{Commit, Content, FileSpec, TableSpec};
 use crate::encode;
 use crate::error::{FixtureError, Result};
+use crate::metrics::ColumnMetrics;
 
 /// The table UUID of every fixture.
 const TABLE_UUID: Uuid = Uuid::from_u128(0x0199_0000_0000_7000_8000_0000_0000_0b5e);
@@ -107,6 +108,7 @@ impl TableSpec {
             file_io: &file_io,
             location: &location,
             metadata: &plan.metadata,
+            column_metrics: self.column_metrics,
             files: BTreeMap::new(),
             manifests: Vec::new(),
         };
@@ -223,6 +225,8 @@ struct Writer<'a> {
     file_io: &'a FileIO,
     location: &'a str,
     metadata: &'a TableMetadata,
+    /// Whether data and equality-delete entries record column metrics.
+    column_metrics: bool,
     files: BTreeMap<String, String>,
     /// The manifests of the latest snapshot, with sequence numbers assigned.
     manifests: Vec<ManifestFile>,
@@ -301,13 +305,26 @@ impl Writer<'_> {
                 file.partition.len()
             )));
         }
+        if !file.omitted_fields.is_empty() && !matches!(file.content, Content::Data(_)) {
+            return Err(FixtureError::Declaration(format!(
+                "only data files can omit fields, but {} is a delete file",
+                file.name
+            )));
+        }
         let mut path_bounds = None;
+        let mut metrics = ColumnMetrics::default();
         let (content, batch, equality_ids) = match &file.content {
-            Content::Data(rows) => (
-                DataContentType::Data,
-                encode::rows_batch(&schema, rows)?,
-                None,
-            ),
+            Content::Data(rows) => {
+                let written = without(&schema, &file.omitted_fields)?;
+                if self.column_metrics {
+                    metrics = ColumnMetrics::of(&written, rows);
+                }
+                (
+                    DataContentType::Data,
+                    encode::rows_batch(&written, rows)?,
+                    None,
+                )
+            }
             Content::PositionDeletes(deletes) => {
                 let resolved: Vec<(String, i64)> = deletes
                     .iter()
@@ -329,6 +346,9 @@ impl Writer<'_> {
             }
             Content::EqualityDeletes { field_ids, keys } => {
                 let projected = project(&schema, field_ids)?;
+                if self.column_metrics {
+                    metrics = ColumnMetrics::of(&projected, keys);
+                }
                 (
                     DataContentType::EqualityDeletes,
                     encode::rows_batch(&projected, keys)?,
@@ -336,10 +356,9 @@ impl Writer<'_> {
                 )
             }
         };
-        let bound = |path: Option<String>| -> HashMap<i32, Datum> {
-            path.map(|path| (encode::FILE_PATH_FIELD_ID, Datum::string(path)))
-                .into_iter()
-                .collect()
+        let bound = |path: Option<String>, mut bounds: HashMap<i32, Datum>| {
+            bounds.extend(path.map(|path| (encode::FILE_PATH_FIELD_ID, Datum::string(path))));
+            bounds
         };
         let (lower, upper) = path_bounds.unzip();
         let bytes = encode::parquet_bytes(&batch, file.row_group_rows)?;
@@ -360,8 +379,11 @@ impl Writer<'_> {
             .record_count(batch.num_rows() as u64)
             .file_size_in_bytes(size)
             .equality_ids(equality_ids)
-            .lower_bounds(bound(lower))
-            .upper_bounds(bound(upper))
+            .value_counts(metrics.value_counts)
+            .null_value_counts(metrics.null_value_counts)
+            .nan_value_counts(metrics.nan_value_counts)
+            .lower_bounds(bound(lower, metrics.lower_bounds))
+            .upper_bounds(bound(upper, metrics.upper_bounds))
             .build()
             .map_err(|error| FixtureError::Declaration(error.to_string()))
     }
@@ -398,6 +420,26 @@ fn project(schema: &Schema, field_ids: &[i32]) -> Result<Schema> {
             "equality fields {field_ids:?} are not all in the current schema"
         )));
     }
+    Ok(Schema::builder().with_fields(fields).build()?)
+}
+
+/// `schema` without `omitted` fields. Every omitted field must exist.
+fn without(schema: &Schema, omitted: &[i32]) -> Result<Schema> {
+    if omitted.is_empty() {
+        return Ok(schema.clone());
+    }
+    if let Some(id) = omitted.iter().find(|id| schema.field_by_id(**id).is_none()) {
+        return Err(FixtureError::Declaration(format!(
+            "omitted field {id} is not in the file's schema"
+        )));
+    }
+    let fields: Vec<_> = schema
+        .as_struct()
+        .fields()
+        .iter()
+        .filter(|field| !omitted.contains(&field.id))
+        .cloned()
+        .collect();
     Ok(Schema::builder().with_fields(fields).build()?)
 }
 

@@ -44,6 +44,13 @@ ignore it; the new worker refuses an omitted location before execution. The
 same-build local `GetTaskResponse` also carries that location, artifact digest,
 and non-secret worker-pool S3 routing settings.
 
+`TaskGrant.max_manifest_entries` carries the immutable plan's preparation
+inventory bound, and local `GetTaskResponse` forwards it to the subprocess.
+Zero in an older grant retains the historical 1,000,000-entry default. Older
+workers can ignore a raised bound and fail conservatively at their default;
+using raised bounds requires upgraded workers. This additive revision-2 field
+changes neither hashed artifacts nor immutable resource envelopes.
+
 ## Hashed messages
 
 `TaskArtifact` and `TaskReceipt` are identified by SHA-256 digests

@@ -1,6 +1,6 @@
 # 0018. Verify planned identities before native row scans
 
-- Status: Accepted
+- Status: Accepted; inventory bound superseded by 0028
 - Date: 2026-10-17
 - Plan reference: `.private/BERGSMITH_PROJECT_PLAN.md` §3 Native executor; BS-010.T1
 

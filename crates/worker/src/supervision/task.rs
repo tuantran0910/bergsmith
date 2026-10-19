@@ -212,7 +212,7 @@ async fn native(
         .file_io()
         .new_input(&task.metadata_location)
         .map_err(bergsmith_maintenance::ExecutorError::from)?;
-    let bytes = tokio::time::timeout(RPC_TIMEOUT, async {
+    let bytes = bergsmith_maintenance::deadline::within(RPC_TIMEOUT, async {
         if input.metadata().await?.size > super::MAX_MESSAGE as u64 {
             return Err(bergsmith_maintenance::ExecutorError::InvalidData(
                 "oversized pinned metadata",
@@ -224,11 +224,12 @@ async fn native(
             .map_err(bergsmith_maintenance::ExecutorError::from)
     })
     .await
-    .map_err(|_| WorkerError::Timeout)??;
+    .ok_or(WorkerError::Timeout)??;
     let metadata = serde_json::from_slice(&bytes)
         .map_err(|_| WorkerError::Invalid("invalid pinned metadata"))?;
     let memory = limits.memory_bytes;
     let execution_limits = ExecutionLimits {
+        manifest_entries: (task.max_manifest_entries != 0).then_some(task.max_manifest_entries),
         batch_memory_bytes: memory.min(32 * 1024 * 1024),
         delete_memory_bytes: memory.min(256 * 1024 * 1024),
         decode_row_group_bytes: memory.min(128 * 1024 * 1024),

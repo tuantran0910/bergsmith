@@ -33,10 +33,11 @@ Update a row only when its acceptance tests pass (see the project plan §5).
 |---|---|
 | Whole-file binpack compaction within existing partitions | Planned; native local executor passes all 11 spike fixtures with oracle checks, rolling metrics and resource failures (BS-010, ADRs 0018–0019); distributed publication pending |
 | Position delete application | Certified for native local rewrites (BS-011): physical positions, equal-sequence applicability, partition/spec scope, retained shared deletes, and capture-publication manifest checks; distributed acceptance/recovery pending |
-| Equality delete application, including null keys | Certified for native local rewrites (BS-011): nullable single/composite keys, duplicate survivors, strict sequence applicability, global equality scope, 50,000-key fixture, and later-delete checks; distributed acceptance/recovery pending |
+| Equality delete application, including null keys | Certified for native local rewrites (BS-011): nullable single/composite keys, duplicate survivors, strict sequence applicability, global equality scope, 50,000-key fixture, and later-delete checks; tables with engine-style column metrics, whose deletes the reader scopes by bounds and null counts (BS-011, ADR 0027); identity-partition columns absent from data files; distributed acceptance/recovery pending |
 | Zero-output replacement | Certified for native execution, capture-publication, durable coordinator acceptance/recovery, and worker result RPCs (BS-011–BS-013) |
 | Floating-point equality-delete keys | Unsupported; rejected at preview |
 | Equality-delete keys on nested or dropped fields | Unsupported; rejected at preview |
+| Equality deletes in an all-`void` partition spec that apply to data in other specs | Unsupported; rejected at preview and by workers (ADR 0027) |
 | Sorted rewrite | Later (M9) |
 | Repartitioning | Unsupported |
 | Manifest rewrite | Later (M7) |

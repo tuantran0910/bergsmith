@@ -171,11 +171,20 @@ async fn setup(pool: &PgPool) -> Run {
 }
 
 async fn setup_with_fixture(pool: &PgPool, fixture: Fixture) -> Run {
+    setup_with_manifest_limit(pool, fixture, PlannerConfig::default().max_manifest_entries).await
+}
+
+async fn setup_with_manifest_limit(
+    pool: &PgPool,
+    fixture: Fixture,
+    max_manifest_entries: u64,
+) -> Run {
     let mut conn = pool.acquire().await.unwrap();
     let tenant = fixture_tenant(&mut conn, &fixture).await;
     let principal = service_principal(&mut conn, tenant.organization).await;
     let job = support::job(&mut conn, &tenant).await;
     let outcome = Planner::new(PlannerConfig {
+        max_manifest_entries,
         min_input_files: 1,
         min_files_removed: 0,
         ..PlannerConfig::default()
@@ -445,7 +454,12 @@ impl Run {
 async fn lost_poll_response_recovers_one_durable_grant_without_persisting_credentials(
     pool: PgPool,
 ) {
-    let mut run = setup(&pool).await;
+    let fixture = spike::small_files_with_duplicates_and_nulls()
+        .unwrap()
+        .generate()
+        .await
+        .unwrap();
+    let mut run = setup_with_manifest_limit(&pool, fixture, 2_000_000).await;
     run.service.offer(run.offer.clone()).await.unwrap();
     let poll = Uuid::now_v7();
     let first = run.pull(poll).await;
@@ -458,6 +472,7 @@ async fn lost_poll_response_recovers_one_durable_grant_without_persisting_creden
         .unwrap();
     let grant = wire::TaskGrant::decode(stored.grant_bytes.unwrap().as_slice()).unwrap();
     assert!(grant.credentials.is_none());
+    assert_eq!(grant.max_manifest_entries, 2_000_000);
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM attempts")
         .fetch_one(&mut *conn)
         .await

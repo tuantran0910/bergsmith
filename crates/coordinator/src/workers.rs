@@ -772,6 +772,7 @@ fn draft_grant(
             limits: Some(offer.limits),
             credentials: None,
             metadata_location: plan.baseline().metadata_location().to_owned(),
+            max_manifest_entries: plan.config().max_manifest_entries,
         },
     ))
 }

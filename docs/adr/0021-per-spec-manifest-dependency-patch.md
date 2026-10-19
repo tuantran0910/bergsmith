@@ -1,6 +1,6 @@
 # 0021. Pin the per-spec manifest dependency patch
 
-- Status: Accepted
+- Status: Accepted; pinned revision superseded by 0027
 - Date: 2026-10-17
 - Plan reference: `.private/BERGSMITH_PROJECT_PLAN.md` §3 Pinned integration baseline; §4 BS-011.T4
 
