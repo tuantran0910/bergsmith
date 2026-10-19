@@ -17,4 +17,8 @@ mkdir "$scope/supervisors"
 printf '%s\n' "$$" > "$scope/supervisors/cgroup.procs"
 printf '+cpu +memory +pids\n' > "$scope/cgroup.subtree_control"
 export BERGSMITH_TEST_CGROUP_ROOT="$scope"
-exec make test-distributed
+# Multiple gates share Make's services-up prerequisite in the same invocation.
+if [ "$#" -eq 0 ]; then
+    set -- test-distributed
+fi
+exec make "$@"

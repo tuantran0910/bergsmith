@@ -67,7 +67,12 @@ confirmed process death. Child processes are killed on teardown; a failed run
 retains its temporary directory and includes its location in the assertion so
 coordinator and worker logs can be inspected.
 
-`make ci` includes this suite. The `distributed-tests` feature keeps tests that
+`make ci` includes this suite. CI runs coverage and process acceptance in one
+delegated Make invocation so their shared Compose services start once. The
+systemd launch preserves compiler flags and incremental-build settings from
+toolchain setup so cached dependencies remain reusable. The delegation script
+defaults to `test-distributed` and accepts other Make targets and variable
+assignments as arguments. The `distributed-tests` feature keeps tests that
 need a prebuilt worker and host delegation separate from ordinary coverage runs;
 workspace check and clippy still compile them. Existing PostgreSQL, TLS/native
 receipt, scheduler, publication, and subprocess suites remain part of the M3

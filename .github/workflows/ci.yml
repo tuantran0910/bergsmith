@@ -57,36 +57,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Pull and boot the services while the toolchain and cache are
-      # restored. Background processes live until the job ends.
-      - name: Start test services in the background
-        run: |
-          nohup make services-up > services.log 2>&1 &
-          echo $! > services.pid
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest,cargo-llvm-cov
-      - name: Wait for test services
-        run: |
-          pid=$(cat services.pid)
-          while kill -0 "$pid" 2>/dev/null; do sleep 1; done
-          cat services.log
-      # One instrumented run is both the test gate and the coverage gate.
-      # `make coverage` re-runs `services-up`, which fails if they are not
-      # healthy.
-      - name: Tests and coverage
-        run: make coverage NEXTEST_PROFILE=ci COVERAGE_REPORT="--lcov --output-path lcov.info"
-      - name: Process recovery acceptance
+      # One Make invocation shares the services-up prerequisite across gates.
+      - name: Tests, coverage, and process recovery acceptance
         run: |
           sudo systemd-run --quiet --wait --pipe --collect \
             --unit="bergsmith-acceptance-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --property=Delegate=yes --uid="$(id -u)" --gid="$(id -g)" \
             --working-directory="$PWD" --setenv="PATH=$PATH" --setenv="HOME=$HOME" \
             --setenv=CARGO_PROFILE_DEV_DEBUG=0 --setenv=CARGO_PROFILE_TEST_DEBUG=0 \
-            /bin/bash deploy/docker/distributed-scope.sh
+            --setenv="RUSTFLAGS=$RUSTFLAGS" --setenv="CARGO_INCREMENTAL=$CARGO_INCREMENTAL" \
+            --setenv="RUST_BACKTRACE=$RUST_BACKTRACE" --setenv="CARGO_TERM_COLOR=$CARGO_TERM_COLOR" \
+            /bin/bash deploy/docker/distributed-scope.sh coverage test-distributed \
+            NEXTEST_PROFILE=ci COVERAGE_REPORT="--lcov --output-path lcov.info"
       - uses: actions/upload-artifact@v4
         with:
           name: lcov
