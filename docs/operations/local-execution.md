@@ -50,9 +50,16 @@ Omitted fields use these defaults; unknown fields and zero budgets are rejected:
   "output_bytes": 4294967296,
   "output_files": 10000,
   "io_timeout_ms": 30000,
-  "duration_ms": 180000
+  "duration_ms": 180000,
+  "manifest_entries": null
 }
 ```
+
+`manifest_entries` bounds the live manifest entries preparation reads. When it
+is `null` or omitted, local mode uses the plan's recorded
+`max_manifest_entries`. `read_request_bytes` also bounds the pinned metadata
+file. Failures are logged with their stable `reason_code` and suggested
+`disposition`.
 
 Delete memory is a conservative admission reservation from footer sizes and key
 counts. Decoded batches are checked by retained Arrow memory. These component

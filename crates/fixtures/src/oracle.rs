@@ -14,8 +14,8 @@ use arrow_schema::DataType;
 use bytes::Bytes;
 use iceberg::io::FileIO;
 use iceberg::spec::{
-    DataContentType, DataFileFormat, FormatVersion, ManifestList, PrimitiveType, Struct,
-    TableMetadata, Type,
+    DataContentType, DataFileFormat, FormatVersion, Literal, ManifestList, PrimitiveLiteral,
+    PrimitiveType, Struct, TableMetadata, Transform, Type,
 };
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -48,7 +48,13 @@ pub async fn read_data_files(
                 "replacement is not parquet".into(),
             ));
         }
-        let rows = read_rows(file_io, file.file_path(), &columns).await?;
+        let fallbacks = missing_values(
+            metadata,
+            &columns,
+            file.partition_spec_id(),
+            file.partition(),
+        )?;
+        let rows = read_rows(file_io, file.file_path(), &columns, &fallbacks).await?;
         if rows.len() as u64 != file.record_count() {
             return Err(FixtureError::Content(
                 "replacement record count does not match parquet".into(),
@@ -116,7 +122,8 @@ pub async fn live_rows(
     let equality = equality_deletes(&files.equality_deletes, &columns, file_io).await?;
     let mut live = RowMultiset::new();
     for file in data {
-        let rows = read_rows(file_io, &file.path, &columns).await?;
+        let fallbacks = missing_values(metadata, &columns, file.spec_id, &file.partition)?;
+        let rows = read_rows(file_io, &file.path, &columns, &fallbacks).await?;
         let deleted = deleted_positions(file, &positions);
         let keys: Vec<&EqualityDeletes> = equality
             .iter()
@@ -283,7 +290,7 @@ async fn position_deletes<'a>(
     let mut deletes = Vec::with_capacity(files.len());
     for file in files {
         let mut positions: BTreeMap<String, BTreeSet<i64>> = BTreeMap::new();
-        for row in read_rows(file_io, &file.path, &columns).await? {
+        for row in read_rows(file_io, &file.path, &columns, &BTreeMap::new()).await? {
             let (Some(Value::String(path)), Some(Value::Long(pos))) =
                 (row.get(FILE_PATH_FIELD_ID), row.get(POS_FIELD_ID))
             else {
@@ -330,7 +337,7 @@ async fn equality_deletes<'a>(
             .iter()
             .map(|id| key_column(file, *id, columns))
             .collect::<Result<Vec<_>>>()?;
-        let keys = read_rows(file_io, &file.path, &key_columns)
+        let keys = read_rows(file_io, &file.path, &key_columns, &BTreeMap::new())
             .await?
             .iter()
             .map(|row| key_of(row, &file.equality_ids))
@@ -379,18 +386,88 @@ fn key_of(row: &Row, field_ids: &[i32]) -> Vec<Value> {
         .collect()
 }
 
+/// The values of columns a data file lacks, by Iceberg's column-projection
+/// rules: the file's identity-partition value when it is not null, otherwise
+/// the field's `initial-default`. Columns with neither read as null.
+fn missing_values(
+    metadata: &TableMetadata,
+    columns: &[Column],
+    spec_id: i32,
+    partition: &Struct,
+) -> Result<BTreeMap<i32, Value>> {
+    let spec = metadata
+        .partition_spec_by_id(spec_id)
+        .ok_or_else(|| FixtureError::Content(format!("partition spec {spec_id} is missing")))?;
+    let schema = metadata.current_schema();
+    let mut values = BTreeMap::new();
+    for column in columns {
+        let identity = spec.fields().iter().position(|field| {
+            field.source_id == column.field_id && field.transform == Transform::Identity
+        });
+        let literal = identity
+            .and_then(|index| partition.fields().get(index).cloned().flatten())
+            .or_else(|| {
+                schema
+                    .field_by_id(column.field_id)
+                    .and_then(|field| field.initial_default.clone())
+            });
+        if let Some(literal) = literal {
+            values.insert(column.field_id, literal_value(&literal, &column.primitive)?);
+        }
+    }
+    Ok(values)
+}
+
+/// A partition or default literal as a value of the column's current type,
+/// applying the int to long and float to double promotions.
+fn literal_value(literal: &Literal, primitive: &PrimitiveType) -> Result<Value> {
+    let Literal::Primitive(literal) = literal else {
+        return Err(FixtureError::Unsupported(format!(
+            "nested literal {literal:?} for a {primitive} column"
+        )));
+    };
+    Ok(match (literal, primitive) {
+        (PrimitiveLiteral::Boolean(v), PrimitiveType::Boolean) => Value::Boolean(*v),
+        (PrimitiveLiteral::Int(v), PrimitiveType::Int) => Value::Int(*v),
+        (PrimitiveLiteral::Int(v), PrimitiveType::Long) => Value::Long(i64::from(*v)),
+        (PrimitiveLiteral::Int(v), PrimitiveType::Date) => Value::Date(*v),
+        (PrimitiveLiteral::Long(v), PrimitiveType::Long) => Value::Long(*v),
+        (PrimitiveLiteral::Float(v), PrimitiveType::Float) => Value::float(v.0),
+        (PrimitiveLiteral::Float(v), PrimitiveType::Double) => Value::double(f64::from(v.0)),
+        (PrimitiveLiteral::Double(v), PrimitiveType::Double) => Value::double(v.0),
+        (PrimitiveLiteral::String(v), PrimitiveType::String) => Value::String(v.clone()),
+        (PrimitiveLiteral::Binary(v), PrimitiveType::Binary) => Value::Binary(v.clone()),
+        _ => {
+            return Err(FixtureError::Unsupported(format!(
+                "literal {literal:?} for a {primitive} column"
+            )));
+        }
+    })
+}
+
 /// Every row of a Parquet file, in file order, projected onto `columns` by
-/// field ID. A column the file lacks reads as null.
-async fn read_rows(file_io: &FileIO, path: &str, columns: &[Column]) -> Result<Vec<Row>> {
+/// field ID. A column the file lacks takes its value from `missing`, or
+/// reads as null.
+async fn read_rows(
+    file_io: &FileIO,
+    path: &str,
+    columns: &[Column],
+    missing: &BTreeMap<i32, Value>,
+) -> Result<Vec<Row>> {
     let reader = ParquetRecordBatchReaderBuilder::try_new(read(file_io, path).await?)?.build()?;
     let mut rows = Vec::new();
     for batch in reader {
-        rows.extend(batch_rows(path, &batch?, columns)?);
+        rows.extend(batch_rows(path, &batch?, columns, missing)?);
     }
     Ok(rows)
 }
 
-fn batch_rows(path: &str, batch: &RecordBatch, columns: &[Column]) -> Result<Vec<Row>> {
+fn batch_rows(
+    path: &str,
+    batch: &RecordBatch,
+    columns: &[Column],
+    missing: &BTreeMap<i32, Value>,
+) -> Result<Vec<Row>> {
     let by_id: BTreeMap<i32, usize> = batch
         .schema()
         .fields()
@@ -409,6 +486,9 @@ fn batch_rows(path: &str, batch: &RecordBatch, columns: &[Column]) -> Result<Vec
     for column in columns {
         let decoded = match by_id.get(&column.field_id) {
             Some(index) => decode(path, column, batch.column(*index).as_ref())?,
+            None if missing.contains_key(&column.field_id) => {
+                vec![missing[&column.field_id].clone(); batch.num_rows()]
+            }
             None if column.required => {
                 return Err(FixtureError::Content(format!(
                     "{path} lacks required field {}",

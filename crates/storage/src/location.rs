@@ -252,6 +252,18 @@ impl Location {
             key,
         }
     }
+
+    /// Returns whether `self` is the [`attempt_output_prefix`] of `job` and
+    /// `attempt` under some root, comparing whole segments.
+    ///
+    /// [`attempt_output_prefix`]: Self::attempt_output_prefix
+    #[must_use]
+    pub fn is_attempt_output_prefix(&self, job: JobId, attempt: AttemptId) -> bool {
+        let mut segments = self.key.rsplit('/');
+        segments.next() == Some(attempt.to_string().as_str())
+            && segments.next() == Some(job.to_string().as_str())
+            && segments.next() == Some("bergsmith")
+    }
 }
 
 impl fmt::Display for Location {
@@ -429,6 +441,32 @@ mod tests {
         assert_eq!(prefix.to_dir_uri(), format!("{prefix}/"));
         let root_prefix = loc("memory://ns").attempt_output_prefix(job, attempt);
         assert_eq!(root_prefix.key(), format!("bergsmith/{job}/{attempt}"));
+    }
+
+    #[test]
+    fn attempt_prefixes_are_recognized_under_any_root_by_whole_segments() {
+        let (job, attempt) = (JobId::generate(), AttemptId::generate());
+        for root in ["s3://warehouse/demo/t1", "s3://other/data", "memory://ns"] {
+            assert!(
+                loc(root)
+                    .attempt_output_prefix(job, attempt)
+                    .is_attempt_output_prefix(job, attempt)
+            );
+        }
+        let prefix = loc("s3://w/t").attempt_output_prefix(job, attempt);
+        assert!(!prefix.is_attempt_output_prefix(job, AttemptId::generate()));
+        assert!(!prefix.is_attempt_output_prefix(JobId::generate(), attempt));
+        assert!(
+            !prefix
+                .child("x")
+                .unwrap()
+                .is_attempt_output_prefix(job, attempt)
+        );
+        assert!(
+            !loc(&format!("s3://w/xbergsmith/{job}/{attempt}"))
+                .is_attempt_output_prefix(job, attempt)
+        );
+        assert!(!loc(&format!("s3://w/{job}/{attempt}")).is_attempt_output_prefix(job, attempt));
     }
 
     #[test]

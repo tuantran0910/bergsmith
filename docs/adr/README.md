@@ -24,11 +24,14 @@ record's status; never rewrite an accepted decision.
 | [0015](0015-commit-adapter-capture.md) | Build commits with a capture-only catalog | Accepted |
 | [0016](0016-native-fixtures-and-oracle.md) | Native fixtures and an independent live-row oracle | Accepted |
 | [0017](0017-deterministic-planner.md) | A deterministic, metadata-only planner | Accepted |
-| [0018](0018-verified-executor-scans.md) | Verify planned identities before native row scans | Accepted |
-| [0019](0019-bounded-native-rewrites.md) | Bounded native rewrites, receipts and local execution | Accepted |
+| [0018](0018-verified-executor-scans.md) | Verify planned identities before native row scans | Accepted; inventory bound superseded by 0028 |
+| [0019](0019-bounded-native-rewrites.md) | Bounded native rewrites, receipts and local execution | Accepted; preparation-timeout disposition superseded by 0028 |
 | [0020](0020-delete-scope-and-retention.md) | Delete scope and retention during native rewrites | Accepted |
-| [0021](0021-per-spec-manifest-dependency-patch.md) | Pin the per-spec manifest dependency patch | Accepted |
+| [0021](0021-per-spec-manifest-dependency-patch.md) | Pin the per-spec manifest dependency patch | Accepted; pinned revision superseded by 0027 |
 | [0022](0022-durable-publication.md) | Durable publication and conservative recovery | Accepted |
 | [0023](0023-worker-sessions-and-durable-pulls.md) | Worker sessions and durable pull assignments | Accepted; failure classification superseded by 0024 |
 | [0024](0024-worker-receipt-fencing-and-task-envelopes.md) | Atomic receipt replay, task envelopes, and dispatch reservations | Accepted |
 | [0025](0025-durable-admission-and-reconciliation.md) | Durable admission, retry timers, and scheduling reconciliation | Accepted |
+| [0026](0026-durable-worker-supervision.md) | Durable worker supervision and platform resource enforcement | Accepted |
+| [0027](0027-delete-applicability-matches-the-native-reader.md) | Delete applicability matches the native reader's metric proof | Accepted |
+| [0028](0028-executor-failure-classification-and-preparation-bounds.md) | Executor failure classification and preparation bounds | Accepted |

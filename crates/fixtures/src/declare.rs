@@ -16,6 +16,7 @@ pub struct TableSpec {
     pub(crate) schema: Schema,
     pub(crate) spec: UnboundPartitionSpec,
     pub(crate) commits: Vec<Commit>,
+    pub(crate) column_metrics: bool,
 }
 
 impl TableSpec {
@@ -27,6 +28,7 @@ impl TableSpec {
             schema,
             spec: UnboundPartitionSpec::builder().build(),
             commits: Vec::new(),
+            column_metrics: false,
         }
     }
 
@@ -34,6 +36,16 @@ impl TableSpec {
     #[must_use]
     pub fn partitioned_by(mut self, spec: UnboundPartitionSpec) -> Self {
         self.spec = spec;
+        self
+    }
+
+    /// Records column metrics in every data and equality-delete file's
+    /// manifest entry, as engines such as Spark and Flink do: value, null,
+    /// and NaN counts and exact lower and upper bounds for each top-level
+    /// column. Without it, only position deletes record (`file_path`) bounds.
+    #[must_use]
+    pub const fn with_column_metrics(mut self) -> Self {
+        self.column_metrics = true;
         self
     }
 
@@ -93,6 +105,7 @@ pub struct FileSpec {
     pub(crate) partition: Vec<Value>,
     pub(crate) content: Content,
     pub(crate) row_group_rows: Option<usize>,
+    pub(crate) omitted_fields: Vec<i32>,
 }
 
 /// What a file holds.
@@ -157,6 +170,16 @@ impl FileSpec {
         self
     }
 
+    /// Writes a data file without the columns `field_ids`, as when files
+    /// written outside Iceberg are added to a table (for example, Hive files
+    /// that keep partition values only in their paths). Readers resolve the
+    /// missing columns by Iceberg's column-projection rules.
+    #[must_use]
+    pub fn without_fields(mut self, field_ids: impl IntoIterator<Item = i32>) -> Self {
+        self.omitted_fields.extend(field_ids);
+        self
+    }
+
     /// Limits Parquet row groups to `rows` rows each.
     #[must_use]
     pub fn row_groups_of(mut self, rows: usize) -> Self {
@@ -171,6 +194,7 @@ impl FileSpec {
             partition: Vec::new(),
             content,
             row_group_rows: None,
+            omitted_fields: Vec::new(),
         }
     }
 }

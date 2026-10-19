@@ -585,6 +585,7 @@ async fn native_grant(
                 .to_vec(),
         }),
         metadata_location: fixture.metadata_location().into(),
+        max_manifest_entries: 2_000_000,
         input_state_id: plan.sha256().unwrap().to_hex(),
         capability_profile: "native-v2".into(),
         lease_expires_at: Some(prost_types::Timestamp {
@@ -609,6 +610,7 @@ async fn native_grant(
     journal::private_dir(&harness.config.state_directory).unwrap();
     let journal = Journal::open(&harness.config.state_directory).unwrap();
     let service = begin(&harness.config, &grant, "session", journal).unwrap();
+    assert_eq!(service.task.lock().await.max_manifest_entries, 2_000_000);
     let active = Arc::new(Mutex::new(Some(Active {
         grant: grant.clone(),
         service: service.clone(),

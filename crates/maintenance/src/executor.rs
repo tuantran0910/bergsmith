@@ -17,10 +17,13 @@ use iceberg::{Runtime, TableIdent};
 
 use crate::baseline::PlanningBaseline;
 use crate::deletes::DeleteIndex;
-use crate::eligibility::{file_rejections, table_rejections};
+use crate::eligibility::{file_rejections, scope_rejections, table_rejections};
 use crate::inventory::Inventory;
 use crate::partition::{PartitionKey, Specs};
 use crate::{PlanError, Rejection};
+
+/// The longest metadata verification may take before row reads.
+const PREPARATION_DEADLINE: Duration = Duration::from_secs(60);
 
 /// Immutable inputs supplied by the task subprocess's caller.
 ///
@@ -169,7 +172,10 @@ pub enum ExecutorError {
     /// Native scan planning failed.
     #[error("task storage or native scan failed")]
     Iceberg(#[from] iceberg::Error),
-    /// Metadata I/O exceeded the preparation deadline.
+    /// Metadata I/O exceeded the 60-second preparation deadline.
+    ///
+    /// Preparation reads only metadata, bounded by the inventory limit, so an
+    /// overrun indicates slow storage and suggests a fresh attempt.
     #[error("task scan preparation exceeded 60 seconds")]
     Timeout,
 }
@@ -202,14 +208,16 @@ impl ExecutorError {
 
     /// Suggested disposition; the coordinator remains authoritative.
     ///
-    /// Only explicitly retryable native/storage errors permit a fresh attempt.
-    /// Corrupt or missing inputs and deterministic resource failures are permanent.
+    /// Only explicitly retryable native/storage errors, storage-operation
+    /// timeouts and preparation timeouts permit a fresh attempt. Corrupt or
+    /// missing inputs and resource-envelope failures, including the whole
+    /// attempt's duration, are permanent.
     #[must_use]
     pub fn disposition(&self) -> bergsmith_common::disposition::FailureDisposition {
         use bergsmith_common::disposition::FailureDisposition as D;
         match self {
             Self::BaselineMismatch => D::ReplanRequired,
-            Self::OperationTimeout => D::RetryTask,
+            Self::OperationTimeout | Self::Timeout => D::RetryTask,
             Self::Iceberg(error) | Self::Metadata(PlanError::Iceberg(error))
                 if error.retryable() =>
             {
@@ -239,13 +247,25 @@ impl Executor for NativeExecutor {
         crate::rewrite::execute(request).await
     }
     async fn prepare(&self, input: ExecutionInput<'_>) -> Result<PreparedScan, ExecutorError> {
-        crate::deadline::within(Duration::from_secs(60), prepare(input))
-            .await
-            .ok_or(ExecutorError::Timeout)?
+        prepare_within(input, crate::ExecutionLimits::default().manifest_entries()).await
     }
 }
 
-async fn prepare(input: ExecutionInput<'_>) -> Result<PreparedScan, ExecutorError> {
+/// Prepares `input` within the preparation deadline, reading at most
+/// `max_entries` live manifest entries.
+pub(crate) async fn prepare_within(
+    input: ExecutionInput<'_>,
+    max_entries: u64,
+) -> Result<PreparedScan, ExecutorError> {
+    crate::deadline::within(PREPARATION_DEADLINE, prepare(input, max_entries))
+        .await
+        .ok_or(ExecutorError::Timeout)?
+}
+
+async fn prepare(
+    input: ExecutionInput<'_>,
+    max_entries: u64,
+) -> Result<PreparedScan, ExecutorError> {
     if artifact_digest(input.artifact) != input.artifact_sha256 {
         return Err(ExecutorError::ArtifactDigest);
     }
@@ -260,16 +280,17 @@ async fn prepare(input: ExecutionInput<'_>) -> Result<PreparedScan, ExecutorErro
         input.metadata,
         &specs,
         input.file_io,
-        // The executor preserves the default planner's inventory bound.
-        crate::PlannerConfig::default().max_manifest_entries,
+        max_entries,
     )
     .await?;
+    let delete_index = DeleteIndex::new(&inventory.deletes, &specs);
     let mut rejections = table_rejections(input.metadata);
     rejections.extend(file_rejections(&inventory, input.metadata.current_schema()));
+    rejections.extend(scope_rejections(&inventory, &delete_index));
     if !rejections.is_empty() {
         return Err(ExecutorError::Unsupported(rejections));
     }
-    verify_files(&artifact, &inventory, &specs)?;
+    verify_files(&artifact, &inventory, &delete_index)?;
 
     let runtime = Runtime::try_current()?;
     // The native planner supplies schema evolution, name mappings and original
@@ -303,10 +324,11 @@ async fn prepare(input: ExecutionInput<'_>) -> Result<PreparedScan, ExecutorErro
         .iter()
         .map(|f| (f.path.as_str(), f))
         .collect();
-    let delete_index = DeleteIndex::new(&inventory.deletes, &specs);
     while let Some(mut task) = tasks.try_next().await? {
         if wanted.remove(task.data_file_path.as_str()) {
-            let source = data[task.data_file_path.as_str()];
+            let source = data
+                .get(task.data_file_path.as_str())
+                .ok_or_else(|| identity(&task.data_file_path))?;
             let required: BTreeSet<_> = delete_index
                 .applicable(source)
                 .iter()
@@ -397,7 +419,7 @@ fn validate_baseline(
 fn verify_files(
     artifact: &TaskArtifact,
     inventory: &Inventory,
-    specs: &Specs,
+    index: &DeleteIndex<'_>,
 ) -> Result<(), ExecutorError> {
     let data: BTreeMap<_, _> = inventory
         .data
@@ -409,7 +431,6 @@ fn verify_files(
         .iter()
         .map(|d| (d.file.path.as_str(), d))
         .collect();
-    let index = DeleteIndex::new(&inventory.deletes, specs);
     let mut seen = BTreeSet::new();
     let mut required = BTreeSet::new();
     for source in &artifact.source_files {
@@ -504,7 +525,6 @@ mod tests {
             ExecutorError::Location(bergsmith_storage::LocationError::MissingScheme(
                 "secret-native-detail".into(),
             )),
-            ExecutorError::Timeout,
         ];
         for error in permanent {
             assert_eq!(error.disposition(), D::PermanentFailure);
@@ -517,6 +537,7 @@ mod tests {
             D::ReplanRequired
         );
         assert_eq!(ExecutorError::OperationTimeout.disposition(), D::RetryTask);
+        assert_eq!(ExecutorError::Timeout.disposition(), D::RetryTask);
         for (error, reason) in [
             (
                 ExecutorError::Iceberg(

@@ -1,16 +1,20 @@
-//! Reject late completions even when work overruns a deadline inside one poll.
+//! Deadlines that reject late completions, even when work overruns a
+//! deadline inside one poll.
 
 use std::future::Future;
 use std::time::Duration;
 
 use tokio::time::Instant;
 
-pub(crate) async fn within<F: Future>(budget: Duration, future: F) -> Option<F::Output> {
+/// Runs `future` with a `budget`, returning `None` if it does not finish in time.
+///
+/// Unlike a bare [`tokio::time::timeout`], a result that completes at or after
+/// the deadline is rejected: Tokio polls the inner future before its timer, so
+/// blocking or CPU-heavy work can finish late within one poll and still
+/// return `Ok`. Rejection does not claim that cancellation stopped the work.
+pub async fn within<F: Future>(budget: Duration, future: F) -> Option<F::Output> {
     let started = Instant::now();
     let result = tokio::time::timeout(budget, future).await.ok()?;
-    // Tokio polls the inner future before checking its timer. A blocking or
-    // CPU-heavy poll can finish late and still return Ok from timeout. Reject
-    // that completion, without claiming that cancellation stopped the work.
     (started.elapsed() < budget).then_some(result)
 }
 

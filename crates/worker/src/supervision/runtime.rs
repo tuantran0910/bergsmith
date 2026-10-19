@@ -479,6 +479,7 @@ fn begin(
         output_prefix: grant.output_prefix.clone(),
         credentials: grant.credentials.clone(),
         metadata_location: grant.metadata_location.clone(),
+        max_manifest_entries: grant.max_manifest_entries,
         artifact_sha256: grant
             .artifact
             .as_ref()

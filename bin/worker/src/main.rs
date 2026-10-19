@@ -136,7 +136,12 @@ async fn dispatch(command: Command) -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Err(error) => {
-                    tracing::error!(error = %error, "local execution failed");
+                    tracing::error!(
+                        error = %error,
+                        reason_code = error.reason_code(),
+                        disposition = error.disposition().as_str(),
+                        "local execution failed"
+                    );
                     ExitCode::FAILURE
                 }
             }
