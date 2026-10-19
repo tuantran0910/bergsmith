@@ -77,6 +77,7 @@ Everything used to build, run, or deploy Bergsmith outside `cargo` lives under
 | `make test-distributed` | Run process recovery and the 100-group, three-worker release test |
 | `make doc` | Build docs with warnings as errors |
 | `make coverage` | Enforce at least 80% line coverage (binaries excluded) |
+| `make coverage-distributed` | Cover workspace and process acceptance together (same delegation as `test-distributed`) |
 | `make coverage-html` | HTML report in `target/llvm-cov/html` |
 | `make deny` | Advisories, licenses, bans, sources |
 | `make machete` | Unused dependencies |

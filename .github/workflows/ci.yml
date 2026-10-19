@@ -63,7 +63,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest,cargo-llvm-cov
-      # One Make invocation shares the services-up prerequisite across gates.
+      # Build workspace tests and the real worker with one coverage environment.
       - name: Tests, coverage, and process recovery acceptance
         run: |
           sudo systemd-run --quiet --wait --pipe --collect \
@@ -73,7 +73,7 @@ jobs:
             --setenv=CARGO_PROFILE_DEV_DEBUG=0 --setenv=CARGO_PROFILE_TEST_DEBUG=0 \
             --setenv="RUSTFLAGS=$RUSTFLAGS" --setenv="CARGO_INCREMENTAL=$CARGO_INCREMENTAL" \
             --setenv="RUST_BACKTRACE=$RUST_BACKTRACE" --setenv="CARGO_TERM_COLOR=$CARGO_TERM_COLOR" \
-            /bin/bash deploy/docker/distributed-scope.sh coverage test-distributed \
+            /bin/bash deploy/docker/distributed-scope.sh coverage-distributed \
             NEXTEST_PROFILE=ci COVERAGE_REPORT="--lcov --output-path lcov.info"
       - uses: actions/upload-artifact@v4
         with:

@@ -67,12 +67,17 @@ confirmed process death. Child processes are killed on teardown; a failed run
 retains its temporary directory and includes its location in the assertion so
 coordinator and worker logs can be inspected.
 
-`make ci` includes this suite. CI runs coverage and process acceptance in one
-delegated Make invocation so their shared Compose services start once. The
-systemd launch preserves compiler flags and incremental-build settings from
-toolchain setup so cached dependencies remain reusable. The delegation script
-defaults to `test-distributed` and accepts other Make targets and variable
-assignments as arguments. The `distributed-tests` feature keeps tests that
+`make ci` includes this suite. CI uses `make coverage-distributed` to build all
+workspace tests and the real worker binary in one coverage environment, then
+runs workspace and process acceptance together with nextest. Both use the
+existing `target/llvm-cov-target` coverage cache rather than creating a second
+build under `target/debug`. This avoids a separate process-build graph and
+starts the shared Compose services once. The 80% coverage threshold and LCOV
+report include the combined run. The systemd
+launch preserves compiler flags and incremental-build settings from toolchain
+setup. The delegation script defaults to `test-distributed` and accepts other
+Make targets and variable assignments as arguments. The `distributed-tests`
+feature keeps tests that
 need a prebuilt worker and host delegation separate from ordinary coverage runs;
 workspace check and clippy still compile them. Existing PostgreSQL, TLS/native
 receipt, scheduler, publication, and subprocess suites remain part of the M3

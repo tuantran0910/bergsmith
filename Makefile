@@ -25,7 +25,7 @@ BENCH_ITERATIONS ?= 3
 WORKER_BIN ?= $(abspath $(or $(CARGO_TARGET_DIR),target)/debug/bergsmith-worker)
 
 .PHONY: help fmt fmt-check check clippy test doc coverage coverage-html deny machete ci \
-	services-up services-down proto-lint proto-breaking bench-executor test-distributed
+	services-up services-down proto-lint proto-breaking bench-executor test-distributed coverage-distributed
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -64,6 +64,17 @@ coverage: services-up ## Enforce the line-coverage threshold
 		--ignore-filename-regex $(COVERAGE_IGNORE) \
 		--fail-under-lines $(COVERAGE_MIN) $(COVERAGE_REPORT)
 
+coverage-distributed: services-up ## Cover workspace and process acceptance in one build (Linux needs delegated cgroup v2)
+	$(CARGO) llvm-cov clean --workspace
+	export CARGO_TARGET_DIR="$(abspath $(or $(CARGO_TARGET_DIR),target)/llvm-cov-target)" && \
+		coverage_env="$$($(CARGO) llvm-cov show-env --sh)" && \
+		eval "$$coverage_env" && \
+		$(CARGO) build --workspace --bins --tests --features distributed-tests --locked && \
+		BERGSMITH_TEST_WORKER_BIN="$$CARGO_LLVM_COV_TARGET_DIR/debug/bergsmith-worker" \
+			$(CARGO) nextest run --workspace --features distributed-tests --locked && \
+		$(CARGO) llvm-cov report --ignore-filename-regex $(COVERAGE_IGNORE) \
+			--fail-under-lines $(COVERAGE_MIN) $(COVERAGE_REPORT)
+
 coverage-html: services-up ## Write an HTML coverage report to target/llvm-cov/html
 	$(CARGO) llvm-cov nextest --workspace --locked \
 		--ignore-filename-regex $(COVERAGE_IGNORE) --html
@@ -90,6 +101,6 @@ proto-breaking: ## Check protobuf changes against PROTO_BASE (buf, via Docker)
 		echo "$(PROTO_BASE) has no buf.yaml yet; nothing to compare against"; \
 	fi
 
-# `coverage` runs the whole test suite and `clippy` type-checks every target,
+# `coverage-distributed` runs the whole test suite and `clippy` checks every target,
 # so `test` and `check` would only repeat them.
-ci: fmt-check proto-lint proto-breaking clippy doc coverage test-distributed deny machete ## Run every quality gate
+ci: fmt-check proto-lint proto-breaking clippy doc coverage-distributed deny machete ## Run every quality gate
