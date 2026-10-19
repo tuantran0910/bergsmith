@@ -36,7 +36,7 @@ tempfile.workspace = true
 bergsmith-fixtures.workspace = true
 mockito.workspace = true
 reqwest.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "test-util"] }
 url.workspace = true
 
 [lints]
