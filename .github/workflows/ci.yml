@@ -79,6 +79,14 @@ jobs:
       # healthy.
       - name: Tests and coverage
         run: make coverage NEXTEST_PROFILE=ci COVERAGE_REPORT="--lcov --output-path lcov.info"
+      - name: Process recovery acceptance
+        run: |
+          sudo systemd-run --quiet --wait --pipe --collect \
+            --unit="bergsmith-acceptance-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --property=Delegate=yes --uid="$(id -u)" --gid="$(id -g)" \
+            --working-directory="$PWD" --setenv="PATH=$PATH" --setenv="HOME=$HOME" \
+            --setenv=CARGO_PROFILE_DEV_DEBUG=0 --setenv=CARGO_PROFILE_TEST_DEBUG=0 \
+            /bin/bash deploy/docker/distributed-scope.sh
       - uses: actions/upload-artifact@v4
         with:
           name: lcov

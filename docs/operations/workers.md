@@ -188,4 +188,5 @@ Keep the state directory when restarting, and do not edit journal files.
 
 Run `cargo test -p bergsmith-worker -p bergsmith-worker-bin` for supervisor,
 private RPC, journal recovery, and real task-subprocess regression tests. The
-full distributed recovery/release suite follows in BS-016.
+[distributed recovery/release suite](distributed-acceptance.md) runs with
+`make test-distributed` (BS-016).
