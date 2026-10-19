@@ -302,8 +302,7 @@ async fn verify_output(
         return Err(ResultError::Invalid("output partition, size, or rows"));
     }
     let footer = read_footer(output, store, metadata).await?;
-    let (sizes, values, nulls, offsets, lower, upper, nan) =
-        column_metrics(output, &footer, metadata)?;
+    let (sizes, values, nulls, offsets, lower, upper) = column_metrics(output, &footer, metadata)?;
     let literals = partition_literals(partition, metadata)?;
     let metrics = |map: BTreeMap<i32, i64>| -> Result<HashMap<i32, u64>, ResultError> {
         map.into_iter()
@@ -321,7 +320,9 @@ async fn verify_output(
         .column_sizes(metrics(sizes)?)
         .value_counts(metrics(values)?)
         .null_value_counts(metrics(nulls)?)
-        .nan_value_counts(nan)
+        // Parquet footers cannot confirm a worker's NaN counts, and a wrong
+        // count lets readers prune files incorrectly. Absent counts mean
+        // "unknown" in the Iceberg spec, so verified descriptors omit them.
         .lower_bounds(lower)
         .upper_bounds(upper)
         .split_offsets(Some(offsets))
@@ -423,7 +424,6 @@ type ColumnMaps = (
     Vec<i64>,
     HashMap<i32, Datum>,
     HashMap<i32, Datum>,
-    HashMap<i32, u64>,
 );
 fn column_metrics(
     output: &bergsmith_protocol::artifact::OutputFile,
@@ -462,7 +462,6 @@ fn column_metrics(
     let mut seen = BTreeSet::new();
     let mut lower = HashMap::new();
     let mut upper = HashMap::new();
-    let mut nan = HashMap::new();
     for column in &output.columns {
         let id = column.field_id;
         if !seen.insert(id)
@@ -488,9 +487,6 @@ fn column_metrics(
         if let Some(bytes) = &column.upper_bound {
             upper.insert(id, Datum::try_from_bytes(bytes, primitive.clone())?);
         }
-        if let Some(count) = column.nan_value_count {
-            nan.insert(id, unsigned(count)?);
-        }
     }
     if seen.len() != sizes.len() {
         return Err(ResultError::Invalid("missing column metrics"));
@@ -499,7 +495,7 @@ fn column_metrics(
     if lower != footer_lower || upper != footer_upper {
         return Err(ResultError::Invalid("output column bounds"));
     }
-    Ok((sizes, values, nulls, offsets, lower, upper, nan))
+    Ok((sizes, values, nulls, offsets, lower, upper))
 }
 
 type Bounds = HashMap<i32, Datum>;
@@ -734,6 +730,24 @@ mod tests {
                 .await
                 .unwrap();
                 assert_eq!(descriptors, result.data_files(), "{}", case.name);
+                // A worker-claimed NaN count cannot be confirmed from the footer,
+                // so it never reaches a manifest.
+                let mut claimed = result.receipt().clone();
+                for output in &mut claimed.outputs {
+                    for column in &mut output.columns {
+                        column.nan_value_count = Some(0);
+                    }
+                }
+                let unverified = verify(&artifact, &claimed, &prefix, &store, fixture.metadata())
+                    .await
+                    .unwrap();
+                assert!(
+                    unverified
+                        .iter()
+                        .all(|file| file.nan_value_counts().is_empty()),
+                    "{}",
+                    case.name
+                );
             }
         }
     }

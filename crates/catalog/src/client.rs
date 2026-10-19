@@ -140,6 +140,11 @@ impl HttpClient {
             .await
             .map_err(|source| CatalogError::Transport { operation, source })?;
         let status = response.status();
+        if matches!(status.as_u16(), 401 | 419) {
+            // A token can be revoked or expire before its advertised lifetime.
+            // Fetch a fresh one next time instead of repeating a rejected token.
+            self.invalidate_token().await;
+        }
         let body = response
             .bytes()
             .await
@@ -152,6 +157,15 @@ impl HttpClient {
             });
         }
         serde_json::from_slice(&body).map_err(|source| CatalogError::Decode { operation, source })
+    }
+
+    /// Discards any cached OAuth2 token after the catalog rejected it, so
+    /// the next request fetches a new one. Static and absent credentials
+    /// are unaffected.
+    pub(crate) async fn invalidate_token(&self) {
+        if matches!(self.auth, Auth::OAuth2 { .. }) {
+            self.token.lock().await.take();
+        }
     }
 
     async fn authorize(&self, request: RequestBuilder) -> Result<RequestBuilder, CatalogError> {

@@ -2,6 +2,7 @@
 
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -46,6 +47,7 @@ pub trait SchedulingAccess: Send + Sync + 'static {
     ) -> Result<Eligibility, Status>;
 
     /// Resolves retained publication evidence without replaying a mutation.
+    /// Every durable write must be fenced by `epoch`.
     ///
     /// # Errors
     /// Missing catalog access/evidence must retain the publication barrier.
@@ -53,6 +55,7 @@ pub trait SchedulingAccess: Send + Sync + 'static {
         &self,
         pool: &PgPool,
         job: &bergsmith_persistence::jobs::Job,
+        epoch: i64,
     ) -> Result<(), Status>;
 }
 
@@ -73,6 +76,11 @@ pub struct SchedulerConfig {
     pub interval: Duration,
     /// Deadline for one job's external validation or publication recovery.
     pub validation_timeout: Duration,
+    /// How long after send authorization periodic passes leave a `Committing`
+    /// job to its live publisher. It must exceed one commit request's connect
+    /// plus request timeout and the time to record its outcome. The first
+    /// pass of a scheduler recovers every publication regardless.
+    pub publication_send_grace: Duration,
 }
 
 impl Default for SchedulerConfig {
@@ -85,6 +93,7 @@ impl Default for SchedulerConfig {
             page_size: 128,
             interval: Duration::from_secs(1),
             validation_timeout: Duration::from_secs(30),
+            publication_send_grace: Duration::from_secs(120),
         }
     }
 }
@@ -121,6 +130,21 @@ impl SchedulingError {
             Self::Timeout => "SchedulerValidationTimedOut",
         }
     }
+
+    /// Whether the failure concerns the coordinator itself (leadership or the
+    /// database) rather than one job. Only these close dispatch; a job-scoped
+    /// failure skips that job and the pass continues.
+    #[must_use]
+    pub const fn is_infrastructure(&self) -> bool {
+        matches!(
+            self,
+            Self::Persistence(
+                PersistenceError::LeadershipLost { .. }
+                    | PersistenceError::Database(_)
+                    | PersistenceError::Migration(_)
+            )
+        )
+    }
 }
 
 /// One active coordinator's repair loop. Serve only [`Self::worker_service`].
@@ -133,6 +157,8 @@ pub struct Scheduler {
     config: SchedulerConfig,
     pass: tokio::sync::Mutex<()>,
     cursor: std::sync::Mutex<Uuid>,
+    started: AtomicBool,
+    unresolved: AtomicI64,
 }
 
 // Abort/drop must close dispatch as reliably as an explicit shutdown signal.
@@ -149,7 +175,7 @@ impl Scheduler {
     /// Database and leadership epoch come from the service's original context.
     ///
     /// # Errors
-    /// Rejects invalid budgets, page size, retry bounds, interval/deadline,
+    /// Rejects invalid budgets, page size, retry bounds, interval/deadline/grace,
     /// or a worker service that already belongs to a scheduler.
     pub fn new(
         service: WorkerService,
@@ -165,6 +191,7 @@ impl Scheduler {
             || config.interval > Duration::from_secs(86_400)
             || config.validation_timeout.is_zero()
             || config.validation_timeout > Duration::from_secs(3_600)
+            || config.publication_send_grace > Duration::from_secs(86_400)
         {
             return Err(SchedulingError::Configuration);
         }
@@ -179,6 +206,8 @@ impl Scheduler {
             config,
             pass: tokio::sync::Mutex::new(()),
             cursor: std::sync::Mutex::new(Uuid::nil()),
+            started: AtomicBool::new(false),
+            unresolved: AtomicI64::new(0),
         })
     }
 
@@ -186,6 +215,14 @@ impl Scheduler {
     #[must_use]
     pub fn worker_service(&self) -> WorkerService {
         self.service.clone()
+    }
+
+    /// Jobs in `CommitOutcomeUnknown` at the end of the last pass. Each keeps
+    /// its table barrier and admission slots until evidence or an operator
+    /// resolves it, so a growing value means admission capacity is shrinking.
+    #[must_use]
+    pub fn unresolved_publications(&self) -> i64 {
+        self.unresolved.load(Ordering::Acquire)
     }
 
     /// Registers safe, complete dispatch configuration without admitting stale work.
@@ -230,9 +267,14 @@ impl Scheduler {
     /// Performs startup/periodic recovery before rebuilding the bounded ready cache.
     /// No database transaction is held across catalog/storage or RPC work.
     ///
+    /// A failure scoped to one job (its catalog, storage, binding, plan, or a
+    /// concurrent state change) skips that job with a logged reason code; the
+    /// pass continues for every other job and table.
+    ///
     /// # Errors
-    /// Any failed pass closes dispatch. Already accepted results and authorized
-    /// publications remain durable; a later pass resumes read-only reconciliation.
+    /// Lost leadership or database failure closes dispatch. Already accepted
+    /// results and authorized publications remain durable; a later pass
+    /// resumes read-only reconciliation.
     pub async fn reconcile(&self) -> Result<(), SchedulingError> {
         let _pass = self.pass.lock().await;
         let result = self.reconcile_inner().await;
@@ -243,16 +285,31 @@ impl Scheduler {
     async fn reconcile_inner(&self) -> Result<(), SchedulingError> {
         let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
         ledger::check_leadership(&mut conn, self.epoch).await?;
-        let publications = publications::recoverable_jobs(&mut conn).await?;
+        // The first pass recovers every publication. Later passes leave a
+        // recently authorized send to the live publisher awaiting its response.
+        let publications = if self.started.load(Ordering::Acquire) {
+            publications::settled_recoverable_jobs(&mut conn, self.config.publication_send_grace)
+                .await?
+        } else {
+            publications::recoverable_jobs(&mut conn).await?
+        };
         drop(conn);
         for job in publications {
-            tokio::time::timeout(
+            let recovered = tokio::time::timeout(
                 self.config.validation_timeout,
-                self.access.recover_publication(&self.pool, &job),
+                self.access
+                    .recover_publication(&self.pool, &job, self.epoch),
             )
             .await
-            .map_err(|_| SchedulingError::Timeout)?
-            .map_err(SchedulingError::Access)?;
+            .map_err(|_| SchedulingError::Timeout)
+            .and_then(|result| result.map_err(SchedulingError::Access));
+            if let Err(error) = recovered {
+                tracing::warn!(
+                    job_id = %job.id,
+                    reason_code = error.reason_code(),
+                    "publication recovery deferred; barrier and outputs retained"
+                );
+            }
         }
         let mut after = Uuid::nil();
         loop {
@@ -264,9 +321,37 @@ impl Scheduler {
             }
             for job in jobs {
                 after = *job.id.as_uuid();
-                self.reconcile_job(&job).await?;
+                if let Err(error) = self.reconcile_job(&job).await {
+                    if error.is_infrastructure() {
+                        return Err(error);
+                    }
+                    tracing::warn!(
+                        job_id = %job.id,
+                        reason_code = error.reason_code(),
+                        "job reconciliation skipped; execution state and retry timers unchanged"
+                    );
+                }
             }
         }
+        self.refill().await?;
+        let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
+        self.observe_unresolved(publications::unresolved_count(&mut conn).await?);
+        ledger::check_leadership(&mut conn, self.epoch).await?;
+        self.started.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn observe_unresolved(&self, count: i64) {
+        let previous = self.unresolved.swap(count, Ordering::AcqRel);
+        if count != previous && count > 0 {
+            tracing::warn!(
+                unresolved_publications = count,
+                "publication outcomes unresolved; their table barriers and admission slots stay reserved until evidence or operator attestation resolves them"
+            );
+        }
+    }
+
+    async fn refill(&self) -> Result<(), SchedulingError> {
         let slots = self.service.reset_ready_queue();
         let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
         let cursor = *self
@@ -284,20 +369,30 @@ impl Scheduler {
         }
         let mut offers = Vec::with_capacity(tasks.len());
         for (task, organization) in tasks {
-            let spec = ledger::dispatch_spec(&mut conn, TaskId::from_uuid(task))
+            let offer = ledger::dispatch_spec(&mut conn, TaskId::from_uuid(task))
                 .await?
-                .ok_or(SchedulingError::Configuration)?;
-            offers.push(task_offer(OrganizationId::from_uuid(organization), spec)?);
+                .ok_or(SchedulingError::Configuration)
+                .and_then(|spec| task_offer(OrganizationId::from_uuid(organization), spec));
+            match offer {
+                Ok(offer) => offers.push(offer),
+                Err(error) => tracing::warn!(
+                    task_id = %task,
+                    reason_code = error.reason_code(),
+                    "task skipped by ready-cache refill"
+                ),
+            }
         }
         drop(conn);
         for offer in offers {
-            self.service
-                .enqueue_registered(offer)
-                .await
-                .map_err(SchedulingError::Access)?;
+            let task = offer.task;
+            if let Err(status) = self.service.enqueue_registered(offer).await {
+                tracing::warn!(
+                    task_id = %task,
+                    reason_code = SchedulingError::Access(status).reason_code(),
+                    "task skipped by ready-cache refill"
+                );
+            }
         }
-        let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
-        ledger::check_leadership(&mut conn, self.epoch).await?;
         Ok(())
     }
 
@@ -310,6 +405,7 @@ impl Scheduler {
             ledger::stop(
                 &mut conn,
                 job.id,
+                job.state_revision,
                 self.epoch,
                 JobState::Cancelled,
                 "CancellationRequested",
@@ -334,6 +430,7 @@ impl Scheduler {
             ledger::stop(
                 &mut conn,
                 job.id,
+                job.state_revision,
                 self.epoch,
                 JobState::ReplanRequired,
                 "PlanningTableIdentityMismatch",
@@ -347,54 +444,84 @@ impl Scheduler {
         } else {
             false
         };
-        drop(conn);
         if !registered {
             return Ok(());
         }
+        // Fencing expired or session-lost attempts needs no external validation;
+        // only releasing their retries does.
+        ledger::repair_attempts(&mut conn, job.id, self.epoch).await?;
+        let current =
+            bergsmith_persistence::jobs::job(&mut conn, job.organization_id, job.id).await?;
+        let need = ledger::validation_need(&mut conn, &current, self.config.admission).await?;
+        if need == ledger::ValidationNeed::None {
+            return Ok(());
+        }
+        if need == ledger::ValidationNeed::Admission
+            && (plan.estimate().bytes > self.config.max_job_input_bytes
+                || plan.estimate().duration_millis > self.config.max_job_duration_millis)
+        {
+            ledger::stop(
+                &mut conn,
+                current.id,
+                current.state_revision,
+                self.epoch,
+                JobState::Failed,
+                "AdmissionJobBudgetExceeded",
+            )
+            .await?;
+            return Ok(());
+        }
+        drop(conn);
+        self.validate_and_apply(&current, &plan).await
+    }
+
+    /// Validates a job that needs admission or retry release, then applies
+    /// the outcome against the revision the decision was based on.
+    async fn validate_and_apply(
+        &self,
+        current: &bergsmith_persistence::jobs::Job,
+        plan: &PlanDocument,
+    ) -> Result<(), SchedulingError> {
         let eligibility = tokio::time::timeout(
             self.config.validation_timeout,
-            self.access.validate(job, &plan),
+            self.access.validate(current, plan),
         )
         .await
         .map_err(|_| SchedulingError::Timeout)?
         .map_err(SchedulingError::Access)?;
         let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
-        match eligibility {
-            Eligibility::ReplanRequired(reason) => {
-                ledger::stop(
+        let stopped = match eligibility {
+            Eligibility::ReplanRequired(reason) => (JobState::ReplanRequired, reason),
+            Eligibility::PermanentFailure(reason) => (JobState::Failed, reason),
+            Eligibility::Valid => {
+                ledger::reconcile_execution(&mut conn, current.id, self.epoch).await?;
+                let latest = bergsmith_persistence::jobs::job(
                     &mut conn,
-                    job.id,
-                    self.epoch,
-                    JobState::ReplanRequired,
-                    reason,
+                    current.organization_id,
+                    current.id,
                 )
                 .await?;
-            }
-            Eligibility::PermanentFailure(reason) => {
-                ledger::stop(&mut conn, job.id, self.epoch, JobState::Failed, reason).await?;
-            }
-            Eligibility::Valid => {
-                if plan.estimate().bytes > self.config.max_job_input_bytes
-                    || plan.estimate().duration_millis > self.config.max_job_duration_millis
+                if matches!(latest.state, JobState::Queued | JobState::Running)
+                    && latest.cancellation.is_none()
                 {
-                    ledger::stop(
-                        &mut conn,
-                        job.id,
-                        self.epoch,
-                        JobState::Failed,
-                        "AdmissionJobBudgetExceeded",
-                    )
-                    .await?;
-                } else {
-                    ledger::reconcile_execution(&mut conn, job.id, self.epoch).await?;
-                    let current =
-                        bergsmith_persistence::jobs::job(&mut conn, job.organization_id, job.id)
-                            .await?;
-                    if matches!(current.state, JobState::Queued | JobState::Running) {
-                        ledger::admit(&mut conn, job.id, self.epoch, self.config.admission).await?;
-                    }
+                    ledger::admit(&mut conn, current.id, self.epoch, self.config.admission).await?;
                 }
+                return Ok(());
             }
+        };
+        // The decision is based on `current`; a job that moved meanwhile
+        // (publication, cancellation) is left to the next pass.
+        if !ledger::stop(
+            &mut conn,
+            current.id,
+            current.state_revision,
+            self.epoch,
+            stopped.0,
+            stopped.1,
+        )
+        .await?
+        {
+            tracing::debug!(job_id = %current.id, "validation outcome superseded by a newer job state");
         }
         Ok(())
     }

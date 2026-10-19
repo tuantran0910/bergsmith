@@ -41,6 +41,8 @@ Automatic startup scheduling and worker RPC orchestration are later tasks.
 | Crash after authorization, timeout, or uncertain response | Reconcile without another send; retain barrier and objects |
 | Matching retained snapshot, even behind current head | `Succeeded`; release barrier |
 | Missing or mismatched evidence | `CommitOutcomeUnknown`; retain barrier and objects |
+| Operator attests non-publication, no matching evidence | Cancellation, pending disposition, or `Failed`; audited; release barrier |
+| Token/authentication failure before send authorization | Remains `Committing` and unauthorized; publish again |
 | Catalog unavailable | Leave durable state and retention intact; retry read-only reconciliation later |
 
 Use `publications::output_inventory` to inspect registered prefixes and finalized
@@ -54,8 +56,44 @@ Keep unresolved outputs and relevant snapshot/manifest history readable. Exclude
 the protected attempt prefixes from external orphan cleanup or disable that
 cleanup while outcomes remain unresolved. Missing history, a different current
 head, elapsed time, or a rejection from a later request cannot prove the original
-authorized request will never publish. Investigate these cases without manually
-forcing a terminal state or clearing the table barrier.
+authorized request will never publish. Never edit job rows or clear the table
+barrier by hand.
+
+`prepare_publication_with` accepts a `PublicationConfig`. Its
+`operation_timeout` (default 60 seconds) bounds each storage step separately:
+one task's output verification, the baseline manifest list, each baseline
+manifest, and writing the proposal. Raise it for very large tasks or slow storage.
+
+`publish` authenticates the commit (including fetching an OAuth2 token) before
+authorizing the send. A token or catalog failure there leaves the job
+`Committing` and unauthorized; call `publish` again. Drive `publish` only after
+the scheduler's first successful reconciliation pass.
+
+### Resolving an unknown outcome
+
+Scheduler passes re-read retained snapshot evidence for every
+`CommitOutcomeUnknown` job and record `Succeeded` when it matches. The scheduler
+logs and exposes (`Scheduler::unresolved_publications`) the number of unknown
+outcomes; each keeps its table barrier and admission job slots.
+
+When evidence cannot appear (for example, the snapshot history expired), an
+operator may call `durable_publication::attest_non_publication` with the job as
+inspected, the leader's epoch, the catalog connection, and the operator's
+principal. Attest only after establishing all of the following outside Bergsmith:
+
+- the catalog's request or audit logs show the authorized commit request was
+  rejected or never applied, and no proxy or client can still deliver it;
+- no snapshot with the intent's snapshot ID, publication ID, or proposal hash
+  exists in table metadata or the metadata log; and
+- the table cannot return to the planning baseline snapshot (otherwise a delayed
+  request could still satisfy its requirements).
+
+The call rechecks evidence first, and a matching snapshot still records
+`Succeeded`. Otherwise the job ends `Cancelled` (if cancellation was requested),
+with its pending disposition, or `Failed`. The job event records the operator and
+`OperatorAttestedNonPublication`; the barrier is released, and outputs stay in the
+inventory for cleanup review. A changed job revision or lost leadership refuses
+the call without changes.
 
 After a database restore, reconcile potentially forgotten intents against retained
 metadata and backups before enabling writes. This library does not automatically

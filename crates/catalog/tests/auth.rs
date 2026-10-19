@@ -75,6 +75,60 @@ async fn oauth2_tokens_are_fetched_once_and_sent_as_bearer_tokens() {
 }
 
 #[tokio::test]
+async fn a_rejected_oauth2_token_is_discarded_and_fetched_again() {
+    let mut server = Server::new_async().await;
+    let token = server
+        .mock("POST", "/oauth/token")
+        .with_body(r#"{"access_token":"t1","token_type":"bearer","expires_in":3600}"#)
+        .expect(2)
+        .create_async()
+        .await;
+    server
+        .mock("GET", "/catalog/v1/config")
+        .match_query(Matcher::Any)
+        .with_body(CONFIG_BODY)
+        .create_async()
+        .await;
+    let rejected = server
+        .mock("GET", "/catalog/v1/p1/namespaces/db/tables")
+        .with_status(401)
+        .expect(1)
+        .create_async()
+        .await;
+    let accepted = server
+        .mock("GET", "/catalog/v1/p1/namespaces/db/tables")
+        .with_body(r#"{"identifiers":[]}"#)
+        .expect(1)
+        .create_async()
+        .await;
+    let connection = CatalogConnection::connect(&config(&server, oauth2(&server, "s3cret")))
+        .await
+        .unwrap();
+
+    let error = connection
+        .list_tables(&["db".to_owned()])
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        matches!(error, CatalogError::Status { status: 401, .. }),
+        "{error}"
+    );
+    // The cached token is still within its lifetime, but the catalog
+    // rejected it; the next request must not repeat it.
+    assert!(
+        connection
+            .list_tables(&["db".to_owned()])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    token.assert_async().await;
+    rejected.assert_async().await;
+    accepted.assert_async().await;
+}
+
+#[tokio::test]
 async fn rejected_client_credentials_fail_to_connect() {
     let mut server = Server::new_async().await;
     server
