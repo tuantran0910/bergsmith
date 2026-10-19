@@ -26,8 +26,16 @@ identity, generation, lease deadline, resource envelope, and current table-scope
 credentials. Only safe grant fields are persisted. `CatalogWorkerAccess` reloads
 catalog metadata and vends credentials into memory; configure its job bindings
 from the original durable job/catalog identity. Catalog credentials never reach
-the worker. Heartbeats refresh the worker's storage credentials and return renewal,
-cancellation, or fencing instructions.
+the worker. Heartbeats return renewal, cancellation, or fencing instructions, and
+refresh the worker's storage credentials only when the delivered ones expire
+within one attempt lease (or their expiry is unknown, such as after a coordinator
+restart). A failed refresh never fails the heartbeat: the committed renewal is
+still returned, and the worker keeps its current credentials. If they lapse,
+storage access fails with an authorization error classified as `RetryTask`.
+Every rejected worker RPC carries a typed `Failure` detail with a stable reason
+code and disposition. For development storage with no vended credentials, the
+coordinator caches that absence for at most one lease. Expired hints are pruned
+on later deliveries; losing a hint only causes another access lookup.
 
 The first admitted offer binds the task's memory, CPU, duration, and output-byte
 limits durably. Every retry must use those same limits, including after a

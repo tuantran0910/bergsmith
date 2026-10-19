@@ -11,6 +11,9 @@ mod support;
 #[path = "support/worker_regressions.rs"]
 mod regressions;
 
+#[path = "support/worker_boundary_regressions.rs"]
+mod boundary_regressions;
+
 #[path = "support/scheduler_regressions.rs"]
 mod scheduling_tests;
 

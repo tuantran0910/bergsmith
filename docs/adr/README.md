@@ -36,3 +36,4 @@ record's status; never rewrite an accepted decision.
 | [0027](0027-delete-applicability-matches-the-native-reader.md) | Delete applicability matches the native reader's metric proof | Accepted |
 | [0028](0028-executor-failure-classification-and-preparation-bounds.md) | Executor failure classification and preparation bounds | Accepted |
 | [0029](0029-isolated-reconciliation-and-operator-resolution.md) | Isolated reconciliation, publication grace, and operator resolution | Accepted |
+| [0031](0031-worker-renewal-and-grant-boundaries.md) | Worker renewal and grant boundaries | Accepted |

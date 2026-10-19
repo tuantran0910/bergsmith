@@ -258,6 +258,9 @@ pub async fn finish_empty_poll(
 /// # Errors
 /// Rejects mismatched tenants, draining/expired sessions, busy workers, lost
 /// leadership, invalid tasks, and duplicate active attempts. Exact polls replay.
+/// Returns [`PersistenceError::StaleAttempt`] for `new.attempt_id`, persisting
+/// nothing, when `payload.generation` is not the generation allocated under the
+/// task lock; the caller may redraft the grant from a fresh task read.
 pub async fn grant(
     conn: &mut PgConnection,
     identity: &Identity,
@@ -335,7 +338,14 @@ async fn grant_inner(
     }
     leadership::ensure_leadership(&mut tx, epoch).await?;
     bind_envelope(&mut tx, new.task_id, payload.envelope_bytes).await?;
-    attempts::grant_attempt(&mut tx, new).await?;
+    let attempt = attempts::grant_attempt(&mut tx, new).await?;
+    // The caller encoded the grant from an unlocked task read. Dropping the
+    // transaction rolls the attempt back when another attempt started meanwhile.
+    if attempt.generation != payload.generation {
+        return Err(PersistenceError::StaleAttempt {
+            attempt: new.attempt_id,
+        });
+    }
     if job.state == JobState::Queued {
         jobs::transition_job(
             &mut tx,
@@ -377,6 +387,9 @@ pub struct GrantPayload<'a> {
     pub output_prefix: &'a str,
     /// Canonical resource-limit message. It must match every prior generation.
     pub envelope_bytes: &'a [u8],
+    /// Generation encoded in `grant_bytes`. It must equal the generation
+    /// allocated under the task lock, or the grant is rejected as stale.
+    pub generation: i32,
 }
 
 /// Binds a task's immutable resource envelope, including across coordinator restarts.

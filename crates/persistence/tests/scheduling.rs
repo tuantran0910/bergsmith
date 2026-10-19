@@ -65,6 +65,11 @@ async fn grant(
         pool: "test".into(),
     };
     let attempt_id = AttemptId::generate();
+    let generation: i32 = sqlx::query_scalar("SELECT attempts_started + 1 FROM tasks WHERE id=$1")
+        .bind(task.as_uuid())
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
     workers::grant_admitted(
         conn,
         &identity,
@@ -80,6 +85,7 @@ async fn grant(
             grant_bytes: b"safe",
             output_prefix: &format!("file:///tmp/{attempt_id}"),
             envelope_bytes: &[1],
+            generation,
         },
         limits,
     )

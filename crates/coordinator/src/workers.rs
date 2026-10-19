@@ -14,6 +14,7 @@ use bergsmith_common::job::JobState;
 use bergsmith_common::task::AttemptState;
 use bergsmith_persistence::{PersistenceError, attempts, jobs, plans, workers as ledger};
 use bergsmith_protocol::cluster::{self as wire, cluster_service_server::ClusterService};
+use bergsmith_protocol::common::FailureDisposition as Disposition;
 use bergsmith_protocol::convert::{
     attempt_state_to_wire, failure_disposition_to_wire, job_state_to_wire,
 };
@@ -25,6 +26,7 @@ use iceberg::spec::TableMetadata;
 use prost::Message;
 use sqlx::PgPool;
 use tokio::sync::Notify;
+use tokio::time::Instant;
 use tonic::transport::server::{TcpConnectInfo, TlsConnectInfo};
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
@@ -126,6 +128,7 @@ pub struct WorkerService {
     polls: PollRegistry,
     admission: Arc<OnceLock<bergsmith_persistence::scheduling::AdmissionLimits>>,
     dispatch_ready: Arc<AtomicBool>,
+    delivered: CredentialLedger,
 }
 
 type PollKey = (WorkerSessionId, Uuid);
@@ -184,41 +187,15 @@ impl Drop for Reservation {
     }
 }
 
-fn database(error: impl Into<PersistenceError>) -> Status {
-    use bergsmith_protocol::common::{Failure, FailureDisposition};
-    let (code, reason, message, disposition) = match error.into() {
-        PersistenceError::LeadershipLost { .. } => (
-            tonic::Code::Unavailable,
-            "CoordinatorLeadershipLost",
-            "coordinator leadership lost",
-            FailureDisposition::RetrySameRequest,
-        ),
-        PersistenceError::Database(_) => (
-            tonic::Code::Unavailable,
-            "ExecutionLedgerUnavailable",
-            "execution ledger unavailable",
-            FailureDisposition::RetrySameRequest,
-        ),
-        PersistenceError::AdmissionUnavailable => (
-            tonic::Code::Unavailable,
-            "AdmissionCapacityUnavailable",
-            "scheduler admission capacity unavailable",
-            FailureDisposition::RetrySameRequest,
-        ),
-        PersistenceError::NotFound { .. } => (
-            tonic::Code::NotFound,
-            "WorkerExecutionEntityMissing",
-            "worker execution entity not found",
-            FailureDisposition::PermanentFailure,
-        ),
-        _ => (
-            tonic::Code::FailedPrecondition,
-            "WorkerAuthorityRejected",
-            "worker execution authority rejected",
-            FailureDisposition::PermanentFailure,
-        ),
-    };
-    let failure = Failure {
+/// Builds a status carrying the typed `Failure` detail required at the worker
+/// boundary: a stable reason code and its retry disposition.
+fn rejection(
+    code: tonic::Code,
+    reason: &'static str,
+    message: &'static str,
+    disposition: Disposition,
+) -> Status {
+    let failure = bergsmith_protocol::common::Failure {
         reason_code: reason.into(),
         disposition: disposition.into(),
         message: message.into(),
@@ -226,23 +203,164 @@ fn database(error: impl Into<PersistenceError>) -> Status {
     Status::with_details(code, message, failure.encode_to_vec().into())
 }
 
+/// A malformed request that repeating cannot fix.
+fn invalid_request(reason: &'static str, message: &'static str) -> Status {
+    rejection(
+        tonic::Code::InvalidArgument,
+        reason,
+        message,
+        Disposition::PermanentFailure,
+    )
+}
+
+/// The caller's service identity is missing or revoked.
+fn unauthenticated(reason: &'static str, message: &'static str) -> Status {
+    rejection(
+        tonic::Code::Unauthenticated,
+        reason,
+        message,
+        Disposition::PermanentFailure,
+    )
+}
+
+/// Durable or configured state forbids the request permanently.
+fn precondition(reason: &'static str, message: &'static str) -> Status {
+    rejection(
+        tonic::Code::FailedPrecondition,
+        reason,
+        message,
+        Disposition::PermanentFailure,
+    )
+}
+
+/// A transient condition; the caller repeats the same request or receipt.
+fn unavailable(reason: &'static str, message: &'static str) -> Status {
+    rejection(
+        tonic::Code::Unavailable,
+        reason,
+        message,
+        Disposition::RetrySameRequest,
+    )
+}
+
+/// Returns the typed reason carried by a status, empty when it has none.
+fn reason_code(status: &Status) -> String {
+    bergsmith_protocol::common::Failure::decode(status.details())
+        .map(|failure| failure.reason_code)
+        .unwrap_or_default()
+}
+
+/// Gives an access-provider status a typed reason when it lacks one. Transient
+/// catalog or storage outages retry the same request; other refusals are
+/// permanent. The provider's redacted message is preserved.
+fn typed_access_error(status: Status) -> Status {
+    if !reason_code(&status).is_empty() {
+        return status;
+    }
+    let (reason, disposition) = match status.code() {
+        tonic::Code::Unavailable
+        | tonic::Code::DeadlineExceeded
+        | tonic::Code::ResourceExhausted
+        | tonic::Code::Aborted => (
+            "WorkerTableAccessUnavailable",
+            Disposition::RetrySameRequest,
+        ),
+        _ => ("WorkerTableAccessRejected", Disposition::PermanentFailure),
+    };
+    let failure = bergsmith_protocol::common::Failure {
+        reason_code: reason.into(),
+        disposition: disposition.into(),
+        message: status.message().into(),
+    };
+    Status::with_details(
+        status.code(),
+        status.message(),
+        failure.encode_to_vec().into(),
+    )
+}
+
+fn database(error: impl Into<PersistenceError>) -> Status {
+    match error.into() {
+        PersistenceError::LeadershipLost { .. } => {
+            unavailable("CoordinatorLeadershipLost", "coordinator leadership lost")
+        }
+        PersistenceError::Database(_) => {
+            unavailable("ExecutionLedgerUnavailable", "execution ledger unavailable")
+        }
+        PersistenceError::AdmissionUnavailable => unavailable(
+            "AdmissionCapacityUnavailable",
+            "scheduler admission capacity unavailable",
+        ),
+        PersistenceError::NotFound { .. } => rejection(
+            tonic::Code::NotFound,
+            "WorkerExecutionEntityMissing",
+            "worker execution entity not found",
+            Disposition::PermanentFailure,
+        ),
+        _ => precondition(
+            "WorkerAuthorityRejected",
+            "worker execution authority rejected",
+        ),
+    }
+}
+
 fn id<T: std::str::FromStr>(value: &str) -> Result<T, Status> {
     value
         .parse()
-        .map_err(|_| Status::invalid_argument("invalid identifier"))
+        .map_err(|_| invalid_request("InvalidIdentifier", "invalid identifier"))
 }
 
 fn scheduler_not_ready() -> Status {
-    let failure = bergsmith_protocol::common::Failure {
-        reason_code: "SchedulerNotReady".into(),
-        disposition: bergsmith_protocol::common::FailureDisposition::RetrySameRequest.into(),
-        message: "scheduler reconciliation is not ready".into(),
-    };
-    Status::with_details(
-        tonic::Code::Unavailable,
-        "scheduler reconciliation is not ready",
-        failure.encode_to_vec().into(),
+    unavailable("SchedulerNotReady", "scheduler reconciliation is not ready")
+}
+
+fn invalid_stored_plan() -> Status {
+    precondition("StoredPlanInvalid", "invalid stored plan")
+}
+
+fn missing_stored_plan() -> Status {
+    precondition("StoredPlanMissing", "missing stored plan")
+}
+
+fn verification_unavailable() -> Status {
+    unavailable(
+        "TaskResultVerificationUnavailable",
+        "task result verification unavailable",
     )
+}
+
+/// Whether a grant error proves this offer can never be granted, so keeping it
+/// queued would only make every compatible poll hit it again. Session-scoped,
+/// leadership, admission, and database errors leave the offer queued.
+fn offer_unusable(error: &PersistenceError) -> bool {
+    match error {
+        PersistenceError::NotFound { entity, .. } => matches!(*entity, "task" | "job"),
+        PersistenceError::InvalidValue { entity, .. } => *entity == "task resource envelope",
+        PersistenceError::JobNotInState { .. }
+        | PersistenceError::JobTransition(_)
+        | PersistenceError::TaskTransition(_)
+        | PersistenceError::RetryBudgetExhausted { .. }
+        | PersistenceError::AlreadyExists { .. } => true,
+        _ => false,
+    }
+}
+
+/// Expiry of the storage credentials last delivered for an attempt. Memory-only;
+/// it never holds credential values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Delivered {
+    /// The access provider vended no credentials at this monotonic instant.
+    /// Forget this hint after one lease even if the worker never reports back.
+    NotVended(Instant),
+    /// The delivered credentials expire at this catalog-reported time.
+    Expires(DateTime<Utc>),
+}
+
+type CredentialLedger = Arc<Mutex<BTreeMap<AttemptId, Delivered>>>;
+
+fn expiry(credentials: &wire::StorageCredentials) -> Option<DateTime<Utc>> {
+    let at = credentials.expires_at.as_ref()?;
+    DateTime::from_timestamp(at.seconds, u32::try_from(at.nanos).ok()?)
 }
 
 fn timestamp(value: DateTime<Utc>) -> prost_types::Timestamp {
@@ -282,7 +400,8 @@ impl WorkerService {
                 .enumerate()
                 .any(|(i, v)| verifiers[..i].iter().any(|p| p.verifier == v.verifier))
         {
-            return Err(Status::invalid_argument(
+            return Err(invalid_request(
+                "WorkerServiceConfigurationInvalid",
                 "invalid worker service configuration",
             ));
         }
@@ -297,6 +416,7 @@ impl WorkerService {
             polls: Arc::new(Mutex::new(BTreeMap::new())),
             admission: Arc::new(OnceLock::new()),
             dispatch_ready: Arc::new(AtomicBool::new(true)),
+            delivered: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
 
@@ -304,9 +424,12 @@ impl WorkerService {
         self,
         limits: bergsmith_persistence::scheduling::AdmissionLimits,
     ) -> Result<Self, Status> {
-        self.admission
-            .set(limits)
-            .map_err(|_| Status::failed_precondition("worker service already has a scheduler"))?;
+        self.admission.set(limits).map_err(|_| {
+            precondition(
+                "WorkerSchedulerAlreadyAttached",
+                "worker service already has a scheduler",
+            )
+        })?;
         self.set_dispatch_ready(false);
         Ok(self)
     }
@@ -366,21 +489,128 @@ impl WorkerService {
             .get::<TlsConnectInfo<TcpConnectInfo>>()
             .is_none()
         {
-            return Err(Status::unauthenticated("worker RPC requires TLS"));
+            return Err(unauthenticated(
+                "WorkerTlsRequired",
+                "worker RPC requires TLS",
+            ));
         }
         let token = ServiceToken::from_metadata(request.metadata())
-            .map_err(|_| Status::unauthenticated("invalid worker service token"))?;
+            .map_err(|_| unauthenticated("WorkerTokenInvalid", "invalid worker service token"))?;
         self.verifiers
             .iter()
             .find(|v| token.matches(&v.verifier) && token.pool() == v.identity.pool)
             .map(|v| v.identity.clone())
-            .ok_or_else(|| Status::unauthenticated("invalid worker service token"))
+            .ok_or_else(|| unauthenticated("WorkerTokenInvalid", "invalid worker service token"))
     }
 
+    /// Loads table access with a bounded wait; every error carries a typed reason.
     async fn access(&self, job: JobId) -> Result<TaskAccess, Status> {
         tokio::time::timeout(Duration::from_secs(30), self.access.access(job))
             .await
-            .map_err(|_| Status::unavailable("worker storage access timed out"))?
+            .map_err(|_| {
+                unavailable(
+                    "WorkerTableAccessTimeout",
+                    "worker storage access timed out",
+                )
+            })?
+            .map_err(typed_access_error)
+    }
+
+    /// Records the expiry of credentials just delivered for `attempt`. Entries for
+    /// already expired credentials are dropped: an absent entry only causes one
+    /// extra refresh. No-credential hints expire after one lease, so vanished
+    /// development workers cannot accumulate entries indefinitely. Credentials
+    /// without a reported expiry are left absent and refreshed each heartbeat.
+    fn remember_delivery(
+        &self,
+        attempt: AttemptId,
+        credentials: Option<&wire::StorageCredentials>,
+    ) {
+        let now = Utc::now();
+        let monotonic_now = Instant::now();
+        let mut delivered = self
+            .delivered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        delivered.retain(|_, entry| match entry {
+            Delivered::NotVended(at) => {
+                monotonic_now.saturating_duration_since(*at) < self.config.lease
+            }
+            Delivered::Expires(at) => *at > now,
+        });
+        match credentials.map(expiry) {
+            None => {
+                delivered.insert(attempt, Delivered::NotVended(monotonic_now));
+            }
+            Some(Some(at)) => {
+                delivered.insert(attempt, Delivered::Expires(at));
+            }
+            Some(None) => {
+                delivered.remove(&attempt);
+            }
+        }
+    }
+
+    fn forget_delivery(&self, attempt: AttemptId) {
+        self.delivered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&attempt);
+    }
+
+    /// Credentials are refreshed only when the delivered ones expire within one
+    /// lease. Because the lease spans several heartbeat intervals, a failed
+    /// refresh is retried on later heartbeats before the credentials lapse.
+    fn needs_refresh(&self, attempt: AttemptId) -> bool {
+        let window = chrono::Duration::from_std(self.config.lease).unwrap_or(chrono::Duration::MAX);
+        match self
+            .delivered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&attempt)
+        {
+            None => true,
+            Some(Delivered::NotVended(at)) => at.elapsed() >= self.config.lease,
+            Some(Delivered::Expires(at)) => *at - Utc::now() <= window,
+        }
+    }
+
+    /// Fetches fresh credentials for a renewed attempt. A failed refresh never
+    /// fails the heartbeat: the renewal stands, and the worker keeps its current
+    /// credentials. If those lapse, storage access fails with a storage
+    /// authorization error that is classified as `RetryTask`.
+    async fn refresh_credentials(&self, attempt: AttemptId) -> Option<wire::StorageCredentials> {
+        let job = match self.attempt_job(attempt).await {
+            Ok(job) => job,
+            Err(error) => {
+                tracing::warn!(
+                    attempt_id = %attempt,
+                    reason_code = reason_code(&database(error)),
+                    "worker credential refresh skipped; lease renewal still returned"
+                );
+                return None;
+            }
+        };
+        match self.access(job).await {
+            Ok(access) => {
+                self.remember_delivery(attempt, access.credentials.as_ref());
+                access.credentials
+            }
+            Err(status) => {
+                tracing::warn!(
+                    attempt_id = %attempt,
+                    reason_code = reason_code(&status),
+                    "worker credential refresh failed; lease renewal still returned"
+                );
+                None
+            }
+        }
+    }
+
+    async fn attempt_job(&self, attempt: AttemptId) -> Result<JobId, PersistenceError> {
+        let mut conn = self.pool.acquire().await?;
+        let attempt = attempts::attempt(&mut conn, attempt).await?;
+        Ok(plans::task(&mut conn, attempt.task_id).await?.job_id)
     }
 
     /// Offers an admitted task without polling PostgreSQL for queue selection.
@@ -403,7 +633,8 @@ impl WorkerService {
                 .await
                 .map_err(database)?;
             if stored.as_ref() != Some(&crate::scheduling::dispatch_spec(&offer)?) {
-                return Err(Status::failed_precondition(
+                return Err(precondition(
+                    "TaskOfferConfigurationMismatch",
                     "offer differs from durable dispatch configuration",
                 ));
             }
@@ -424,7 +655,12 @@ impl WorkerService {
             return Ok(());
         }
         if queue.len() >= self.config.queue_capacity {
-            return Err(Status::resource_exhausted("worker ready queue full"));
+            return Err(rejection(
+                tonic::Code::ResourceExhausted,
+                "WorkerReadyQueueFull",
+                "worker ready queue full",
+                Disposition::RetrySameRequest,
+            ));
         }
         queue.push_back(ReadyOffer {
             offer,
@@ -451,15 +687,15 @@ impl WorkerService {
     ) -> Result<(), Status> {
         let first = offers
             .first()
-            .ok_or_else(|| Status::invalid_argument("missing task offers"))?;
+            .ok_or_else(|| invalid_request("TaskOfferMissing", "missing task offers"))?;
         let mut conn = self.pool.acquire().await.map_err(database)?;
         jobs::job(&mut conn, first.organization, job)
             .await
             .map_err(database)?;
         let plan = planning::load_plan(&mut conn, job)
             .await
-            .map_err(|_| Status::failed_precondition("invalid stored plan"))?
-            .ok_or_else(|| Status::failed_precondition("missing stored plan"))?;
+            .map_err(|_| invalid_stored_plan())?
+            .ok_or_else(missing_stored_plan)?;
         drop(conn);
         let tasks: BTreeMap<_, _> = plan
             .tasks()
@@ -470,32 +706,43 @@ impl WorkerService {
         for offer in offers {
             validate_offer_shape(offer)?;
             if offer.organization != first.organization {
-                return Err(Status::invalid_argument("task offer organization mismatch"));
+                return Err(invalid_request(
+                    "TaskOfferOrganizationMismatch",
+                    "task offer organization mismatch",
+                ));
             }
             let task = tasks
                 .get(&offer.task)
-                .ok_or_else(|| Status::failed_precondition("task absent from plan"))?;
+                .ok_or_else(|| precondition("TaskAbsentFromPlan", "task absent from plan"))?;
             let artifact = plan
                 .artifact_of(task)
-                .map_err(|_| Status::failed_precondition("invalid task artifact"))?;
+                .map_err(|_| precondition("TaskArtifactInvalid", "invalid task artifact"))?;
             let digest = artifact_digest(&artifact);
             if offer.artifact.sha256 != digest.as_bytes() {
-                return Err(Status::invalid_argument("task artifact digest mismatch"));
+                return Err(invalid_request(
+                    "TaskArtifactDigestMismatch",
+                    "task artifact digest mismatch",
+                ));
             }
             expected.push((offer, digest));
         }
         let access = self.access(job).await?;
         for (offer, digest) in expected {
             let location = Location::parse(&offer.artifact.uri)
-                .map_err(|_| Status::invalid_argument("invalid artifact URI"))?;
+                .map_err(|_| invalid_request("TaskArtifactUriInvalid", "invalid artifact URI"))?;
             let bytes = tokio::time::timeout(Duration::from_secs(30), access.store.read(&location))
                 .await
-                .map_err(|_| Status::unavailable("task artifact read timed out"))?
-                .map_err(|_| Status::unavailable("task artifact unavailable"))?;
+                .map_err(|_| {
+                    unavailable("TaskArtifactReadTimeout", "task artifact read timed out")
+                })?
+                .map_err(|_| unavailable("TaskArtifactUnavailable", "task artifact unavailable"))?;
             let actual = bergsmith_protocol::artifact::TaskArtifact::decode(bytes)
-                .map_err(|_| Status::invalid_argument("invalid task artifact"))?;
+                .map_err(|_| invalid_request("TaskArtifactInvalid", "invalid task artifact"))?;
             if artifact_digest(&actual) != digest {
-                return Err(Status::invalid_argument("task artifact content mismatch"));
+                return Err(invalid_request(
+                    "TaskArtifactContentMismatch",
+                    "task artifact content mismatch",
+                ));
             }
         }
         Ok(())
@@ -561,12 +808,22 @@ impl WorkerService {
                 result: Some(wire::request_task_response::Result::Disposition(status)),
             });
         }
-        let mut grant = wire::TaskGrant::decode(
-            poll.grant_bytes
-                .as_deref()
-                .ok_or_else(|| Status::internal("missing stored grant"))?,
-        )
-        .map_err(|_| Status::internal("invalid stored grant"))?;
+        let mut grant = wire::TaskGrant::decode(poll.grant_bytes.as_deref().ok_or_else(|| {
+            rejection(
+                tonic::Code::Internal,
+                "StoredGrantMissing",
+                "missing stored grant",
+                Disposition::PermanentFailure,
+            )
+        })?)
+        .map_err(|_| {
+            rejection(
+                tonic::Code::Internal,
+                "StoredGrantInvalid",
+                "invalid stored grant",
+                Disposition::PermanentFailure,
+            )
+        })?;
         let job = id(&grant.job_id)?;
         let access = self.access(job).await?;
         let status = self.status(identity, session, attempt_id).await?;
@@ -579,7 +836,9 @@ impl WorkerService {
         let attempt = ledger::owned_attempt(&mut conn, identity, session, attempt_id)
             .await
             .map_err(database)?;
+        drop(conn);
         grant.lease_expires_at = Some(timestamp(attempt.lease_expires_at));
+        self.remember_delivery(attempt_id, access.credentials.as_ref());
         grant.credentials = access.credentials;
         Ok(wire::RequestTaskResponse {
             result: Some(wire::request_task_response::Result::Grant(grant)),
@@ -642,8 +901,8 @@ impl WorkerService {
         }
         let plan = planning::load_plan(&mut conn, task.job_id)
             .await
-            .map_err(|_| Status::failed_precondition("invalid stored plan"))?
-            .ok_or_else(|| Status::failed_precondition("missing stored plan"))?;
+            .map_err(|_| invalid_stored_plan())?
+            .ok_or_else(missing_stored_plan)?;
         let (attempt_id, grant) = draft_grant(offer, &task, &plan, session)?;
         let new = attempts::NewGrant {
             attempt_id,
@@ -655,8 +914,9 @@ impl WorkerService {
             grant_bytes: &grant.encode_to_vec(),
             output_prefix: &grant.output_prefix,
             envelope_bytes: &offer.limits.encode_to_vec(),
+            generation: grant.generation,
         };
-        let poll = if let Some(limits) = self.admission.get() {
+        let granted = if let Some(limits) = self.admission.get() {
             if !self.dispatch_ready.load(Ordering::Acquire) {
                 return Err(scheduler_not_ready());
             }
@@ -666,10 +926,26 @@ impl WorkerService {
             .await
         } else {
             ledger::grant(&mut conn, identity, &new, request, self.epoch, &payload).await
+        };
+        match granted {
+            Ok(poll) => {
+                reservation.consumed = poll.attempt_id == Some(*attempt_id.as_uuid());
+                Ok(Some(poll))
+            }
+            // The task changed after the unlocked read; nothing was persisted.
+            // Keep the offer so the caller redrafts it from a fresh read.
+            Err(PersistenceError::StaleAttempt { attempt }) if attempt == attempt_id => Ok(None),
+            Err(error) if offer_unusable(&error) => {
+                tracing::warn!(
+                    task_id = %offer.task,
+                    reason_code = reason_code(&database(error)),
+                    "dropping ungrantable task offer"
+                );
+                reservation.consumed = true;
+                Ok(None)
+            }
+            Err(error) => Err(database(error)),
         }
-        .map_err(database)?;
-        reservation.consumed = poll.attempt_id == Some(*attempt_id.as_uuid());
-        Ok(Some(poll))
     }
 
     async fn pull(
@@ -678,7 +954,7 @@ impl WorkerService {
         session_id: WorkerSessionId,
         request: Uuid,
     ) -> Result<wire::RequestTaskResponse, Status> {
-        let deadline = tokio::time::Instant::now() + self.config.long_poll_timeout;
+        let deadline = Instant::now() + self.config.long_poll_timeout;
         loop {
             let notified = self.changed.notified();
             tokio::pin!(notified);
@@ -715,7 +991,14 @@ impl WorkerService {
                     self.grant_reserved(identity, session_id, request, &mut reservation),
                 )
                 .await
-                .map_err(|_| Status::deadline_exceeded("task grant decision timed out"))??;
+                .map_err(|_| {
+                    rejection(
+                        tonic::Code::DeadlineExceeded,
+                        "TaskGrantDecisionTimeout",
+                        "task grant decision timed out",
+                        Disposition::RetrySameRequest,
+                    )
+                })??;
                 drop(reservation);
                 if let Some(poll) = poll {
                     return self.replay(identity, session_id, poll).await;
@@ -750,7 +1033,12 @@ fn draft_grant(
 ) -> Result<(AttemptId, wire::TaskGrant), Status> {
     let attempt_id = AttemptId::generate();
     let prefix = Location::parse(plan.baseline().data_location())
-        .map_err(|_| Status::internal("invalid planned data location"))?
+        .map_err(|_| {
+            precondition(
+                "PlannedDataLocationInvalid",
+                "invalid planned data location",
+            )
+        })?
         .attempt_output_prefix(task.job_id, attempt_id);
     Ok((
         attempt_id,
@@ -763,10 +1051,7 @@ fn draft_grant(
             generation: task.attempts_started + 1,
             lease_expires_at: None,
             artifact: Some(offer.artifact.clone()),
-            input_state_id: plan
-                .sha256()
-                .map_err(|_| Status::internal("invalid stored plan"))?
-                .to_hex(),
+            input_state_id: plan.sha256().map_err(|_| invalid_stored_plan())?.to_hex(),
             capability_profile: offer.capability.clone(),
             output_prefix: prefix.to_string(),
             limits: Some(offer.limits),
@@ -786,16 +1071,25 @@ impl ClusterService for WorkerService {
         let identity = self.authenticate(&request)?;
         let registration = request.into_inner();
         if registration.pool != identity.pool {
-            return Err(Status::permission_denied("worker pool mismatch"));
+            return Err(rejection(
+                tonic::Code::PermissionDenied,
+                "WorkerPoolMismatch",
+                "worker pool mismatch",
+                Disposition::PermanentFailure,
+            ));
         }
         if registration.protocol_revision < 2 {
-            return Err(Status::failed_precondition("unsupported worker protocol"));
+            return Err(precondition(
+                "WorkerProtocolUnsupported",
+                "unsupported worker protocol",
+            ));
         }
         let capacity = registration
             .capacity
-            .ok_or_else(|| Status::invalid_argument("missing worker capacity"))?;
+            .ok_or_else(|| invalid_request("WorkerCapacityMissing", "missing worker capacity"))?;
         if capacity.max_concurrent_tasks != 1 {
-            return Err(Status::invalid_argument(
+            return Err(invalid_request(
+                "WorkerConcurrencyUnsupported",
                 "one executing task per worker is required",
             ));
         }
@@ -808,10 +1102,11 @@ impl ClusterService for WorkerService {
                 id: session,
                 worker_name: registration.worker_name,
                 capabilities: registration.capabilities,
-                memory_bytes: i64::try_from(capacity.memory_bytes)
-                    .map_err(|_| Status::invalid_argument("invalid worker memory"))?,
+                memory_bytes: i64::try_from(capacity.memory_bytes).map_err(|_| {
+                    invalid_request("WorkerCapacityInvalid", "invalid worker memory")
+                })?,
                 cpu_millis: i32::try_from(capacity.cpu_millis)
-                    .map_err(|_| Status::invalid_argument("invalid worker CPU"))?,
+                    .map_err(|_| invalid_request("WorkerCapacityInvalid", "invalid worker CPU"))?,
                 build_version: registration.build_version,
             },
             self.config.lease,
@@ -851,7 +1146,10 @@ impl ClusterService for WorkerService {
         let heartbeat = request.into_inner();
         let session_id = id(&heartbeat.worker_session_id)?;
         if heartbeat.attempts.len() > 1 {
-            return Err(Status::invalid_argument("too many executing attempts"));
+            return Err(invalid_request(
+                "TooManyExecutingAttempts",
+                "too many executing attempts",
+            ));
         }
         let mut conn = self.pool.acquire().await.map_err(database)?;
         let session = ledger::touch(
@@ -893,20 +1191,13 @@ impl ClusterService for WorkerService {
                     wire::attempt_directive::Directive::Fenced(wire::Fenced {})
                 }
             };
-            let refresh_job = if matches!(renewal, ledger::Renewal::Renewed(_)) {
-                let attempt = attempts::attempt(&mut conn, attempt_id)
-                    .await
-                    .map_err(database)?;
-                let task = plans::task(&mut conn, attempt.task_id)
-                    .await
-                    .map_err(database)?;
-                Some(task.job_id)
-            } else {
-                None
-            };
             drop(conn);
-            let credentials = if let Some(job) = refresh_job {
-                self.access(job).await?.credentials
+            // The renewal is committed: from here on nothing may discard it.
+            let credentials = if !matches!(renewal, ledger::Renewal::Renewed(_)) {
+                self.forget_delivery(attempt_id);
+                None
+            } else if self.needs_refresh(attempt_id) {
+                self.refresh_credentials(attempt_id).await
             } else {
                 None
             };
@@ -930,7 +1221,7 @@ impl ClusterService for WorkerService {
         let report = request.into_inner();
         let receipt = report
             .receipt
-            .ok_or_else(|| Status::invalid_argument("missing receipt"))?;
+            .ok_or_else(|| invalid_request("TaskReceiptMissing", "missing receipt"))?;
         let session_id = id(&report.worker_session_id)?;
         let attempt_id = id(&receipt.attempt_id)?;
         let mut conn = self.pool.acquire().await.map_err(database)?;
@@ -978,16 +1269,17 @@ impl ClusterService for WorkerService {
         }
         let plan = planning::load_plan(&mut conn, task.job_id)
             .await
-            .map_err(|_| Status::failed_precondition("invalid stored plan"))?
-            .ok_or_else(|| Status::failed_precondition("missing stored plan"))?;
+            .map_err(|_| invalid_stored_plan())?
+            .ok_or_else(missing_stored_plan)?;
         drop(conn);
+        self.forget_delivery(attempt_id);
         let access = self.access(task.job_id).await?;
         let verified =
             match results::verify_receipt(&plan, &canonical, &access.store, &access.metadata).await
             {
                 Ok(verified) => verified,
                 Err(error) if invalid_output(&error) => return Ok(invalid()),
-                Err(_) => return Err(Status::unavailable("task result verification unavailable")),
+                Err(_) => return Err(verification_unavailable()),
             };
         let mut conn = self.pool.acquire().await.map_err(database)?;
         match bergsmith_persistence::publications::accept_outputs(
@@ -1044,14 +1336,18 @@ impl ClusterService for WorkerService {
         let attempt_id = id(&report.attempt_id)?;
         let failure = report
             .failure
-            .ok_or_else(|| Status::invalid_argument("missing failure"))?;
+            .ok_or_else(|| invalid_request("TaskFailureMissing", "missing failure"))?;
         let mut conn = self.pool.acquire().await.map_err(database)?;
         let attempt = ledger::owned_attempt(&mut conn, &identity, session, attempt_id)
             .await
             .map_err(database)?;
         if report.generation != attempt.generation {
-            return Err(Status::failed_precondition("stale attempt generation"));
+            return Err(precondition(
+                "StaleAttemptGeneration",
+                "stale attempt generation",
+            ));
         }
+        self.forget_delivery(attempt_id);
         let response = ledger::report_failure(
             &mut conn,
             &identity,
@@ -1110,7 +1406,7 @@ fn validate_offer_shape(offer: &TaskOffer) -> Result<(), Status> {
                 && (d.seconds > 0 || d.nanos > 0)
         })
     {
-        return Err(Status::invalid_argument("invalid task offer"));
+        return Err(invalid_request("TaskOfferInvalid", "invalid task offer"));
     }
     Ok(())
 }
@@ -1155,6 +1451,157 @@ mod tests {
         ] {
             assert!(!invalid_output(&error));
         }
+    }
+
+    fn failure(status: &Status) -> (String, i32) {
+        let failure = bergsmith_protocol::common::Failure::decode(status.details()).unwrap();
+        (failure.reason_code, failure.disposition)
+    }
+
+    #[test]
+    fn access_errors_gain_a_typed_reason_without_losing_an_existing_one() {
+        let retry = i32::from(Disposition::RetrySameRequest);
+        let permanent = i32::from(Disposition::PermanentFailure);
+        for code in [
+            tonic::Code::Unavailable,
+            tonic::Code::DeadlineExceeded,
+            tonic::Code::ResourceExhausted,
+            tonic::Code::Aborted,
+        ] {
+            let status = typed_access_error(Status::new(code, "catalog unavailable"));
+            assert_eq!(status.code(), code);
+            assert_eq!(status.message(), "catalog unavailable");
+            assert_eq!(
+                failure(&status),
+                ("WorkerTableAccessUnavailable".into(), retry)
+            );
+        }
+        let status = typed_access_error(Status::failed_precondition("missing binding"));
+        assert_eq!(
+            failure(&status),
+            ("WorkerTableAccessRejected".into(), permanent)
+        );
+        let typed = typed_access_error(precondition("ExecutionAuthorityRevoked", "revoked"));
+        assert_eq!(
+            failure(&typed),
+            ("ExecutionAuthorityRevoked".into(), permanent)
+        );
+        assert_eq!(
+            failure(&verification_unavailable()),
+            ("TaskResultVerificationUnavailable".into(), retry)
+        );
+        assert!(reason_code(&Status::internal("untyped")).is_empty());
+    }
+
+    #[test]
+    fn only_offer_scoped_grant_errors_drop_the_offer() {
+        let task = TaskId::generate();
+        let job = JobId::generate();
+        for error in [
+            PersistenceError::RetryBudgetExhausted { task },
+            PersistenceError::JobNotInState {
+                job,
+                state: JobState::Succeeded,
+                operation: "grant an attempt",
+            },
+            PersistenceError::TaskTransition(bergsmith_common::task::TaskTransitionError {
+                from: bergsmith_common::task::TaskState::Accepted,
+                to: bergsmith_common::task::TaskState::Leased,
+            }),
+            PersistenceError::AlreadyExists {
+                entity: "attempt",
+                constraint: "attempts_one_active".into(),
+            },
+            PersistenceError::NotFound {
+                entity: "task",
+                id: task.to_string(),
+            },
+            PersistenceError::InvalidValue {
+                entity: "task resource envelope",
+                constraint: "task_resource_envelope_is_immutable".into(),
+            },
+        ] {
+            assert!(offer_unusable(&error), "{error:?}");
+        }
+        for error in [
+            PersistenceError::LeadershipLost { epoch: 1 },
+            PersistenceError::AdmissionUnavailable,
+            PersistenceError::Database(sqlx::Error::PoolTimedOut),
+            PersistenceError::InvalidValue {
+                entity: "worker session",
+                constraint: "worker_session_authority".into(),
+            },
+            PersistenceError::NotFound {
+                entity: "attempt",
+                id: String::new(),
+            },
+            PersistenceError::StaleAttempt {
+                attempt: AttemptId::generate(),
+            },
+        ] {
+            assert!(!offer_unusable(&error), "{error:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn credentials_are_refreshed_only_within_one_lease_of_expiry() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://localhost/refresh_test")
+            .unwrap();
+        let service =
+            WorkerService::new(pool, 1, vec![], WorkerConfig::default(), Arc::new(NoAccess))
+                .unwrap();
+        let credentials = |seconds: i64| wire::StorageCredentials {
+            prefix: "s3://bucket/table".into(),
+            properties: BTreeMap::new(),
+            expires_at: Some(prost_types::Timestamp {
+                seconds: (Utc::now() + chrono::Duration::seconds(seconds)).timestamp(),
+                nanos: 0,
+            }),
+        };
+        let attempt = AttemptId::generate();
+        assert!(service.needs_refresh(attempt), "unknown delivery");
+        service.remember_delivery(attempt, None);
+        assert!(!service.needs_refresh(attempt), "nothing is vended");
+        service.remember_delivery(attempt, Some(&credentials(3600)));
+        assert!(!service.needs_refresh(attempt));
+        service.remember_delivery(attempt, Some(&credentials(60)));
+        assert!(service.needs_refresh(attempt), "expires within the lease");
+        let mut unbounded = credentials(3600);
+        unbounded.expires_at = None;
+        service.remember_delivery(attempt, Some(&unbounded));
+        assert!(service.needs_refresh(attempt), "unknown expiry");
+        let expired = AttemptId::generate();
+        service.remember_delivery(expired, Some(&credentials(-1)));
+        service.remember_delivery(attempt, Some(&credentials(3600)));
+        assert!(!service.delivered.lock().unwrap().contains_key(&expired));
+        service.forget_delivery(attempt);
+        assert!(service.needs_refresh(attempt));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn vanished_workers_without_credentials_do_not_accumulate_delivery_hints() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://localhost/refresh_test")
+            .unwrap();
+        let service =
+            WorkerService::new(pool, 1, vec![], WorkerConfig::default(), Arc::new(NoAccess))
+                .unwrap();
+        let abandoned = AttemptId::generate();
+        service.remember_delivery(abandoned, None);
+        assert!(!service.needs_refresh(abandoned));
+
+        // Advance the monotonic cache clock without sleeping or changing a
+        // durable lease. Losing this optimization must only cause a refresh.
+        tokio::time::advance(service.config.lease).await;
+        assert!(service.needs_refresh(abandoned));
+
+        let live = AttemptId::generate();
+        service.remember_delivery(live, None);
+        let delivered = service.delivered.lock().unwrap();
+        assert!(!delivered.contains_key(&abandoned));
+        assert!(delivered.contains_key(&live));
+        assert_eq!(delivered.len(), 1);
     }
 
     struct NoAccess;

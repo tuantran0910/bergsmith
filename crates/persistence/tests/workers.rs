@@ -122,6 +122,7 @@ async fn grant_requires_current_leadership_and_does_not_consume_an_attempt_on_re
             grant_bytes: b"safe",
             output_prefix: "file:///tmp/output/",
             envelope_bytes: b"original",
+            generation: 1,
         },
     )
     .await
@@ -136,6 +137,58 @@ async fn grant_requires_current_leadership_and_does_not_consume_an_attempt_on_re
         .await
         .unwrap();
     assert_eq!(attempts, 0);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_grant_encoded_for_an_outdated_generation_persists_nothing(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let job = support::job(&mut conn, &tenant).await;
+    let task = support::plan(&mut conn, job, 1).await[0];
+    support::force_job_state(&mut conn, job, JobState::Queued).await;
+    let session = support::worker_session(&mut conn, task).await;
+    let identity = identity(&mut conn, session).await;
+    let epoch = support::leader(&mut conn).await;
+    // The caller read the task before another attempt started and ended.
+    sqlx::query("UPDATE tasks SET attempts_started = 1 WHERE id = $1")
+        .bind(task.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    let new = attempts::NewGrant {
+        attempt_id: AttemptId::generate(),
+        task_id: task,
+        worker_session_id: session,
+        lease: Duration::from_secs(90),
+    };
+    let request = Uuid::now_v7();
+    let payload = |generation| workers::GrantPayload {
+        grant_bytes: b"safe",
+        output_prefix: "file:///tmp/output/",
+        envelope_bytes: b"original",
+        generation,
+    };
+    let error = workers::grant(&mut conn, &identity, &new, request, epoch, &payload(1))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, PersistenceError::StaleAttempt { attempt } if attempt == new.attempt_id)
+    );
+    let (attempts, polls, started): (i64, i64, i32) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM attempts), (SELECT count(*) FROM worker_polls),
+            (SELECT attempts_started FROM tasks WHERE id = $1)",
+    )
+    .bind(task.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!((attempts, polls, started), (0, 0, 1));
+    let redrafted = workers::grant(&mut conn, &identity, &new, request, epoch, &payload(2))
+        .await
+        .unwrap();
+    assert_eq!(redrafted.attempt_id, Some(*new.attempt_id.as_uuid()));
+    let attempt = attempts::attempt(&mut conn, new.attempt_id).await.unwrap();
+    assert_eq!(attempt.generation, 2);
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
@@ -165,6 +218,7 @@ async fn poll_and_grant_are_immutable_and_foreign_session_is_rejected(pool: PgPo
             grant_bytes: b"safe",
             output_prefix: "file:///tmp/output/",
             envelope_bytes: b"original",
+            generation: 1,
         },
     )
     .await
@@ -179,6 +233,7 @@ async fn poll_and_grant_are_immutable_and_foreign_session_is_rejected(pool: PgPo
             grant_bytes: b"different",
             output_prefix: "file:///tmp/other/",
             envelope_bytes: b"original",
+            generation: 1,
         },
     )
     .await
