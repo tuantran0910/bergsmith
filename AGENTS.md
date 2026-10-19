@@ -74,8 +74,10 @@ Everything used to build, run, or deploy Bergsmith outside `cargo` lives under
 | `make check` | Type-check every target |
 | `make clippy` | Lint with warnings as errors |
 | `make test` | Run tests with cargo-nextest |
+| `make test-distributed` | Run process recovery and the 100-group, three-worker release test |
 | `make doc` | Build docs with warnings as errors |
 | `make coverage` | Enforce at least 80% line coverage (binaries excluded) |
+| `make coverage-distributed` | Cover workspace and process acceptance together (same delegation as `test-distributed`) |
 | `make coverage-html` | HTML report in `target/llvm-cov/html` |
 | `make deny` | Advisories, licenses, bans, sources |
 | `make machete` | Unused dependencies |
@@ -91,6 +93,12 @@ test` and `make coverage` start first. They read `DATABASE_URL`,
 `BERGSMITH_TEST_S3_ENDPOINT`, and `BERGSMITH_TEST_CATALOG_URL`; override them
 to use your own servers. The PostgreSQL role must be allowed to create
 databases, because `#[sqlx::test]` gives each test a fresh one.
+
+Distributed process tests also build the worker binary and require OpenSSL and
+the operating system's POSIX `mkfifo` utility.
+On Linux, set `BERGSMITH_TEST_CGROUP_ROOT` to a writable cgroup v2 subtree with
+memory, CPU, and PID controllers enabled for child cgroups; see
+`docs/operations/distributed-acceptance.md`. `make ci` includes this gate.
 
 ## 4. Definition of done
 
