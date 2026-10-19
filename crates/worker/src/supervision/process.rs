@@ -132,9 +132,12 @@ impl Process {
             .arg("--parent-pid")
             .arg(std::process::id().to_string())
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            // Drained continuously by `forward_output`, so the child never blocks.
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .env_clear()
+            // Forwarded lines are already structured; keep them free of escapes.
+            .env("NO_COLOR", "1")
             .process_group(0)
             .kill_on_drop(true);
         #[cfg(target_os = "linux")]
@@ -170,6 +173,8 @@ impl Process {
                 Ok(())
             };
             if let Err(error) = setup() {
+                // Never leak a partially configured cgroup; it holds no task yet.
+                let _ = std::fs::remove_dir(&path);
                 return Err(error.into());
             }
             command.arg("--bootstrap-cgroup").arg(&path);
@@ -177,7 +182,14 @@ impl Process {
         };
         #[cfg(not(target_os = "linux"))]
         let _ = (limits, cgroup_root);
-        let (child, launcher) = launch(command)?;
+        let (child, launcher) = match launch(command) {
+            Ok(launched) => launched,
+            Err(error) => {
+                #[cfg(target_os = "linux")]
+                let _ = std::fs::remove_dir(&cgroup);
+                return Err(error);
+            }
+        };
         let pid = child
             .id()
             .and_then(|pid| i32::try_from(pid).ok())
@@ -190,6 +202,24 @@ impl Process {
             #[cfg(target_os = "linux")]
             cgroup,
         })
+    }
+
+    /// Forwards the child's stdout and stderr into the supervisor's tracing,
+    /// tagged with the attempt. The task client receives no service token or
+    /// catalog access, and never logs its storage credentials.
+    pub(super) fn forward_output(&mut self, attempt_id: &str) {
+        if let Some(stdout) = self.child.stdout.take() {
+            let attempt_id = attempt_id.to_owned();
+            tokio::spawn(forward_lines(stdout, move |line| {
+                tracing::info!(target: "bergsmith_worker::task", attempt_id = %attempt_id, stream = "stdout", "{line}");
+            }));
+        }
+        if let Some(stderr) = self.child.stderr.take() {
+            let attempt_id = attempt_id.to_owned();
+            tokio::spawn(forward_lines(stderr, move |line| {
+                tracing::warn!(target: "bergsmith_worker::task", attempt_id = %attempt_id, stream = "stderr", "{line}");
+            }));
+        }
     }
 
     pub(super) fn signal(&self, signal: Signal) {
@@ -220,17 +250,177 @@ impl Drop for Process {
         self.signal(Signal::KILL);
         #[cfg(target_os = "linux")]
         {
-            let _ = std::fs::remove_dir(&self.cgroup);
+            // Escaped descendants share the cgroup, not the process group.
+            kill_cgroup(&self.cgroup);
+            // Removal fails with EBUSY until killed members finish exiting.
+            // Retry from a dedicated thread; never block an async worker.
+            if std::fs::remove_dir(&self.cgroup).is_err_and(|error| busy(&error)) {
+                let path = self.cgroup.clone();
+                let cleanup = std::thread::Builder::new()
+                    .name("cgroup-cleanup".into())
+                    .spawn(move || {
+                        if let Err(error) = remove_cgroup(&path, 50) {
+                            tracing::warn!(cgroup = %path.display(), error_code = error.raw_os_error(), "task cgroup could not be removed");
+                        }
+                    });
+                if cleanup.is_err() {
+                    tracing::warn!(cgroup = %self.cgroup.display(), "task cgroup cleanup could not start");
+                }
+            }
         }
     }
 }
 
+/// Reads `reader` to its end, passing each line (without its terminator) to
+/// `sink`. Lines are cut at `MAX_LINE` bytes, so memory stays bounded even for
+/// output that never contains a newline.
+async fn forward_lines(reader: impl tokio::io::AsyncRead + Unpin, mut sink: impl FnMut(&str)) {
+    use tokio::io::AsyncBufReadExt;
+    const MAX_LINE: usize = 8 * 1024;
+    let mut reader = tokio::io::BufReader::new(reader);
+    let mut line = Vec::with_capacity(256);
+    loop {
+        let Ok(chunk) = reader.fill_buf().await else {
+            break;
+        };
+        if chunk.is_empty() {
+            break;
+        }
+        let room = MAX_LINE - line.len();
+        let newline = chunk.iter().take(room).position(|byte| *byte == b'\n');
+        let taken = newline.map_or(chunk.len().min(room), |index| index + 1);
+        line.extend_from_slice(&chunk[..newline.unwrap_or(taken)]);
+        reader.consume(taken);
+        if newline.is_some() || line.len() >= MAX_LINE {
+            sink(String::from_utf8_lossy(&line).trim_end_matches('\r'));
+            line.clear();
+        }
+    }
+    if !line.is_empty() {
+        sink(String::from_utf8_lossy(&line).trim_end_matches('\r'));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn busy(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(rustix::io::Errno::BUSY.raw_os_error())
+}
+
+/// Kills every member of a task cgroup (cgroup v2 `cgroup.kill`, Linux 5.14+).
+/// Opening without `create` leaves an ordinary directory untouched.
+#[cfg(target_os = "linux")]
+fn kill_cgroup(path: &Path) {
+    use std::io::Write;
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path.join("cgroup.kill"))
+    {
+        let _ = file.write_all(b"1");
+    }
+}
+
+/// Removes an owned task cgroup, retrying while killed members finish exiting.
+/// Blocking: call only from a dedicated or blocking thread.
+#[cfg(target_os = "linux")]
+fn remove_cgroup(path: &Path, attempts: u32) -> std::io::Result<()> {
+    let mut delay = std::time::Duration::from_millis(5);
+    for attempt in 1..=attempts {
+        match std::fs::remove_dir(path) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if busy(&error) && attempt < attempts => {
+                std::thread::sleep(delay);
+                delay = (delay * 2).min(std::time::Duration::from_millis(500));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+/// Whether a process with this PID exists in the worker's PID namespace.
+#[cfg(target_os = "linux")]
+pub(super) fn process_alive(pid: i32) -> bool {
+    Pid::from_raw(pid).is_some_and(|pid| {
+        !matches!(
+            rustix::process::test_kill_process(pid),
+            Err(rustix::io::Errno::SRCH)
+        )
+    })
+}
+
+/// Removes empty `bergsmith-<pid>-<uuid>` cgroups left by an earlier run.
+///
+/// Called at supervisor startup, before any task exists, so a cgroup named
+/// with this process's PID (a reused PID) or a PID that no longer exists is
+/// stale. Removal is a plain `rmdir`: the kernel refuses a populated cgroup,
+/// so a cgroup that still contains processes is kept and logged, never
+/// killed. Returns how many cgroups were removed.
+///
+/// # Errors
+/// Returns an I/O error if the root cannot be listed.
+#[cfg_attr(
+    all(not(target_os = "linux"), not(test)),
+    expect(dead_code, reason = "cgroup sweeping runs only on linux")
+)]
+pub(super) fn sweep_stale_cgroups(
+    root: &Path,
+    alive: impl Fn(i32) -> bool,
+) -> std::io::Result<usize> {
+    let own = i32::try_from(std::process::id()).ok();
+    let mut removed = 0;
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("bergsmith-"))
+            .and_then(|rest| rest.split_once('-'))
+            .and_then(|(pid, _)| pid.parse::<i32>().ok())
+        else {
+            continue;
+        };
+        if Some(pid) != own && alive(pid) {
+            continue;
+        }
+        match std::fs::remove_dir(entry.path()) {
+            Ok(()) => removed += 1,
+            Err(error) => tracing::warn!(
+                cgroup = %entry.path().display(),
+                error_code = error.raw_os_error(),
+                "stale task cgroup could not be removed"
+            ),
+        }
+    }
+    Ok(removed)
+}
+
+/// The task's `RLIMIT_CPU` in seconds: a backstop that must never fire before
+/// the wall-clock duration limit.
+///
+/// `RLIMIT_CPU` counts CPU time summed over all threads. Linux throttles the
+/// cgroup to `cpu_millis`, so CPU time cannot exceed `cpu_millis × duration`.
+/// Other platforms cannot throttle, so a multi-threaded task may use every
+/// available core; the bound then allows `parallelism × duration`.
+#[must_use]
+fn cpu_time_limit(max_duration: std::time::Duration, cpu_millis: u32, parallelism: u64) -> u64 {
+    let seconds = max_duration.as_secs().saturating_add(1);
+    let cores_millis = if cfg!(target_os = "linux") {
+        u64::from(cpu_millis)
+    } else {
+        u64::from(cpu_millis).max(parallelism.saturating_mul(1000))
+    };
+    seconds.saturating_mul(cores_millis).div_ceil(1000).max(1)
+}
+
 pub(super) fn apply_limits(limits: &ResourceLimits) -> Result<(), WorkerError> {
-    let seconds = duration(limits.max_duration)?.as_secs().saturating_add(1);
-    let cpu_seconds = seconds
-        .saturating_mul(u64::from(limits.cpu_millis))
-        .div_ceil(1000)
-        .max(1);
+    let parallelism = std::thread::available_parallelism()
+        .map_or(1, |cores| u64::try_from(cores.get()).unwrap_or(u64::MAX));
+    let cpu_seconds = cpu_time_limit(
+        duration(limits.max_duration)?,
+        limits.cpu_millis,
+        parallelism,
+    );
     let set = |resource, value| {
         rustix::process::setrlimit(
             resource,
@@ -463,5 +653,62 @@ mod tests {
             )
             .is_err()
         );
+        // The partially configured cgroup directory is removed, not leaked.
+        assert!(std::fs::read_dir(root.path()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("bergsmith-")
+        }));
+    }
+
+    #[test]
+    fn startup_sweep_removes_only_empty_cgroups_of_dead_or_reused_pids() {
+        let root = tempfile::tempdir().unwrap();
+        let own = std::process::id();
+        let dead = root.path().join("bergsmith-999999-a");
+        let reused = root.path().join(format!("bergsmith-{own}-b"));
+        let live = root.path().join("bergsmith-1-c");
+        let populated = root.path().join("bergsmith-999998-d");
+        let unrelated = root.path().join("other-999999-e");
+        for directory in [&dead, &reused, &live, &populated, &unrelated] {
+            std::fs::create_dir(directory).unwrap();
+        }
+        // A non-empty directory stands in for a cgroup that still has members.
+        std::fs::write(populated.join("member"), "").unwrap();
+        let removed = sweep_stale_cgroups(root.path(), |pid| pid == 1).unwrap();
+        assert_eq!(removed, 2);
+        assert!(!dead.exists() && !reused.exists());
+        assert!(live.exists() && populated.exists() && unrelated.exists());
+    }
+
+    #[test]
+    fn cpu_rlimit_never_fires_before_the_duration_limit() {
+        let duration = std::time::Duration::from_secs(30);
+        if cfg!(target_os = "linux") {
+            // The cgroup throttles CPU to cpu_millis, bounding total CPU time.
+            assert_eq!(cpu_time_limit(duration, 1000, 8), 31);
+            assert_eq!(cpu_time_limit(duration, 500, 8), 16);
+        } else {
+            // Unthrottled threads may use every core for the whole duration.
+            assert_eq!(cpu_time_limit(duration, 1000, 8), 248);
+            assert_eq!(cpu_time_limit(duration, 16_000, 8), 496);
+        }
+        assert_eq!(cpu_time_limit(std::time::Duration::ZERO, 1, 1), 1);
+    }
+
+    #[tokio::test]
+    async fn child_output_is_forwarded_line_by_line_with_bounded_lines() {
+        let long = "x".repeat(8 * 1024 + 10);
+        let input = format!("first\r\nsecond\n{long}\ntail");
+        let mut lines = Vec::new();
+        forward_lines(input.as_bytes(), |line| lines.push(line.to_owned())).await;
+        assert_eq!(lines.len(), 5);
+        assert_eq!(lines[0], "first");
+        assert_eq!(lines[1], "second");
+        assert_eq!(lines[2].len(), 8 * 1024);
+        assert_eq!(lines[3], "x".repeat(10));
+        assert_eq!(lines[4], "tail");
     }
 }

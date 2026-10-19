@@ -49,7 +49,7 @@ pub(super) fn credential(
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect(),
     )
-    .map_err(|_| WorkerError::Invalid("invalid vended credentials"))?;
+    .map_err(|_| WorkerError::InvalidGrant("invalid vended credentials"))?;
     if let Some(expiry) = value.expires_at {
         credential.expires_at = Some(deadline(Some(expiry))?);
     }
@@ -67,10 +67,13 @@ pub(super) fn store(
     let profile = match location.backend() {
         Backend::LocalFs => StorageProfile::LocalFs,
         Backend::S3 => {
-            let value = credentials.ok_or(WorkerError::Invalid("missing storage credentials"))?;
+            let value =
+                credentials.ok_or(WorkerError::InvalidGrant("missing storage credentials"))?;
             let value = credential(value)?;
             if !value.covers(location) || !value.valid_for(SystemTime::now(), Duration::ZERO) {
-                return Err(WorkerError::Invalid("credentials expired or out of scope"));
+                return Err(WorkerError::InvalidGrant(
+                    "credentials expired or out of scope",
+                ));
             }
             cell.replace(vec![value]);
             StorageProfile::S3(S3Profile {
@@ -79,7 +82,7 @@ pub(super) fn store(
                 path_style_access,
             })
         }
-        _ => return Err(WorkerError::Invalid("unsupported worker storage")),
+        _ => return Err(WorkerError::InvalidGrant("unsupported worker storage")),
     };
     ObjectStore::open(&profile, Some(cell.clone()))
         .map_err(|_| WorkerError::Invalid("storage could not be opened"))
@@ -226,7 +229,7 @@ async fn native(
     .await
     .ok_or(WorkerError::Timeout)??;
     let metadata = serde_json::from_slice(&bytes)
-        .map_err(|_| WorkerError::Invalid("invalid pinned metadata"))?;
+        .map_err(|_| WorkerError::InvalidGrant("invalid pinned metadata"))?;
     let memory = limits.memory_bytes;
     let execution_limits = ExecutionLimits {
         manifest_entries: (task.max_manifest_entries != 0).then_some(task.max_manifest_entries),
@@ -240,17 +243,17 @@ async fn native(
         ..ExecutionLimits::default()
     };
     let output = Location::parse(&task.output_prefix)
-        .map_err(|_| WorkerError::Invalid("invalid output prefix"))?;
+        .map_err(|_| WorkerError::InvalidGrant("invalid output prefix"))?;
     let attempt_id: AttemptId = task
         .attempt_id
         .parse()
-        .map_err(|_| WorkerError::Invalid("invalid attempt id"))?;
+        .map_err(|_| WorkerError::InvalidGrant("invalid attempt id"))?;
     let result = NativeExecutor
         .execute(ExecutionRequest {
             input: ExecutionInput {
                 artifact,
                 artifact_sha256: Sha256Digest::from_slice(&task.artifact_sha256)
-                    .map_err(|_| WorkerError::Invalid("invalid artifact digest"))?,
+                    .map_err(|_| WorkerError::InvalidGrant("invalid artifact digest"))?,
                 metadata: &metadata,
                 metadata_location: &task.metadata_location,
                 file_io: storage.file_io(),

@@ -664,6 +664,12 @@ pub async fn report_failure(
     Ok((disposition, state))
 }
 
+/// Classifies a worker-reported failure reason; the coordinator is authoritative.
+///
+/// Worker-local infrastructure faults (`WorkerLocalFailure`), an artifact read
+/// that did not verify, and an unavailable development memory sample consume a
+/// retry like a lost worker. A genuinely invalid grant, deterministic resource
+/// limits, and unknown reasons are permanent.
 fn classify_failure(reason: &str, generation: i32) -> FailureDisposition {
     match reason {
         "PlanningBaselineMismatch" => FailureDisposition::ReplanRequired,
@@ -674,6 +680,9 @@ fn classify_failure(reason: &str, generation: i32) -> FailureDisposition {
         | "TaskSubprocessCrashed"
         | "StorageAuthorizationExpired"
         | "WorkerExecutionInterrupted"
+        | "WorkerLocalFailure"
+        | "TaskArtifactUnverified"
+        | "ProcessMemoryUsageUnavailable"
             if generation < 3 =>
         {
             FailureDisposition::RetryTask
@@ -686,6 +695,46 @@ fn classify_failure(reason: &str, generation: i32) -> FailureDisposition {
 mod tests {
     use super::*;
 
+    // Every reason a worker or its native executor can report, by disposition.
+    const RETRYABLE: [&str; 10] = [
+        "StorageOperationTimedOut",
+        "PreparationTimeLimitExceeded",
+        "TransientNativeExecutionFailed",
+        "TransientMetadataReadFailed",
+        "TaskSubprocessCrashed",
+        "StorageAuthorizationExpired",
+        "WorkerExecutionInterrupted",
+        "WorkerLocalFailure",
+        "TaskArtifactUnverified",
+        "ProcessMemoryUsageUnavailable",
+    ];
+    const PERMANENT: [&str; 24] = [
+        "InvalidTaskGrant",
+        "TaskCancelled",
+        "TaskDurationExceeded",
+        "ProcessMemoryLimitExceeded",
+        "ProcessCpuLimitExceeded",
+        "BatchMemoryLimitExceeded",
+        "DeleteMemoryLimitExceeded",
+        "DecodeRowGroupLimitExceeded",
+        "ReadBufferLimitExceeded",
+        "FooterLimitExceeded",
+        "OutputBytesLimitExceeded",
+        "OutputFilesLimitExceeded",
+        "InvalidExecutionLimits",
+        "InvalidOutputPrefix",
+        "ArtifactDigestMismatch",
+        "InvalidTaskArtifact",
+        "PlannedFileIdentityMismatch",
+        "UnsupportedTaskInput",
+        "InvalidTaskData",
+        "MetadataVerificationFailed",
+        "NativeExecutionFailed",
+        "InvalidStorageLocation",
+        "UnknownWorkerReason",
+        "",
+    ];
+
     #[test]
     fn worker_failure_classification_obeys_the_execution_budget_and_conflict_policy() {
         for generation in 1..=3 {
@@ -693,36 +742,40 @@ mod tests {
                 classify_failure("PlanningBaselineMismatch", generation),
                 FailureDisposition::ReplanRequired
             );
-            assert_eq!(
-                classify_failure("OutputBytesLimitExceeded", generation),
-                FailureDisposition::PermanentFailure
-            );
-            assert_eq!(
-                classify_failure("UnknownWorkerReason", generation),
-                FailureDisposition::PermanentFailure
-            );
-            assert_eq!(
-                classify_failure("TaskDurationExceeded", generation),
-                FailureDisposition::PermanentFailure
-            );
-            for reason in [
-                "StorageOperationTimedOut",
-                "PreparationTimeLimitExceeded",
-                "TransientNativeExecutionFailed",
-                "TransientMetadataReadFailed",
-                "TaskSubprocessCrashed",
-                "StorageAuthorizationExpired",
-                "WorkerExecutionInterrupted",
-            ] {
+            for reason in PERMANENT {
+                assert_eq!(
+                    classify_failure(reason, generation),
+                    FailureDisposition::PermanentFailure,
+                    "{reason}"
+                );
+            }
+            for reason in RETRYABLE {
                 assert_eq!(
                     classify_failure(reason, generation),
                     if generation < 3 {
                         FailureDisposition::RetryTask
                     } else {
                         FailureDisposition::PermanentFailure
-                    }
+                    },
+                    "{reason}"
                 );
             }
         }
+    }
+
+    #[test]
+    fn worker_local_infrastructure_faults_retry_but_an_invalid_grant_is_permanent() {
+        assert_eq!(
+            classify_failure("WorkerLocalFailure", 1),
+            FailureDisposition::RetryTask
+        );
+        assert_eq!(
+            classify_failure("ProcessMemoryUsageUnavailable", 1),
+            FailureDisposition::RetryTask
+        );
+        assert_eq!(
+            classify_failure("InvalidTaskGrant", 1),
+            FailureDisposition::PermanentFailure
+        );
     }
 }

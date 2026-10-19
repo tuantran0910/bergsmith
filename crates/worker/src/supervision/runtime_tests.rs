@@ -42,6 +42,65 @@ fn exits_without_a_report_are_retried_unless_cancellation_or_resource_limits_exp
     );
 }
 
+#[test]
+fn reporting_retries_transient_and_identity_errors_but_counts_record_rejections() {
+    for code in [
+        tonic::Code::Unavailable,
+        tonic::Code::DeadlineExceeded,
+        tonic::Code::Unauthenticated,
+        tonic::Code::PermissionDenied,
+    ] {
+        assert_eq!(next_step(&Err(Status::new(code, "x").into())), Next::Retry);
+    }
+    for code in [
+        tonic::Code::FailedPrecondition,
+        tonic::Code::NotFound,
+        tonic::Code::InvalidArgument,
+        tonic::Code::Internal,
+    ] {
+        assert_eq!(
+            next_step(&Err(Status::new(code, "x").into())),
+            Next::Rejected("ReportRejected")
+        );
+    }
+    assert_eq!(next_step(&Ok(())), Next::Acknowledged);
+    assert_eq!(
+        next_step(&Err(std::io::Error::other("disk").into())),
+        Next::Retry
+    );
+    assert_eq!(
+        next_step(&Err(WorkerError::Invalid("corrupt receipt digest"))),
+        Next::Rejected("InvalidJournalRecord")
+    );
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn a_transient_memory_sample_failure_is_tolerated_and_persistent_ones_retry() {
+    let mut failures = 0;
+    assert!(memory_verdict(None, 10, true, &mut failures).is_none());
+    assert!(memory_verdict(None, 10, true, &mut failures).is_none());
+    // A successful sample resets the run of failures.
+    assert!(memory_verdict(Some(5), 10, true, &mut failures).is_none());
+    assert_eq!(failures, 0);
+    assert!(memory_verdict(None, 10, false, &mut failures).is_none());
+    for _ in 1..MAX_MEMORY_SAMPLE_FAILURES {
+        assert!(memory_verdict(None, 10, true, &mut failures).is_none());
+    }
+    let unavailable = memory_verdict(None, 10, true, &mut failures).unwrap();
+    assert_eq!(unavailable.reason_code, "ProcessMemoryUsageUnavailable");
+    assert_eq!(
+        unavailable.disposition,
+        i32::from(common::FailureDisposition::RetryTask)
+    );
+    let exceeded = memory_verdict(Some(11), 10, true, &mut failures).unwrap();
+    assert_eq!(exceeded.reason_code, "ProcessMemoryLimitExceeded");
+    assert_eq!(
+        exceeded.disposition,
+        i32::from(common::FailureDisposition::PermanentFailure)
+    );
+}
+
 #[derive(Clone, Default)]
 struct Coordinator {
     polls: Arc<Mutex<Vec<String>>>,
@@ -56,6 +115,10 @@ struct Coordinator {
     poll_session_lost: Arc<AtomicBool>,
     registrations: Arc<AtomicUsize>,
     registered_again: Arc<tokio::sync::Notify>,
+    result_rejected: Arc<AtomicBool>,
+    result_errors: Arc<Mutex<std::collections::VecDeque<tonic::Code>>>,
+    grant: Arc<Mutex<Option<cluster::TaskGrant>>>,
+    failures: Arc<Mutex<Vec<cluster::ReportTaskFailureRequest>>>,
 }
 
 #[tonic::async_trait]
@@ -93,6 +156,11 @@ impl ClusterService for Coordinator {
         if self.poll_session_lost.swap(false, Ordering::AcqRel) {
             return Err(Status::failed_precondition("worker session expired"));
         }
+        if let Some(grant) = self.grant.lock().await.take() {
+            return Ok(Response::new(cluster::RequestTaskResponse {
+                result: Some(cluster::request_task_response::Result::Grant(grant)),
+            }));
+        }
         let mut polls = self.polls.lock().await;
         polls.push(request.into_inner().request_id);
         if polls.len() == 1 {
@@ -115,6 +183,12 @@ impl ClusterService for Coordinator {
         &self,
         request: Request<cluster::ReportTaskResultRequest>,
     ) -> Result<Response<cluster::ReportTaskResultResponse>, Status> {
+        if self.result_rejected.load(Ordering::Acquire) {
+            return Err(Status::failed_precondition("invalid stored plan"));
+        }
+        if let Some(code) = self.result_errors.lock().await.pop_front() {
+            return Err(Status::new(code, "scripted reporting error"));
+        }
         let mut reports = self.reports.lock().await;
         reports.push(request.into_inner());
         if reports.len() == 1 {
@@ -129,8 +203,9 @@ impl ClusterService for Coordinator {
     }
     async fn report_task_failure(
         &self,
-        _: Request<cluster::ReportTaskFailureRequest>,
+        request: Request<cluster::ReportTaskFailureRequest>,
     ) -> Result<Response<cluster::ReportTaskFailureResponse>, Status> {
+        self.failures.lock().await.push(request.into_inner());
         if self.failure_stale.load(Ordering::Acquire) {
             return Err(Status::failed_precondition("stale attempt"));
         }
@@ -329,6 +404,252 @@ async fn restart_replays_the_original_receipt_and_session_after_a_lost_acknowled
     harness.server.abort();
 }
 
+fn persist_receipt(state: &Path, attempt: u128) -> PathBuf {
+    journal::private_dir(state).unwrap();
+    let directory = state.join(uuid::Uuid::from_u128(attempt).to_string());
+    journal::private_dir(&directory).unwrap();
+    let receipt = bergsmith_protocol::artifact::TaskReceipt {
+        attempt_id: uuid::Uuid::from_u128(attempt).to_string(),
+        generation: 1,
+        ..Default::default()
+    };
+    let report = cluster::ReportTaskResultRequest {
+        worker_session_id: uuid::Uuid::from_u128(10).to_string(),
+        receipt_sha256: bergsmith_protocol::hashing::receipt_digest(&receipt)
+            .as_bytes()
+            .to_vec(),
+        receipt: Some(receipt),
+    };
+    journal::persist(&directory.join("result.pb"), &report).unwrap();
+    directory
+}
+
+#[tokio::test]
+async fn a_report_the_coordinator_keeps_rejecting_is_quarantined_and_polling_resumes() {
+    let harness = harness().await;
+    harness
+        .coordinator
+        .result_rejected
+        .store(true, Ordering::Release);
+    let directory = persist_receipt(&harness.config.state_directory, 21);
+    let (stop, stopped) = watch::channel(false);
+    let coordinator = harness.coordinator.clone();
+    let run = tokio::spawn(run(harness.config, stopped));
+    // Polling waits for reporting, so a second poll proves the record settled.
+    tokio::time::timeout(Duration::from_secs(10), coordinator.second_poll.notified())
+        .await
+        .unwrap();
+    assert!(directory.join("quarantine.pb").exists());
+    assert!(!directory.join("ack.pb").exists());
+    let quarantine = common::Failure::decode(
+        std::fs::read(directory.join("quarantine.pb"))
+            .unwrap()
+            .as_slice(),
+    )
+    .unwrap();
+    assert_eq!(quarantine.reason_code, "ReportRejected");
+    assert!(Journal::open(&directory.with_file_name("")).is_ok());
+    stop.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(3), run)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    harness.server.abort();
+}
+
+#[tokio::test]
+async fn a_transient_report_error_resets_the_consecutive_rejection_count() {
+    let harness = harness().await;
+    *harness.coordinator.result_errors.lock().await = [
+        tonic::Code::FailedPrecondition,
+        tonic::Code::Unavailable,
+        tonic::Code::FailedPrecondition,
+        tonic::Code::FailedPrecondition,
+    ]
+    .into();
+    let directory = persist_receipt(&harness.config.state_directory, 23);
+    let (stop, stopped) = watch::channel(false);
+    let coordinator = harness.coordinator.clone();
+    let run = tokio::spawn(run(harness.config, stopped));
+    // The old loop quarantines on the third total rejection, before the
+    // coordinator can recover and acknowledge the immutable report.
+    tokio::time::timeout(Duration::from_secs(30), coordinator.second_poll.notified())
+        .await
+        .unwrap();
+    assert!(directory.join("ack.pb").exists());
+    assert!(!directory.join("quarantine.pb").exists());
+    assert_eq!(coordinator.reports.lock().await.len(), 2);
+    stop.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(3), run)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    harness.server.abort();
+}
+
+#[tokio::test]
+async fn a_rejected_report_for_an_ended_attempt_is_acknowledged_from_attempt_status() {
+    let harness = harness().await;
+    harness
+        .coordinator
+        .result_rejected
+        .store(true, Ordering::Release);
+    *harness.coordinator.attempt_status.lock().await = cluster::GetAttemptStatusResponse {
+        attempt_state: common::AttemptState::Expired.into(),
+        result_outcome: cluster::ResultOutcome::StaleAttempt.into(),
+        job_state: 3,
+    };
+    let directory = persist_receipt(&harness.config.state_directory, 22);
+    let (stop, stopped) = watch::channel(false);
+    let coordinator = harness.coordinator.clone();
+    let run = tokio::spawn(run(harness.config, stopped));
+    tokio::time::timeout(Duration::from_secs(10), coordinator.second_poll.notified())
+        .await
+        .unwrap();
+    let ack = cluster::GetAttemptStatusResponse::decode(
+        std::fs::read(directory.join("ack.pb")).unwrap().as_slice(),
+    )
+    .unwrap();
+    assert_eq!(
+        ack.result_outcome,
+        i32::from(cluster::ResultOutcome::StaleAttempt)
+    );
+    assert!(!directory.join("quarantine.pb").exists());
+    stop.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(3), run)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    harness.server.abort();
+}
+
+#[tokio::test]
+async fn an_invalid_grant_is_reported_as_a_permanent_failure_and_polling_continues() {
+    let harness = harness().await;
+    let attempt = uuid::Uuid::from_u128(23).to_string();
+    *harness.coordinator.grant.lock().await = Some(cluster::TaskGrant {
+        attempt_id: attempt.clone(),
+        worker_session_id: uuid::Uuid::from_u128(10).to_string(),
+        generation: 1,
+        // The worker does not advertise this capability.
+        capability_profile: "unknown-capability".into(),
+        ..Default::default()
+    });
+    let (stop, stopped) = watch::channel(false);
+    let coordinator = harness.coordinator.clone();
+    let state = harness.config.state_directory.clone();
+    let run = tokio::spawn(run(harness.config, stopped));
+    tokio::time::timeout(Duration::from_secs(10), coordinator.second_poll.notified())
+        .await
+        .unwrap();
+    let failures = coordinator.failures.lock().await.clone();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].attempt_id, attempt);
+    let failure = failures[0].failure.clone().unwrap();
+    assert_eq!(failure.reason_code, "InvalidTaskGrant");
+    assert_eq!(
+        failure.disposition,
+        i32::from(common::FailureDisposition::PermanentFailure)
+    );
+    assert!(state.join(&attempt).join("ack.pb").exists());
+    stop.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(3), run)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    harness.server.abort();
+}
+
+#[tokio::test]
+async fn a_repeated_grant_never_reexecutes_and_an_interrupted_one_reports_retryably() {
+    let harness = harness().await;
+    let state = &harness.config.state_directory;
+    journal::private_dir(state).unwrap();
+    let journal = Journal::open(state).unwrap();
+    let exists = || WorkerError::Io(std::io::Error::from(std::io::ErrorKind::AlreadyExists));
+    let grant = |attempt: u128| cluster::TaskGrant {
+        attempt_id: uuid::Uuid::from_u128(attempt).to_string(),
+        generation: 2,
+        ..Default::default()
+    };
+    // An earlier execution left its directory without a completion record.
+    let interrupted = state.join(uuid::Uuid::from_u128(30).to_string());
+    journal::private_dir(&interrupted).unwrap();
+    reject(&harness.config, &grant(30), "session", &journal, &exists()).unwrap();
+    let report = cluster::ReportTaskFailureRequest::decode(
+        std::fs::read(interrupted.join("failure.pb"))
+            .unwrap()
+            .as_slice(),
+    )
+    .unwrap();
+    assert_eq!(report.generation, 2);
+    let failure = report.failure.unwrap();
+    assert_eq!(failure.reason_code, "WorkerExecutionInterrupted");
+    assert_eq!(
+        failure.disposition,
+        i32::from(common::FailureDisposition::RetryTask)
+    );
+    // A completed attempt keeps its original report.
+    let completed = persist_receipt(state, 31);
+    reject(&harness.config, &grant(31), "session", &journal, &exists()).unwrap();
+    assert!(!completed.join("failure.pb").exists());
+    // An unparseable attempt has no safe journal path and is left to expiry.
+    let mut invalid = grant(32);
+    invalid.attempt_id = "../escape".into();
+    reject(
+        &harness.config,
+        &invalid,
+        "session",
+        &journal,
+        &WorkerError::InvalidGrant("invalid attempt id"),
+    )
+    .unwrap();
+    assert_eq!(
+        journal.pending().unwrap(),
+        vec![interrupted.join("failure.pb")]
+    );
+    harness.server.abort();
+}
+
+#[tokio::test]
+async fn coordinator_responses_carry_the_date_used_for_lease_conversion() {
+    let harness = harness().await;
+    let tls = ClientTlsConfig::new().ca_certificate(Certificate::from_pem(
+        harness.config.ca_certificate.clone().unwrap(),
+    ));
+    let mut client = Client::new(
+        Endpoint::from_shared(harness.config.endpoint.clone())
+            .unwrap()
+            .tls_config(tls)
+            .unwrap()
+            .connect()
+            .await
+            .unwrap(),
+    );
+    let response = client
+        .heartbeat(
+            request(
+                &harness.config,
+                cluster::HeartbeatRequest::default(),
+                RPC_TIMEOUT,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let date = coordinator_time(response.metadata()).unwrap();
+    let skew = date
+        .duration_since(SystemTime::now())
+        .or_else(|error| Ok::<_, ()>(error.duration()))
+        .unwrap();
+    assert!(skew < Duration::from_secs(5));
+    harness.server.abort();
+}
+
 #[tokio::test]
 async fn heartbeat_pushes_credentials_and_cancellation_and_obeys_drain() {
     let harness = harness().await;
@@ -365,7 +686,7 @@ async fn heartbeat_pushes_credentials_and_cancellation_and_obeys_drain() {
             ..Default::default()
         },
         service: service.clone(),
-        lease: SystemTime::now(),
+        lease: tokio::time::Instant::now(),
     })));
     let drain = Arc::new(AtomicBool::new(false));
     let tls = ClientTlsConfig::new().ca_certificate(Certificate::from_pem(
@@ -440,12 +761,12 @@ async fn failure_reporting_resolves_fenced_attempts_without_acknowledging_live_a
     );
     assert!(
         matches!(report_one(&harness.config, &mut client, &path).await,
-        Err(WorkerError::Rpc(error)) if error.code() == tonic::Code::Unavailable)
+        Err(WorkerError::Rpc(error)) if error.code() == tonic::Code::FailedPrecondition)
     );
     assert!(!directory.join("ack.pb").exists());
     // A grant can be stale before the expiry reconciler changes its stored state.
     *harness.coordinator.attempt_status.lock().await = cluster::GetAttemptStatusResponse {
-        attempt_state: bergsmith_protocol::common::AttemptState::Granted.into(),
+        attempt_state: common::AttemptState::Granted.into(),
         result_outcome: cluster::ResultOutcome::StaleAttempt.into(),
         job_state: 3,
     };
@@ -493,7 +814,7 @@ async fn local_shutdown_persists_a_retryable_interruption_before_the_child_repor
     assert_eq!(failure.reason_code, "WorkerExecutionInterrupted");
     assert_eq!(
         failure.disposition,
-        i32::from(bergsmith_protocol::common::FailureDisposition::RetryTask)
+        i32::from(common::FailureDisposition::RetryTask)
     );
 }
 
@@ -609,12 +930,12 @@ async fn native_grant(
     };
     journal::private_dir(&harness.config.state_directory).unwrap();
     let journal = Journal::open(&harness.config.state_directory).unwrap();
-    let service = begin(&harness.config, &grant, "session", journal).unwrap();
+    let (service, expiry) = begin(&harness.config, &grant, "session", journal).unwrap();
     assert_eq!(service.task.lock().await.max_manifest_entries, 2_000_000);
     let active = Arc::new(Mutex::new(Some(Active {
         grant: grant.clone(),
         service: service.clone(),
-        lease: deadline(grant.lease_expires_at).unwrap(),
+        lease: local_deadline(expiry, None, SystemTime::now(), tokio::time::Instant::now()),
     })));
     (fixture, grant, service, active)
 }

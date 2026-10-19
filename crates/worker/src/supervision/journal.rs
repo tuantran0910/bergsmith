@@ -22,6 +22,14 @@ pub(super) fn private_dir(path: &Path) -> Result<(), WorkerError> {
     Ok(())
 }
 
+/// Marker recording why an unacknowledgeable record was set aside.
+pub(super) const QUARANTINE: &str = "quarantine.pb";
+
+/// Whether an attempt directory's record is acknowledged or quarantined.
+pub(super) fn settled(directory: &Path) -> bool {
+    directory.join("ack.pb").exists() || directory.join(QUARANTINE).exists()
+}
+
 pub(super) fn lock(path: &Path) -> Result<std::fs::File, WorkerError> {
     private_dir(path)?;
     let file = std::fs::OpenOptions::new()
@@ -95,7 +103,7 @@ impl Journal {
                 continue;
             }
             let directory = entry.path();
-            if directory.join("ack.pb").exists() {
+            if settled(&directory) {
                 continue;
             }
             let result = directory.join("result.pb").exists();
@@ -124,11 +132,24 @@ impl Journal {
                 .pending
                 .lock()
                 .map_err(|_| WorkerError::Invalid("journal index lock failed"))?;
-            if !path.with_file_name("ack.pb").exists() {
+            if path.parent().is_some_and(|directory| !settled(directory)) {
                 pending.insert(path.to_owned());
             }
         }
         result
+    }
+
+    /// Durably sets aside a record the coordinator will never acknowledge.
+    ///
+    /// The record and its `quarantine.pb` reason stay for inspection; recovery
+    /// and polling treat the attempt as settled, so it never blocks the worker.
+    pub(super) fn quarantine(
+        &self,
+        path: &Path,
+        reason: &bergsmith_protocol::common::Failure,
+    ) -> Result<(), WorkerError> {
+        persist(&path.with_file_name(QUARANTINE), reason)?;
+        self.acknowledged(path)
     }
 
     pub(super) fn acknowledged(&self, path: &Path) -> Result<(), WorkerError> {

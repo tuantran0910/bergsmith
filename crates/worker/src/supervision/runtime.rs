@@ -8,7 +8,7 @@ use std::sync::{
 };
 use std::time::{Duration, SystemTime};
 
-use bergsmith_protocol::{artifact::TaskArtifact, cluster, identity::ServiceToken, local};
+use bergsmith_protocol::{artifact::TaskArtifact, cluster, common, identity::ServiceToken, local};
 use bergsmith_storage::{CredentialCell, Location, StorageProfile};
 use prost::Message;
 use tokio::sync::{Mutex, watch};
@@ -17,8 +17,15 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 use super::journal::{self, Journal};
 use super::service::{Control, LocalService};
 use super::{
-    MAX_MESSAGE, RPC_TIMEOUT, WorkerError, credentials_expired, deadline, duration, failure,
+    MAX_MESSAGE, RPC_TIMEOUT, WorkerError, coordinator_time, credentials_expired, deadline,
+    duration, failure, local_deadline,
 };
+
+/// Consecutive definitive rejections before a journal record is quarantined.
+const MAX_REPORT_REJECTIONS: u32 = 3;
+/// Consecutive failed memory samples tolerated on development platforms.
+#[cfg(not(target_os = "linux"))]
+const MAX_MEMORY_SAMPLE_FAILURES: u32 = 3;
 
 type Client = cluster::cluster_service_client::ClusterServiceClient<Channel>;
 
@@ -125,6 +132,15 @@ pub async fn run(config: WorkerConfig, shutdown: watch::Receiver<bool>) -> Resul
     let _lock = tokio::task::spawn_blocking(move || journal::lock(&state))
         .await
         .map_err(|_| WorkerError::Invalid("state lock task failed"))??;
+    // No task runs yet, so every empty cgroup left by a crashed run is stale.
+    #[cfg(target_os = "linux")]
+    if let Some(root) = config.cgroup_root.clone() {
+        super::blocking(move || {
+            super::process::sweep_stale_cgroups(&root, super::process::process_alive)?;
+            Ok(())
+        })
+        .await?;
+    }
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let mut tls = ClientTlsConfig::new().with_native_roots();
     if let Some(ca) = &config.ca_certificate {
@@ -237,7 +253,8 @@ async fn drive(
 struct Active {
     grant: cluster::TaskGrant,
     service: LocalService,
-    lease: SystemTime,
+    /// Local monotonic lease deadline, immune to worker wall-clock skew.
+    lease: tokio::time::Instant,
 }
 type ActiveSlot = Arc<Mutex<Option<Active>>>;
 
@@ -296,10 +313,13 @@ async fn heartbeat(
         )
         .await
         {
-            Ok(response) => response.into_inner(),
+            Ok(response) => response,
             Err(error) if retryable(&error) => continue,
             Err(error) => return Err(error.into()),
         };
+        let received = tokio::time::Instant::now();
+        let coordinator_now = coordinator_time(response.metadata());
+        let response = response.into_inner();
         if response.drain {
             drain.store(true, Ordering::Release);
         }
@@ -319,7 +339,12 @@ async fn heartbeat(
                 }
                 match directive.directive {
                     Some(cluster::attempt_directive::Directive::LeaseExpiresAt(expiry)) => {
-                        active.lease = deadline(Some(expiry))?;
+                        active.lease = local_deadline(
+                            deadline(Some(expiry))?,
+                            coordinator_now,
+                            SystemTime::now(),
+                            received,
+                        );
                     }
                     Some(cluster::attempt_directive::Directive::Cancel(cancel)) => active
                         .service
@@ -357,7 +382,7 @@ async fn polling(
             continue;
         }
         let request_id = uuid::Uuid::now_v7().to_string();
-        let response = loop {
+        let (received, coordinator_now, response) = loop {
             let poll = rpc(
                 poll_timeout,
                 client.request_task(request(
@@ -372,7 +397,11 @@ async fn polling(
             let result =
                 tokio::select! { result = poll => result, _ = shutdown.changed() => return Ok(()) };
             match result {
-                Ok(response) => break response.into_inner(),
+                Ok(response) => {
+                    let received = tokio::time::Instant::now();
+                    let coordinator_now = coordinator_time(response.metadata());
+                    break (received, coordinator_now, response.into_inner());
+                }
                 Err(error) if retryable(&error) => {
                     if pause(&mut shutdown, Duration::from_secs(1)).await {
                         return Ok(());
@@ -387,12 +416,25 @@ async fn polling(
                 let begin_grant = grant.clone();
                 let begin_session = session.clone();
                 let begin_journal = journal.clone();
-                let service = super::blocking(move || {
+                let begun = super::blocking(move || {
                     begin(&begin_config, &begin_grant, &begin_session, begin_journal)
                 })
-                .await?;
+                .await;
+                let (service, expiry) = match begun {
+                    Ok(begun) => begun,
+                    Err(error) => {
+                        // Report the refusal for this attempt and keep polling;
+                        // the journal backpressure above waits for its ack.
+                        if !refuse(config, &grant, &session, journal, error).await
+                            && pause(&mut shutdown, Duration::from_secs(1)).await
+                        {
+                            return Ok(());
+                        }
+                        continue;
+                    }
+                };
                 *active.lock().await = Some(Active {
-                    lease: deadline(grant.lease_expires_at)?,
+                    lease: local_deadline(expiry, coordinator_now, SystemTime::now(), received),
                     grant: grant.clone(),
                     service: service.clone(),
                 });
@@ -404,16 +446,7 @@ async fn polling(
                         .await?;
                     tracing::warn!(attempt_id = %grant.attempt_id, error = %error, "task supervision failed");
                 }
-                while !tokio::fs::try_exists(service.directory.join("ack.pb")).await?
-                    && !*shutdown.borrow()
-                {
-                    if service.control.borrow().cancel.is_some() {
-                        break;
-                    }
-                    if pause(&mut shutdown, Duration::from_millis(200)).await {
-                        break;
-                    }
-                }
+                settle(&service, &mut shutdown).await?;
                 *active.lock().await = None;
             }
             Some(cluster::request_task_response::Result::NoTask(no_task)) => {
@@ -432,12 +465,14 @@ fn begin(
     grant: &cluster::TaskGrant,
     session: &str,
     journal: Journal,
-) -> Result<LocalService, WorkerError> {
+) -> Result<(LocalService, SystemTime), WorkerError> {
     let attempt: bergsmith_common::ids::AttemptId = grant
         .attempt_id
         .parse()
-        .map_err(|_| WorkerError::Invalid("invalid attempt id"))?;
-    let limits = grant.limits.ok_or(WorkerError::Invalid("missing limits"))?;
+        .map_err(|_| WorkerError::InvalidGrant("invalid attempt id"))?;
+    let limits = grant
+        .limits
+        .ok_or(WorkerError::InvalidGrant("missing limits"))?;
     let capacity = config
         .registration
         .capacity
@@ -457,9 +492,11 @@ fn begin(
         || limits.cpu_millis > capacity.cpu_millis
         || limits.max_output_bytes == 0
     {
-        return Err(WorkerError::Invalid("invalid task grant"));
+        return Err(WorkerError::InvalidGrant("invalid task grant"));
     }
-    duration(limits.max_duration)?;
+    duration(limits.max_duration).map_err(|_| WorkerError::InvalidGrant("invalid max duration"))?;
+    let expiry = deadline(grant.lease_expires_at)
+        .map_err(|_| WorkerError::InvalidGrant("invalid lease deadline"))?;
     let directory = config.state_directory.join(attempt.to_string());
     // A repeated grant must recover its report, never execute the same attempt twice.
     std::fs::DirBuilder::new().mode(0o700).create(&directory)?;
@@ -492,7 +529,7 @@ fn begin(
         cancel: None,
         credentials: None,
     });
-    Ok(LocalService {
+    let service = LocalService {
         task: Arc::new(Mutex::new(task)),
         control,
         progress: Arc::default(),
@@ -500,7 +537,94 @@ fn begin(
         directory,
         session: session.into(),
         journal,
-    })
+    };
+    Ok((service, expiry))
+}
+
+/// Keeps the attempt leased until its record is acknowledged or quarantined,
+/// it is cancelled, or the worker stops.
+async fn settle(
+    service: &LocalService,
+    shutdown: &mut watch::Receiver<bool>,
+) -> Result<(), WorkerError> {
+    loop {
+        let directory = service.directory.clone();
+        if *shutdown.borrow()
+            || service.control.borrow().cancel.is_some()
+            || super::blocking(move || Ok(journal::settled(&directory))).await?
+            || pause(shutdown, Duration::from_millis(200)).await
+        {
+            return Ok(());
+        }
+    }
+}
+
+/// Logs and journals a refused grant off the async runtime. Returns whether
+/// the refusal was recorded (or needed no record).
+async fn refuse(
+    config: &WorkerConfig,
+    grant: &cluster::TaskGrant,
+    session: &str,
+    journal: &Journal,
+    error: WorkerError,
+) -> bool {
+    tracing::warn!(attempt_id = %grant.attempt_id, error = %error, "task grant refused");
+    let (config, task, session, journal) = (
+        config.clone(),
+        grant.clone(),
+        session.to_owned(),
+        journal.clone(),
+    );
+    let result = super::blocking(move || reject(&config, &task, &session, &journal, &error)).await;
+    if let Err(error) = &result {
+        tracing::error!(attempt_id = %grant.attempt_id, error = %error, "grant refusal could not be journaled");
+    }
+    result.is_ok()
+}
+
+/// Journals a failure for a grant that could not begin, so the coordinator
+/// learns its disposition instead of waiting for lease expiry.
+///
+/// An attempt directory that already holds a completion is left untouched:
+/// a repeated grant recovers its existing report and never executes again.
+/// A directory without one means an earlier local execution was interrupted.
+fn reject(
+    config: &WorkerConfig,
+    grant: &cluster::TaskGrant,
+    session: &str,
+    journal: &Journal,
+    error: &WorkerError,
+) -> Result<(), WorkerError> {
+    let Ok(attempt) = grant.attempt_id.parse::<bergsmith_common::ids::AttemptId>() else {
+        // No safe journal path exists; the coordinator expires the attempt.
+        return Ok(());
+    };
+    let directory = config.state_directory.join(attempt.to_string());
+    let failure = match error {
+        WorkerError::Io(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if ["result.pb", "failure.pb"]
+                .iter()
+                .any(|name| directory.join(name).exists())
+            {
+                return Ok(());
+            }
+            failure("WorkerExecutionInterrupted", true)
+        }
+        error => super::worker_failure(error, None),
+    };
+    match std::fs::DirBuilder::new().mode(0o700).create(&directory) {
+        Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => return Err(error.into()),
+        _ => {}
+    }
+    journal.record(
+        &directory.join("failure.pb"),
+        &cluster::ReportTaskFailureRequest {
+            worker_session_id: session.into(),
+            attempt_id: grant.attempt_id.clone(),
+            generation: grant.generation,
+            failure: Some(failure),
+        },
+    )
 }
 
 async fn prepare(grant: &cluster::TaskGrant, service: &LocalService) -> Result<(), WorkerError> {
@@ -508,9 +632,9 @@ async fn prepare(grant: &cluster::TaskGrant, service: &LocalService) -> Result<(
     let reference = grant
         .artifact
         .as_ref()
-        .ok_or(WorkerError::Invalid("missing artifact ref"))?;
+        .ok_or(WorkerError::InvalidGrant("missing artifact ref"))?;
     let location = Location::parse(&reference.uri)
-        .map_err(|_| WorkerError::Invalid("invalid artifact location"))?;
+        .map_err(|_| WorkerError::InvalidGrant("invalid artifact location"))?;
     let cell = CredentialCell::default();
     let store = super::task::store(
         &location,
@@ -537,13 +661,16 @@ async fn prepare(grant: &cluster::TaskGrant, service: &LocalService) -> Result<(
     })
     .await
     .map_err(|_| WorkerError::Timeout)??;
-    let artifact = TaskArtifact::decode(bytes)?;
+    let artifact = TaskArtifact::decode(bytes)
+        .map_err(|_| WorkerError::UnverifiedArtifact("undecodable artifact"))?;
     if reference.sha256 != bergsmith_protocol::hashing::artifact_digest(&artifact).as_bytes()
         || artifact.job_id != grant.job_id
         || artifact.plan_id != grant.plan_id
         || artifact.task_id != grant.task_id
     {
-        return Err(WorkerError::Invalid("artifact differs from grant"));
+        return Err(WorkerError::UnverifiedArtifact(
+            "artifact differs from grant",
+        ));
     }
     service.task.lock().await.artifact = Some(artifact);
     Ok(())
@@ -578,7 +705,7 @@ async fn supervise(
         .lock()
         .await
         .as_ref()
-        .is_none_or(|active| active.lease <= SystemTime::now());
+        .is_none_or(|active| active.lease <= tokio::time::Instant::now());
     if *shutdown.borrow() || expired {
         interrupt(service, "worker stopped before execution").await?;
         return Ok(());
@@ -602,6 +729,7 @@ async fn supervise(
         )
     })
     .await?;
+    process.forward_output(&grant.attempt_id);
     let local_service = service.clone();
     let server = tonic::transport::Server::builder()
         .add_service(
@@ -613,6 +741,8 @@ async fn supervise(
     tokio::pin!(server);
     let mut timer = tokio::time::interval(Duration::from_millis(100));
     let mut escalation = super::process::Escalation::default();
+    #[cfg(not(target_os = "linux"))]
+    let mut sample_failures = 0;
     loop {
         tokio::select! {
             result = &mut server => { result?; return Err(WorkerError::Invalid("local task server stopped")); }
@@ -630,7 +760,7 @@ async fn supervise(
             _ = timer.tick() => {
                 let now = tokio::time::Instant::now();
                 #[cfg(not(target_os = "linux"))]
-                check_memory(&mut process, service, limits.memory_bytes).await?;
+                check_memory(&mut process, service, limits.memory_bytes, &mut sample_failures).await?;
                 let shutting_down = *shutdown.borrow();
                 enforce_control(service, active, shutting_down, maximum).await?;
                 let cancellation = service.control.borrow().cancel.clone();
@@ -666,7 +796,7 @@ async fn enforce_control(
         .lock()
         .await
         .as_ref()
-        .is_none_or(|active| active.lease <= SystemTime::now());
+        .is_none_or(|active| active.lease <= tokio::time::Instant::now());
     let expired_credentials = credentials_expired(service.task.lock().await.credentials.as_ref());
     if expired_credentials {
         service
@@ -702,45 +832,122 @@ fn exit_reason(
     }
 }
 
+/// Decides the development-platform memory verdict for one RSS sample.
+///
+/// A sample above the limit fails permanently. A sample that cannot be read
+/// while the task is alive fails, retryably, only after
+/// `MAX_MEMORY_SAMPLE_FAILURES` consecutive misses, so one transient platform
+/// query failure does not stop the task.
+#[cfg(not(target_os = "linux"))]
+fn memory_verdict(
+    sample: Option<u64>,
+    limit: u64,
+    alive: bool,
+    failures: &mut u32,
+) -> Option<common::Failure> {
+    match sample {
+        Some(memory) => {
+            *failures = 0;
+            (memory > limit).then(|| failure("ProcessMemoryLimitExceeded", false))
+        }
+        None if alive => {
+            *failures += 1;
+            (*failures >= MAX_MEMORY_SAMPLE_FAILURES)
+                .then(|| failure("ProcessMemoryUsageUnavailable", true))
+        }
+        None => None,
+    }
+}
+
 #[cfg(not(target_os = "linux"))]
 async fn check_memory(
     process: &mut super::process::Process,
     service: &LocalService,
     limit: u64,
+    failures: &mut u32,
 ) -> Result<(), WorkerError> {
     if let Some(pid) = process.child.id() {
-        let memory = super::blocking(move || super::process::resident_memory(pid)).await;
-        let reason = if memory.as_ref().is_ok_and(|memory| *memory > limit) {
-            Some("ProcessMemoryLimitExceeded")
-        } else if memory.is_err() && process.child.try_wait()?.is_none() {
-            Some("ProcessMemoryUsageUnavailable")
-        } else {
-            None
-        };
-        if let Some(reason) = reason {
-            service.fail(failure(reason, false)).await?;
+        let memory = super::blocking(move || super::process::resident_memory(pid))
+            .await
+            .ok();
+        let alive = memory.is_some() || process.child.try_wait()?.is_none();
+        if let Some(failure) = memory_verdict(memory, limit, alive, failures) {
+            service.fail(failure).await?;
             process.signal(rustix::process::Signal::KILL);
         }
     }
     Ok(())
 }
 
+/// What the reporting loop does with a record after one reporting turn.
+#[derive(Debug, PartialEq, Eq)]
+enum Next {
+    Acknowledged,
+    /// Transient: keep the record and retry with backoff.
+    Retry,
+    /// The coordinator, or the record itself, definitively refused it.
+    Rejected(&'static str),
+}
+
+/// Classifies one report outcome. Identity failures are global rather than
+/// specific to a record, so they keep it; registration surfaces them.
+fn next_step(result: &Result<(), WorkerError>) -> Next {
+    match result {
+        Ok(()) => Next::Acknowledged,
+        Err(WorkerError::Rpc(error)) if !definitive(error) => Next::Retry,
+        Err(WorkerError::Io(_) | WorkerError::Timeout | WorkerError::Transport(_)) => Next::Retry,
+        Err(WorkerError::Rpc(_)) => Next::Rejected("ReportRejected"),
+        Err(_) => Next::Rejected("InvalidJournalRecord"),
+    }
+}
+
+/// Whether a coordinator refusal is specific to this record, rather than a
+/// transient or worker-identity failure.
+fn definitive(error: &tonic::Status) -> bool {
+    !retryable(error)
+        && !matches!(
+            error.code(),
+            tonic::Code::Unauthenticated | tonic::Code::PermissionDenied
+        )
+}
+
+/// Reports journal records for the worker's lifetime; one bad record never
+/// stops the worker.
+///
+/// A record that is definitively refused `MAX_REPORT_REJECTIONS` times in a
+/// row, and that attempt status does not resolve, is quarantined durably so
+/// polling can resume. Its files remain for inspection.
 async fn reporting(
     config: &WorkerConfig,
     mut client: Client,
     journal: Journal,
 ) -> Result<(), WorkerError> {
     let mut delay = Duration::from_millis(200);
+    let mut rejections = std::collections::BTreeMap::<PathBuf, u32>::new();
     loop {
         let mut retry = false;
         for path in journal.pending()? {
             let result = report_one(config, &mut client, &path).await;
-            match result {
-                Ok(()) => journal.acknowledged(&path)?,
-                Err(WorkerError::Rpc(error)) if retryable(&error) => {
+            match next_step(&result) {
+                Next::Acknowledged => {
+                    rejections.remove(&path);
+                    journal.acknowledged(&path)?;
+                }
+                Next::Retry => {
+                    rejections.remove(&path);
                     retry = true;
                 }
-                Err(error) => return Err(error),
+                Next::Rejected(reason) => {
+                    retry = true;
+                    let count = rejections.entry(path.clone()).or_default();
+                    *count += 1;
+                    let error = result.err().map(|error| error.to_string());
+                    tracing::warn!(path = %path.display(), reason, rejections = *count, error = error.as_deref(), "worker report rejected");
+                    if *count >= MAX_REPORT_REJECTIONS {
+                        quarantine(&journal, &path, reason, error.unwrap_or_default()).await;
+                        rejections.remove(&path);
+                    }
+                }
             }
         }
         tokio::time::sleep(delay).await;
@@ -749,6 +956,56 @@ async fn reporting(
         } else {
             Duration::from_millis(200)
         };
+    }
+}
+
+async fn quarantine(journal: &Journal, path: &Path, reason: &'static str, message: String) {
+    let record = common::Failure {
+        reason_code: reason.into(),
+        disposition: common::FailureDisposition::PermanentFailure.into(),
+        message,
+    };
+    let journal = journal.clone();
+    let target = path.to_owned();
+    match super::blocking(move || journal.quarantine(&target, &record)).await {
+        Ok(()) => {
+            tracing::error!(path = %path.display(), reason, "worker report quarantined");
+        }
+        // The record stays pending and is quarantined on a later rejection.
+        Err(error) => {
+            tracing::error!(path = %path.display(), error = %error, "worker report could not be quarantined");
+        }
+    }
+}
+
+/// Resolves a definitively rejected report through attempt status.
+///
+/// Only a conclusive ended disposition acknowledges the record. A live
+/// attempt keeps the original rejection, which the caller counts.
+async fn resolve(
+    config: &WorkerConfig,
+    client: &mut Client,
+    ack: PathBuf,
+    query: cluster::GetAttemptStatusRequest,
+    rejection: tonic::Status,
+) -> Result<(), WorkerError> {
+    let status = rpc(
+        RPC_TIMEOUT,
+        client.get_attempt_status(request(config, query, RPC_TIMEOUT)?),
+    )
+    .await?
+    .into_inner();
+    match cluster::ResultOutcome::try_from(status.result_outcome) {
+        Ok(
+            cluster::ResultOutcome::AlreadyAccepted
+            | cluster::ResultOutcome::StaleAttempt
+            | cluster::ResultOutcome::Cancelled,
+        ) => {
+            super::blocking(move || journal::persist(&ack, &status)).await?;
+            Ok(())
+        }
+        Ok(cluster::ResultOutcome::Unspecified) => Err(rejection.into()),
+        _ => Err(WorkerError::Invalid("invalid attempt status")),
     }
 }
 
@@ -761,12 +1018,26 @@ async fn report_one(
     if path.file_name().is_some_and(|name| name == "result.pb") {
         let report_path = path.to_owned();
         let report = super::blocking(move || Journal::result(&report_path)).await?;
-        let response = rpc(
+        let query = cluster::GetAttemptStatusRequest {
+            worker_session_id: report.worker_session_id.clone(),
+            attempt_id: report
+                .receipt
+                .as_ref()
+                .map(|receipt| receipt.attempt_id.clone())
+                .unwrap_or_default(),
+        };
+        let response = match rpc(
             RPC_TIMEOUT,
             client.report_task_result(request(config, report, RPC_TIMEOUT)?),
         )
-        .await?
-        .into_inner();
+        .await
+        {
+            Ok(response) => response.into_inner(),
+            Err(error) if definitive(&error) => {
+                return resolve(config, client, ack, query, error).await;
+            }
+            Err(error) => return Err(error.into()),
+        };
         if cluster::ResultOutcome::try_from(response.outcome)
             .ok()
             .is_none_or(|value| value == cluster::ResultOutcome::Unspecified)
@@ -791,38 +1062,14 @@ async fn report_one(
         .await
         {
             Ok(response) => response.into_inner(),
-            Err(error) if error.code() == tonic::Code::FailedPrecondition => {
-                let status = rpc(
-                    RPC_TIMEOUT,
-                    client.get_attempt_status(request(config, query, RPC_TIMEOUT)?),
-                )
-                .await?
-                .into_inner();
-                match cluster::ResultOutcome::try_from(status.result_outcome) {
-                    Ok(
-                        cluster::ResultOutcome::AlreadyAccepted
-                        | cluster::ResultOutcome::StaleAttempt
-                        | cluster::ResultOutcome::Cancelled,
-                    ) => {
-                        super::blocking(move || journal::persist(&ack, &status)).await?;
-                        return Ok(());
-                    }
-                    Ok(cluster::ResultOutcome::Unspecified) => {
-                        return Err(tonic::Status::unavailable(
-                            "failure report remains unresolved",
-                        )
-                        .into());
-                    }
-                    _ => return Err(WorkerError::Invalid("invalid failure reporting status")),
-                }
+            Err(error) if definitive(&error) => {
+                return resolve(config, client, ack, query, error).await;
             }
             Err(error) => return Err(error.into()),
         };
-        if bergsmith_protocol::common::FailureDisposition::try_from(response.disposition)
+        if common::FailureDisposition::try_from(response.disposition)
             .ok()
-            .is_none_or(|value| {
-                value == bergsmith_protocol::common::FailureDisposition::Unspecified
-            })
+            .is_none_or(|value| value == common::FailureDisposition::Unspecified)
         {
             return Err(WorkerError::Invalid("unknown failure disposition"));
         }

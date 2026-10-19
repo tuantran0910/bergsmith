@@ -1,6 +1,6 @@
 # 0026. Durable worker supervision and platform resource enforcement
 
-- Status: Accepted
+- Status: Accepted; reporting refusal, lease-clock, and development resource-limit behavior superseded by 0030
 - Date: 2026-10-18
 - Plan reference: `.private/BERGSMITH_PROJECT_PLAN.md` BS-015
 
