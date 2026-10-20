@@ -1,11 +1,12 @@
 //! Canonical table identities and their catalog aliases.
 
-use bergsmith_common::ids::{CatalogConnectionId, OrganizationId, TableId};
+use bergsmith_common::ids::{CatalogConnectionId, OrganizationId, PrincipalId, TableId};
 use chrono::{DateTime, Utc};
 use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 
 use crate::PersistenceError;
+use crate::tenancy::CatalogConnection;
 
 /// A catalog name for a table: connection, namespace path, and table name.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -142,4 +143,122 @@ pub async fn table_by_alias(
     .fetch_optional(conn)
     .await?;
     Ok(row.map(TableIdentity::from))
+}
+
+/// One catalog name for a table, with the connection that serves it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TableAliasConnection {
+    /// The catalog name.
+    pub alias: TableAlias,
+    /// The connection the name belongs to.
+    pub connection: CatalogConnection,
+}
+
+#[derive(sqlx::FromRow)]
+struct TableAliasConnectionRow {
+    catalog_connection_id: Uuid,
+    namespace: Vec<String>,
+    table_name: String,
+    connection_id: Uuid,
+    organization_id: Uuid,
+    connection_name: String,
+    uri: String,
+    warehouse: Option<String>,
+    credential_ref: Option<String>,
+    created_at: DateTime<Utc>,
+}
+
+impl From<TableAliasConnectionRow> for TableAliasConnection {
+    fn from(row: TableAliasConnectionRow) -> Self {
+        Self {
+            alias: TableAlias {
+                connection_id: CatalogConnectionId::from_uuid(row.catalog_connection_id),
+                namespace: row.namespace,
+                name: row.table_name,
+            },
+            connection: CatalogConnection {
+                id: CatalogConnectionId::from_uuid(row.connection_id),
+                organization_id: OrganizationId::from_uuid(row.organization_id),
+                name: row.connection_name,
+                uri: row.uri,
+                warehouse: row.warehouse,
+                credential_ref: row.credential_ref,
+                created_at: row.created_at,
+            },
+        }
+    }
+}
+
+/// Looks up a canonical table identity.
+///
+/// # Errors
+///
+/// [`PersistenceError::NotFound`] when the organization has no such table.
+pub async fn table_identity(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    id: TableId,
+) -> Result<TableIdentity, PersistenceError> {
+    sqlx::query_as::<_, TableIdentityRow>(
+        "SELECT id, organization_id, table_uuid, created_at
+         FROM table_identities WHERE organization_id = $1 AND id = $2",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(id.as_uuid())
+    .fetch_optional(conn)
+    .await?
+    .map(TableIdentity::from)
+    .ok_or_else(|| PersistenceError::NotFound {
+        entity: "table",
+        id: id.to_string(),
+    })
+}
+
+/// Lists a table's catalog names that `principal_id` may use, canonically
+/// ordered.
+///
+/// The grant predicate mirrors [`crate::grants::has_permission`] for the same
+/// roles: an organization grant covers every name, a table grant covers the
+/// table, and a connection grant covers only names on that connection. A
+/// caller restricted to one connection therefore never reaches another
+/// connection's catalog on this table's behalf.
+///
+/// The order is by connection ID, then namespace, then table name, so a
+/// reader that needs one name gets the same one on every call.
+///
+/// # Errors
+///
+/// [`PersistenceError::Database`] when the query fails.
+pub async fn accessible_aliases_with_connections(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    principal_id: PrincipalId,
+    roles: &[&str],
+    table_id: TableId,
+) -> Result<Vec<TableAliasConnection>, PersistenceError> {
+    let roles: Vec<String> = roles.iter().map(|role| (*role).to_owned()).collect();
+    let rows: Vec<TableAliasConnectionRow> = sqlx::query_as(
+        "SELECT a.catalog_connection_id, a.namespace, a.table_name,
+                c.id AS connection_id, c.organization_id, c.name AS connection_name,
+                c.uri, c.warehouse, c.credential_ref, c.created_at
+         FROM table_aliases a
+         JOIN catalog_connections c
+           ON c.organization_id = a.organization_id AND c.id = a.catalog_connection_id
+         WHERE a.organization_id = $1 AND a.table_identity_id = $2
+           AND EXISTS (
+               SELECT 1 FROM principal_role_grants g
+               WHERE g.organization_id = $1 AND g.principal_id = $3
+                 AND g.revoked_at IS NULL AND g.role = ANY($4::text[])
+                 AND ((g.catalog_connection_id IS NULL AND g.table_identity_id IS NULL)
+                   OR g.table_identity_id = a.table_identity_id
+                   OR g.catalog_connection_id = a.catalog_connection_id))
+         ORDER BY a.catalog_connection_id, a.namespace, a.table_name",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(table_id.as_uuid())
+    .bind(principal_id.as_uuid())
+    .bind(&roles)
+    .fetch_all(conn)
+    .await?;
+    Ok(rows.into_iter().map(TableAliasConnection::from).collect())
 }

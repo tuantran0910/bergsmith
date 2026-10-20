@@ -392,38 +392,6 @@ pub(super) async fn audit(
     Ok(Json(page.finish(rows)?))
 }
 
-pub(super) async fn deferred_preview(
-    State(state): State<ApiState>,
-    caller: Caller,
-) -> Result<Json<Value>, ApiError> {
-    let mut conn = state.database.pool().acquire().await?;
-    // No table or preview is read until T2 supplies a typed request and scope.
-    let grants =
-        grants::active_grants(&mut conn, caller.organization_id, caller.principal_id).await?;
-    if !grants
-        .iter()
-        .any(|grant| grant.role.allows(Permission::SubmitJobs))
-    {
-        record_denial(
-            &mut conn,
-            &caller.0,
-            Permission::SubmitJobs,
-            ResourceScope::Organization,
-        )
-        .await;
-        return Err(ApiError::new(
-            StatusCode::FORBIDDEN,
-            "permission_denied",
-            "request_permission",
-        ));
-    }
-    Err(ApiError::new(
-        StatusCode::NOT_IMPLEMENTED,
-        "previews_unavailable",
-        "wait_for_preview_api",
-    ))
-}
-
 pub(super) async fn deferred_schedules(
     State(state): State<ApiState>,
     caller: Caller,
