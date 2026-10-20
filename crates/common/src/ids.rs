@@ -116,6 +116,10 @@ define_id!(
     /// Identifies a job's single publication operation.
     PublicationId
 );
+define_id!(
+    /// Identifies one role grant.
+    RoleGrantId
+);
 
 #[cfg(test)]
 mod tests {

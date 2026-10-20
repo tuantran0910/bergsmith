@@ -38,3 +38,5 @@ record's status; never rewrite an accepted decision.
 | [0029](0029-isolated-reconciliation-and-operator-resolution.md) | Isolated reconciliation, publication grace, and operator resolution | Accepted |
 | [0030](0030-worker-report-quarantine-and-supervision-recovery.md) | Worker report quarantine and supervision recovery | Accepted |
 | [0031](0031-worker-renewal-and-grant-boundaries.md) | Worker renewal and grant boundaries | Accepted |
+| [0032](0032-oidc-sessions-and-scoped-authorization.md) | OIDC sessions and scoped authorization | Accepted; refined by 0033 |
+| [0033](0033-every-job-names-its-requester.md) | Every job names its requester | Accepted |

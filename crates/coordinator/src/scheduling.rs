@@ -417,6 +417,14 @@ impl Scheduler {
             return Ok(());
         }
         let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
+        // Revocation is checked before anything else needs dispatch
+        // configuration, so a revoked requester is failed even when its plan
+        // has no registered dispatch yet.
+        let current =
+            bergsmith_persistence::jobs::job(&mut conn, job.organization_id, job.id).await?;
+        if self.revoke_if_unauthorized(&mut conn, &current).await? {
+            return Ok(());
+        }
         let plan = planning::load_plan(&mut conn, job.id)
             .await?
             .ok_or(SchedulingError::Configuration)?;
@@ -475,6 +483,47 @@ impl Scheduler {
         self.validate_and_apply(&current, &plan).await
     }
 
+    /// Fails a job whose requester no longer holds the submitting grant.
+    ///
+    /// Returns whether the job was stopped. Revocation is job-scoped and is
+    /// evaluated even while budgets or the table are busy; worker sessions and
+    /// tokens are untouched.
+    async fn revoke_if_unauthorized(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        job: &bergsmith_persistence::jobs::Job,
+    ) -> Result<bool, SchedulingError> {
+        match bergsmith_persistence::grants::require_job_permission(
+            conn,
+            job,
+            bergsmith_common::permission::Permission::SubmitJobs,
+        )
+        .await
+        {
+            Ok(()) => Ok(false),
+            Err(PersistenceError::PermissionDenied { .. }) => {
+                record_admission_decision(
+                    conn,
+                    job,
+                    bergsmith_common::audit::AuditAction::JobAdmissionDenied,
+                    bergsmith_common::audit::AuditOutcome::Denied,
+                    "AuthorizationRevoked",
+                )
+                .await;
+                Ok(ledger::stop(
+                    conn,
+                    job.id,
+                    job.state_revision,
+                    self.epoch,
+                    JobState::Failed,
+                    "AuthorizationRevoked",
+                )
+                .await?)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
     /// Validates a job that needs admission or retry release, then applies
     /// the outcome against the revision the decision was based on.
     async fn validate_and_apply(
@@ -501,10 +550,19 @@ impl Scheduler {
                     current.id,
                 )
                 .await?;
-                if matches!(latest.state, JobState::Queued | JobState::Running)
+                let admitted = matches!(latest.state, JobState::Queued | JobState::Running)
                     && latest.cancellation.is_none()
-                {
-                    ledger::admit(&mut conn, current.id, self.epoch, self.config.admission).await?;
+                    && ledger::admit(&mut conn, current.id, self.epoch, self.config.admission)
+                        .await?;
+                if admitted {
+                    record_admission_decision(
+                        &mut conn,
+                        &latest,
+                        bergsmith_common::audit::AuditAction::JobAdmitted,
+                        bergsmith_common::audit::AuditOutcome::Allowed,
+                        "Admitted",
+                    )
+                    .await;
                 }
                 return Ok(());
             }
@@ -589,4 +647,32 @@ fn task_offer(
         },
         limits,
     })
+}
+
+/// Records an admission decision. Audit failure is logged but never changes the
+/// scheduling outcome: the decision is already durable in the job ledger.
+async fn record_admission_decision(
+    conn: &mut sqlx::PgConnection,
+    job: &bergsmith_persistence::jobs::Job,
+    action: bergsmith_common::audit::AuditAction,
+    outcome: bergsmith_common::audit::AuditOutcome,
+    reason: &str,
+) {
+    if let Err(error) = crate::identity::audit::job_decision(
+        conn,
+        job.organization_id,
+        Some(job.created_by),
+        action,
+        &job.id.to_string(),
+        outcome,
+        Some(reason),
+    )
+    .await
+    {
+        tracing::warn!(
+            reason = error.reason_code(),
+            job_id = %job.id,
+            "admission audit record failed"
+        );
+    }
 }

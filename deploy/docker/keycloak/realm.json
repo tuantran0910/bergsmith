@@ -1,0 +1,59 @@
+{
+  "realm": "bergsmith",
+  "enabled": true,
+  "displayName": "Bergsmith development",
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 43200,
+  "clients": [
+    {
+      "clientId": "bergsmith",
+      "name": "Bergsmith coordinator (development)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "development-only-not-a-real-secret",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "rootUrl": "http://127.0.0.1:3000",
+      "redirectUris": [
+        "http://127.0.0.1:3000/auth/callback",
+        "http://localhost:3000/auth/callback"
+      ],
+      "webOrigins": ["http://127.0.0.1:3000", "http://localhost:3000"],
+      "defaultClientScopes": ["web-origins", "acr", "profile", "roles", "email"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@example.test",
+      "firstName": "Alice",
+      "lastName": "Operator",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "development-only-not-a-real-password",
+          "temporary": false
+        }
+      ]
+    }
+  ],
+  "roles": {
+    "realm": [
+      { "name": "bergsmith-admin" },
+      { "name": "bergsmith-operator" }
+    ]
+  },
+  "defaultRoles": ["bergsmith-operator"]
+}

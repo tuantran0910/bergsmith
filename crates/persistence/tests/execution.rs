@@ -11,9 +11,12 @@ use bergsmith_persistence::attempts::{
     self, AcceptOutcome, Acceptance, EndAttempt, ReceiptSubmission,
 };
 use bergsmith_persistence::jobs::{self, JobEventKind, NewJob};
+use bergsmith_persistence::leadership::acquire_leadership;
 use bergsmith_persistence::plans::{self, NewPlan};
+use bergsmith_persistence::publications;
 use chrono::Utc;
 use sqlx::PgPool;
+use std::time::Duration;
 use support::{
     constraint, digest, expire_lease, force_job_state, grant, job, plan, release_task,
     running_attempt, sqlstate, tenant,
@@ -70,7 +73,7 @@ async fn jobs_cannot_reference_another_organizations_table(pool: PgPool) {
             organization_id: globex.organization,
             table_id: acme.table,
             retry_of: None,
-            created_by: None,
+            created_by: globex.user,
         },
     )
     .await
@@ -112,7 +115,7 @@ async fn a_retry_links_to_the_job_it_retries(pool: PgPool) {
             organization_id: tenant.organization,
             table_id: tenant.table,
             retry_of: Some(original),
-            created_by: None,
+            created_by: tenant.user,
         },
     )
     .await
@@ -680,4 +683,51 @@ async fn a_job_has_at_most_one_publication(pool: PgPool) {
         error.as_database_error().and_then(|e| e.constraint()),
         Some("publications_job_id_key")
     );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_denied_sender_cannot_release_authority_held_by_another(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = tenant(&mut conn, "acme").await;
+    let epoch = acquire_leadership(&mut conn, "test", Duration::from_secs(60))
+        .await
+        .unwrap()
+        .unwrap()
+        .epoch;
+
+    // No sender authorized: the denial resolves the job and releases authority.
+    let unowned = job(&mut conn, &tenant).await;
+    force_job_state(&mut conn, unowned, JobState::Committing).await;
+    let resolved = publications::resolve_authorization_denied(&mut conn, unowned, 0, epoch)
+        .await
+        .unwrap()
+        .expect("no sender is authorized, so the denial resolves");
+    assert_eq!(resolved.state, JobState::Failed);
+    assert_eq!(
+        resolved.state_reason.as_deref(),
+        Some("AuthorizationRevoked")
+    );
+
+    // Another sender authorized at the same revision: the denial must neither
+    // resolve the job nor release the barrier, because send authorization does
+    // not bump the revision.
+    let sent = job(&mut conn, &tenant).await;
+    force_job_state(&mut conn, sent, JobState::Committing).await;
+    sqlx::query("UPDATE jobs SET publication_started_at = clock_timestamp() WHERE id = $1")
+        .bind(sent.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    let denied = publications::resolve_authorization_denied(&mut conn, sent, 0, epoch)
+        .await
+        .unwrap();
+    assert!(
+        denied.is_none(),
+        "a competing authorized sender owns the outcome"
+    );
+    let current = jobs::job(&mut conn, tenant.organization, sent)
+        .await
+        .unwrap();
+    assert_eq!(current.state, JobState::Committing);
+    assert!(current.publication_started_at.is_some());
 }

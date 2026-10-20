@@ -281,6 +281,68 @@ pub async fn create_principal(
     row.try_into()
 }
 
+/// Looks up a principal by identifier.
+///
+/// # Errors
+///
+/// [`PersistenceError::NotFound`] when the organization has no such principal.
+pub async fn principal(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    principal_id: PrincipalId,
+) -> Result<Principal, PersistenceError> {
+    sqlx::query_as::<_, PrincipalRow>(
+        "SELECT id, organization_id, kind, issuer, subject, display_name, created_at
+         FROM principals WHERE organization_id = $1 AND id = $2",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(principal_id.as_uuid())
+    .fetch_optional(conn)
+    .await?
+    .ok_or_else(|| PersistenceError::NotFound {
+        entity: "principal",
+        id: principal_id.to_string(),
+    })?
+    .try_into()
+}
+
+/// Creates a principal unless the organization already has that issuer and
+/// subject, returning the stored row and whether it was created.
+///
+/// Safe to race: a concurrent caller that loses the insert re-reads the winner.
+///
+/// # Errors
+///
+/// [`PersistenceError::MissingReference`] when the organization does not
+/// exist, and [`PersistenceError::InvalidValue`] for empty fields.
+pub async fn ensure_principal(
+    conn: &mut PgConnection,
+    new: &NewPrincipal,
+) -> Result<(Principal, bool), PersistenceError> {
+    let inserted = sqlx::query_as::<_, PrincipalRow>(
+        "INSERT INTO principals (id, organization_id, kind, issuer, subject, display_name)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT DO NOTHING
+         RETURNING id, organization_id, kind, issuer, subject, display_name, created_at",
+    )
+    .bind(new.id.as_uuid())
+    .bind(new.organization_id.as_uuid())
+    .bind(new.kind.as_str())
+    .bind(&new.issuer)
+    .bind(&new.subject)
+    .bind(&new.display_name)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(|error| PersistenceError::from_write("principal", error))?;
+    match inserted {
+        Some(row) => Ok((row.try_into()?, true)),
+        None => Ok((
+            principal_by_subject(conn, new.organization_id, &new.issuer, &new.subject).await?,
+            false,
+        )),
+    }
+}
+
 /// Looks up the principal an authenticated token belongs to.
 ///
 /// # Errors

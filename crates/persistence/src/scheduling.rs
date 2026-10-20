@@ -283,6 +283,14 @@ pub async fn admit(
 ) -> Result<bool, PersistenceError> {
     let mut tx = conn.begin().await?;
     let job = jobs::lock_job(&mut tx, job_id).await?;
+    // Revocation takes effect at the next admission, inside the same
+    // transaction that would reserve budgets and open the table.
+    crate::grants::require_job_permission(
+        &mut tx,
+        &job,
+        bergsmith_common::permission::Permission::SubmitJobs,
+    )
+    .await?;
     if !limits.is_valid()
         || !matches!(job.state, JobState::Queued | JobState::Running)
         || job.cancellation.is_some()
@@ -390,6 +398,15 @@ pub(crate) async fn authorize_publication(
     conn: &mut PgConnection,
     job: &jobs::Job,
 ) -> Result<(), PersistenceError> {
+    // The requester's grant is rechecked before intent construction and again
+    // before send authorization. Revocation therefore prevents a new
+    // publication without touching worker credentials.
+    crate::grants::require_job_permission(
+        conn,
+        job,
+        bergsmith_common::permission::Permission::SubmitJobs,
+    )
+    .await?;
     guard(conn).await?;
     let blocked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM execution_admissions WHERE table_identity_id=$1 AND job_id<>$2 AND NOT released)")
         .bind(job.table_id.as_uuid()).bind(job.id.as_uuid()).fetch_one(conn).await?;

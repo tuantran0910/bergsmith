@@ -266,6 +266,10 @@ pub async fn publication_connection(
 /// # Errors
 /// Authorization/read/database errors, and catalog errors before authorization,
 /// preserve the existing durable intent and barrier.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one audited publication decision path: baseline recheck, send, and outcome mapping"
+)]
 pub async fn publish(
     conn: &mut PgConnection,
     job: &Job,
@@ -317,7 +321,17 @@ pub async fn publish(
     .await;
     let (to, reason, proof) = match sent {
         Ok(sent) => match sent.outcome {
-            CommitOutcome::Committed(_) => (JobState::Succeeded, "CommitConfirmed", false),
+            CommitOutcome::Committed(_) => {
+                record_publication_decision(
+                    conn,
+                    job,
+                    bergsmith_common::audit::AuditAction::JobPublished,
+                    bergsmith_common::audit::AuditOutcome::Allowed,
+                    "CommitConfirmed",
+                )
+                .await;
+                (JobState::Succeeded, "CommitConfirmed", false)
+            }
             CommitOutcome::Unknown(_) => (
                 JobState::CommitOutcomeUnknown,
                 "CommitOutcomeUnknown",
@@ -336,6 +350,31 @@ pub async fn publish(
                 (state, "CommitRejected", true)
             }
         },
+        Err(PublicationError::NotAuthorized(PersistenceError::PermissionDenied { .. })) => {
+            // Resolve atomically: if another sender was authorized after this
+            // denial, it owns the barrier and this attempt must not release it.
+            // Boxed to keep the publication future small; the resolve state
+            // machine is not on the common path.
+            let resolved = Box::pin(publications::resolve_authorization_denied(
+                conn,
+                job.id,
+                job.state_revision,
+                epoch,
+            ))
+            .await?;
+            record_publication_decision(
+                conn,
+                job,
+                bergsmith_common::audit::AuditAction::JobPublicationDenied,
+                bergsmith_common::audit::AuditOutcome::Denied,
+                "AuthorizationRevoked",
+            )
+            .await;
+            return Ok(match resolved {
+                Some(resolved) => resolved,
+                None => jobs::job(conn, job.organization_id, job.id).await?,
+            });
+        }
         Err(PublicationError::NotAuthorized(error)) => return Err(error.into()),
         Err(PublicationError::NotPrepared(error)) => return Err(error.into()),
         Err(PublicationError::NotSent { .. }) => (JobState::Failed, "CommitNotSent", true),
@@ -557,4 +596,32 @@ async fn build_proposal(
         added,
     };
     bounded(limit, proposal.prepare(baseline)).await
+}
+
+/// Records a publication decision. Audit failure is logged and never changes
+/// the outcome already decided from durable evidence.
+async fn record_publication_decision(
+    conn: &mut PgConnection,
+    job: &Job,
+    action: bergsmith_common::audit::AuditAction,
+    outcome: bergsmith_common::audit::AuditOutcome,
+    reason: &str,
+) {
+    if let Err(error) = crate::identity::audit::job_decision(
+        conn,
+        job.organization_id,
+        Some(job.created_by),
+        action,
+        &job.id.to_string(),
+        outcome,
+        Some(reason),
+    )
+    .await
+    {
+        tracing::warn!(
+            reason = error.reason_code(),
+            job_id = %job.id,
+            "publication audit record failed"
+        );
+    }
 }

@@ -37,8 +37,9 @@ pub struct Job {
     pub state_reason: Option<String>,
     /// The terminal job this one retries with a fresh plan, if any.
     pub retry_of: Option<JobId>,
-    /// Who submitted the job, if a principal did.
-    pub created_by: Option<PrincipalId>,
+    /// Who submitted the job. Every job has a requester, so authorization can
+    /// always name an actor; legacy rows were attributed by migration 0012.
+    pub created_by: PrincipalId,
     /// When the job was created (database time).
     pub created_at: DateTime<Utc>,
     /// When the job row last changed (database time).
@@ -73,8 +74,8 @@ pub struct NewJob {
     pub table_id: TableId,
     /// The terminal job this one retries, if any.
     pub retry_of: Option<JobId>,
-    /// Who submitted the job, if a principal did.
-    pub created_by: Option<PrincipalId>,
+    /// Who submitted the job.
+    pub created_by: PrincipalId,
 }
 
 /// The kind of a [`JobEvent`].
@@ -144,7 +145,7 @@ pub(crate) struct JobRow {
     state_revision: i64,
     state_reason: Option<String>,
     retry_of_job_id: Option<Uuid>,
-    created_by: Option<Uuid>,
+    created_by: Uuid,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     cancellation_requested_at: Option<DateTime<Utc>>,
@@ -165,7 +166,7 @@ impl TryFrom<JobRow> for Job {
             state_revision: row.state_revision,
             state_reason: row.state_reason,
             retry_of: row.retry_of_job_id.map(JobId::from_uuid),
-            created_by: row.created_by.map(PrincipalId::from_uuid),
+            created_by: PrincipalId::from_uuid(row.created_by),
             created_at: row.created_at,
             updated_at: row.updated_at,
             cancellation: row
@@ -288,7 +289,7 @@ pub async fn create_job(conn: &mut PgConnection, new: &NewJob) -> Result<Job, Pe
     .bind(new.table_id.as_uuid())
     .bind(JobState::Planning.as_str())
     .bind(new.retry_of.as_ref().map(JobId::as_uuid))
-    .bind(new.created_by.as_ref().map(PrincipalId::as_uuid))
+    .bind(new.created_by.as_uuid())
     .fetch_one(&mut *tx)
     .await
     .map_err(|error| PersistenceError::from_write("job", error))?
@@ -302,7 +303,7 @@ pub async fn create_job(conn: &mut PgConnection, new: &NewJob) -> Result<Job, Pe
             to_state: job.state,
             state_revision: job.state_revision,
             reason: None,
-            actor: job.created_by,
+            actor: Some(job.created_by),
         },
     )
     .await?;
@@ -410,7 +411,7 @@ pub async fn transition_job(
 
     let job: Job = sqlx::query_as::<_, JobRow>(concat!(
         "UPDATE jobs SET state = $2, state_revision = state_revision + 1, state_reason = $3,
-             updated_at = now()
+             updated_at = clock_timestamp()
          WHERE id = $1
          RETURNING ",
         job_columns!()
@@ -435,9 +436,9 @@ pub async fn transition_job(
     )
     .await?;
     if job.state.is_terminal() || job.state == JobState::Cancelling {
-        sqlx::query("UPDATE attempts SET state='Cancelled',finished_at=now() WHERE task_id IN (SELECT id FROM tasks WHERE job_id=$1) AND state IN ('Granted','Running')")
+        sqlx::query("UPDATE attempts SET state='Cancelled',finished_at=clock_timestamp() WHERE task_id IN (SELECT id FROM tasks WHERE job_id=$1) AND state IN ('Granted','Running')")
             .bind(job.id.as_uuid()).execute(&mut *tx).await?;
-        sqlx::query("UPDATE tasks SET state='Cancelled',retry_not_before=NULL,updated_at=now() WHERE job_id=$1 AND state IN ('Pending','Leased','RetryWaiting')")
+        sqlx::query("UPDATE tasks SET state='Cancelled',retry_not_before=NULL,updated_at=clock_timestamp() WHERE job_id=$1 AND state IN ('Pending','Leased','RetryWaiting')")
             .bind(job.id.as_uuid()).execute(&mut *tx).await?;
     }
     if job.state.is_terminal() {

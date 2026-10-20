@@ -458,10 +458,13 @@ checksum = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90"
 dependencies = [
  "axum-core",
  "bytes",
+ "form_urlencoded",
  "futures-util",
  "http",
  "http-body",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "itoa",
  "matchit",
  "memchr",
@@ -469,10 +472,15 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "serde_core",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_urlencoded",
  "sync_wrapper",
+ "tokio",
  "tower",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -491,6 +499,7 @@ dependencies = [
  "sync_wrapper",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -553,6 +562,8 @@ name = "bergsmith-coordinator"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
+ "base64 0.22.1",
  "bergsmith-catalog",
  "bergsmith-common",
  "bergsmith-fixtures",
@@ -568,16 +579,19 @@ dependencies = [
  "prost",
  "prost-types",
  "reqwest 0.12.28",
+ "ring",
  "rustix",
  "rustls",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "sqlx",
  "sysinfo",
  "tempfile",
  "thiserror",
  "tokio",
  "tonic",
+ "tower",
  "tracing",
  "url",
  "uuid",
@@ -4069,6 +4083,16 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_path_to_error"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4beec8bce849d58d06238cb50db2e1c417cfeafa4c63f692b15c82b7c80f8335"
+dependencies = [
+ "itoa",
+ "serde",
 ]
 
 [[package]]

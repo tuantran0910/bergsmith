@@ -20,21 +20,57 @@ use std::time::Duration;
 use bergsmith_catalog::{
     CatalogConnection, CommitOutcome, PreparedCommit, RejectionKind, SnapshotEvidence, TableName,
 };
-use bergsmith_common::ids::{CatalogConnectionId, JobId, OrganizationId};
+use bergsmith_common::ids::{CatalogConnectionId, JobId, OrganizationId, PrincipalId, RoleGrantId};
 use bergsmith_common::job::JobState;
+use bergsmith_common::permission::{GrantScope, Role};
 use bergsmith_coordinator::inventory::record_observation;
 use bergsmith_coordinator::publication::{PublicationError, send_first_commit};
 use bergsmith_persistence::PersistenceError;
 use bergsmith_persistence::cancellation::{
     CancelJob, CancellationDisposition, SendAuthorization, authorize_send, request_cancellation,
 };
+use bergsmith_persistence::grants::{self, NewRoleGrant};
 use bergsmith_persistence::jobs::{self, Job, NewJob, Transition};
 use bergsmith_persistence::leadership::acquire_leadership;
-use bergsmith_persistence::tenancy::{self, NewCatalogConnection, NewOrganization};
+use bergsmith_persistence::tenancy::{
+    self, NewCatalogConnection, NewOrganization, NewPrincipal, PrincipalKind,
+};
 use sqlx::{PgConnection, PgPool};
 use support::Warehouse;
 use support::commit::{append, baseline, data_file, rewrite, table_with_files};
 use support::proxy::LossyProxy;
+
+/// Creates the job requester and its organization-wide administrator grant.
+async fn publisher_principal(db: &mut PgConnection, organization: OrganizationId) -> PrincipalId {
+    let created_by = PrincipalId::generate();
+    tenancy::create_principal(
+        db,
+        &NewPrincipal {
+            id: created_by,
+            organization_id: organization,
+            kind: PrincipalKind::User,
+            issuer: "https://idp.example".to_owned(),
+            subject: format!("publisher-{created_by}"),
+            display_name: "Publisher".to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+    grants::create_grant(
+        db,
+        &NewRoleGrant {
+            id: RoleGrantId::generate(),
+            organization_id: organization,
+            principal_id: created_by,
+            role: Role::Administrator,
+            scope: GrantScope::organization(),
+            granted_by: None,
+        },
+    )
+    .await
+    .unwrap();
+    created_by
+}
 
 struct Fixture {
     db: sqlx::pool::PoolConnection<sqlx::Postgres>,
@@ -89,6 +125,9 @@ async fn fixture(pool: &PgPool) -> Fixture {
     let table_id = record_observation(&mut db, organization, connection, &observed)
         .await
         .unwrap();
+    // A requester is mandatory; an administrator grant lets the fixture
+    // create the intent and authorize the send.
+    let created_by = publisher_principal(&mut db, organization).await;
     let mut job = jobs::create_job(
         &mut db,
         &NewJob {
@@ -96,7 +135,7 @@ async fn fixture(pool: &PgPool) -> Fixture {
             organization_id: organization,
             table_id,
             retry_of: None,
-            created_by: None,
+            created_by,
         },
     )
     .await

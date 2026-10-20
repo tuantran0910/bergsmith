@@ -41,6 +41,8 @@ arrow-schema = "58.4.0"
 parquet = { version = "58.4.0", default-features = false, features = ["arrow", "async"] }
 
 async-trait = "0.1.92"
+axum = "0.8.9"
+base64 = "0.22.1"
 bytes = "1.12.1"
 futures = "0.3.34"
 mockito = "1.7.2"
@@ -50,6 +52,7 @@ prost = "0.14.4"
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 prost-types = "0.14.4"
 protox = "0.10.0"
+ring = "0.17.14"
 # TLS for catalog HTTPS. Feature unification also gives iceberg-rust's reqwest TLS.
 reqwest = { version = "0.12.28", default-features = false, features = ["http2", "json", "rustls-tls-native-roots"] }
 # Explicit TLS startup provider: upstream clients enable both ring and AWS-LC.
