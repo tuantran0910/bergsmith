@@ -4,7 +4,9 @@
 mod support;
 
 use bergsmith_common::ids::{CatalogConnectionId, OrganizationId, PrincipalId};
+use bergsmith_common::permission::{GrantScope, Role};
 use bergsmith_persistence::PersistenceError;
+use bergsmith_persistence::grants::{self, NewRoleGrant};
 use bergsmith_persistence::tables::{self, TableAlias};
 use bergsmith_persistence::tenancy::{
     self, NewCatalogConnection, NewOrganization, NewPrincipal, PrincipalKind,
@@ -344,4 +346,181 @@ async fn unknown_aliases_resolve_to_nothing(pool: PgPool) {
         .unwrap();
 
     assert_eq!(found, None);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn accessible_aliases_are_scoped_to_the_grants_and_ordered_canonically(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let acme = organization(&mut conn, "acme").await;
+    let globex = organization(&mut conn, "globex").await;
+    let main = connection(&mut conn, acme, "main").await;
+    let replica = connection(&mut conn, acme, "replica").await;
+    let foreign = connection(&mut conn, globex, "foreign").await;
+    let table_uuid = Uuid::now_v7();
+    let table = tables::resolve_table(&mut conn, acme, &alias(main, "events"), table_uuid)
+        .await
+        .unwrap()
+        .id;
+    tables::resolve_table(&mut conn, acme, &alias(replica, "events_v"), table_uuid)
+        .await
+        .unwrap();
+    tables::resolve_table(&mut conn, globex, &alias(foreign, "events"), table_uuid)
+        .await
+        .unwrap();
+    let principal = user(&mut conn, acme, "reader").await;
+
+    let identity = tables::table_identity(&mut conn, acme, table)
+        .await
+        .unwrap();
+    assert_eq!(identity.table_uuid, table_uuid);
+    assert!(matches!(
+        tables::table_identity(&mut conn, acme, bergsmith_common::ids::TableId::generate())
+            .await
+            .unwrap_err(),
+        PersistenceError::NotFound { .. }
+    ));
+
+    // No grant: no catalog name is usable.
+    assert!(
+        tables::accessible_aliases_with_connections(&mut conn, acme, principal, &["Viewer"], table)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // A connection grant reaches only that connection's name.
+    grants::create_grant(
+        &mut conn,
+        &NewRoleGrant {
+            id: bergsmith_common::ids::RoleGrantId::generate(),
+            organization_id: acme,
+            principal_id: principal,
+            role: Role::Viewer,
+            scope: GrantScope::connection(replica),
+            granted_by: None,
+        },
+    )
+    .await
+    .unwrap();
+    let declared =
+        tables::accessible_aliases_with_connections(&mut conn, acme, principal, &["Viewer"], table)
+            .await
+            .unwrap();
+    assert_eq!(declared.len(), 1);
+    assert_eq!(declared[0].connection.id, replica);
+    assert_eq!(declared[0].alias.name, "events_v");
+    assert_eq!(declared[0].alias.namespace, vec!["db".to_owned()]);
+    assert_eq!(
+        declared[0].connection.credential_ref.as_deref(),
+        Some("secret/catalog")
+    );
+    // A role the grant does not carry sees nothing.
+    assert!(
+        tables::accessible_aliases_with_connections(
+            &mut conn,
+            acme,
+            principal,
+            &["Operator"],
+            table
+        )
+        .await
+        .unwrap()
+        .is_empty()
+    );
+
+    // An organization grant reaches every name of the table in the organization.
+    grants::create_grant(
+        &mut conn,
+        &NewRoleGrant {
+            id: bergsmith_common::ids::RoleGrantId::generate(),
+            organization_id: acme,
+            principal_id: principal,
+            role: Role::Operator,
+            scope: GrantScope::organization(),
+            granted_by: None,
+        },
+    )
+    .await
+    .unwrap();
+    let all = tables::accessible_aliases_with_connections(
+        &mut conn,
+        acme,
+        principal,
+        &["Viewer", "Operator"],
+        table,
+    )
+    .await
+    .unwrap();
+    assert_eq!(all.len(), 2, "another organization's alias is not listed");
+    let names: Vec<&str> = all
+        .iter()
+        .map(|entry| entry.connection.name.as_str())
+        .collect();
+    assert!(names.contains(&"main"));
+    assert!(names.contains(&"replica"));
+    let mut canonically_ordered = all.clone();
+    canonically_ordered.sort_by_key(|entry| {
+        (
+            *entry.alias.connection_id.as_uuid(),
+            entry.alias.namespace.clone(),
+            entry.alias.name.clone(),
+        )
+    });
+    assert_eq!(canonically_ordered, all);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn revoked_grants_stop_covering_table_aliases(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let acme = organization(&mut conn, "acme").await;
+    let main = connection(&mut conn, acme, "main").await;
+    let table = tables::resolve_table(&mut conn, acme, &alias(main, "events"), Uuid::now_v7())
+        .await
+        .unwrap()
+        .id;
+    let principal = user(&mut conn, acme, "reader").await;
+    let grant = bergsmith_common::ids::RoleGrantId::generate();
+    grants::create_grant(
+        &mut conn,
+        &NewRoleGrant {
+            id: grant,
+            organization_id: acme,
+            principal_id: principal,
+            role: Role::Operator,
+            scope: GrantScope::organization(),
+            granted_by: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        tables::accessible_aliases_with_connections(
+            &mut conn,
+            acme,
+            principal,
+            &["Operator"],
+            table
+        )
+        .await
+        .unwrap()
+        .len(),
+        1
+    );
+
+    grants::revoke_grant(&mut conn, acme, grant, None)
+        .await
+        .unwrap();
+
+    assert!(
+        tables::accessible_aliases_with_connections(
+            &mut conn,
+            acme,
+            principal,
+            &["Operator"],
+            table
+        )
+        .await
+        .unwrap()
+        .is_empty()
+    );
 }

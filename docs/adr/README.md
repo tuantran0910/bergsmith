@@ -41,3 +41,4 @@ record's status; never rewrite an accepted decision.
 | [0032](0032-oidc-sessions-and-scoped-authorization.md) | OIDC sessions and scoped authorization | Accepted; refined by 0033 |
 | [0033](0033-every-job-names-its-requester.md) | Every job names its requester | Accepted |
 | [0034](0034-versioned-browser-resource-api.md) | Versioned browser resources and atomic idempotent submission | Accepted |
+| [0035](0035-previews-and-job-commands.md) | Catalog-backed previews and durable job commands | Accepted |

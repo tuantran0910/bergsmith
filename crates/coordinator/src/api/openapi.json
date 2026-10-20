@@ -737,6 +737,269 @@
         ]
       }
     },
+    "/api/v1/jobs/{id}/cancel": {
+      "post": {
+        "operationId": "cancelJob",
+        "description": "Record a cancellation request and report what it achieved. Idempotent and monotonic: the first requester and reason are kept. A request after send authorization cannot stop the commit; a terminal job is reported, not changed. Authorization, the cancellation, and its audit record commit together.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelJobRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Invalid request or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Transient failure; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or inaccessible job",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body too large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Cancellation outcome and the job after the request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelJobResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/jobs/{id}/retry": {
+      "post": {
+        "operationId": "retryJob",
+        "description": "Create a fresh-plan retry of a terminal job that did not succeed. The new job links to its source and starts in Planning; no plan, output, or accepted result is reused. The same key and source return the same operation.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "pattern": "^[!-~]+$"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Invalid request or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Transient failure; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or inaccessible job",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The source job is not terminal or already succeeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Fresh job durably accepted; replay returns the original operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcceptedRetry"
+                }
+              }
+            },
+            "headers": {
+              "Location": {
+                "description": "Job resource URL",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/audit": {
       "get": {
         "operationId": "listAudit",
@@ -837,8 +1100,28 @@
     },
     "/api/v1/previews": {
       "post": {
-        "operationId": "requestPreview",
-        "description": "Explicitly unavailable until BS-018.T2 (previews) or BS-019 (schedules and policies). No resource is created.",
+        "operationId": "previewTable",
+        "description": "Assess a canonical table without creating a job, plan, or output. Reports the baseline, refusals, bins, and estimate. Requires jobs:submit on the table and uses only a catalog connection that grant covers. Bins are capped per response (see bins_total and bins_truncated). No catalog or storage I/O happens until authorization succeeds.",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreviewRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "400": {
             "description": "Invalid request or cursor",
@@ -881,17 +1164,7 @@
             }
           },
           "503": {
-            "description": "Ledger unavailable; retry the same request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "501": {
-            "description": "Feature not implemented",
+            "description": "Transient failure; retry the same request",
             "content": {
               "application/json": {
                 "schema": {
@@ -909,18 +1182,48 @@
                 }
               }
             }
-          }
-        },
-        "parameters": [
-          {
-            "name": "x-csrf-token",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string"
+          },
+          "404": {
+            "description": "Unknown or inaccessible table",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The table is staged or its metadata cannot be planned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body too large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Immutable assessment; nothing was created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Preview"
+                }
+              }
             }
           }
-        ]
+        }
       }
     },
     "/api/v1/schedules": {
@@ -1147,11 +1450,27 @@
               "permission_denied",
               "idempotency_key_reused",
               "ledger_unavailable",
-              "previews_unavailable",
               "scheduling_unavailable",
               "method_not_allowed",
               "request_too_large",
-              "internal_error"
+              "internal_error",
+              "catalog_credential_unavailable",
+              "catalog_connection_invalid",
+              "storage_profile_unavailable",
+              "storage_unavailable",
+              "catalog_access_denied",
+              "catalog_unavailable",
+              "table_staged",
+              "job_not_terminal",
+              "job_already_succeeded",
+              "table_identity_changed",
+              "catalog_table_missing",
+              "inventory_too_large",
+              "table_metadata_inconsistent",
+              "preview_capacity_exhausted",
+              "catalog_unsupported",
+              "catalog_credentials_unavailable",
+              "catalog_request_rejected"
             ]
           },
           "disposition": {
@@ -1542,6 +1861,495 @@
           },
           "name": {
             "type": "string"
+          }
+        }
+      },
+      "PreviewRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "table_id"
+        ],
+        "properties": {
+          "table_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "CancelJobRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "CancelJobResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "job_id",
+          "state",
+          "revision",
+          "cancellation",
+          "cancellation_requested",
+          "publication_started"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "Planning",
+              "Queued",
+              "Running",
+              "ReadyToCommit",
+              "Committing",
+              "CommitOutcomeUnknown",
+              "Cancelling",
+              "Succeeded",
+              "NoOp",
+              "Cancelled",
+              "ReplanRequired",
+              "Failed"
+            ]
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cancellation": {
+            "type": "string",
+            "enum": [
+              "cancelling",
+              "too_late_publication_started",
+              "publication_unresolved",
+              "too_late_committed",
+              "cancelled",
+              "already_ended"
+            ]
+          },
+          "cancellation_requested": {
+            "type": "boolean"
+          },
+          "publication_started": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AcceptedRetry": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation_id",
+          "job_id",
+          "resource_url",
+          "retry_of_job_id"
+        ],
+        "properties": {
+          "operation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "resource_url": {
+            "type": "string"
+          },
+          "retry_of_job_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "Tally": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "files",
+          "bytes"
+        ],
+        "properties": {
+          "files": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "Estimate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "tasks",
+          "files",
+          "bytes",
+          "files_removed",
+          "duration_millis"
+        ],
+        "properties": {
+          "tasks": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "files": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "files_removed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "duration_millis": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "PartitionValue": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "field_id",
+          "value"
+        ],
+        "properties": {
+          "field_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^([0-9a-f]{2})*$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "PartitionKey": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "spec_id",
+          "values"
+        ],
+        "properties": {
+          "spec_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PartitionValue"
+            }
+          }
+        }
+      },
+      "Rejection": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reason",
+          "detail",
+          "path",
+          "version",
+          "sort_order_id",
+          "format",
+          "field_id",
+          "problem"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "enum": [
+              "format_version",
+              "sorted_table",
+              "encrypted",
+              "write_format",
+              "non_parquet_file",
+              "equality_key",
+              "void_spec_equality_delete"
+            ]
+          },
+          "detail": {
+            "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int32"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sort_order_id": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int64"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "field_id": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int32"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "problem": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "floating_point",
+                  "nested",
+                  "not_in_schema"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "Skipped": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reason",
+          "files",
+          "bytes"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "enum": [
+              "outside_selection",
+              "too_large",
+              "at_target_size"
+            ]
+          },
+          "files": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "Bin": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "partition",
+          "ordinal",
+          "input",
+          "has_deletes",
+          "files_removed",
+          "disposition"
+        ],
+        "properties": {
+          "partition": {
+            "$ref": "#/components/schemas/PartitionKey"
+          },
+          "ordinal": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "input": {
+            "$ref": "#/components/schemas/Tally"
+          },
+          "has_deletes": {
+            "type": "boolean"
+          },
+          "files_removed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "disposition": {
+            "type": "string",
+            "enum": [
+              "admitted",
+              "no_benefit",
+              "deferred_job_input",
+              "deferred_job_files",
+              "deferred_duration"
+            ]
+          }
+        }
+      },
+      "Preview": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "table_id",
+          "outcome",
+          "no_op_reason",
+          "baseline",
+          "rejections",
+          "candidates",
+          "skipped",
+          "bins",
+          "bins_total",
+          "bins_truncated",
+          "estimate"
+        ],
+        "properties": {
+          "table_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "planned",
+              "no_op",
+              "rejected"
+            ]
+          },
+          "no_op_reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "no_snapshot",
+                  "no_beneficial_work"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "baseline": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "snapshot_id",
+                  "sequence_number"
+                ],
+                "properties": {
+                  "snapshot_id": {
+                    "type": "integer",
+                    "format": "int64"
+                  },
+                  "sequence_number": {
+                    "type": "integer",
+                    "format": "int64"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rejections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Rejection"
+            }
+          },
+          "candidates": {
+            "$ref": "#/components/schemas/Tally"
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Skipped"
+            }
+          },
+          "bins": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Bin"
+            }
+          },
+          "estimate": {
+            "$ref": "#/components/schemas/Estimate"
+          },
+          "bins_total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "bins_truncated": {
+            "type": "boolean"
           }
         }
       }

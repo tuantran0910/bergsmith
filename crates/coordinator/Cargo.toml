@@ -52,6 +52,9 @@ sysinfo.workspace = true
 tempfile.workspace = true
 bergsmith-fixtures.workspace = true
 mockito.workspace = true
+# Capture tracing events so a regression test proves logs never carry upstream
+# catalog text.
+tracing-subscriber.workspace = true
 tower = { workspace = true, features = ["util"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "test-util"] }
 

@@ -4,7 +4,10 @@
 //! server-side session; mutations additionally require the session's CSRF token.
 //! Organization and actor identifiers always come from that session.
 
+mod commands;
+mod creation;
 mod pagination;
+mod preview;
 mod resources;
 mod submission;
 
@@ -16,13 +19,15 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bergsmith_common::disposition::FailureDisposition;
-use bergsmith_common::ids::{OrganizationId, PrincipalId};
+use bergsmith_common::ids::{JobId, OrganizationId, PrincipalId};
 use bergsmith_persistence::auth::Session;
 use bergsmith_persistence::{Database, PersistenceError};
 use serde::Serialize;
+use serde_json::json;
 use sqlx::PgConnection;
 
 use crate::identity::{CSRF_HEADER, audit, routes::cookie, session};
+use crate::preview::CatalogPreviewer;
 
 /// Shared API dependencies. Uses the same session policy as `/auth`.
 #[derive(Clone, Debug)]
@@ -31,6 +36,9 @@ pub struct ApiState {
     pub database: Database,
     /// Must match the configuration used to issue browser sessions.
     pub sessions: session::SessionConfig,
+    /// Produces previews without creating work. The runtime supplies the
+    /// storage profiles and planner configuration.
+    pub previews: CatalogPreviewer,
 }
 
 /// Builds the `/api/v1` resource router, including its `OpenAPI` document.
@@ -57,8 +65,10 @@ pub fn router(state: ApiState) -> Router {
             get(resources::jobs).post(submission::submit),
         )
         .route("/api/v1/jobs/{id}", get(resources::job))
+        .route("/api/v1/jobs/{id}/cancel", post(commands::cancel))
+        .route("/api/v1/jobs/{id}/retry", post(commands::retry))
         .route("/api/v1/audit", get(resources::audit))
-        .route("/api/v1/previews", post(resources::deferred_preview))
+        .route("/api/v1/previews", post(preview::preview))
         .route("/api/v1/schedules", get(resources::deferred_schedules))
         .route("/api/v1/policies", get(resources::deferred_schedules))
         .layer(DefaultBodyLimit::max(16 * 1024))
@@ -227,6 +237,23 @@ impl ApiError {
             operator_action,
         }
     }
+    /// A permanent failure with a specific status, such as a conflict.
+    const fn permanent(
+        status: StatusCode,
+        reason: &'static str,
+        operator_action: &'static str,
+    ) -> Self {
+        Self::new(status, reason, operator_action)
+    }
+    /// A transient failure: the same request can be retried unchanged.
+    const fn transient(reason: &'static str, operator_action: &'static str) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            reason,
+            disposition: FailureDisposition::RetrySameRequest,
+            operator_action,
+        }
+    }
     const fn unauthorized() -> Self {
         Self::new(
             StatusCode::UNAUTHORIZED,
@@ -248,13 +275,11 @@ impl ApiError {
             "correct_request",
         )
     }
+    const fn conflict(reason: &'static str, operator_action: &'static str) -> Self {
+        Self::permanent(StatusCode::CONFLICT, reason, operator_action)
+    }
     const fn unavailable() -> Self {
-        Self {
-            status: StatusCode::SERVICE_UNAVAILABLE,
-            reason: "ledger_unavailable",
-            disposition: FailureDisposition::RetrySameRequest,
-            operator_action: "retry_same_request",
-        }
+        Self::transient("ledger_unavailable", "retry_same_request")
     }
     const fn internal() -> Self {
         Self::new(
@@ -331,6 +356,51 @@ impl From<PersistenceError> for ApiError {
 
 // Keep session authority internal; handlers cannot accept a caller-selected actor.
 type Caller = axum::Extension<Session>;
+
+/// Parses a JSON mutation body, keeping an oversized body distinguishable from
+/// a malformed one.
+fn json_body<T>(
+    body: Result<Json<T>, axum::extract::rejection::JsonRejection>,
+) -> Result<T, ApiError> {
+    body.map(|Json(value)| value)
+        .map_err(|error| json_rejection(&error))
+}
+
+/// Parses an optional JSON mutation body the same way as [`json_body`].
+///
+/// A request without a JSON content type carries no body; one that announces
+/// JSON but sends nothing usable is a client error, including 413 for a body
+/// over the limit.
+fn json_optional_body<T>(
+    body: Result<Option<Json<T>>, axum::extract::rejection::JsonRejection>,
+) -> Result<Option<T>, ApiError> {
+    body.map(|body| body.map(|Json(value)| value))
+        .map_err(|error| json_rejection(&error))
+}
+
+fn json_rejection(error: &axum::extract::rejection::JsonRejection) -> ApiError {
+    if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "request_too_large",
+            "reduce_request_size",
+        )
+    } else {
+        ApiError::invalid()
+    }
+}
+
+/// The 202 response for a durable command that created a job.
+///
+/// A retry adds the job it replaces; a submission's body keeps the T1 shape.
+fn accepted_job(id: JobId, retry_of: Option<JobId>) -> Response {
+    let url = format!("/api/v1/jobs/{id}");
+    let mut body = json!({"operation_id": id, "job_id": id, "resource_url": url});
+    if let Some(source) = retry_of {
+        body["retry_of_job_id"] = json!(source);
+    }
+    (StatusCode::ACCEPTED, [(header::LOCATION, url)], Json(body)).into_response()
+}
 
 #[cfg(test)]
 mod tests {
