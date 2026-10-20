@@ -563,7 +563,7 @@ fn validated_return_to(value: Option<&str>) -> Option<String> {
     Some(value.to_owned())
 }
 
-fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+pub(crate) fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     for value in headers.get_all(header::COOKIE) {
         let Ok(value) = value.to_str() else {
             continue;

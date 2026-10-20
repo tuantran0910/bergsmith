@@ -6,6 +6,7 @@
 //! This crate is the only one allowed to depend on `bergsmith-persistence`
 //! and `bergsmith-catalog`.
 
+pub mod api;
 pub mod database;
 pub mod durable_publication;
 pub mod identity;

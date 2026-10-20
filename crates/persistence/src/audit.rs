@@ -101,9 +101,11 @@ impl TryFrom<AuditEventRow> for AuditEvent {
     }
 }
 
-/// A transaction-scoped advisory lock that serializes audit appends, so a
-/// lower identifier cannot commit after a reader has advanced past it.
-const AUDIT_APPEND_LOCK: i64 = 0x0042_5341_5544_4954;
+/// A transaction-scoped advisory lock that serializes audit appends per
+/// organization, so a lower identifier cannot commit after a reader has
+/// advanced past it. Events with no organization are not returned by any
+/// organization-scoped read, so they need no ordering lock.
+const AUDIT_APPEND_LOCK_NAMESPACE: i64 = 0x0042_5341_5544_4954;
 
 /// Columns selected for [`AuditEvent`], in [`AuditEventRow`] order. A macro so
 /// queries stay `&'static str` literals.
@@ -126,13 +128,18 @@ pub async fn record(
     event: &NewAuditEvent<'_>,
 ) -> Result<i64, PersistenceError> {
     let mut tx = conn.begin().await?;
-    // Serialize appends: identity values follow allocation order, but a
-    // cursor over committed rows must never advance past an event that is
-    // still pending. Holding this lock until commit makes both orders agree.
-    sqlx::query("SELECT pg_advisory_xact_lock($1)")
-        .bind(AUDIT_APPEND_LOCK)
-        .execute(&mut *tx)
-        .await?;
+    // Serialize appends per organization: identity values follow allocation
+    // order, but a cursor over committed rows must never advance past an event
+    // that is still pending. Holding the lock until commit makes both orders
+    // agree. Other organizations and the audit log's org-less events cannot
+    // affect a tenant's listing, so they do not contend for this lock.
+    if let Some(organization_id) = event.organization_id {
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, $2))")
+            .bind(organization_id.as_uuid().to_string())
+            .bind(AUDIT_APPEND_LOCK_NAMESPACE)
+            .execute(&mut *tx)
+            .await?;
+    }
     let id = sqlx::query_scalar(
         "INSERT INTO audit_events
              (organization_id, actor_principal_id, actor_kind, action, resource_type,
@@ -170,17 +177,31 @@ pub async fn list(
     limit: i64,
 ) -> Result<Vec<AuditEvent>, PersistenceError> {
     let limit = limit.clamp(1, 500);
-    let rows = sqlx::query_as::<_, AuditEventRow>(concat!(
-        "SELECT ",
-        audit_columns!(),
-        " FROM audit_events
-         WHERE organization_id = $1 AND ($2::bigint IS NULL OR id > $2)
-         ORDER BY id LIMIT $3"
-    ))
-    .bind(organization_id.as_uuid())
-    .bind(after)
-    .bind(limit)
-    .fetch_all(conn)
-    .await?;
+    let rows = if let Some(after) = after {
+        sqlx::query_as::<_, AuditEventRow>(concat!(
+            "SELECT ",
+            audit_columns!(),
+            " FROM audit_events
+             WHERE organization_id = $1 AND id > $2
+             ORDER BY id LIMIT $3"
+        ))
+        .bind(organization_id.as_uuid())
+        .bind(after)
+        .bind(limit)
+        .fetch_all(conn)
+        .await?
+    } else {
+        sqlx::query_as::<_, AuditEventRow>(concat!(
+            "SELECT ",
+            audit_columns!(),
+            " FROM audit_events
+             WHERE organization_id = $1
+             ORDER BY id LIMIT $2"
+        ))
+        .bind(organization_id.as_uuid())
+        .bind(limit)
+        .fetch_all(conn)
+        .await?
+    };
     rows.into_iter().map(TryInto::try_into).collect()
 }
