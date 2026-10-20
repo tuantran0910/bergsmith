@@ -19,7 +19,7 @@ use sqlx::PgPool;
 #[tokio::test]
 async fn coordinator_process() {
     if let Some(path) = std::env::var_os("BERGSMITH_RECOVERY_CHILD") {
-        distributed::coordinator(std::path::Path::new(&path)).await;
+        Box::pin(distributed::coordinator(std::path::Path::new(&path))).await;
     }
 }
 

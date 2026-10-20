@@ -16,8 +16,10 @@ use bergsmith_common::ids::{
     WorkerSessionId,
 };
 use bergsmith_common::job::JobState;
+use bergsmith_common::permission::{GrantScope, Role};
 use bergsmith_persistence::PersistenceError;
 use bergsmith_persistence::attempts::{self, Attempt, NewGrant};
+use bergsmith_persistence::grants::{self, NewRoleGrant};
 use bergsmith_persistence::jobs::{self, NewJob};
 use bergsmith_persistence::plans::{self, NewPlan};
 use bergsmith_persistence::tables::{self, TableAlias};
@@ -120,6 +122,20 @@ pub(crate) async fn tenant(conn: &mut PgConnection, slug: &str) -> Tenant {
     .await
     .expect("table resolves")
     .id;
+    // BS-017: a user needs an active grant before admission or publication.
+    grants::create_grant(
+        conn,
+        &NewRoleGrant {
+            id: bergsmith_common::ids::RoleGrantId::generate(),
+            organization_id: organization,
+            principal_id: user,
+            role: Role::Administrator,
+            scope: GrantScope::organization(),
+            granted_by: None,
+        },
+    )
+    .await
+    .expect("administrator grant is created");
     Tenant {
         organization,
         user,
@@ -153,7 +169,7 @@ pub(crate) async fn job(conn: &mut PgConnection, tenant: &Tenant) -> JobId {
             organization_id: tenant.organization,
             table_id: tenant.table,
             retry_of: None,
-            created_by: Some(tenant.user),
+            created_by: tenant.user,
         },
     )
     .await

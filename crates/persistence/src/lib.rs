@@ -7,9 +7,12 @@
 //! transaction is ever held across network, gRPC, or object-store I/O.
 
 pub mod attempts;
+pub mod audit;
+pub mod auth;
 pub mod cancellation;
 mod database;
 mod error;
+pub mod grants;
 pub mod idempotency;
 pub mod jobs;
 pub mod leadership;

@@ -340,6 +340,54 @@ pub async fn resolve(
     Ok(updated)
 }
 
+/// Resolves a send authorization denial only if no sender has been authorized
+/// since it happened.
+///
+/// The check and the terminal transition run under the job lock in one
+/// transaction. A grant restored after the denial, and a competing sender that
+/// then authorized, therefore cannot be released by this resolution: the
+/// answer is `None` and the caller must not record non-publication.
+///
+/// # Errors
+///
+/// Returns lost leadership, database errors, or an invalid transition. A job
+/// that moved on, changed revision, or already authorized a send yields
+/// `Ok(None)`.
+pub async fn resolve_authorization_denied(
+    conn: &mut PgConnection,
+    job_id: JobId,
+    revision: i64,
+    epoch: i64,
+) -> Result<Option<Job>, PersistenceError> {
+    let mut tx = conn.begin().await?;
+    let job = lock_job(&mut tx, job_id).await?;
+    ensure_leadership(&mut tx, epoch).await?;
+    if job.state != JobState::Committing
+        || job.state_revision != revision
+        || job.publication_started_at.is_some()
+    {
+        return Ok(None);
+    }
+    let (to, reason) =
+        non_success_target(&mut tx, &job, JobState::Failed, "AuthorizationRevoked").await?;
+    let updated = transition_job(
+        &mut tx,
+        &Transition {
+            job_id,
+            expected_revision: revision,
+            to,
+            reason: Some(reason),
+            actor: None,
+            non_publication_proven: true,
+        },
+    )
+    .await?;
+    // transition_job releases only this job's barrier on a terminal transition.
+    ensure_leadership(&mut tx, epoch).await?;
+    tx.commit().await?;
+    Ok(Some(updated))
+}
+
 /// Stable reason recorded when an operator attests non-publication.
 pub const OPERATOR_ATTESTED_NON_PUBLICATION: &str = "OperatorAttestedNonPublication";
 

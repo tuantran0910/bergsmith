@@ -11,8 +11,11 @@
 use std::sync::Arc;
 
 use bergsmith_catalog::{ObservedTable, TableName};
-use bergsmith_common::ids::{CatalogConnectionId, JobId, OrganizationId, PlanId};
+use bergsmith_common::ids::{
+    CatalogConnectionId, JobId, OrganizationId, PlanId, PrincipalId, RoleGrantId,
+};
 use bergsmith_common::job::JobState;
+use bergsmith_common::permission::{GrantScope, Role};
 use bergsmith_common::task::TaskState;
 use bergsmith_coordinator::inventory::record_observation;
 use bergsmith_coordinator::planning::{
@@ -23,9 +26,12 @@ use bergsmith_maintenance::{
     NoOpReason, PlanDocument, PlanIds, PlanInput, PlanOutcome, Planner, PlannerConfig, Rejection,
 };
 use bergsmith_persistence::PersistenceError;
+use bergsmith_persistence::grants::{self, NewRoleGrant};
 use bergsmith_persistence::jobs::{self, Job, NewJob};
 use bergsmith_persistence::plans;
-use bergsmith_persistence::tenancy::{self, NewCatalogConnection, NewOrganization};
+use bergsmith_persistence::tenancy::{
+    self, NewCatalogConnection, NewOrganization, NewPrincipal, PrincipalKind,
+};
 use bergsmith_storage::Location;
 use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
 use sqlx::{PgConnection, PgPool};
@@ -89,6 +95,34 @@ async fn job(conn: &mut PgConnection, fixture: &Fixture) -> Job {
     let table_id = record_observation(conn, organization, connection, &observed)
         .await
         .unwrap();
+    // A requester is mandatory; grants let the fixture reach admission.
+    let created_by = PrincipalId::generate();
+    tenancy::create_principal(
+        conn,
+        &NewPrincipal {
+            id: created_by,
+            organization_id: organization,
+            kind: PrincipalKind::User,
+            issuer: "https://idp.example".to_owned(),
+            subject: format!("planner-{created_by}"),
+            display_name: "Planner".to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+    grants::create_grant(
+        conn,
+        &NewRoleGrant {
+            id: RoleGrantId::generate(),
+            organization_id: organization,
+            principal_id: created_by,
+            role: Role::Administrator,
+            scope: GrantScope::organization(),
+            granted_by: None,
+        },
+    )
+    .await
+    .unwrap();
     jobs::create_job(
         conn,
         &NewJob {
@@ -96,7 +130,7 @@ async fn job(conn: &mut PgConnection, fixture: &Fixture) -> Job {
             organization_id: organization,
             table_id,
             retry_of: None,
-            created_by: None,
+            created_by,
         },
     )
     .await

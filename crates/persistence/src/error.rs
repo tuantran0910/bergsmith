@@ -1,6 +1,6 @@
 //! Errors returned by the persistence layer.
 
-use bergsmith_common::ids::{AttemptId, CatalogConnectionId, JobId, TableId, TaskId};
+use bergsmith_common::ids::{AttemptId, CatalogConnectionId, JobId, PrincipalId, TableId, TaskId};
 use bergsmith_common::job::{JobState, JobTransitionError};
 use bergsmith_common::task::{AttemptTransitionError, TaskTransitionError};
 
@@ -139,6 +139,26 @@ pub enum PersistenceError {
     ReceiptConflict {
         /// The task.
         task: TaskId,
+    },
+    /// The principal does not hold an active grant for the operation.
+    #[error("principal {principal} lacks permission {permission} for this resource")]
+    PermissionDenied {
+        /// The principal that was checked.
+        principal: PrincipalId,
+        /// The stable permission name.
+        permission: &'static str,
+    },
+    /// The session is unknown, expired, idle, or revoked.
+    #[error("session rejected: {reason}")]
+    SessionRejected {
+        /// Stable reason: `unknown`, `expired`, `idle`, or `revoked`.
+        reason: &'static str,
+    },
+    /// The caller has too many outstanding operations of this kind.
+    #[error("too many outstanding {entity} operations")]
+    RateLimited {
+        /// Kind of operation that is limited.
+        entity: &'static str,
     },
     /// A stored value could not be decoded, which means the schema and the
     /// code disagree.

@@ -129,8 +129,8 @@ async fn record_request(
     request: &CancelJob,
 ) -> Result<Job, PersistenceError> {
     let updated: Job = sqlx::query_as::<_, JobRow>(concat!(
-        "UPDATE jobs SET cancellation_requested_at = now(), cancellation_requested_by = $2,
-             cancellation_reason = $3, updated_at = now()
+        "UPDATE jobs SET cancellation_requested_at = clock_timestamp(), cancellation_requested_by = $2,
+             cancellation_reason = $3, updated_at = clock_timestamp()
          WHERE id = $1
          RETURNING ",
         job_columns!()
@@ -204,9 +204,18 @@ pub async fn authorize_send(
     if job.publication_started_at.is_some() {
         return Err(PersistenceError::PublicationAlreadyAuthorized { job: job.id });
     }
+    // Recheck the requester's grant immediately before the one-shot send
+    // authorization. Nothing has been sent yet, so a revoked grant prevents
+    // publication without claiming a fact that is not yet known.
+    crate::grants::require_job_permission(
+        &mut tx,
+        &job,
+        bergsmith_common::permission::Permission::SubmitJobs,
+    )
+    .await?;
 
     let authorized: Job = sqlx::query_as::<_, JobRow>(concat!(
-        "UPDATE jobs SET publication_started_at = clock_timestamp(), updated_at = now() WHERE id = $1
+        "UPDATE jobs SET publication_started_at = clock_timestamp(), updated_at = clock_timestamp() WHERE id = $1
          RETURNING ",
         job_columns!()
     ))

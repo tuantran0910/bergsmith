@@ -4,6 +4,7 @@
 #   rustfs       S3-compatible object store with STS    127.0.0.1:59000
 #   lakekeeper   Iceberg REST catalog that vends        127.0.0.1:58181
 #                RustFS credentials through STS
+#   keycloak     OIDC development provider              127.0.0.1:58080
 #
 # Tests bootstrap Lakekeeper and create their own warehouses.
 #
@@ -120,3 +121,34 @@ services:
         condition: service_completed_successfully
       rustfs-init:
         condition: service_completed_successfully
+
+  # OIDC development provider (BS-017). `start-dev` uses an in-memory database,
+  # so the realm is re-imported on every start. The BS-017 test suites use a
+  # mock provider instead; this service is for local sign-in journeys.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0.7
+    command: ["start-dev", "--import-realm", "--http-port=8080"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: development-only-not-a-real-password
+      KC_HEALTH_ENABLED: "true"
+      # Development only: the issuer is a plain-HTTP loopback URL.
+      KC_HOSTNAME: "http://127.0.0.1:58080"
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+    ports:
+      - "127.0.0.1:58080:8080"
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - |
+          exec 3<>/dev/tcp/127.0.0.1/9000; \
+          printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3; \
+          grep -q '"status": "UP"' <&3
+      interval: 2s
+      timeout: 5s
+      retries: 60

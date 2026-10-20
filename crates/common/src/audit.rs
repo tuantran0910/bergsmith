@@ -1,0 +1,189 @@
+//! Audit vocabulary shared by the coordinator and the ledger.
+//!
+//! Audit records are append-only. They name the actor, the action, the
+//! resource, and the outcome, and never contain credentials, tokens, or object
+//! contents. BS-017 records identity, grant, and maintenance decisions;
+//! BS-018 exposes them through the API. See ADR 0032.
+
+/// Who acted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActorKind {
+    /// A person authenticated with OIDC.
+    User,
+    /// A service principal, such as a schedule's maintenance identity.
+    Service,
+    /// A request that could not be authenticated.
+    Anonymous,
+    /// The coordinator itself, such as a recovery decision.
+    System,
+}
+
+impl ActorKind {
+    /// The stable name persisted in PostgreSQL.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "User",
+            Self::Service => "Service",
+            Self::Anonymous => "Anonymous",
+            Self::System => "System",
+        }
+    }
+
+    /// Parses the persisted name.
+    #[must_use]
+    pub fn from_name(value: &str) -> Option<Self> {
+        match value {
+            "User" => Some(Self::User),
+            "Service" => Some(Self::Service),
+            "Anonymous" => Some(Self::Anonymous),
+            "System" => Some(Self::System),
+            _ => None,
+        }
+    }
+}
+
+/// What happened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuditAction {
+    /// An OIDC login completed and a session was issued.
+    AuthLoginSucceeded,
+    /// An OIDC login failed validation or identity binding.
+    AuthLoginFailed,
+    /// A session was revoked by an explicit logout.
+    AuthLoggedOut,
+    /// A request presented a missing, expired, or revoked session.
+    AuthSessionDenied,
+    /// A role grant was created.
+    GrantCreated,
+    /// A role grant was revoked.
+    GrantRevoked,
+    /// A session was revoked administratively.
+    SessionRevoked,
+    /// A principal was provisioned for a verified issuer and subject.
+    IdentityProvisioned,
+    /// Admission authorized a job.
+    JobAdmitted,
+    /// Admission refused a job because the requester's grant was revoked or
+    /// never covered the table.
+    JobAdmissionDenied,
+    /// Publication was authorized for a job.
+    JobPublished,
+    /// Publication was refused because the requester no longer holds the
+    /// required grant.
+    JobPublicationDenied,
+    /// Cancellation was requested.
+    JobCancellationRequested,
+    /// A fresh-plan retry was requested.
+    JobRetryRequested,
+}
+
+impl AuditAction {
+    /// The stable dotted name persisted in PostgreSQL.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AuthLoginSucceeded => "auth.login_succeeded",
+            Self::AuthLoginFailed => "auth.login_failed",
+            Self::AuthLoggedOut => "auth.logged_out",
+            Self::AuthSessionDenied => "auth.session_denied",
+            Self::GrantCreated => "grant.created",
+            Self::GrantRevoked => "grant.revoked",
+            Self::SessionRevoked => "session.revoked",
+            Self::IdentityProvisioned => "identity.provisioned",
+            Self::JobAdmitted => "job.admitted",
+            Self::JobAdmissionDenied => "job.admission_denied",
+            Self::JobPublished => "job.published",
+            Self::JobPublicationDenied => "job.publication_denied",
+            Self::JobCancellationRequested => "job.cancellation_requested",
+            Self::JobRetryRequested => "job.retry_requested",
+        }
+    }
+
+    /// Parses a persisted action name.
+    #[must_use]
+    pub fn from_name(value: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|action| action.as_str() == value)
+    }
+
+    /// Every action, in a stable order.
+    pub const ALL: &'static [Self] = &[
+        Self::AuthLoginSucceeded,
+        Self::AuthLoginFailed,
+        Self::AuthLoggedOut,
+        Self::AuthSessionDenied,
+        Self::GrantCreated,
+        Self::GrantRevoked,
+        Self::SessionRevoked,
+        Self::IdentityProvisioned,
+        Self::JobAdmitted,
+        Self::JobAdmissionDenied,
+        Self::JobPublished,
+        Self::JobPublicationDenied,
+        Self::JobCancellationRequested,
+        Self::JobRetryRequested,
+    ];
+}
+
+/// The result of the audited action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuditOutcome {
+    /// The action was permitted and completed.
+    Allowed,
+    /// Authorization refused the action.
+    Denied,
+    /// The action was permitted but failed for another reason.
+    Failed,
+}
+
+impl AuditOutcome {
+    /// The stable name persisted in PostgreSQL.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Allowed => "Allowed",
+            Self::Denied => "Denied",
+            Self::Failed => "Failed",
+        }
+    }
+
+    /// Parses the persisted name.
+    #[must_use]
+    pub fn from_name(value: &str) -> Option<Self> {
+        match value {
+            "Allowed" => Some(Self::Allowed),
+            "Denied" => Some(Self::Denied),
+            "Failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn action_names_round_trip_and_are_unique() {
+        let mut seen = std::collections::BTreeSet::new();
+        for action in AuditAction::ALL {
+            assert!(seen.insert(action.as_str()));
+            assert_eq!(AuditAction::from_name(action.as_str()), Some(*action));
+        }
+        assert_eq!(AuditAction::from_name("job.unknown"), None);
+    }
+
+    #[test]
+    fn actor_and_outcome_names_are_stable() {
+        assert_eq!(ActorKind::from_name("Service"), Some(ActorKind::Service));
+        assert_eq!(
+            AuditOutcome::from_name("Denied"),
+            Some(AuditOutcome::Denied)
+        );
+        assert_eq!(ActorKind::from_name("service"), None);
+        assert_eq!(AuditOutcome::from_name("allowed"), None);
+    }
+}

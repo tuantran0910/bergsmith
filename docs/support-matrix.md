@@ -78,6 +78,17 @@ Connection restrictions and the retention each connection needs are in
 | Google Cloud Storage | Later (M9) |
 | Azure Blob Storage / ADLS Gen2 | Later (M9) |
 
+## Authorization and identity
+
+| Capability | Status |
+|---|---|
+| OIDC Authorization Code with PKCE, server-side sessions, CSRF | Certified (BS-017, ADR 0032) |
+| Scoped role grants (organization, connection, table) | Certified (BS-017): admission and send authorization recheck active grants |
+| Maintenance service identity for schedules | Certified (BS-017): `kind = Service` principal with a scoped grant; occurrence/cron execution is BS-019 |
+| Mandatory job requester and legacy attribution | Certified (BS-017, ADR 0033): `jobs.created_by` is `NOT NULL`; pre-BS-017 rows are attributed to a revocable per-organization `bergsmith:system` principal |
+| Audit log of identity, grant, and maintenance decisions | Certified (BS-017): append-only and secret-free; API exposure is BS-018 |
+| Worker pool bearer-token identity and TLS | Implemented (BS-012/013/015, ADRs 0012, 0023, 0026) |
+
 ## Deployment
 
 | Target | Status |

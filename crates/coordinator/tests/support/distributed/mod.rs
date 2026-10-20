@@ -299,7 +299,7 @@ impl Harness {
                 organization_id: self.tenant.organization,
                 table_id: self.tenant.table,
                 retry_of: Some(self.job),
-                created_by: None,
+                created_by: self.tenant.user,
             },
         )
         .await
