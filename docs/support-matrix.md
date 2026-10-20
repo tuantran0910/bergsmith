@@ -86,8 +86,20 @@ Connection restrictions and the retention each connection needs are in
 | Scoped role grants (organization, connection, table) | Certified (BS-017): admission and send authorization recheck active grants |
 | Maintenance service identity for schedules | Certified (BS-017): `kind = Service` principal with a scoped grant; occurrence/cron execution is BS-019 |
 | Mandatory job requester and legacy attribution | Certified (BS-017, ADR 0033): `jobs.created_by` is `NOT NULL`; pre-BS-017 rows are attributed to a revocable per-organization `bergsmith:system` principal |
-| Audit log of identity, grant, and maintenance decisions | Certified (BS-017): append-only and secret-free; API exposure is BS-018 |
+| Audit log of identity, grant, and maintenance decisions | Certified (BS-017): append-only and secret-free; read-only API exposure by BS-018.T1 |
 | Worker pool bearer-token identity and TLS | Implemented (BS-012/013/015, ADRs 0012, 0023, 0026) |
+
+## Browser API and UI
+
+| Capability | Status |
+|---|---|
+| `/api/v1` catalog, table, job, and audit reads; idempotent job submission | Implemented as a session-authenticated library router (BS-018.T1, ADR 0034); scoped reads, cursor pagination, CSRF, concurrent idempotency, and audit rollback pass PostgreSQL route tests; HTTP startup is not wired |
+| Previews, cancellation, and fresh-plan retry commands | Planned (BS-018.T2); preview submission explicitly returns 501 |
+| Durable SSE job events | Planned (BS-018.T3) |
+| Generated API client and manual-maintenance UI journeys | Planned (BS-018.T4); M4 acceptance remains pending |
+| Schedule and policy resources | Planned (BS-019); reserved list routes explicitly return 501 |
+
+See the [API contract and current limits](operations/api.md).
 
 ## Deployment
 

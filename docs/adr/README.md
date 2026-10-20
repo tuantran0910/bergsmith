@@ -40,3 +40,4 @@ record's status; never rewrite an accepted decision.
 | [0031](0031-worker-renewal-and-grant-boundaries.md) | Worker renewal and grant boundaries | Accepted |
 | [0032](0032-oidc-sessions-and-scoped-authorization.md) | OIDC sessions and scoped authorization | Accepted; refined by 0033 |
 | [0033](0033-every-job-names-its-requester.md) | Every job names its requester | Accepted |
+| [0034](0034-versioned-browser-resource-api.md) | Versioned browser resources and atomic idempotent submission | Accepted |
