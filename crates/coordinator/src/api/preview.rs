@@ -123,8 +123,10 @@ fn report(table: TableId, assessed: &AssessedPreview) -> Value {
         "table_id": table,
         "outcome": outcome,
         "no_op_reason": no_op_reason,
+        // Snapshot IDs use all 64 bits; a decimal string keeps browser clients
+        // from rounding them, as audit event IDs do.
         "baseline": preview.baseline.as_ref().map(|baseline| json!({
-            "snapshot_id": baseline.snapshot_id(),
+            "snapshot_id": baseline.snapshot_id().to_string(),
             "sequence_number": baseline.sequence_number(),
         })),
         "rejections": preview.rejections.iter().map(rejection).collect::<Vec<_>>(),

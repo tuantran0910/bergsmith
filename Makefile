@@ -28,7 +28,8 @@ BENCH_ITERATIONS ?= 3
 WORKER_BIN ?= $(abspath $(or $(CARGO_TARGET_DIR),target)/debug/bergsmith-worker)
 
 .PHONY: help fmt fmt-check check clippy test test-changed doc coverage coverage-html deny machete ci \
-	services-up services-down proto-lint proto-breaking bench-executor test-distributed coverage-distributed
+	services-up services-down proto-lint proto-breaking bench-executor test-distributed coverage-distributed \
+	web-install web web-dev web-audit
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -114,6 +115,27 @@ proto-breaking: ## Check protobuf changes against PROTO_BASE (buf, via Docker)
 		echo "$(PROTO_BASE) has no buf.yaml yet; nothing to compare against"; \
 	fi
 
+# The web UI (BS-018.T4). Node and npm versions: web/.nvmrc and web/package.json.
+WEB := npm --prefix web
+
+web-install: ## Install the web UI's locked dependencies
+	$(WEB) ci --no-fund --no-audit
+
+web: web-install ## Web UI gates: generated client, format, lint, types, tests with coverage, build
+	$(WEB) run check-generated
+	$(WEB) run format-check
+	$(WEB) run lint
+	$(WEB) run typecheck
+	$(WEB) run coverage
+	$(WEB) run build
+
+web-dev: web-install ## Serve the web UI, proxying /api and /auth to BERGSMITH_COORDINATOR_URL
+	$(WEB) run dev
+
+web-audit: web-install ## Audit npm dependencies: production at any severity, all at high
+	$(WEB) audit --omit=dev
+	$(WEB) audit --audit-level=high
+
 # `coverage-distributed` runs the whole test suite and `clippy` checks every target,
 # so `test` and `check` would only repeat them.
-ci: fmt-check proto-lint proto-breaking clippy doc coverage-distributed deny machete ## Run every quality gate
+ci: fmt-check proto-lint proto-breaking clippy doc coverage-distributed deny machete web web-audit ## Run every quality gate

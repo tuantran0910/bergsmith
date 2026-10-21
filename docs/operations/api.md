@@ -65,7 +65,7 @@ The response describes what a job would be built from:
 |---|---|
 | `outcome` | `planned`, `no_op`, or `rejected` |
 | `no_op_reason` | `no_snapshot` or `no_beneficial_work` when nothing would run |
-| `baseline` | `snapshot_id` and `sequence_number` assessed; null without a `main` snapshot |
+| `baseline` | `snapshot_id` (a decimal string, so browsers do not round it) and `sequence_number` assessed; null without a `main` snapshot |
 | `rejections` | Typed refusals: `format_version`, `sorted_table`, `encrypted`, `write_format`, `non_parquet_file`, `equality_key`, `void_spec_equality_delete`, each with a human `detail` and the variant fields that apply |
 | `candidates` | Data files selected for compaction and their bytes |
 | `skipped` | Non-candidates by `outside_selection`, `too_large`, or `at_target_size` |
@@ -209,6 +209,11 @@ are outside this resource surface. The trust boundary for catalog connections is
 deployment configuration: a stored URI is contacted as given, so connection
 creation must remain an administrator operation and egress should be restricted
 at the network layer.
+
+The browser application that uses this contract is described in
+[the web UI guide](web-ui.md). Its client is generated from the OpenAPI
+document; regenerate it with `npm --prefix web run generate` whenever
+`openapi.json` changes.
 
 Run `make services-up` followed by
 `DATABASE_URL=postgres://bergsmith:bergsmith@127.0.0.1:55432/bergsmith cargo test -p bergsmith-coordinator --test api`.

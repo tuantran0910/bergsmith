@@ -1,0 +1,74 @@
+# Web UI
+
+The browser application in `web/` covers manual maintenance over the
+[browser API](api.md). The decision is recorded in
+[ADR 0037](../adr/0037-web-ui-and-generated-client.md).
+
+## Journeys
+
+| Page | What it does |
+|---|---|
+| Sign-in | Asks for the organization slug and starts `/auth/login`; returns to the page that asked |
+| Tables | Lists the tables the session may see, named `catalog.namespace.table` through their aliases |
+| Table | Shows the table's names, previews maintenance (outcome, unsupported features, bins, estimate), and runs it |
+| Jobs | Lists jobs with execution and publication status side by side |
+| Job | Shows execution and publication separately, streams events live, requests cancellation, and retries with a fresh plan |
+| Audit | Organization audit history; shown only to organization-wide administrators |
+
+Connection setup, schedules and policies, and worker health are not in the UI
+yet, because the API does not serve them.
+
+## Reading job status
+
+| Execution | Meaning |
+|---|---|
+| Planning, Queued, Running | Work is in progress |
+| Outputs ready | Rewritten files exist; this is not success |
+| Stopping after cancellation | Cancellation won; the job is winding down |
+| Nothing to rewrite | The job ended as `NoOp` |
+| Stopped / Failed | The job ended without publishing |
+
+| Publication | Meaning |
+|---|---|
+| Not started | No commit request is authorized |
+| Commit authorized | A commit request may be sent; cancellation is now too late |
+| Committing | The commit request is in flight |
+| Outcome unknown | The catalog did not confirm the result; Bergsmith resolves it from publication evidence |
+| Confirmed | The exact publication is confirmed (`Succeeded`) |
+| Not needed / Not published | Nothing was or will be published |
+
+`ReplanRequired` and `CommitOutcomeUnknown` also show a notice with the next
+step. A `ReplanRequired` job can be retried, which creates a new job with a
+fresh plan. Do not start new maintenance on a table while a job's commit
+outcome is unknown.
+
+## Errors and retries
+
+Every API error shows its reason and the operator action. When the API marks a
+failure as safe to repeat, the coordinator could not be reached, or a gateway
+answered 502, 503, or 504, the page offers "Retry the same request". A
+submission whose outcome is unknown keeps its idempotency key, whether it is
+retried or run again, so it can never create a second job.
+
+Signing out, an expired session, or a sign-in as someone else in another tab
+(checked when the tab regains focus) discards everything the page had read.
+
+## Development
+
+The UI must be served from the same origin as `/auth` and `/api/v1`. Until the
+coordinator serves it (BS-020.T1), run the development server, which proxies
+both to a coordinator:
+
+```sh
+BERGSMITH_COORDINATOR_URL=http://127.0.0.1:8080 make web-dev
+```
+
+Open `http://127.0.0.1:5173`. The OIDC redirect URI must point at the same
+origin (`http://127.0.0.1:5173/auth/callback`).
+
+| Command | Purpose |
+|---|---|
+| `make web` | Generated-client check, format, lint, typecheck, tests with coverage, build |
+| `make web-audit` | `npm audit` of the locked dependencies |
+| `npm --prefix web run generate` | Regenerate `web/src/api/schema.d.ts` after changing `openapi.json` |
+| `npm --prefix web test` | Run the tests once |

@@ -2527,8 +2527,9 @@
                 ],
                 "properties": {
                   "snapshot_id": {
-                    "type": "integer",
-                    "format": "int64"
+                    "type": "string",
+                    "pattern": "^-?[0-9]+$",
+                    "description": "64-bit snapshot ID as a decimal string, so clients that parse JSON numbers as doubles do not round it."
                   },
                   "sequence_number": {
                     "type": "integer",
