@@ -1,0 +1,21 @@
+name: Dependency review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  review:
+    name: Review dependency changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Fails a pull request that introduces a new dependency with a moderate
+      # or higher advisory. Existing advisories are reported by Dependabot.
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: moderate
+          comment-summary-in-pr: never
