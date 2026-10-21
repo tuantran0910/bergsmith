@@ -62,7 +62,8 @@ jobs:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest,cargo-llvm-cov
+          # Keep in step with `nextest-version` in .config/nextest.toml.
+          tool: cargo-nextest@0.9.146,cargo-llvm-cov@0.9.1
       # Build workspace tests and the real worker with one coverage environment.
       - name: Tests, coverage, and process recovery acceptance
         run: |

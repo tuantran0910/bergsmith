@@ -35,6 +35,7 @@ metadata authority.
 | `crates/coordinator` | Coordinator services |
 | `crates/worker` | Worker supervisor and task subprocess |
 | `bin/coordinator`, `bin/worker` | Thin binaries: startup wiring only |
+| `scripts/` | Developer tooling, such as affected-package selection for `make test-changed` |
 | `deploy/` | Container, Compose, and Kubernetes assets (see below) |
 | `docs/` | ADRs, support matrix, operator documentation |
 
@@ -74,6 +75,7 @@ Everything used to build, run, or deploy Bergsmith outside `cargo` lives under
 | `make check` | Type-check every target |
 | `make clippy` | Lint with warnings as errors |
 | `make test` | Run tests with cargo-nextest |
+| `make test-changed` | Run tests of the packages affected since `BASE` (default `origin/main`); local only |
 | `make test-distributed` | Run process recovery and the 100-group, three-worker release test |
 | `make doc` | Build docs with warnings as errors |
 | `make coverage` | Enforce at least 80% line coverage (binaries excluded) |
@@ -86,7 +88,8 @@ Everything used to build, run, or deploy Bergsmith outside `cargo` lives under
 | `make proto-lint` / `make proto-breaking` | buf lint and breaking-change checks (Docker) |
 
 Required tools: rustup (the toolchain comes from `rust-toolchain.toml`),
-`cargo-nextest`, `cargo-llvm-cov`, `cargo-deny`, `cargo-machete`, and Docker.
+`cargo-nextest` (the version required by `.config/nextest.toml`, which CI
+installs exactly), `cargo-llvm-cov`, `cargo-deny`, `cargo-machete`, and Docker.
 
 Integration tests use the Compose services in `deploy/docker/`, which `make
 test` and `make coverage` start first. They read `DATABASE_URL`,
@@ -99,6 +102,48 @@ the operating system's POSIX `mkfifo` utility.
 On Linux, set `BERGSMITH_TEST_CGROUP_ROOT` to a writable cgroup v2 subtree with
 memory, CPU, and PID controllers enabled for child cgroups; see
 `docs/operations/distributed-acceptance.md`. `make ci` includes this gate.
+
+### Local development loop
+
+Run the narrowest check that answers the question, and widen only when it
+passes. The full `make ci` run is reserved for the end of a change, where the
+definition of done (§4) requires it, not for every edit.
+
+| When | Run |
+|---|---|
+| While editing | `cargo check -p <crate> --all-targets` |
+| After a logical change | `cargo nextest run -p <crate>` (add `--lib` for unit tests only) |
+| Before each commit | `make clippy` and `make test-changed` |
+| Before opening or updating a pull request | `make ci` (§4) |
+
+- Use cargo-nextest, never `cargo test --workspace`. Nextest reports every
+  failure in one run (`fail-fast = false`), so fix them all before re-running.
+- `make test-changed` runs every package a change touches plus all packages
+  that depend on them, transitively. Changes to shared inputs (root manifests,
+  `Cargo.lock`, the toolchain, `.cargo/`, `.config/`, `.github/`, `deploy/`,
+  `scripts/`, the `Makefile`, lint and dependency policy) select every package.
+  A documentation-only change runs nothing.
+- Preview a selection before paying for it:
+  `cargo nextest list -E 'rdeps(=bergsmith-storage)'`.
+- Never change `RUSTFLAGS`, `RUSTC_WRAPPER`, or the linker for the shared
+  `target/` directory; each change rebuilds every crate. Keep local linker
+  or cache experiments in an untracked `~/.cargo/config.toml`.
+- Debug info stays at Cargo's default in the repository, so debuggers can
+  inspect every crate. Reduced debug info shrank a clean `target/debug` by
+  about a third without speeding up builds; to trade debuggability for disk,
+  opt in from `~/.cargo/config.toml`:
+
+  ```toml
+  [profile.dev]
+  debug = "line-tables-only"
+  [profile.dev.package."*"]
+  debug = false
+  ```
+- `make coverage` and `make ci` build an instrumented copy under
+  `target/llvm-cov-target`; they never speed up or replace the inner loop.
+- To reclaim disk, use `cargo clean -p <crate>` or delete
+  `target/llvm-cov-target`. A full `cargo clean` is not a fix for a
+  confusing build error.
 
 ## 4. Definition of done
 
@@ -200,6 +245,12 @@ tracking task.
 - Coverage: the workspace stays at or above 80% line coverage. State
   transitions, planning, commit classification, and delete application aim for
   full branch coverage.
+- CI always runs the full suite; the coverage gate depends on it. Affected-only
+  selection is a local convenience and never a gate. No nextest profile used
+  in CI may set `default-filter`, because that silently skips tests.
+- A test may include another crate's test support by `#[path]` only when its
+  crate already depends on that crate, so change selection by dependency still
+  re-runs it.
 
 ## 7. Architecture invariants
 

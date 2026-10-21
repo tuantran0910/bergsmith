@@ -15,6 +15,9 @@ DATABASE_URL ?= postgres://bergsmith:bergsmith@127.0.0.1:55432/bergsmith
 BERGSMITH_TEST_S3_ENDPOINT ?= http://127.0.0.1:59000
 BERGSMITH_TEST_CATALOG_URL ?= http://127.0.0.1:58181
 export DATABASE_URL BERGSMITH_TEST_S3_ENDPOINT BERGSMITH_TEST_CATALOG_URL
+# The change `test-changed` selects packages for: everything since the merge
+# base with BASE, plus uncommitted and untracked files.
+BASE ?= origin/main
 # Read by nextest directly, so it also applies under `cargo llvm-cov nextest`.
 NEXTEST_PROFILE ?= default
 export NEXTEST_PROFILE
@@ -24,7 +27,7 @@ BENCH_DIR ?= .private/executor-benchmark
 BENCH_ITERATIONS ?= 3
 WORKER_BIN ?= $(abspath $(or $(CARGO_TARGET_DIR),target)/debug/bergsmith-worker)
 
-.PHONY: help fmt fmt-check check clippy test doc coverage coverage-html deny machete ci \
+.PHONY: help fmt fmt-check check clippy test test-changed doc coverage coverage-html deny machete ci \
 	services-up services-down proto-lint proto-breaking bench-executor test-distributed coverage-distributed
 
 help: ## List targets
@@ -50,6 +53,16 @@ services-down: ## Stop the test services and discard their data
 
 test: services-up ## Run the test suite
 	$(CARGO) nextest run --workspace --locked
+
+test-changed: ## Run tests of packages affected since BASE (local loop; CI runs everything)
+	@packages="$$(scripts/affected-packages.sh $(BASE))"; \
+	if [ -z "$$packages" ]; then \
+		echo "no workspace package is affected since $(BASE)"; \
+	else \
+		echo "affected:" $$packages; \
+		$(MAKE) --no-print-directory services-up && \
+		$(CARGO) nextest run --locked $$(printf ' -p %s' $$packages); \
+	fi
 
 test-distributed: services-up ## Run process recovery acceptance (Linux needs delegated cgroup v2)
 	$(CARGO) build --locked --bin bergsmith-worker
