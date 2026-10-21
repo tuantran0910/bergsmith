@@ -47,9 +47,10 @@ ADR 0021 names revision `eb162a1`; commit `1b4bfe4` moved the pin to
   reader would not apply it and rows would be resurrected.
 - The oracle follows the column-projection rules for data files, and fixtures
   can write data files without some columns (`FileSpec::without_fields`).
-- The pin is `thealtoclef/rw-iceberg-rust@e7ed9e8db3e09dbf39503296c3dd753b28b8a04e`,
-  recorded with its evidence in `docs/dependencies.md`. ADR 0021's other
-  decisions remain in force.
+- The pin is `thealtoclef/rw-iceberg-rust@28b0f37c446e154d95860d3851eb455d0099cac9`,
+  advanced from `e7ed9e8` for the Arrow/Parquet 59.3.1 upgrade that removes
+  Thrift 0.17 (CVE-2026-43868), and recorded with its evidence in
+  `docs/dependencies.md`. ADR 0021's other decisions remain in force.
 
 ## Consequences
 

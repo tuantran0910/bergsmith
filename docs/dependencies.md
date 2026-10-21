@@ -3,7 +3,8 @@
 Workspace dependency declarations retain the iceberg-rust integration baseline
 `risingwavelabs/iceberg-rust@f501ff0c245b4b625fe52feaf6125c69f7132557`
 for the core, REST catalog, and OpenDAL storage crates (ADR 0003). All three
-resolve through a single pinned patch source, as recorded below (ADR 0021).
+resolve through a single pinned patch source, currently
+`thealtoclef/rw-iceberg-rust@28b0f37c`, as recorded below (ADR 0021).
 
 ## BS-011: preserve added-file partition specs
 
@@ -21,9 +22,10 @@ numbers and inherited file sequence numbers. Its upstream regression rewrites
 an old-spec file while adding replacements in both old and current specs.
 
 The workspace `[patch]` redirects all three packages to the full immutable
-revision `e7ed9e8db3e09dbf39503296c3dd753b28b8a04e`. The core, REST catalog,
-and storage adapter therefore share one source revision; no local override or
-branch tracking is required. The source is explicitly allowed by `deny.toml`.
+revision `28b0f37c446e154d95860d3851eb455d0099cac9`, which contains this fix
+and the Arrow/Parquet 59 upgrade. The core, REST catalog, and storage adapter
+therefore share one source revision; no local override or branch tracking is
+required. The source is explicitly allowed by `deny.toml`.
 
 The installed upstream regression additionally rejects unknown spec IDs and
 incompatible partition tuples. Bergsmith's `native_publication` suite checks
@@ -58,9 +60,11 @@ The current pin also includes two changes from the maintainer's
   including parents whose only physically stored children have been dropped
   from the current table schema.
 
-The branch reapplies the per-spec manifest fix as `e7ed9e8`; it is not a linear
-descendant of the previous pin. All three packages move together to that full
-immutable SHA. No branch tracking or local checkout override is used.
+The branch reapplies the per-spec manifest fix as `e7ed9e8` and then upgrades
+the core crates to Arrow/Parquet 59.3.1. The current pin is `28b0f37c`; it is
+not a linear descendant of the previous pin. All three packages move together
+to that full immutable SHA. No branch tracking or local checkout override is
+used.
 
 The existing native rewrite and publication suites remain the correctness
 checks, including nullable single/composite keys, sequence-number boundaries,
@@ -89,6 +93,26 @@ the parent's validity. The upstream commits also include regression tests.
 
 Validation on 2026-10-18 at `e7ed9e8`: `make ci` passes all 535 tests, none
 skipped, with 95.84% workspace line coverage. All other required gates pass.
+
+## CVE-2026-43868 and Arrow/Parquet 59.3.1
+
+Dependabot alert GHSA-2f9f-gq7v-9h6m / CVE-2026-43868 flags `thrift < 0.23.0`
+(memory allocation with excessive size, moderate). Parquet 58.4.0 requires
+`thrift ^0.17`; Bergsmith inherited it through the pinned iceberg-rust core
+crates.
+
+The fork's `dev_rebase_main_20260807` branch now pins Arrow and Parquet 59.3.1,
+which removes Parquet's Thrift dependency, and updates the DataFusion
+integration to 55 (and pyo3 to 0.29). All three iceberg-rust packages stay on
+one revision. `cargo tree -i thrift` in Bergsmith reports no such package.
+
+Validation on 2026-10-21 at `28b0f37c`: `make ci` passes all 760 tests, none
+skipped, with 90.59% workspace line coverage. The native rewrite, delete,
+publication, and distributed acceptance suites pass, as do the web build and
+audit. Fork-side `check-fmt`, `check-toml`, `cargo machete`, `check-clippy`,
+unit/doc tests, and `check-public-api` pass. The fork's Docker-backed
+integration suite was not completed locally after a `ghcr.io` image pull
+failure; Bergsmith's gates do not depend on that suite.
 
 Removal condition: when the integration branch contains all installed fixes,
 advance all three workspace dependencies to that reviewed revision and remove
