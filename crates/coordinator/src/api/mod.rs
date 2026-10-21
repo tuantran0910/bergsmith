@@ -1,4 +1,4 @@
-//! Versioned browser API (BS-018.T1).
+//! Versioned browser API (BS-018.T1–T3).
 //!
 //! Merge [`router`] with the identity router. Every resource request uses the
 //! server-side session; mutations additionally require the session's CSRF token.
@@ -6,6 +6,7 @@
 
 mod commands;
 mod creation;
+mod events;
 mod pagination;
 mod preview;
 mod resources;
@@ -29,6 +30,8 @@ use sqlx::PgConnection;
 use crate::identity::{CSRF_HEADER, audit, routes::cookie, session};
 use crate::preview::CatalogPreviewer;
 
+pub use events::{EventStreamLimits, EventStreamLimitsError, JOB_EVENT_CHANNEL, JobEventHub};
+
 /// Shared API dependencies. Uses the same session policy as `/auth`.
 #[derive(Clone, Debug)]
 pub struct ApiState {
@@ -39,6 +42,10 @@ pub struct ApiState {
     /// Produces previews without creating work. The runtime supplies the
     /// storage profiles and planner configuration.
     pub previews: CatalogPreviewer,
+    /// Admits and wakes job event streams. Start its
+    /// [`listen`](JobEventHub::listen) task for prompt delivery; without it,
+    /// streams poll.
+    pub events: JobEventHub,
 }
 
 /// Builds the `/api/v1` resource router, including its `OpenAPI` document.
@@ -67,6 +74,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/jobs/{id}", get(resources::job))
         .route("/api/v1/jobs/{id}/cancel", post(commands::cancel))
         .route("/api/v1/jobs/{id}/retry", post(commands::retry))
+        .route("/api/v1/jobs/{id}/events", get(events::events))
         .route("/api/v1/audit", get(resources::audit))
         .route("/api/v1/previews", post(preview::preview))
         .route("/api/v1/schedules", get(resources::deferred_schedules))

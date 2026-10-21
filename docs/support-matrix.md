@@ -95,7 +95,7 @@ Connection restrictions and the retention each connection needs are in
 |---|---|
 | `/api/v1` catalog, table, job, and audit reads; idempotent job submission | Implemented as a session-authenticated library router (BS-018.T1, ADR 0034); scoped reads, cursor pagination, CSRF, concurrent idempotency, and audit rollback pass PostgreSQL route tests; HTTP startup is not wired |
 | Table previews and cancellation/fresh-plan retry commands | Implemented (BS-018.T2, ADR 0035) for unauthenticated catalog connections: previews resolve a grant-scoped alias, verify the canonical `table-uuid`, and are bounded per response and per process; commands follow the cancellation contract and never reuse a plan. Connections with an external `credential_ref` fail until the runtime resolves credential references |
-| Durable SSE job events | Planned (BS-018.T3) |
+| Durable SSE job events | Implemented (BS-018.T3, ADR 0036): per-job sequences as event IDs, `Last-Event-ID`/`after` resume without gaps or duplicates, notification wake-ups with a polling fallback, session and grant rechecks, and bounded capacity pass PostgreSQL route tests; HTTP startup is not wired |
 | Generated API client and manual-maintenance UI journeys | Planned (BS-018.T4); M4 acceptance remains pending |
 | Schedule and policy resources | Planned (BS-019); reserved list routes explicitly return 501 |
 

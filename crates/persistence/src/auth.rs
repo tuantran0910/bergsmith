@@ -387,6 +387,53 @@ pub async fn authenticate_session(
     token_hash: Sha256Digest,
     idle_timeout: Duration,
 ) -> Result<Session, PersistenceError> {
+    let row = lookup_session(conn, token_hash, idle_timeout).await?;
+    // Coarse, conditional touch: one write per session per touch interval
+    // instead of one per request, and never a lock. The interval is capped at
+    // half the idle timeout, so a short timeout still refreshes before it
+    // expires.
+    let touch = TOUCH_INTERVAL
+        .min(idle_timeout / 2)
+        .max(Duration::from_millis(1));
+    sqlx::query(
+        "UPDATE auth_sessions SET last_seen_at = clock_timestamp()
+         WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > clock_timestamp()
+           AND last_seen_at < clock_timestamp() - make_interval(secs => $3)",
+    )
+    .bind(token_hash.as_bytes().as_slice())
+    .bind(idle_timeout.as_secs_f64())
+    .bind(touch.as_secs_f64())
+    .execute(&mut *conn)
+    .await?;
+    Session::try_from(row.into_session_row())
+}
+
+/// Checks that a session is still valid without refreshing its idle
+/// timestamp.
+///
+/// A long-lived response such as an event stream uses this to notice
+/// revocation, expiry, or idleness. Holding a stream open is not activity, so
+/// it never extends an idle session.
+///
+/// # Errors
+///
+/// [`PersistenceError::SessionRejected`] and database errors.
+pub async fn verify_session(
+    conn: &mut PgConnection,
+    token_hash: Sha256Digest,
+    idle_timeout: Duration,
+) -> Result<(), PersistenceError> {
+    lookup_session(conn, token_hash, idle_timeout)
+        .await
+        .map(|_| ())
+}
+
+/// Reads a session and rejects it when revoked, expired, or idle.
+async fn lookup_session(
+    conn: &mut PgConnection,
+    token_hash: Sha256Digest,
+    idle_timeout: Duration,
+) -> Result<SessionLookup, PersistenceError> {
     let row = sqlx::query_as::<_, SessionLookup>(
         "SELECT s.token_hash, s.organization_id, s.principal_id, s.issuer, s.subject,
                 s.csrf_token_hash, s.created_at, s.last_seen_at, s.expires_at,
@@ -407,24 +454,7 @@ pub async fn authenticate_session(
     if let Some(reason) = row.rejection() {
         return Err(PersistenceError::SessionRejected { reason });
     }
-    // Coarse, conditional touch: one write per session per touch interval
-    // instead of one per request, and never a lock. The interval is capped at
-    // half the idle timeout, so a short timeout still refreshes before it
-    // expires.
-    let touch = TOUCH_INTERVAL
-        .min(idle_timeout / 2)
-        .max(Duration::from_millis(1));
-    sqlx::query(
-        "UPDATE auth_sessions SET last_seen_at = clock_timestamp()
-         WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > clock_timestamp()
-           AND last_seen_at < clock_timestamp() - make_interval(secs => $3)",
-    )
-    .bind(token_hash.as_bytes().as_slice())
-    .bind(idle_timeout.as_secs_f64())
-    .bind(touch.as_secs_f64())
-    .execute(&mut *conn)
-    .await?;
-    Session::try_from(row.into_session_row())
+    Ok(row)
 }
 
 /// Upper bound on how often an authenticated request refreshes a session's idle

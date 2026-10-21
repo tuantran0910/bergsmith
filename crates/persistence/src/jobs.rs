@@ -120,6 +120,10 @@ impl JobEventKind {
 /// One entry in a job's append-only history.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JobEvent {
+    /// Position in the job's history: 1 for the first event, then
+    /// consecutive. Appends are serialized by the job row lock, so a reader
+    /// that has seen `n` has seen every event before it.
+    pub sequence: i64,
     /// What happened.
     pub kind: JobEventKind,
     /// State before a transition; `None` for other kinds.
@@ -183,6 +187,7 @@ impl TryFrom<JobRow> for Job {
 
 #[derive(sqlx::FromRow)]
 struct JobEventRow {
+    sequence: i64,
     kind: String,
     from_state: Option<String>,
     to_state: String,
@@ -197,6 +202,7 @@ impl TryFrom<JobEventRow> for JobEvent {
 
     fn try_from(row: JobEventRow) -> Result<Self, Self::Error> {
         Ok(Self {
+            sequence: row.sequence,
             kind: JobEventKind::parse(&row.kind)?,
             from_state: row.from_state.as_deref().map(parse_job_state).transpose()?,
             to_state: parse_job_state(&row.to_state)?,
@@ -216,6 +222,10 @@ pub(crate) fn parse_job_state(value: &str) -> Result<JobState, PersistenceError>
 }
 
 /// An event to append, in the same transaction as the change it records.
+///
+/// The caller must hold the job's row lock (or be inserting the job): the
+/// sequence is the job's current maximum plus one, and the unique
+/// `(job_id, sequence)` constraint rejects an append that raced without it.
 pub(crate) struct EventRecord<'a> {
     pub(crate) job_id: JobId,
     pub(crate) kind: JobEventKind,
@@ -232,8 +242,9 @@ pub(crate) async fn append_event(
 ) -> Result<(), PersistenceError> {
     sqlx::query(
         "INSERT INTO job_events
-             (job_id, kind, from_state, to_state, state_revision, reason, actor_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+             (job_id, sequence, kind, from_state, to_state, state_revision, reason, actor_id)
+         VALUES ($1, (SELECT COALESCE(max(sequence), 0) + 1 FROM job_events WHERE job_id = $1),
+                 $2, $3, $4, $5, $6, $7)",
     )
     .bind(event.job_id.as_uuid())
     .bind(event.kind.as_str())
@@ -344,10 +355,48 @@ pub async fn job_events(
     id: JobId,
 ) -> Result<Vec<JobEvent>, PersistenceError> {
     sqlx::query_as::<_, JobEventRow>(
-        "SELECT kind, from_state, to_state, state_revision, reason, actor_id, occurred_at
-         FROM job_events WHERE job_id = $1 ORDER BY id",
+        "SELECT sequence, kind, from_state, to_state, state_revision, reason, actor_id, occurred_at
+         FROM job_events WHERE job_id = $1 ORDER BY sequence",
     )
     .bind(id.as_uuid())
+    .fetch_all(conn)
+    .await?
+    .into_iter()
+    .map(JobEvent::try_from)
+    .collect()
+}
+
+/// Returns up to `limit` of a job's events with a sequence above `after`,
+/// oldest first.
+///
+/// Sequences are assigned under the job row lock and commit in order, so
+/// resuming from the last sequence a reader saw never skips an event. The
+/// caller authorizes access to the job; this function performs none.
+///
+/// # Errors
+///
+/// [`PersistenceError::InvalidValue`] when `after` is negative or `limit` is
+/// not positive, and [`PersistenceError::CorruptValue`] when a stored event
+/// does not decode.
+pub async fn job_events_after(
+    conn: &mut PgConnection,
+    id: JobId,
+    after: i64,
+    limit: i64,
+) -> Result<Vec<JobEvent>, PersistenceError> {
+    if after < 0 || limit < 1 {
+        return Err(PersistenceError::InvalidValue {
+            entity: "job event page",
+            constraint: "after must be non-negative and limit positive".to_owned(),
+        });
+    }
+    sqlx::query_as::<_, JobEventRow>(
+        "SELECT sequence, kind, from_state, to_state, state_revision, reason, actor_id, occurred_at
+         FROM job_events WHERE job_id = $1 AND sequence > $2 ORDER BY sequence LIMIT $3",
+    )
+    .bind(id.as_uuid())
+    .bind(after)
+    .bind(limit)
     .fetch_all(conn)
     .await?
     .into_iter()

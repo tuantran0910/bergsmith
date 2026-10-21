@@ -1000,6 +1000,125 @@
         }
       }
     },
+    "/api/v1/jobs/{id}/events": {
+      "get": {
+        "operationId": "streamJobEvents",
+        "description": "Server-sent events for one job, oldest first. Each event's `id` is the job's per-job sequence (1, 2, 3, ...), its `event` is the kind, and its `data` is a JobEvent. Resume with the `Last-Event-ID` header (sent automatically by a reconnecting EventSource) or the `after` query parameter; the header wins. Authorization matches getJob, so unknown and inaccessible jobs are both 404. The stream sends a keep-alive comment every 15 seconds and ends after the event that reaches a terminal state, when the session ends or the caller loses access (checked every 30 seconds without extending the session), or after one hour; reconnect with the last ID seen. A resume point past the job's last event waits for later events, or ends immediately once the job is terminal.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "description": "Resume after this sequence; 0 or absent means the start.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "required": false,
+            "description": "The last event ID received; takes precedence over `after`.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Event stream; each `data` line is a JobEvent",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid resume point or query parameter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or inaccessible job",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable or stream capacity exhausted; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/audit": {
       "get": {
         "operationId": "listAudit",
@@ -1470,7 +1589,8 @@
               "preview_capacity_exhausted",
               "catalog_unsupported",
               "catalog_credentials_unavailable",
-              "catalog_request_rejected"
+              "catalog_request_rejected",
+              "event_stream_capacity_exhausted"
             ]
           },
           "disposition": {
@@ -1625,6 +1745,108 @@
           },
           "publication_started": {
             "type": "boolean"
+          }
+        }
+      },
+      "JobEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "The data of one job event. `reason` is set only for transitions, as the typed state reason; operator cancellation text is never included.",
+        "required": [
+          "sequence",
+          "kind",
+          "from_state",
+          "to_state",
+          "state_revision",
+          "reason",
+          "actor_id",
+          "occurred_at"
+        ],
+        "properties": {
+          "sequence": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "created",
+              "transitioned",
+              "cancellation_requested",
+              "publication_authorized"
+            ]
+          },
+          "from_state": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "Planning",
+                  "Queued",
+                  "Running",
+                  "ReadyToCommit",
+                  "Committing",
+                  "CommitOutcomeUnknown",
+                  "Cancelling",
+                  "Succeeded",
+                  "NoOp",
+                  "Cancelled",
+                  "ReplanRequired",
+                  "Failed"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "to_state": {
+            "type": "string",
+            "enum": [
+              "Planning",
+              "Queued",
+              "Running",
+              "ReadyToCommit",
+              "Committing",
+              "CommitOutcomeUnknown",
+              "Cancelling",
+              "Succeeded",
+              "NoOp",
+              "Cancelled",
+              "ReplanRequired",
+              "Failed"
+            ]
+          },
+          "state_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "actor_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
