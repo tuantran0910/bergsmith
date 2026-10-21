@@ -15,8 +15,9 @@ The browser application in `web/` covers manual maintenance over the
 | Job | Shows execution and publication separately, streams events live, requests cancellation, and retries with a fresh plan |
 | Audit | Organization audit history; shown only to organization-wide administrators |
 
-Connection setup, schedules and policies, and worker health are not in the UI
-yet, because the API does not serve them.
+Connection setup and worker health are not in the UI yet, because no API
+serves them. Maintenance policies and schedules do have a configuration API
+(BS-019.T1, ADR 0038), but the UI for them is not built yet.
 
 ## Reading job status
 

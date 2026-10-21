@@ -9,7 +9,7 @@ use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, Request, StatusCode};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use bergsmith_common::ids::{PrincipalId, RoleGrantId};
+use bergsmith_common::ids::{PolicyId, PrincipalId, RoleGrantId};
 use bergsmith_common::permission::{GrantScope, Role};
 use bergsmith_coordinator::api::{self, ApiState, EventStreamLimits, JobEventHub};
 use bergsmith_coordinator::identity::{
@@ -629,17 +629,18 @@ async fn denied_and_invalid_submissions_create_no_job_and_csrf_is_required(pool:
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
-async fn future_resources_report_unavailability_without_claiming_execution(pool: PgPool) {
+async fn configuration_resources_are_available_and_the_contract_is_public(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let tenant = support::tenant(&mut conn, "acme").await;
     drop(conn);
     let admin = Browser::new(&pool, &tenant, tenant.user, "alice").await;
-    for (method, path) in [("GET", "schedules"), ("GET", "policies")] {
-        let result = admin
-            .request(method, &format!("/api/v1/{path}"), None, None)
+    for path in ["schedules", "policies"] {
+        let (status, body) = admin
+            .request("GET", &format!("/api/v1/{path}"), None, None)
             .await;
-        assert_eq!(result.0, StatusCode::NOT_IMPLEMENTED);
-        assert_eq!(result.1["disposition"], "PermanentFailure");
+        assert_eq!(status, StatusCode::OK, "{path}");
+        assert_eq!(body["items"].as_array().unwrap().len(), 0);
+        assert_eq!(body["next_cursor"], Value::Null);
     }
     let document = admin
         .request("GET", "/api/v1/openapi.json", None, None)
@@ -1045,7 +1046,13 @@ fn openapi_documents_every_route() {
         ("/api/v1/audit", "get"),
         ("/api/v1/previews", "post"),
         ("/api/v1/schedules", "get"),
+        ("/api/v1/schedules", "post"),
+        ("/api/v1/schedules/{id}", "get"),
+        ("/api/v1/schedules/{id}", "patch"),
         ("/api/v1/policies", "get"),
+        ("/api/v1/policies", "post"),
+        ("/api/v1/policies/{id}", "get"),
+        ("/api/v1/policies/{id}", "patch"),
         ("/api/v1/openapi.json", "get"),
     ];
     let document: Value = serde_json::from_str(include_str!("../src/api/openapi.json")).unwrap();
@@ -1054,12 +1061,14 @@ fn openapi_documents_every_route() {
         .unwrap()
         .iter()
         .flat_map(|(path, operations)| {
-            ["get", "post"].into_iter().filter_map(move |method| {
-                operations
-                    .get(method)
-                    .is_some()
-                    .then_some((path.as_str(), method))
-            })
+            ["get", "post", "patch"]
+                .into_iter()
+                .filter_map(move |method| {
+                    operations
+                        .get(method)
+                        .is_some()
+                        .then_some((path.as_str(), method))
+                })
         })
         .collect();
     let expected: BTreeSet<(&str, &str)> = ROUTES.iter().copied().collect();
@@ -3052,4 +3061,534 @@ async fn the_deadline_ends_streams_whose_database_calls_stall(pool: PgPool) {
         );
         drop(held);
     }
+}
+
+async fn service_identity(
+    pool: &PgPool,
+    tenant: &support::Tenant,
+    role: Role,
+    scope: GrantScope,
+) -> PrincipalId {
+    let mut conn = pool.acquire().await.unwrap();
+    let subject = RoleGrantId::generate().to_string();
+    let id = support::service_principal(&mut conn, tenant.organization, &subject).await;
+    grants::create_grant(
+        &mut conn,
+        &NewRoleGrant {
+            id: RoleGrantId::generate(),
+            organization_id: tenant.organization,
+            principal_id: id,
+            role,
+            scope,
+            granted_by: Some(tenant.user),
+        },
+    )
+    .await
+    .unwrap();
+    id
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn policies_and_schedules_are_audited_configuration_with_revisions(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let service = service_identity(
+        &pool,
+        &tenant,
+        Role::MaintenanceService,
+        GrantScope::table(tenant.table),
+    )
+    .await;
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+
+    let (status, policy) = browser
+        .request(
+            "POST",
+            "/api/v1/policies",
+            Some(json!({
+                "name": "nightly",
+                "target_file_size_bytes": 536_870_912_u64,
+                "min_input_files": 4,
+            })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{policy}");
+    assert_eq!(policy["operation"], "Compact");
+    assert_eq!(policy["revision"], 1);
+    assert_eq!(policy["enabled"], true);
+    let policy_id = policy["id"].as_str().unwrap().to_owned();
+
+    let (status, listed) = browser.request("GET", "/api/v1/policies", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed["items"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["next_cursor"], Value::Null);
+
+    let (status, updated) = browser
+        .request(
+            "PATCH",
+            &format!("/api/v1/policies/{policy_id}"),
+            Some(json!({ "revision": 1, "enabled": false, "min_input_files": 6 })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["revision"], 2);
+    assert_eq!(updated["enabled"], false);
+    assert_eq!(updated["min_input_files"], 6);
+
+    let (status, stale) = browser
+        .request(
+            "PATCH",
+            &format!("/api/v1/policies/{policy_id}"),
+            Some(json!({ "revision": 1, "enabled": true })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(stale["reason"], "revision_conflict");
+    assert_eq!(stale["disposition"], "PermanentFailure");
+
+    let (status, schedule) = browser
+        .request(
+            "POST",
+            "/api/v1/schedules",
+            Some(json!({
+                "policy_id": policy_id,
+                "table_id": tenant.table,
+                "cron_expression": "30 2 * * MON-FRI",
+                "time_zone": "Europe/Berlin",
+                "service_principal_id": service,
+            })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{schedule}");
+    assert_eq!(schedule["cron_expression"], "30 2 * * MON-FRI");
+    assert_eq!(schedule["time_zone"], "Europe/Berlin");
+    assert_eq!(schedule["enabled"], true);
+    assert_eq!(schedule["revision"], 1);
+    let schedule_id = schedule["id"].as_str().unwrap().to_owned();
+
+    let (status, read) = browser
+        .request(
+            "GET",
+            &format!("/api/v1/schedules/{schedule_id}"),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(read["id"], schedule["id"]);
+    assert_eq!(read["policy_id"], policy_id);
+
+    let (status, disabled) = browser
+        .request(
+            "PATCH",
+            &format!("/api/v1/schedules/{schedule_id}"),
+            Some(json!({ "revision": 1, "enabled": false })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{disabled}");
+    assert_eq!(disabled["revision"], 2);
+    assert_eq!(disabled["enabled"], false);
+
+    // Every configuration change has an attributable audit record.
+    let mut conn = pool.acquire().await.unwrap();
+    let actions: Vec<String> = sqlx::query_scalar(
+        "SELECT action FROM audit_events
+         WHERE organization_id = $1 AND resource_id IN ($2, $3)
+         ORDER BY id",
+    )
+    .bind(tenant.organization.as_uuid())
+    .bind(&policy_id)
+    .bind(&schedule_id)
+    .fetch_all(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(
+        actions,
+        vec![
+            "policy.created",
+            "policy.updated",
+            "schedule.created",
+            "schedule.updated"
+        ]
+    );
+
+    // The update audit carries the persisted compaction parameters, so a
+    // changed target size or input-file count is reconstructable afterwards.
+    let detail: Value = sqlx::query_scalar(
+        "SELECT detail FROM audit_events
+         WHERE organization_id = $1 AND action = 'policy.updated'",
+    )
+    .bind(tenant.organization.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(detail["target_file_size_bytes"], json!(536_870_912_u64));
+    assert_eq!(detail["min_input_files"], json!(6));
+    assert_eq!(detail["enabled"], json!(false));
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn scheduling_rejects_invalid_timing_and_ineligible_identities(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+
+    let (status, body) = browser
+        .request(
+            "POST",
+            "/api/v1/policies",
+            Some(json!({ "name": "too-small", "target_file_size_bytes": 1 })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["reason"], "invalid_policy_parameters");
+
+    let (status, body) = browser
+        .request(
+            "POST",
+            "/api/v1/policies",
+            Some(json!({ "name": "" })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["reason"], "invalid_request");
+
+    let (status, policy) = browser
+        .request(
+            "POST",
+            "/api/v1/policies",
+            Some(json!({ "name": "nightly" })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{policy}");
+    let policy_id = policy["id"].as_str().unwrap().to_owned();
+
+    for (expression, zone, reason) in [
+        ("not a cron", "UTC", "invalid_cron_expression"),
+        ("61 * * * *", "UTC", "invalid_cron_expression"),
+        ("0 2 * * *", "Mars/Olympus_Mons", "invalid_time_zone"),
+        ("0 9 * * *", "EST", "invalid_time_zone"),
+    ] {
+        let (status, body) = browser
+            .request(
+                "POST",
+                "/api/v1/schedules",
+                Some(json!({
+                    "policy_id": policy_id,
+                    "table_id": tenant.table,
+                    "cron_expression": expression,
+                    "time_zone": zone,
+                    "service_principal_id": tenant.user,
+                })),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{expression} {zone}");
+        assert_eq!(body["reason"], reason);
+    }
+
+    // A person is never an execution identity, even with an administrator grant.
+    let (status, body) = browser
+        .request(
+            "POST",
+            "/api/v1/schedules",
+            Some(json!({
+                "policy_id": policy_id,
+                "table_id": tenant.table,
+                "cron_expression": "0 2 * * *",
+                "time_zone": "UTC",
+                "service_principal_id": tenant.user,
+            })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["reason"], "service_identity_not_eligible");
+
+    // A policy cannot run twice against the same table.
+    let service = service_identity(
+        &pool,
+        &tenant,
+        Role::MaintenanceService,
+        GrantScope::organization(),
+    )
+    .await;
+    let (status, _) = browser
+        .request(
+            "POST",
+            "/api/v1/schedules",
+            Some(json!({
+                "policy_id": policy_id,
+                "table_id": tenant.table,
+                "cron_expression": "0 2 * * *",
+                "time_zone": "UTC",
+                "service_principal_id": service,
+            })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, body) = browser
+        .request(
+            "POST",
+            "/api/v1/schedules",
+            Some(json!({
+                "policy_id": policy_id,
+                "table_id": tenant.table,
+                "cron_expression": "0 3 * * *",
+                "time_zone": "UTC",
+                "service_principal_id": service,
+            })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["reason"], "resource_already_exists");
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn scheduling_configuration_requires_schedules_manage(pool: PgPool) {
+    let tenant = {
+        let mut conn = pool.acquire().await.unwrap();
+        support::tenant(&mut conn, "acme").await
+    };
+    let (viewer, _) = scoped(&pool, &tenant, Role::Viewer, GrantScope::organization()).await;
+    for (method, uri, body) in [
+        ("GET", "/api/v1/policies".to_owned(), None),
+        (
+            "POST",
+            "/api/v1/policies".to_owned(),
+            Some(json!({ "name": "nightly" })),
+        ),
+        ("GET", "/api/v1/schedules".to_owned(), None),
+        (
+            "POST",
+            "/api/v1/schedules".to_owned(),
+            Some(json!({
+                "policy_id": PolicyId::generate(),
+                "table_id": tenant.table,
+                "cron_expression": "0 2 * * *",
+                "time_zone": "UTC",
+                "service_principal_id": tenant.user,
+            })),
+        ),
+    ] {
+        let (status, body) = viewer.request(method, &uri, body, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}");
+        assert_eq!(body["reason"], "permission_denied");
+    }
+    // Denials are audited even though no configuration transaction commits.
+    let denials: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_events
+         WHERE organization_id = $1 AND action = 'api.permission_denied'",
+    )
+    .bind(tenant.organization.as_uuid())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(denials, 4);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn schedule_creation_rejects_an_unknown_policy(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let service = service_identity(
+        &pool,
+        &tenant,
+        Role::MaintenanceService,
+        GrantScope::organization(),
+    )
+    .await;
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+
+    let (status, body) = browser
+        .request(
+            "POST",
+            "/api/v1/schedules",
+            Some(json!({
+                "policy_id": PolicyId::generate(),
+                "table_id": tenant.table,
+                "cron_expression": "0 2 * * *",
+                "time_zone": "UTC",
+                "service_principal_id": service,
+            })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["reason"], "resource_not_found");
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn table_scoped_administrators_cannot_manage_schedules(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let other_table = tables::resolve_table(
+        &mut conn,
+        tenant.organization,
+        &support::alias(tenant.connection, "other"),
+        Uuid::now_v7(),
+    )
+    .await
+    .unwrap()
+    .id;
+    drop(conn);
+    let service = service_identity(
+        &pool,
+        &tenant,
+        Role::MaintenanceService,
+        GrantScope::organization(),
+    )
+    .await;
+    let admin = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+    let (status, policy) = admin
+        .request(
+            "POST",
+            "/api/v1/policies",
+            Some(json!({ "name": "nightly" })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{policy}");
+    let (status, schedule) = admin
+        .request(
+            "POST",
+            "/api/v1/schedules",
+            Some(json!({
+                "policy_id": policy["id"],
+                "table_id": tenant.table,
+                "cron_expression": "0 2 * * *",
+                "time_zone": "UTC",
+                "service_principal_id": service,
+            })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{schedule}");
+    let schedule_id = schedule["id"].as_str().unwrap().to_owned();
+
+    // Scheduling is organization configuration; a table-scoped administrator
+    // cannot read or change a schedule even for the table they administer.
+    let (scoped_admin, _) = scoped(
+        &pool,
+        &tenant,
+        Role::Administrator,
+        GrantScope::table(other_table),
+    )
+    .await;
+    for (method, uri, body) in [
+        ("GET", format!("/api/v1/schedules/{schedule_id}"), None),
+        (
+            "PATCH",
+            format!("/api/v1/schedules/{schedule_id}"),
+            Some(json!({ "revision": 1, "enabled": false })),
+        ),
+        (
+            "POST",
+            "/api/v1/schedules".to_owned(),
+            Some(json!({
+                "policy_id": policy["id"],
+                "table_id": other_table,
+                "cron_expression": "0 2 * * *",
+                "time_zone": "UTC",
+                "service_principal_id": service,
+            })),
+        ),
+    ] {
+        let (status, body) = scoped_admin.request(method, &uri, body, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}");
+        assert_eq!(body["reason"], "permission_denied");
+    }
+
+    // Denials are attributable to the organization scope they failed.
+    let denials: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_events
+         WHERE organization_id = $1 AND action = 'api.permission_denied'
+           AND resource_type = 'organization' AND resource_id = $2",
+    )
+    .bind(tenant.organization.as_uuid())
+    .bind(tenant.organization.to_string())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(denials, 3);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn policy_creation_rolls_back_when_the_audit_cannot_be_recorded(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    sqlx::query("CREATE FUNCTION reject_policy_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test audit unavailable'; END $$").execute(&mut *conn).await.unwrap();
+    sqlx::query("CREATE TRIGGER reject_policy_audit BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION reject_policy_audit()").execute(&mut *conn).await.unwrap();
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+
+    let (status, body) = browser
+        .request(
+            "POST",
+            "/api/v1/policies",
+            Some(json!({ "name": "nightly" })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body["disposition"], "PermanentFailure");
+    let policies: i64 = sqlx::query_scalar("SELECT count(*) FROM maintenance_policies")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(policies, 0);
+
+    sqlx::query("DROP TRIGGER reject_policy_audit ON audit_events")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (status, _) = browser
+        .request(
+            "POST",
+            "/api/v1/policies",
+            Some(json!({ "name": "nightly" })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn policy_updates_reject_nonpositive_revisions(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+    let (status, policy) = browser
+        .request(
+            "POST",
+            "/api/v1/policies",
+            Some(json!({ "name": "nightly" })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{policy}");
+    let (status, body) = browser
+        .request(
+            "PATCH",
+            &format!("/api/v1/policies/{}", policy["id"].as_str().unwrap()),
+            Some(json!({ "revision": 0, "enabled": false })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["reason"], "invalid_request");
 }

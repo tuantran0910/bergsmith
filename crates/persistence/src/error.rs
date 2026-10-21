@@ -79,6 +79,26 @@ pub enum PersistenceError {
         /// The current revision.
         actual: i64,
     },
+    /// Another writer changed a configuration row after the caller read it.
+    #[error("{entity} {id} is at revision {actual}, not the expected {expected}")]
+    ConfigRevisionConflict {
+        /// Kind of row that was being updated.
+        entity: &'static str,
+        /// The row's identifier.
+        id: String,
+        /// The revision the caller read.
+        expected: i64,
+        /// The current revision.
+        actual: i64,
+    },
+    /// A schedule named a principal that cannot execute maintenance.
+    #[error("principal {principal} cannot execute maintenance for table {table}")]
+    IneligibleServiceIdentity {
+        /// The principal that was checked.
+        principal: PrincipalId,
+        /// The table it was meant to run against.
+        table: TableId,
+    },
     /// The job lifecycle forbids the change.
     #[error(transparent)]
     JobTransition(#[from] JobTransitionError),

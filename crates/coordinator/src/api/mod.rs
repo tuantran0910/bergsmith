@@ -10,6 +10,7 @@ mod events;
 mod pagination;
 mod preview;
 mod resources;
+mod scheduling;
 mod submission;
 
 use axum::body::{Body, Bytes};
@@ -77,8 +78,22 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/jobs/{id}/events", get(events::events))
         .route("/api/v1/audit", get(resources::audit))
         .route("/api/v1/previews", post(preview::preview))
-        .route("/api/v1/schedules", get(resources::deferred_schedules))
-        .route("/api/v1/policies", get(resources::deferred_schedules))
+        .route(
+            "/api/v1/policies",
+            get(scheduling::policies).post(scheduling::create_policy),
+        )
+        .route(
+            "/api/v1/policies/{id}",
+            get(scheduling::policy).patch(scheduling::update_policy),
+        )
+        .route(
+            "/api/v1/schedules",
+            get(scheduling::schedules).post(scheduling::create_schedule),
+        )
+        .route(
+            "/api/v1/schedules/{id}",
+            get(scheduling::schedule).patch(scheduling::update_schedule),
+        )
         .layer(DefaultBodyLimit::max(16 * 1024))
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
     Router::new()
@@ -283,6 +298,13 @@ impl ApiError {
             "correct_request",
         )
     }
+    const fn invalid_policy_parameters() -> Self {
+        Self::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_policy_parameters",
+            "correct_policy_parameters",
+        )
+    }
     const fn conflict(reason: &'static str, operator_action: &'static str) -> Self {
         Self::permanent(StatusCode::CONFLICT, reason, operator_action)
     }
@@ -352,6 +374,17 @@ impl From<PersistenceError> for ApiError {
             ),
             PersistenceError::InvalidValue { .. } | PersistenceError::MissingReference { .. } => {
                 Self::invalid()
+            }
+            PersistenceError::ConfigRevisionConflict { .. } => {
+                Self::conflict("revision_conflict", "reload_and_retry")
+            }
+            PersistenceError::IneligibleServiceIdentity { .. } => Self::new(
+                StatusCode::BAD_REQUEST,
+                "service_identity_not_eligible",
+                "grant_maintenance_role",
+            ),
+            PersistenceError::AlreadyExists { .. } => {
+                Self::conflict("resource_already_exists", "choose_another_name")
             }
             PersistenceError::Database(error) => Self::from(error),
             other => {

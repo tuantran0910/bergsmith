@@ -1,7 +1,8 @@
 # Browser API
 
-BS-018.T1–T3 provide `bergsmith_coordinator::api::router(ApiState)` for
-composition with `identity::routes::router`. Supply the same database and
+BS-018.T1–T4 provide `bergsmith_coordinator::api::router(ApiState)` for
+composition with `identity::routes::router`. BS-019.T1 adds the policy and
+schedule configuration resources. Supply the same database and
 `SessionConfig` to both. `ApiState` also carries a `CatalogPreviewer` built from
 the configured storage profiles and planner configuration, because previews read
 table metadata through the catalog, and a `JobEventHub` that admits and wakes
@@ -27,7 +28,12 @@ as `x-csrf-token`. All responses use `Cache-Control: no-store`.
 | `POST /api/v1/jobs/{id}/retry` | Create a fresh-plan retry of a terminal job; 202 with the new job |
 | `POST /api/v1/previews` | Assess a table without creating work |
 | `GET /api/v1/audit` | Organization audit history; requires organization-wide `audit:read` |
-| `GET /api/v1/schedules`, `GET /api/v1/policies` | Explicit 501 until BS-019; requires organization schedule administration |
+| `GET /api/v1/policies`, `GET /api/v1/policies/{id}` | Maintenance policies; requires organization-wide `schedules:manage` |
+| `POST /api/v1/policies` | Create a policy; 201 with the stored row |
+| `PATCH /api/v1/policies/{id}` | Edit or disable a policy using the revision read; 409 when it is stale |
+| `GET /api/v1/schedules`, `GET /api/v1/schedules/{id}` | Maintenance schedules; requires organization-wide `schedules:manage` |
+| `POST /api/v1/schedules` | Bind a policy to one table with a cron expression, time zone, and service identity; 201; requires organization-wide `schedules:manage` |
+| `PATCH /api/v1/schedules/{id}` | Edit a schedule's timing or enabled state using the revision read; requires organization-wide `schedules:manage` |
 
 Submit `{"table_id":"<canonical table UUID>"}` with a nonempty, printable ASCII
 `Idempotency-Key` of at most 255 bytes. Unknown body fields are rejected, so a
@@ -173,6 +179,49 @@ channel; if notifications are lost, streams still poll the ledger every 2
 seconds. A runtime that serves the router starts `JobEventHub::listen`, which
 holds one dedicated PostgreSQL connection per process in addition to the request
 pool.
+
+## Policies and schedules
+
+A policy is the reusable "what": an operation (`Compact` in this release), a
+target file size between 1 MiB and 1 GiB, and a minimum input-file count between
+2 and 1000. It names no table. A schedule binds one policy to one canonical
+table, a five-field cron expression in an IANA time zone, and a service
+principal. A policy runs at most once per table; changing the timing updates
+that schedule instead of adding another.
+
+`POST /api/v1/policies` accepts `name` and optional `operation`,
+`target_file_size_bytes`, and `min_input_files`, defaulting to 256 MiB and five
+files. `PATCH` accepts the `revision` the caller read plus any of `name`,
+`operation`, `target_file_size_bytes`, `min_input_files`, and `enabled`.
+`POST /api/v1/schedules` accepts `policy_id`, `table_id`, `cron_expression`,
+`time_zone`, and `service_principal_id`; `PATCH` accepts `revision` plus any of
+`cron_expression`, `time_zone`, and `enabled`. A schedule's policy and table
+cannot change.
+
+Edits are optimistic. A request whose `revision` is stale returns 409
+`revision_conflict` and changes nothing. `POST` on an existing policy name or an
+existing policy/table pair returns 409 `resource_already_exists`. Every schedule
+and policy operation requires organization-wide `schedules:manage`; a grant
+scoped to one table or connection does not administer organization
+configuration. Every mutation, and its `policy.created`, `policy.updated`,
+`schedule.created`, or `schedule.updated` audit record, commits in one
+transaction.
+
+Timing follows the plan's DST rules: a local time skipped by spring-forward is
+not an occurrence, and a local time repeated by fall-back runs once at the
+earlier instant. The time zone must be `UTC` or a regional IANA name containing
+a `/`; abbreviations such as `EST` or `HST` are rejected because they pin a
+fixed offset and would not follow daylight saving. Cron syntax and an unknown
+time zone return 400 `invalid_cron_expression` and `invalid_time_zone`. Out-of-range policy
+parameters return 400 `invalid_policy_parameters`, an unknown operation returns
+`invalid_policy_operation`, and a service principal that is not a service
+account with a current `jobs:submit` grant for the table returns 400
+`service_identity_not_eligible`.
+
+These resources define configuration only. Occurrence persistence,
+deduplication, coalescing, and admission are BS-019.T2; windows and budgets are
+BS-019.T3. Disabling a schedule or policy stores the change now, and enforcement
+at admission follows with T2.
 
 ## Pagination, errors, and authentication
 
