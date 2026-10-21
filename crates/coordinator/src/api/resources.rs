@@ -1,6 +1,5 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
 use bergsmith_common::job::JobState;
 use bergsmith_common::permission::{Permission, ResourceScope};
 use bergsmith_persistence::grants;
@@ -408,23 +407,4 @@ pub(super) async fn audit(
         "outcome": row.outcome.as_str(), "detail": row.detail, "occurred_at": row.occurred_at,
     }))).collect();
     Ok(Json(page.finish(rows)?))
-}
-
-pub(super) async fn deferred_schedules(
-    State(state): State<ApiState>,
-    caller: Caller,
-) -> Result<Json<Value>, ApiError> {
-    let mut conn = state.database.pool().acquire().await?;
-    require(
-        &mut conn,
-        &caller.0,
-        Permission::ManageSchedules,
-        ResourceScope::Organization,
-    )
-    .await?;
-    Err(ApiError::new(
-        StatusCode::NOT_IMPLEMENTED,
-        "scheduling_unavailable",
-        "wait_for_scheduling_api",
-    ))
 }

@@ -78,6 +78,14 @@ pub enum AuditAction {
     JobRetryRequested,
     /// The public API durably accepted a new job submission.
     JobSubmitted,
+    /// A maintenance policy was created.
+    PolicyCreated,
+    /// A maintenance policy was edited or enabled/disabled.
+    PolicyUpdated,
+    /// A schedule was created.
+    ScheduleCreated,
+    /// A schedule was edited, enabled, or disabled.
+    ScheduleUpdated,
     /// A public API command was refused by scoped authorization.
     ApiPermissionDenied,
 }
@@ -102,6 +110,10 @@ impl AuditAction {
             Self::JobCancellationRequested => "job.cancellation_requested",
             Self::JobRetryRequested => "job.retry_requested",
             Self::JobSubmitted => "job.submitted",
+            Self::PolicyCreated => "policy.created",
+            Self::PolicyUpdated => "policy.updated",
+            Self::ScheduleCreated => "schedule.created",
+            Self::ScheduleUpdated => "schedule.updated",
             Self::ApiPermissionDenied => "api.permission_denied",
         }
     }
@@ -132,6 +144,10 @@ impl AuditAction {
         Self::JobCancellationRequested,
         Self::JobRetryRequested,
         Self::JobSubmitted,
+        Self::PolicyCreated,
+        Self::PolicyUpdated,
+        Self::ScheduleCreated,
+        Self::ScheduleUpdated,
         Self::ApiPermissionDenied,
     ];
 }

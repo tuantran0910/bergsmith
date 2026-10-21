@@ -120,6 +120,14 @@ define_id!(
     /// Identifies one role grant.
     RoleGrantId
 );
+define_id!(
+    /// Identifies a named maintenance policy.
+    PolicyId
+);
+define_id!(
+    /// Identifies a schedule that runs one policy against one table.
+    ScheduleId
+);
 
 #[cfg(test)]
 mod tests {
@@ -169,5 +177,7 @@ mod tests {
         assert!(text.parse::<PrincipalId>().is_ok());
         assert!(text.parse::<CatalogConnectionId>().is_ok());
         assert!(text.parse::<TableId>().is_ok());
+        assert!(text.parse::<PolicyId>().is_ok());
+        assert!(text.parse::<ScheduleId>().is_ok());
     }
 }

@@ -76,6 +76,29 @@ pub(crate) async fn user(
     id
 }
 
+/// Creates a service principal with `subject` in `organization`.
+pub(crate) async fn service_principal(
+    conn: &mut PgConnection,
+    organization: OrganizationId,
+    subject: &str,
+) -> PrincipalId {
+    let id = PrincipalId::generate();
+    tenancy::create_principal(
+        conn,
+        &NewPrincipal {
+            id,
+            organization_id: organization,
+            kind: PrincipalKind::Service,
+            issuer: "bergsmith:test".to_owned(),
+            subject: subject.to_owned(),
+            display_name: subject.to_owned(),
+        },
+    )
+    .await
+    .expect("service principal is created");
+    id
+}
+
 /// Creates a catalog connection named `name` in `organization`.
 pub(crate) async fn connection(
     conn: &mut PgConnection,
