@@ -3110,6 +3110,7 @@ async fn policies_and_schedules_are_audited_configuration_with_revisions(pool: P
                 "name": "nightly",
                 "target_file_size_bytes": 536_870_912_u64,
                 "min_input_files": 4,
+                "max_input_bytes": 8_589_934_592_u64,
             })),
             None,
         )
@@ -3118,6 +3119,7 @@ async fn policies_and_schedules_are_audited_configuration_with_revisions(pool: P
     assert_eq!(policy["operation"], "Compact");
     assert_eq!(policy["revision"], 1);
     assert_eq!(policy["enabled"], true);
+    assert_eq!(policy["max_input_bytes"], json!(8_589_934_592_u64));
     let policy_id = policy["id"].as_str().unwrap().to_owned();
 
     let (status, listed) = browser.request("GET", "/api/v1/policies", None, None).await;
@@ -3129,7 +3131,12 @@ async fn policies_and_schedules_are_audited_configuration_with_revisions(pool: P
         .request(
             "PATCH",
             &format!("/api/v1/policies/{policy_id}"),
-            Some(json!({ "revision": 1, "enabled": false, "min_input_files": 6 })),
+            Some(json!({
+                "revision": 1,
+                "enabled": false,
+                "min_input_files": 6,
+                "max_input_bytes": 4_294_967_296_u64,
+            })),
             None,
         )
         .await;
@@ -3137,6 +3144,7 @@ async fn policies_and_schedules_are_audited_configuration_with_revisions(pool: P
     assert_eq!(updated["revision"], 2);
     assert_eq!(updated["enabled"], false);
     assert_eq!(updated["min_input_files"], 6);
+    assert_eq!(updated["max_input_bytes"], json!(4_294_967_296_u64));
 
     let (status, stale) = browser
         .request(
@@ -3159,6 +3167,7 @@ async fn policies_and_schedules_are_audited_configuration_with_revisions(pool: P
                 "table_id": tenant.table,
                 "cron_expression": "30 2 * * MON-FRI",
                 "time_zone": "Europe/Berlin",
+                "window": { "start_minute": 120, "end_minute": 240 },
                 "service_principal_id": service,
             })),
             None,
@@ -3167,6 +3176,10 @@ async fn policies_and_schedules_are_audited_configuration_with_revisions(pool: P
     assert_eq!(status, StatusCode::CREATED, "{schedule}");
     assert_eq!(schedule["cron_expression"], "30 2 * * MON-FRI");
     assert_eq!(schedule["time_zone"], "Europe/Berlin");
+    assert_eq!(
+        schedule["window"],
+        json!({ "start_minute": 120, "end_minute": 240 })
+    );
     assert_eq!(schedule["enabled"], true);
     assert_eq!(schedule["revision"], 1);
     let schedule_id = schedule["id"].as_str().unwrap().to_owned();
@@ -3194,6 +3207,11 @@ async fn policies_and_schedules_are_audited_configuration_with_revisions(pool: P
     assert_eq!(status, StatusCode::OK, "{disabled}");
     assert_eq!(disabled["revision"], 2);
     assert_eq!(disabled["enabled"], false);
+    // An update that does not name the window leaves it unchanged.
+    assert_eq!(
+        disabled["window"],
+        json!({ "start_minute": 120, "end_minute": 240 })
+    );
 
     // Every configuration change has an attributable audit record.
     let mut conn = pool.acquire().await.unwrap();
@@ -3230,6 +3248,7 @@ async fn policies_and_schedules_are_audited_configuration_with_revisions(pool: P
     .unwrap();
     assert_eq!(detail["target_file_size_bytes"], json!(536_870_912_u64));
     assert_eq!(detail["min_input_files"], json!(6));
+    assert_eq!(detail["max_input_bytes"], json!(4_294_967_296_u64));
     assert_eq!(detail["enabled"], json!(false));
 }
 
@@ -3250,6 +3269,68 @@ async fn scheduling_rejects_invalid_timing_and_ineligible_identities(pool: PgPoo
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["reason"], "invalid_policy_parameters");
+
+    // The per-run budget is bounded, and it must hold one replacement file.
+    for max_input_bytes in [0, u64::MAX] {
+        let (status, body) = browser
+            .request(
+                "POST",
+                "/api/v1/policies",
+                Some(json!({ "name": "bad-budget", "max_input_bytes": max_input_bytes })),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{max_input_bytes}");
+        assert_eq!(body["reason"], "invalid_policy_parameters");
+    }
+    let (status, body) = browser
+        .request(
+            "POST",
+            "/api/v1/policies",
+            Some(json!({
+                "name": "too-tight-budget",
+                "target_file_size_bytes": 536_870_912_u64,
+                "max_input_bytes": 268_435_456_u64,
+            })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["reason"], "run_budget_below_target_file_size");
+
+    // Raising the target above the stored run budget is rejected on update too,
+    // and the failed update changes nothing.
+    let (status, policy) = browser
+        .request(
+            "POST",
+            "/api/v1/policies",
+            Some(json!({
+                "name": "bounded-update",
+                "target_file_size_bytes": 1_048_576_u64,
+                "max_input_bytes": 2_097_152_u64,
+            })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{policy}");
+    let bounded_id = policy["id"].as_str().unwrap().to_owned();
+    let (status, body) = browser
+        .request(
+            "PATCH",
+            &format!("/api/v1/policies/{bounded_id}"),
+            Some(json!({ "revision": 1, "target_file_size_bytes": 4_194_304_u64 })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["reason"], "run_budget_below_target_file_size");
+    let (status, read) = browser
+        .request("GET", &format!("/api/v1/policies/{bounded_id}"), None, None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(read["revision"], 1);
+    assert_eq!(read["target_file_size_bytes"], json!(1_048_576_u64));
+    assert_eq!(read["max_input_bytes"], json!(2_097_152_u64));
 
     let (status, body) = browser
         .request(
@@ -3354,6 +3435,145 @@ async fn scheduling_rejects_invalid_timing_and_ineligible_identities(pool: PgPoo
         .await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(body["reason"], "resource_already_exists");
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn schedule_windows_are_validated_and_can_be_replaced_or_cleared(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let service = service_identity(
+        &pool,
+        &tenant,
+        Role::MaintenanceService,
+        GrantScope::table(tenant.table),
+    )
+    .await;
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+
+    let (status, policy) = browser
+        .request(
+            "POST",
+            "/api/v1/policies",
+            Some(json!({ "name": "nightly" })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{policy}");
+    let policy_id = policy["id"].as_str().unwrap().to_owned();
+
+    // 22:00–02:00 is one window that wraps past midnight.
+    let (status, schedule) = browser
+        .request(
+            "POST",
+            "/api/v1/schedules",
+            Some(json!({
+                "policy_id": policy_id,
+                "table_id": tenant.table,
+                "cron_expression": "0 23 * * *",
+                "time_zone": "UTC",
+                "window": { "start_minute": 1320, "end_minute": 120 },
+                "service_principal_id": service,
+            })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{schedule}");
+    assert_eq!(
+        schedule["window"],
+        json!({ "start_minute": 1320, "end_minute": 120 })
+    );
+    let schedule_id = schedule["id"].as_str().unwrap().to_owned();
+
+    // A named window replaces the stored one.
+    let (status, replaced) = browser
+        .request(
+            "PATCH",
+            &format!("/api/v1/schedules/{schedule_id}"),
+            Some(json!({
+                "revision": 1,
+                "window": { "start_minute": 60, "end_minute": 120 },
+            })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{replaced}");
+    assert_eq!(replaced["revision"], 2);
+    assert_eq!(
+        replaced["window"],
+        json!({ "start_minute": 60, "end_minute": 120 })
+    );
+
+    // An explicit null clears it, while an absent field leaves it alone.
+    let (status, cleared) = browser
+        .request(
+            "PATCH",
+            &format!("/api/v1/schedules/{schedule_id}"),
+            Some(json!({ "revision": 2, "window": null })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{cleared}");
+    assert_eq!(cleared["revision"], 3);
+    assert_eq!(cleared["window"], Value::Null);
+
+    let (status, body) = browser
+        .request(
+            "PATCH",
+            &format!("/api/v1/schedules/{schedule_id}"),
+            Some(json!({ "revision": 3 })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["reason"], "invalid_request");
+
+    // Empty and out-of-day windows are rejected with a window-specific reason.
+    for window in [
+        json!({ "start_minute": 60, "end_minute": 60 }),
+        json!({ "start_minute": 1440, "end_minute": 60 }),
+        json!({ "start_minute": 60, "end_minute": 1440 }),
+        // Negative and wider-than-u16 values must reach the window validator
+        // instead of failing as a generic malformed body.
+        json!({ "start_minute": -1, "end_minute": 60 }),
+        json!({ "start_minute": 60, "end_minute": 70_000 }),
+    ] {
+        let (status, body) = browser
+            .request(
+                "PATCH",
+                &format!("/api/v1/schedules/{schedule_id}"),
+                Some(json!({ "revision": 3, "window": window })),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{window}");
+        assert_eq!(body["reason"], "invalid_maintenance_window");
+    }
+    let (status, body) = browser
+        .request(
+            "PATCH",
+            &format!("/api/v1/schedules/{schedule_id}"),
+            Some(json!({ "revision": 3, "window": { "start_minute": 60 } })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["reason"], "invalid_request");
+
+    // A rejected window changes nothing, so revision 3 is still current.
+    let (status, stale) = browser
+        .request(
+            "PATCH",
+            &format!("/api/v1/schedules/{schedule_id}"),
+            Some(json!({
+                "revision": 1,
+                "window": { "start_minute": 60, "end_minute": 120 },
+            })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(stale["reason"], "revision_conflict");
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]

@@ -90,6 +90,68 @@ processes stopped writing; follow [publication retention](publication.md).
 Publication recovery inspects evidence and never resends a commit. An unresolved
 publication keeps its barrier and table/job reservations.
 
-BS-014 supplies scheduling and reconciliation library orchestration. Worker
-supervisor loops and subprocess enforcement follow in BS-015. Production startup,
-policy configuration, and packaging remain later application tasks.
+## Schedules, windows, and run budgets
+
+A maintenance schedule runs one policy against one table. Each enabled schedule
+has a durable `next_due_at`; the coordinator's `ScheduleRunner` admits every due
+schedule in its own transaction, fenced by the coordinator epoch. An occurrence
+row keyed by `(organization, schedule, first due instant)` is written before the
+job, so a replay cannot admit a second job. Missed occurrences coalesce into one
+evaluation, and an occurrence that overlaps a nonterminal job on the same table
+is recorded as `Coalesced` with reason `TableBusy` instead of starting a second
+run.
+
+An optional schedule window bounds when a run may start. It is a daily
+local-time interval in the schedule's IANA zone: the start minute is inclusive,
+the end minute exclusive, and a start later than the end wraps past midnight
+(for example `22:00`–`02:00`). Admission checks the instant at which the job
+would be created, not the occurrence's nominal time. An occurrence evaluated
+outside the window is recorded as one `Skipped` row with reason `OutsideWindow`
+covering the due span up to the evaluation instant, and the cursor jumps to the
+first occurrence at or after the next opening; the run itself is dropped, not
+deferred. A cron more frequent than its window therefore does not write one
+skipped row per tick. The skip is logged at debug level and is not audited,
+because it is routine scheduling; only a disabled policy or an ineligible
+service identity is an operator denial. A run that starts inside the window may
+finish after it closes. The window does not change occurrence identity,
+deduplication, or coalescing, and it is not rechecked at publication.
+
+Checks are ordered `PolicyDisabled`, `ServiceIdentityIneligible`,
+`OutsideWindow`, then `TableBusy`: a run that may not start never folds into
+another job's occurrence. A window uses the zone's wall clock, so a
+spring-forward gap shortens it and a fall-back overlap lengthens it; the cron
+engine still decides which instants exist. A repeated fall-back start is two
+candidate openings: the earlier is preferred, but if it is already past, the
+later reading still opens the window. That differs from cron's deduplication to
+the earlier instant, and it keeps a valid run later that morning.
+
+Window eligibility samples the coordinator's clock **after** the schedule and
+state row locks, so a pass that waited on a lock decides with the instant it
+actually has, not the pass start. Arming and window-edit re-arming use the
+database clock; a small difference remains, but the window is a start guard and
+publication does not depend on it.
+
+Changing a window recomputes a future cursor to the next cron occurrence after
+the decision instant, because a skip under the old window may have advanced it
+past newly eligible runs. An overdue cursor is preserved so a due run is still
+evaluated under the new window, and re-sending the same window changes nothing.
+The update samples its clock after locking the schedule row, and the next
+cursor is also after the **latest evaluated occurrence** for the schedule
+(`max(coalesced_until, scheduled_for)`). That bound makes the recomputation
+independent of clock skew: admission uses the coordinator clock while window
+edits, timing changes, and re-enables use the database clock, and a database
+clock slightly behind a recorded occurrence can no longer rewind the cursor onto
+it and leave every later admission failing the uniqueness constraint. The same
+bound applies when a timing change or re-enable arms the cursor.
+
+A policy's `max_input_bytes` is its per-run budget: the most input one run may
+rewrite. It defaults to 100 GiB, is bounded at 1 MiB–100 GiB, and must be at
+least the policy's target file size. `PlannerConfig::for_policy` applies it when
+a scheduled job is planned, replacing the target and minimum input-file count
+and capping the job and group limits. It takes the coordinator's global
+admission cap as an argument, so the effective budget is the smallest of the
+policy, base planner, and admission values and the group limit never exceeds the
+job limit. The budget is recorded in the immutable plan; tightening a policy
+later does not invalidate an already planned run. Disabling a policy stops
+future admission and also blocks a scheduled job from publishing, while
+disabling only a schedule leaves an existing job alone.

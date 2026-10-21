@@ -7,6 +7,7 @@ use bergsmith_common::ids::{OrganizationId, PolicyId, PrincipalId, ScheduleId};
 use bergsmith_common::permission::{GrantScope, Role};
 use bergsmith_common::policy::{MaintenanceOperation, PolicySpec};
 use bergsmith_common::schedule::CronSchedule;
+use bergsmith_common::window::MaintenanceWindow;
 use bergsmith_persistence::PersistenceError;
 use bergsmith_persistence::grants::{self, NewRoleGrant};
 use bergsmith_persistence::schedules::{
@@ -97,6 +98,7 @@ async fn schedule(
             policy_id,
             table_id: tenant.table,
             timing: CronSchedule::parse("0 2 * * *", "Europe/Berlin").unwrap(),
+            window: None,
             service_principal_id: service,
             created_by: tenant.user,
         },
@@ -198,8 +200,13 @@ async fn policy_updates_are_guarded_by_the_revision(pool: PgPool) {
     let tenant = support::tenant(&mut conn, "acme").await;
     let id = policy(&mut conn, tenant.organization, tenant.user, "nightly").await;
 
-    let specification =
-        PolicySpec::new(MaintenanceOperation::Compact, 512 * 1024 * 1024, 8).unwrap();
+    let specification = PolicySpec::new(
+        MaintenanceOperation::Compact,
+        512 * 1024 * 1024,
+        8,
+        PolicySpec::MAX_RUN_INPUT_BYTES,
+    )
+    .unwrap();
     let updated = schedules::update_policy(
         &mut conn,
         tenant.organization,
@@ -297,6 +304,7 @@ async fn schedules_require_a_service_identity_with_a_current_grant(pool: PgPool)
             policy_id,
             table_id: tenant.table,
             timing: CronSchedule::parse("0 2 * * *", "UTC").unwrap(),
+            window: None,
             service_principal_id: tenant.user,
             created_by: tenant.user,
         },
@@ -318,6 +326,7 @@ async fn schedules_require_a_service_identity_with_a_current_grant(pool: PgPool)
             policy_id,
             table_id: tenant.table,
             timing: CronSchedule::parse("0 2 * * *", "UTC").unwrap(),
+            window: None,
             service_principal_id: unprivileged,
             created_by: tenant.user,
         },
@@ -356,6 +365,7 @@ async fn schedules_require_a_service_identity_with_a_current_grant(pool: PgPool)
             policy_id,
             table_id: tenant.table,
             timing: CronSchedule::parse("0 2 * * *", "UTC").unwrap(),
+            window: None,
             service_principal_id: elsewhere,
             created_by: tenant.user,
         },
@@ -404,6 +414,7 @@ async fn a_policy_runs_at_most_once_per_table(pool: PgPool) {
             policy_id,
             table_id: tenant.table,
             timing: CronSchedule::parse("0 3 * * *", "UTC").unwrap(),
+            window: None,
             service_principal_id: service,
             created_by: tenant.user,
         },
@@ -453,6 +464,7 @@ async fn schedules_round_trip_and_update_only_timing_and_enabled(pool: PgPool) {
         id,
         &ScheduleUpdate {
             timing: Some(timing.clone()),
+            window: None,
             enabled: Some(false),
             expected_revision: 1,
         },
@@ -471,6 +483,7 @@ async fn schedules_round_trip_and_update_only_timing_and_enabled(pool: PgPool) {
         id,
         &ScheduleUpdate {
             timing: None,
+            window: None,
             enabled: Some(true),
             expected_revision: 1,
         },
@@ -494,6 +507,7 @@ async fn schedules_round_trip_and_update_only_timing_and_enabled(pool: PgPool) {
         id,
         &ScheduleUpdate {
             timing: None,
+            window: None,
             enabled: Some(true),
             expected_revision: 2,
         },
@@ -608,4 +622,211 @@ async fn the_schema_bounds_policy_parameters(pool: PgPool) {
     .await
     .unwrap_err();
     assert_eq!(support::sqlstate(&error), "23514");
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn policies_store_and_update_the_per_run_input_budget(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let id = PolicyId::generate();
+    let specification = PolicySpec::new(
+        MaintenanceOperation::Compact,
+        256 * 1024 * 1024,
+        5,
+        8 * 1024 * 1024 * 1024,
+    )
+    .unwrap();
+    schedules::create_policy(
+        &mut conn,
+        &NewMaintenancePolicy {
+            id,
+            organization_id: tenant.organization,
+            name: "bounded".to_owned(),
+            specification,
+            created_by: tenant.user,
+        },
+    )
+    .await
+    .unwrap();
+
+    let stored = schedules::policy(&mut conn, tenant.organization, id)
+        .await
+        .unwrap();
+    assert_eq!(stored.specification.max_input_bytes, 8 * 1024 * 1024 * 1024);
+
+    let tighter = PolicySpec::new(
+        MaintenanceOperation::Compact,
+        256 * 1024 * 1024,
+        5,
+        2 * 1024 * 1024 * 1024,
+    )
+    .unwrap();
+    let updated = schedules::update_policy(
+        &mut conn,
+        tenant.organization,
+        id,
+        &PolicyUpdate {
+            name: None,
+            specification: Some(tighter),
+            enabled: None,
+            expected_revision: 1,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(updated.revision, 2);
+    assert_eq!(
+        updated.specification.max_input_bytes,
+        2 * 1024 * 1024 * 1024
+    );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn the_schema_bounds_the_per_run_input_budget(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+
+    for (target, budget) in [(1_048_576_i64, 0_i64), (2_097_152, 1_048_576)] {
+        let error = sqlx::query(
+            "INSERT INTO maintenance_policies
+                 (id, organization_id, name, operation, target_file_size_bytes,
+                  min_input_files, max_input_bytes, created_by)
+             VALUES ($1, $2, 'bad-budget', 'Compact', $3, 5, $4, $5)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(tenant.organization.as_uuid())
+        .bind(target)
+        .bind(budget)
+        .bind(tenant.user.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap_err();
+        assert_eq!(support::sqlstate(&error), "23514", "{target} {budget}");
+    }
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn schedules_store_replace_and_clear_their_window(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let service = service_principal(&mut conn, tenant.organization, "scheduler").await;
+    grant_role(
+        &mut conn,
+        tenant.organization,
+        service,
+        Role::MaintenanceService,
+        GrantScope::table(tenant.table),
+    )
+    .await;
+    let policy_id = policy(&mut conn, tenant.organization, tenant.user, "nightly").await;
+
+    let id = ScheduleId::generate();
+    let created = schedules::create_schedule(
+        &mut conn,
+        &NewMaintenanceSchedule {
+            id,
+            organization_id: tenant.organization,
+            policy_id,
+            table_id: tenant.table,
+            timing: CronSchedule::parse("0 23 * * *", "UTC").unwrap(),
+            window: Some(MaintenanceWindow::new(1320, 120).unwrap()),
+            service_principal_id: service,
+            created_by: tenant.user,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        created.window,
+        Some(MaintenanceWindow::new(1320, 120).unwrap())
+    );
+
+    let replaced = schedules::update_schedule(
+        &mut conn,
+        tenant.organization,
+        id,
+        &ScheduleUpdate {
+            timing: None,
+            window: Some(Some(MaintenanceWindow::new(60, 120).unwrap())),
+            enabled: None,
+            expected_revision: 1,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(replaced.revision, 2);
+    assert_eq!(
+        replaced.window,
+        Some(MaintenanceWindow::new(60, 120).unwrap())
+    );
+
+    // `None` leaves the stored window alone, including after a timing edit.
+    let untouched = schedules::update_schedule(
+        &mut conn,
+        tenant.organization,
+        id,
+        &ScheduleUpdate {
+            timing: Some(CronSchedule::parse("0 1 * * *", "UTC").unwrap()),
+            window: None,
+            enabled: None,
+            expected_revision: 2,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        untouched.window,
+        Some(MaintenanceWindow::new(60, 120).unwrap())
+    );
+
+    let cleared = schedules::update_schedule(
+        &mut conn,
+        tenant.organization,
+        id,
+        &ScheduleUpdate {
+            timing: None,
+            window: Some(None),
+            enabled: None,
+            expected_revision: 3,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(cleared.window, None);
+    assert_eq!(cleared.revision, 4);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn the_schema_bounds_schedule_windows(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let service = service_principal(&mut conn, tenant.organization, "scheduler").await;
+    let policy_id = policy(&mut conn, tenant.organization, tenant.user, "nightly").await;
+
+    for (start, end) in [
+        (Some(60_i32), None),
+        (Some(60), Some(60)),
+        (Some(1440), Some(60)),
+        (Some(-1), Some(60)),
+    ] {
+        let error = sqlx::query(
+            "INSERT INTO maintenance_schedules
+                 (id, organization_id, policy_id, table_identity_id, cron_expression,
+                  time_zone, window_start_minute, window_end_minute,
+                  service_principal_id, created_by)
+             VALUES ($1, $2, $3, $4, '0 2 * * *', 'UTC', $5, $6, $7, $8)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(tenant.organization.as_uuid())
+        .bind(policy_id.as_uuid())
+        .bind(tenant.table.as_uuid())
+        .bind(start)
+        .bind(end)
+        .bind(service.as_uuid())
+        .bind(tenant.user.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap_err();
+        assert_eq!(support::sqlstate(&error), "23514", "{start:?} {end:?}");
+    }
 }

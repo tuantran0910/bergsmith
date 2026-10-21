@@ -17,8 +17,9 @@ use axum::http::StatusCode;
 use bergsmith_common::audit::{ActorKind, AuditAction, AuditOutcome};
 use bergsmith_common::ids::{PolicyId, ScheduleId, TableId};
 use bergsmith_common::permission::{Permission, ResourceScope};
-use bergsmith_common::policy::{MaintenanceOperation, PolicySpec};
+use bergsmith_common::policy::{MaintenanceOperation, PolicyError, PolicySpec};
 use bergsmith_common::schedule::{CronSchedule, ScheduleError};
+use bergsmith_common::window::MaintenanceWindow;
 use bergsmith_persistence::audit::NewAuditEvent;
 use bergsmith_persistence::schedules::{
     self, MaintenancePolicy, MaintenanceSchedule, NewMaintenancePolicy, NewMaintenanceSchedule,
@@ -38,6 +39,7 @@ pub(super) struct CreatePolicyRequest {
     operation: Option<String>,
     target_file_size_bytes: Option<u64>,
     min_input_files: Option<u32>,
+    max_input_bytes: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -48,6 +50,7 @@ pub(super) struct UpdatePolicyRequest {
     operation: Option<String>,
     target_file_size_bytes: Option<u64>,
     min_input_files: Option<u32>,
+    max_input_bytes: Option<u64>,
     enabled: Option<bool>,
 }
 
@@ -58,6 +61,7 @@ pub(super) struct CreateScheduleRequest {
     table_id: TableId,
     cron_expression: String,
     time_zone: String,
+    window: Option<WindowBody>,
     service_principal_id: bergsmith_common::ids::PrincipalId,
 }
 
@@ -67,7 +71,54 @@ pub(super) struct UpdateScheduleRequest {
     revision: i64,
     cron_expression: Option<String>,
     time_zone: Option<String>,
+    /// Absent leaves the stored window alone, `null` clears it, and an object
+    /// replaces it.
+    #[serde(default, deserialize_with = "double_option")]
+    #[expect(
+        clippy::option_option,
+        reason = "absent, null, and an object are three distinct PATCH states"
+    )]
+    window: Option<Option<WindowBody>>,
     enabled: Option<bool>,
+}
+
+/// A daily local-time range in the schedule's time zone.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WindowBody {
+    /// Inclusive minute after local midnight, `0..=1439`.
+    ///
+    /// Parsed as a wider integer so every out-of-day value reaches the window
+    /// validator and reports `invalid_maintenance_window`, rather than failing
+    /// the JSON body with the generic `invalid_request`.
+    start_minute: i64,
+    /// Exclusive minute after local midnight, `0..=1439`. A value smaller than
+    /// the start wraps past midnight.
+    end_minute: i64,
+}
+
+impl WindowBody {
+    /// Validates the pair into a window.
+    fn into_window(self) -> Result<MaintenanceWindow, ApiError> {
+        let start =
+            u16::try_from(self.start_minute).map_err(|_| ApiError::invalid_maintenance_window())?;
+        let end =
+            u16::try_from(self.end_minute).map_err(|_| ApiError::invalid_maintenance_window())?;
+        MaintenanceWindow::new(start, end).map_err(|_| ApiError::invalid_maintenance_window())
+    }
+}
+
+/// Distinguishes an absent field from an explicit `null` in a PATCH body.
+#[expect(
+    clippy::option_option,
+    reason = "this is the standard serde double-option deserializer"
+)]
+fn double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 /// Lists the organization's policies in identifier order.
@@ -125,6 +176,7 @@ pub(super) async fn create_policy(
         request.operation.as_deref(),
         request.target_file_size_bytes,
         request.min_input_files,
+        request.max_input_bytes,
     )?;
     let id = PolicyId::generate();
     let mut tx = state.database.pool().begin().await?;
@@ -150,6 +202,7 @@ pub(super) async fn create_policy(
             "operation": created.specification.operation.as_str(),
             "target_file_size_bytes": created.specification.target_file_size_bytes,
             "min_input_files": created.specification.min_input_files,
+            "max_input_bytes": created.specification.max_input_bytes,
             "revision": created.revision,
         }),
     )
@@ -172,7 +225,8 @@ pub(super) async fn update_policy(
     }
     let changes_specification = request.operation.is_some()
         || request.target_file_size_bytes.is_some()
-        || request.min_input_files.is_some();
+        || request.min_input_files.is_some()
+        || request.max_input_bytes.is_some();
     if request.name.is_none() && !changes_specification && request.enabled.is_none() {
         return Err(ApiError::invalid());
     }
@@ -193,8 +247,11 @@ pub(super) async fn update_policy(
                 request
                     .min_input_files
                     .unwrap_or(current.specification.min_input_files),
+                request
+                    .max_input_bytes
+                    .unwrap_or(current.specification.max_input_bytes),
             )
-            .map_err(|_| ApiError::invalid_policy_parameters())?,
+            .map_err(|error| policy_error(&error))?,
         )
     } else {
         None
@@ -222,6 +279,7 @@ pub(super) async fn update_policy(
             "operation": updated.specification.operation.as_str(),
             "target_file_size_bytes": updated.specification.target_file_size_bytes,
             "min_input_files": updated.specification.min_input_files,
+            "max_input_bytes": updated.specification.max_input_bytes,
             "revision": updated.revision,
             "enabled": updated.enabled,
         }),
@@ -285,6 +343,7 @@ pub(super) async fn create_schedule(
     // organization-wide grant, not one scoped to a single table.
     authorize(&state, &caller, ResourceScope::Organization).await?;
     let timing = timing(&request.cron_expression, &request.time_zone)?;
+    let window = request.window.map(WindowBody::into_window).transpose()?;
     let id = ScheduleId::generate();
     let mut tx = state.database.pool().begin().await?;
     schedules::policy(&mut tx, caller.organization_id, request.policy_id).await?;
@@ -296,6 +355,7 @@ pub(super) async fn create_schedule(
             policy_id: request.policy_id,
             table_id: request.table_id,
             timing,
+            window,
             service_principal_id: request.service_principal_id,
             created_by: caller.principal_id,
         },
@@ -312,6 +372,7 @@ pub(super) async fn create_schedule(
             "table_id": created.table_id,
             "cron_expression": created.timing.expression.as_str(),
             "time_zone": created.timing.time_zone.as_str(),
+            "window": window_json(created.window),
             "revision": created.revision,
         }),
     )
@@ -332,7 +393,10 @@ pub(super) async fn update_schedule(
     if request.revision < 1 {
         return Err(ApiError::invalid());
     }
-    if request.cron_expression.is_none() && request.time_zone.is_none() && request.enabled.is_none()
+    if request.cron_expression.is_none()
+        && request.time_zone.is_none()
+        && request.window.is_none()
+        && request.enabled.is_none()
     {
         return Err(ApiError::invalid());
     }
@@ -350,12 +414,17 @@ pub(super) async fn update_schedule(
                 .unwrap_or(current.timing.time_zone.as_str()),
         )?),
     };
+    let window = request
+        .window
+        .map(|window| window.map(WindowBody::into_window).transpose())
+        .transpose()?;
     let updated = schedules::update_schedule(
         &mut tx,
         caller.organization_id,
         id,
         &ScheduleUpdate {
             timing,
+            window,
             enabled: request.enabled,
             expected_revision: request.revision,
         },
@@ -370,6 +439,7 @@ pub(super) async fn update_schedule(
         json!({
             "cron_expression": updated.timing.expression.as_str(),
             "time_zone": updated.timing.time_zone.as_str(),
+            "window": window_json(updated.window),
             "revision": updated.revision,
             "enabled": updated.enabled,
         }),
@@ -411,6 +481,7 @@ fn specification(
     operation_name: Option<&str>,
     target_file_size_bytes: Option<u64>,
     min_input_files: Option<u32>,
+    max_input_bytes: Option<u64>,
 ) -> Result<PolicySpec, ApiError> {
     let defaults = PolicySpec::default();
     let operation = parse_operation(operation_name)?;
@@ -418,8 +489,23 @@ fn specification(
         operation,
         target_file_size_bytes.unwrap_or(defaults.target_file_size_bytes),
         min_input_files.unwrap_or(defaults.min_input_files),
+        max_input_bytes.unwrap_or(defaults.max_input_bytes),
     )
-    .map_err(|_| ApiError::invalid_policy_parameters())
+    .map_err(|error| policy_error(&error))
+}
+
+/// Reports a rejected policy parameter with the field the caller must change.
+fn policy_error(error: &PolicyError) -> ApiError {
+    match error {
+        PolicyError::MaxInputBelowTarget { .. } => ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "run_budget_below_target_file_size",
+            "increase_run_budget",
+        ),
+        PolicyError::TargetFileSize { .. }
+        | PolicyError::MinInputFiles { .. }
+        | PolicyError::MaxInputBytes { .. } => ApiError::invalid_policy_parameters(),
+    }
 }
 
 /// Parses a timing contract, reporting which part was rejected.
@@ -446,6 +532,7 @@ fn policy_json(policy: &MaintenancePolicy) -> Value {
         "operation": policy.specification.operation.as_str(),
         "target_file_size_bytes": policy.specification.target_file_size_bytes,
         "min_input_files": policy.specification.min_input_files,
+        "max_input_bytes": policy.specification.max_input_bytes,
         "enabled": policy.enabled,
         "revision": policy.revision,
         "created_at": policy.created_at.to_rfc3339_opts(SecondsFormat::Millis, true),
@@ -461,12 +548,24 @@ fn schedule_json(schedule: &MaintenanceSchedule) -> Value {
         "table_id": schedule.table_id,
         "cron_expression": schedule.timing.expression.as_str(),
         "time_zone": schedule.timing.time_zone.as_str(),
+        "window": window_json(schedule.window),
         "service_principal_id": schedule.service_principal_id,
         "enabled": schedule.enabled,
         "revision": schedule.revision,
         "created_at": schedule.created_at.to_rfc3339_opts(SecondsFormat::Millis, true),
         "updated_at": schedule.updated_at.to_rfc3339_opts(SecondsFormat::Millis, true),
     })
+}
+
+/// The public representation of a schedule's window, or `null` for any time.
+fn window_json(window: Option<MaintenanceWindow>) -> Value {
+    match window {
+        Some(window) => json!({
+            "start_minute": window.start_minute(),
+            "end_minute": window.end_minute(),
+        }),
+        None => Value::Null,
+    }
 }
 
 /// Appends one configuration audit record for this caller.

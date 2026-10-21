@@ -8,11 +8,12 @@ use bergsmith_common::ids::{PolicyId, PrincipalId, RoleGrantId, ScheduleId};
 use bergsmith_common::permission::{GrantScope, Role};
 use bergsmith_common::policy::PolicySpec;
 use bergsmith_common::schedule::CronSchedule;
+use bergsmith_common::window::MaintenanceWindow;
 use bergsmith_coordinator::schedules::ScheduleRunner;
 use bergsmith_persistence::grants::{self, NewRoleGrant};
 use bergsmith_persistence::occurrences;
 use bergsmith_persistence::schedules::{
-    self, NewMaintenancePolicy, NewMaintenanceSchedule, PolicyUpdate,
+    self, NewMaintenancePolicy, NewMaintenanceSchedule, PolicyUpdate, ScheduleUpdate,
 };
 use bergsmith_persistence::tenancy::{self, NewPrincipal, PrincipalKind};
 use chrono::{DateTime, TimeZone, Utc};
@@ -77,6 +78,7 @@ async fn fixture(conn: &mut PgConnection, slug: &str) -> Fixture {
             policy_id: policy,
             table_id: tenant.table,
             timing: CronSchedule::parse("0 * * * *", "UTC").unwrap(),
+            window: None,
             service_principal_id: service,
             created_by: tenant.user,
         },
@@ -117,6 +119,7 @@ async fn second_schedule(conn: &mut PgConnection, fixture: &Fixture) -> Schedule
             policy_id: policy,
             table_id: fixture.tenant.table,
             timing: CronSchedule::parse("0 * * * *", "UTC").unwrap(),
+            window: None,
             service_principal_id: fixture.service,
             created_by: fixture.tenant.user,
         },
@@ -276,4 +279,74 @@ async fn a_failing_schedule_does_not_starve_later_schedules(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(jobs, 1);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn the_runner_reports_an_occurrence_outside_its_window_as_skipped(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let fixture = fixture(&mut conn, "acme").await;
+    schedules::update_schedule(
+        &mut conn,
+        fixture.tenant.organization,
+        fixture.schedule,
+        &ScheduleUpdate {
+            timing: None,
+            window: Some(Some(MaintenanceWindow::new(120, 240).unwrap())),
+            enabled: None,
+            expected_revision: 1,
+        },
+    )
+    .await
+    .unwrap();
+    // Due at 10:00 UTC, which is outside 02:00–04:00.
+    set_due(&mut conn, &fixture, at(10)).await;
+    drop(conn);
+
+    let runner = ScheduleRunner::new(pool.clone(), fixture.epoch, 16);
+    let summary = runner.admit_due_at(at(10)).await.unwrap();
+    assert_eq!(summary.admitted, 0);
+    assert_eq!(summary.coalesced, 0);
+    assert_eq!(summary.skipped, 1);
+
+    let mut conn = pool.acquire().await.unwrap();
+    let jobs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM jobs WHERE organization_id=$1 AND table_identity_id=$2",
+    )
+    .bind(fixture.tenant.organization.as_uuid())
+    .bind(fixture.tenant.table.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(jobs, 0);
+    let reason: Option<String> = sqlx::query_scalar(
+        "SELECT reason FROM maintenance_schedule_occurrences WHERE schedule_id=$1",
+    )
+    .bind(fixture.schedule.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(reason.as_deref(), Some("OutsideWindow"));
+    // The cursor waits for tomorrow's opening, not the next hourly tick.
+    let next: Option<DateTime<Utc>> = sqlx::query_scalar(
+        "SELECT next_due_at FROM maintenance_schedule_state WHERE schedule_id=$1",
+    )
+    .bind(fixture.schedule.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(
+        next,
+        Some(Utc.with_ymd_and_hms(2026, 5, 2, 2, 0, 0).single().unwrap())
+    );
+    // A routine outside-window evaluation is not audited as a denial.
+    let denied: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_events
+         WHERE organization_id=$1 AND action='job.admission_denied' AND resource_id=$2",
+    )
+    .bind(fixture.tenant.organization.as_uuid())
+    .bind(fixture.schedule.to_string())
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(denied, 0);
 }
