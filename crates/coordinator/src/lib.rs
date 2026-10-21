@@ -15,6 +15,7 @@ pub mod planning;
 pub mod preview;
 pub mod publication;
 pub mod results;
+pub mod schedules;
 pub mod scheduling;
 pub mod worker_access;
 pub mod workers;

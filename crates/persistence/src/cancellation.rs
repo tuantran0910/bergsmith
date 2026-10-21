@@ -213,6 +213,11 @@ pub async fn authorize_send(
         bergsmith_common::permission::Permission::SubmitJobs,
     )
     .await?;
+    // A policy disabled after admission stops the job before its one commit
+    // request. Disabling only the schedule leaves an existing job alone.
+    if crate::occurrences::job_policy_disabled(&mut tx, job.id).await? {
+        return Err(PersistenceError::MaintenancePolicyDisabled { job: job.id });
+    }
 
     let authorized: Job = sqlx::query_as::<_, JobRow>(concat!(
         "UPDATE jobs SET publication_started_at = clock_timestamp(), updated_at = clock_timestamp() WHERE id = $1

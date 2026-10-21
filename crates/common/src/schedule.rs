@@ -475,6 +475,48 @@ impl CronSchedule {
         }
         None
     }
+
+    /// The latest start instant at or before `before`, in UTC.
+    ///
+    /// The same DST rules as [`Self::next_occurrence`] apply: a local time in a
+    /// spring-forward gap is skipped, and a repeated fall-back local time counts
+    /// once at its earlier instant.
+    ///
+    /// The search walks local dates backwards, so a coalesced catch-up needs one
+    /// pass over at most one matching day instead of resolving every missed
+    /// instant in turn.
+    ///
+    /// Returns `None` when the expression names no date at all.
+    #[must_use]
+    pub fn previous_occurrence(&self, before: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        let zone = self.time_zone.zone();
+        let start = before.with_timezone(&zone).date_naive();
+        for offset in 0..=MAX_SEARCH_DAYS {
+            let date = start.checked_sub_signed(Duration::days(offset))?;
+            if !self.expression.matches_date(date) {
+                continue;
+            }
+            let mut previous: Option<DateTime<Utc>> = None;
+            for hour in self.expression.hours() {
+                for minute in self.expression.minutes() {
+                    let Some(local) = date.and_hms_opt(u32::from(hour), u32::from(minute), 0)
+                    else {
+                        continue;
+                    };
+                    let Some(instant) = resolve_local(zone, &local) else {
+                        continue;
+                    };
+                    if instant <= before && previous.is_none_or(|current| instant > current) {
+                        previous = Some(instant);
+                    }
+                }
+            }
+            if previous.is_some() {
+                return previous;
+            }
+        }
+        None
+    }
 }
 
 /// Resolves a local time to one instant, applying the plan's DST rules.
@@ -699,6 +741,59 @@ mod tests {
                 .next_occurrence(at("2026-11-01T06:00:00Z"))
                 .unwrap(),
             at("2026-11-02T06:30:00Z")
+        );
+    }
+
+    #[test]
+    fn previous_occurrence_finds_the_latest_instant_at_or_before() {
+        let schedule = CronSchedule::parse("*/15 * * * *", "UTC").unwrap();
+        assert_eq!(
+            schedule
+                .previous_occurrence(at("2026-10-21T12:15:00Z"))
+                .unwrap(),
+            at("2026-10-21T12:15:00Z")
+        );
+        assert_eq!(
+            schedule
+                .previous_occurrence(at("2026-10-21T12:14:00Z"))
+                .unwrap(),
+            at("2026-10-21T12:00:00Z")
+        );
+    }
+
+    #[test]
+    fn previous_occurrence_applies_the_dst_rules() {
+        // New York repeats 01:30 on 2026-11-01: 05:30Z (EDT) and 06:30Z (EST).
+        let schedule = CronSchedule::parse("30 1 * * *", "America/New_York").unwrap();
+        assert_eq!(
+            schedule
+                .previous_occurrence(at("2026-11-01T06:00:00Z"))
+                .unwrap(),
+            at("2026-11-01T05:30:00Z")
+        );
+        // The repeated reading is not a second occurrence.
+        assert_eq!(
+            schedule
+                .previous_occurrence(at("2026-11-01T06:30:00Z"))
+                .unwrap(),
+            at("2026-11-01T05:30:00Z")
+        );
+        // 02:30 on 2026-03-08 does not exist; the latest start is the 7th.
+        let schedule = CronSchedule::parse("30 2 * * *", "America/New_York").unwrap();
+        assert_eq!(
+            schedule
+                .previous_occurrence(at("2026-03-08T12:00:00Z"))
+                .unwrap(),
+            at("2026-03-07T07:30:00Z")
+        );
+    }
+
+    #[test]
+    fn an_impossible_expression_has_no_previous_occurrence() {
+        let schedule = CronSchedule::parse("0 0 30 2 *", "UTC").unwrap();
+        assert_eq!(
+            schedule.previous_occurrence(at("2026-01-01T00:00:00Z")),
+            None
         );
     }
 

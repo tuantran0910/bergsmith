@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use crate::{
     planning,
+    schedules::{DEFAULT_DUE_SCHEDULES, ScheduleRunner},
     workers::{TaskOffer, WorkerService},
 };
 
@@ -155,6 +156,7 @@ pub struct Scheduler {
     service: WorkerService,
     access: Arc<dyn SchedulingAccess>,
     config: SchedulerConfig,
+    schedules: ScheduleRunner,
     pass: tokio::sync::Mutex<()>,
     cursor: std::sync::Mutex<Uuid>,
     started: AtomicBool,
@@ -196,6 +198,7 @@ impl Scheduler {
             return Err(SchedulingError::Configuration);
         }
         let (pool, epoch) = service.scheduler_context();
+        let schedules = ScheduleRunner::new(pool.clone(), epoch, DEFAULT_DUE_SCHEDULES);
         Ok(Self {
             pool,
             epoch,
@@ -204,6 +207,7 @@ impl Scheduler {
                 .map_err(SchedulingError::Access)?,
             access,
             config,
+            schedules,
             pass: tokio::sync::Mutex::new(()),
             cursor: std::sync::Mutex::new(Uuid::nil()),
             started: AtomicBool::new(false),
@@ -333,6 +337,9 @@ impl Scheduler {
                 }
             }
         }
+        // Due schedules are admitted after the existing jobs are reconciled, so
+        // a pass that observes a busy table coalesces rather than queues work.
+        self.schedules.admit_due().await?;
         self.refill().await?;
         let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
         self.observe_unresolved(publications::unresolved_count(&mut conn).await?);
@@ -500,7 +507,30 @@ impl Scheduler {
         )
         .await
         {
-            Ok(()) => Ok(false),
+            Ok(()) => {
+                // A scheduled job whose policy was disabled stops before it can
+                // publish. Disabling only its schedule leaves the job alone.
+                if bergsmith_persistence::occurrences::job_policy_disabled(conn, job.id).await? {
+                    record_admission_decision(
+                        conn,
+                        job,
+                        bergsmith_common::audit::AuditAction::JobAdmissionDenied,
+                        bergsmith_common::audit::AuditOutcome::Denied,
+                        "PolicyDisabled",
+                    )
+                    .await;
+                    return Ok(ledger::stop(
+                        conn,
+                        job.id,
+                        job.state_revision,
+                        self.epoch,
+                        JobState::Failed,
+                        "PolicyDisabled",
+                    )
+                    .await?);
+                }
+                Ok(false)
+            }
             Err(PersistenceError::PermissionDenied { .. }) => {
                 record_admission_decision(
                     conn,

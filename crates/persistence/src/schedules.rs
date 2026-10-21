@@ -17,7 +17,7 @@ use bergsmith_common::permission::{Permission, ResourceScope};
 use bergsmith_common::policy::{MaintenanceOperation, PolicySpec};
 use bergsmith_common::schedule::CronSchedule;
 use chrono::{DateTime, Utc};
-use sqlx::PgConnection;
+use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 
 use crate::tenancy::PrincipalKind;
@@ -434,11 +434,14 @@ pub async fn update_policy(
     }
 }
 
-/// Creates a schedule and validates its service identity.
+/// Creates a schedule, validates its service identity, and arms its due state.
 ///
 /// The principal must be a service account and must currently hold a grant
-/// covering `jobs:submit` for the table. Revalidation at admission and
-/// publication follows in BS-019.T2.
+/// covering `jobs:submit` for the table. Admission and publication recheck that
+/// grant in BS-019.T2, so revoking it later stops new work.
+///
+/// The schedule starts at its next occurrence after creation; creating it does
+/// not run it immediately.
 ///
 /// # Errors
 ///
@@ -451,8 +454,9 @@ pub async fn create_schedule(
     conn: &mut PgConnection,
     new: &NewMaintenanceSchedule,
 ) -> Result<MaintenanceSchedule, PersistenceError> {
+    let mut tx = conn.begin().await?;
     require_execution_identity(
-        conn,
+        &mut tx,
         new.organization_id,
         new.service_principal_id,
         new.table_id,
@@ -474,10 +478,14 @@ pub async fn create_schedule(
     .bind(new.timing.time_zone.as_str())
     .bind(new.service_principal_id.as_uuid())
     .bind(new.created_by.as_uuid())
-    .fetch_one(conn)
+    .fetch_one(&mut *tx)
     .await
     .map_err(|error| PersistenceError::from_write("maintenance schedule", error))?;
-    row.try_into()
+    let schedule: MaintenanceSchedule = row.try_into()?;
+    let now = database_now(&mut tx).await?;
+    arm_state(&mut tx, &schedule, now).await?;
+    tx.commit().await?;
+    Ok(schedule)
 }
 
 /// Reads one schedule.
@@ -551,7 +559,11 @@ pub async fn schedules(
 /// Applies a schedule update when the stored revision still matches.
 ///
 /// The policy and table cannot change: a schedule for another pair is a new
-/// row, so occurrence identity never moves between tables.
+/// row, so occurrence identity never moves between tables. Changing the timing
+/// or enabling a disabled schedule re-arms it from the current instant;
+/// disabling it removes the due state, so the disabled interval never
+/// backfills. A redundant enable request for an already enabled schedule keeps
+/// its due state, so overdue work is not silently discarded.
 ///
 /// # Errors
 ///
@@ -564,6 +576,32 @@ pub async fn update_schedule(
     id: ScheduleId,
     update: &ScheduleUpdate,
 ) -> Result<MaintenanceSchedule, PersistenceError> {
+    let mut tx = conn.begin().await?;
+    // Lock first: the previous enabled value decides whether this update is a
+    // real re-enable or a no-op that must preserve an overdue cursor.
+    let previous: Option<(bool, i64)> = sqlx::query_as(
+        "SELECT enabled, revision FROM maintenance_schedules
+         WHERE organization_id = $1 AND id = $2
+         FOR UPDATE",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(id.as_uuid())
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((was_enabled, revision)) = previous else {
+        return Err(PersistenceError::NotFound {
+            entity: "maintenance schedule",
+            id: id.to_string(),
+        });
+    };
+    if revision != update.expected_revision {
+        return Err(PersistenceError::ConfigRevisionConflict {
+            entity: "maintenance schedule",
+            id: id.to_string(),
+            expected: update.expected_revision,
+            actual: revision,
+        });
+    }
     let timing = update.timing.as_ref();
     let row = sqlx::query_as::<_, ScheduleRow>(concat!(
         "UPDATE maintenance_schedules
@@ -582,27 +620,66 @@ pub async fn update_schedule(
     .bind(timing.map(|timing| timing.time_zone.as_str()))
     .bind(update.enabled)
     .bind(update.expected_revision)
-    .fetch_optional(&mut *conn)
+    .fetch_one(&mut *tx)
     .await
     .map_err(|error| PersistenceError::from_write("maintenance schedule", error))?;
-    match row {
-        Some(row) => row.try_into(),
-        None => Err(revision_or_missing(
-            conn,
-            "SELECT revision FROM maintenance_schedules WHERE organization_id = $1 AND id = $2",
-            organization_id,
-            *id.as_uuid(),
-            update.expected_revision,
-            "maintenance schedule",
-            id.to_string(),
-        )
-        .await?),
+    let schedule: MaintenanceSchedule = row.try_into()?;
+    if !schedule.enabled {
+        clear_state(&mut tx, &schedule).await?;
+    } else if update.timing.is_some() || (!was_enabled && update.enabled == Some(true)) {
+        let now = database_now(&mut tx).await?;
+        arm_state(&mut tx, &schedule, now).await?;
     }
+    tx.commit().await?;
+    Ok(schedule)
+}
+
+/// Reads the database clock, so arming and advancing share one time source.
+async fn database_now(conn: &mut PgConnection) -> Result<DateTime<Utc>, PersistenceError> {
+    Ok(sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(conn)
+        .await?)
+}
+
+/// Sets the schedule's next due instant to its first occurrence after `now`.
+async fn arm_state(
+    conn: &mut PgConnection,
+    schedule: &MaintenanceSchedule,
+    now: DateTime<Utc>,
+) -> Result<(), PersistenceError> {
+    sqlx::query(
+        "INSERT INTO maintenance_schedule_state (organization_id, schedule_id, next_due_at)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (organization_id, schedule_id)
+         DO UPDATE SET next_due_at = EXCLUDED.next_due_at,
+                       updated_at = clock_timestamp()",
+    )
+    .bind(schedule.organization_id.as_uuid())
+    .bind(schedule.id.as_uuid())
+    .bind(schedule.timing.next_occurrence(now))
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+async fn clear_state(
+    conn: &mut PgConnection,
+    schedule: &MaintenanceSchedule,
+) -> Result<(), PersistenceError> {
+    sqlx::query(
+        "DELETE FROM maintenance_schedule_state
+         WHERE organization_id = $1 AND schedule_id = $2",
+    )
+    .bind(schedule.organization_id.as_uuid())
+    .bind(schedule.id.as_uuid())
+    .execute(conn)
+    .await?;
+    Ok(())
 }
 
 /// Requires `principal` to be a service account that may run maintenance for
 /// `table_id` right now.
-async fn require_execution_identity(
+pub(crate) async fn require_execution_identity(
     conn: &mut PgConnection,
     organization_id: OrganizationId,
     principal: PrincipalId,

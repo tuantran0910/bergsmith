@@ -84,9 +84,9 @@ Connection restrictions and the retention each connection needs are in
 |---|---|
 | OIDC Authorization Code with PKCE, server-side sessions, CSRF | Certified (BS-017, ADR 0032) |
 | Scoped role grants (organization, connection, table) | Certified (BS-017): admission and send authorization recheck active grants |
-| Maintenance service identity for schedules | Certified (BS-017): `kind = Service` principal with a scoped grant; occurrence/cron execution is BS-019 |
+| Maintenance service identity for schedules | Certified (BS-017): `kind = Service` principal with a scoped grant; BS-019.T2 rechecks the grant at occurrence admission, job admission, and publication |
 | Mandatory job requester and legacy attribution | Certified (BS-017, ADR 0033): `jobs.created_by` is `NOT NULL`; pre-BS-017 rows are attributed to a revocable per-organization `bergsmith:system` principal |
-| Audit log of identity, grant, and maintenance decisions | Certified (BS-017): append-only and secret-free; read-only API exposure by BS-018.T1 |
+| Audit log of identity, grant, and maintenance decisions | Certified (BS-017): append-only and secret-free; read-only API exposure by BS-018.T1; scheduled admissions and denials are audited by BS-019.T2 |
 | Worker pool bearer-token identity and TLS | Implemented (BS-012/013/015, ADRs 0012, 0023, 0026) |
 
 ## Browser API and UI
@@ -97,7 +97,8 @@ Connection restrictions and the retention each connection needs are in
 | Table previews and cancellation/fresh-plan retry commands | Implemented (BS-018.T2, ADR 0035) for unauthenticated catalog connections: previews resolve a grant-scoped alias, verify the canonical `table-uuid`, and are bounded per response and per process; commands follow the cancellation contract and never reuse a plan. Connections with an external `credential_ref` fail until the runtime resolves credential references |
 | Durable SSE job events | Implemented (BS-018.T3, ADR 0036): per-job sequences as event IDs, `Last-Event-ID`/`after` resume without gaps or duplicates, notification wake-ups with a polling fallback, session and grant rechecks, and bounded capacity pass PostgreSQL route tests; HTTP startup is not wired |
 | Generated API client and manual-maintenance UI journeys | Implemented (BS-018.T4, ADR 0037): browse, preview, submit, live progress, cancellation, fresh-plan retry, and audit pass journey tests against a contract-typed fake coordinator; not served until BS-020.T1, so M4 acceptance remains pending |
-| Schedule and policy configuration | Implemented (BS-019.T1, ADR 0038): five-field cron with IANA time zones and the plan's DST rules, optimistic revisions, audited edits, and a service-identity eligibility check pass unit and PostgreSQL route tests; occurrence persistence and admission are BS-019.T2, windows and budgets are BS-019.T3 |
+| Schedule and policy configuration | Implemented (BS-019.T1, ADR 0038): five-field cron with IANA time zones and the plan's DST rules, optimistic revisions, audited edits, and a service-identity eligibility check pass unit and PostgreSQL route tests; windows and budgets are BS-019.T3 |
+| Schedule occurrence admission and coalescing | Implemented (BS-019.T2, ADR 0039): occurrence identity is unique per schedule and first due instant, missed occurrences coalesce into one evaluation, an active job on the table coalesces later evaluations, disabled schedules stop admission without backfilling, existing schedules are armed on the first post-upgrade pass, a bounded rotating due scan prevents one failing schedule from starving others, and disabled policies or revoked service grants skip admission and block publication; duplicate, downtime, overlap, disabled, time-zone, DST, upgrade, and starvation scenarios pass PostgreSQL and coordinator-runner tests |
 
 See the [API contract and current limits](operations/api.md) and the [web UI](operations/web-ui.md).
 
