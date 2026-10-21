@@ -8,9 +8,9 @@ members = ["crates/*", "bin/*"]
 # dependencies to an upstream revision containing all installed fixes, then remove
 # this patch block and the fork's deny.toml allowance (see docs/dependencies.md).
 [patch."https://github.com/risingwavelabs/iceberg-rust.git"]
-iceberg = { git = "https://github.com/thealtoclef/rw-iceberg-rust.git", rev = "e7ed9e8db3e09dbf39503296c3dd753b28b8a04e" }
-iceberg-catalog-rest = { git = "https://github.com/thealtoclef/rw-iceberg-rust.git", rev = "e7ed9e8db3e09dbf39503296c3dd753b28b8a04e" }
-iceberg-storage-opendal = { git = "https://github.com/thealtoclef/rw-iceberg-rust.git", rev = "e7ed9e8db3e09dbf39503296c3dd753b28b8a04e" }
+iceberg = { git = "https://github.com/thealtoclef/rw-iceberg-rust.git", rev = "28b0f37c446e154d95860d3851eb455d0099cac9" }
+iceberg-catalog-rest = { git = "https://github.com/thealtoclef/rw-iceberg-rust.git", rev = "28b0f37c446e154d95860d3851eb455d0099cac9" }
+iceberg-storage-opendal = { git = "https://github.com/thealtoclef/rw-iceberg-rust.git", rev = "28b0f37c446e154d95860d3851eb455d0099cac9" }
 
 [workspace.package]
 version = "0.1.0"
@@ -36,9 +36,9 @@ bergsmith-worker = { path = "crates/worker" }
 iceberg = { git = "https://github.com/risingwavelabs/iceberg-rust.git", rev = "f501ff0c245b4b625fe52feaf6125c69f7132557" }
 iceberg-catalog-rest = { git = "https://github.com/risingwavelabs/iceberg-rust.git", rev = "f501ff0c245b4b625fe52feaf6125c69f7132557" }
 iceberg-storage-opendal = { git = "https://github.com/risingwavelabs/iceberg-rust.git", rev = "f501ff0c245b4b625fe52feaf6125c69f7132557", default-features = false, features = ["opendal-s3"] }
-arrow-array = "58.4.0"
-arrow-schema = "58.4.0"
-parquet = { version = "58.4.0", default-features = false, features = ["arrow", "async"] }
+arrow-array = "59.3.1"
+arrow-schema = "59.3.1"
+parquet = { version = "59.3.1", default-features = false, features = ["arrow", "async"] }
 
 async-trait = "0.1.92"
 axum = "0.8.9"

@@ -1,0 +1,117 @@
+version: 2
+updates:
+  # Rust workspace. The pinned iceberg-rust revision uses Arrow/Parquet 59, so
+  # Arrow/Parquet 60 updates must wait for a compatible iceberg-rust bump.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+      include: scope
+    labels:
+      - dependencies
+      - rust
+    groups:
+      rust-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+      rust-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+    ignore:
+      # Arrow/Parquet 60+ requires a newer iceberg-rust revision. The pinned
+      # revision still uses Arrow 59, so these updates cannot compile yet.
+      - dependency-name: "arrow-*"
+        versions:
+          - ">= 60.0.0"
+      - dependency-name: "parquet"
+        versions:
+          - ">= 60.0.0"
+
+  # Browser UI. Locked installs and the generated OpenAPI client are checked by
+  # the existing Web UI CI job.
+  - package-ecosystem: npm
+    directory: "/web"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    versioning-strategy: increase
+    commit-message:
+      prefix: "chore(web-deps)"
+      include: scope
+    labels:
+      - dependencies
+      - web
+    groups:
+      web-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+      web-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # GitHub Actions used by the CI, dependency-review, and future release jobs.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(ci-deps)"
+      include: scope
+    labels:
+      - dependencies
+      - ci
+    groups:
+      actions-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+      actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # Development and test service images in deploy/docker/compose.yaml.
+  - package-ecosystem: docker-compose
+    directory: "/deploy/docker"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(docker-deps)"
+      include: scope
+    labels:
+      - dependencies
+      - docker
+    groups:
+      compose-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+      compose-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
