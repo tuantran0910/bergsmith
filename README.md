@@ -49,7 +49,8 @@ Prerequisites:
 - [rustup](https://rustup.rs). The pinned toolchain in `rust-toolchain.toml`
   installs on first use.
 - `cargo install --locked cargo-nextest cargo-llvm-cov cargo-deny cargo-machete`
-  (or `cargo binstall` the same tools).
+  (or `cargo binstall` the same tools). Nextest must be at least the version in
+  `.config/nextest.toml`; CI installs exactly that version.
 - Docker, for the PostgreSQL, RustFS, and Lakekeeper services that `make test`
   starts (`make services-down` stops them).
 
@@ -58,6 +59,7 @@ Common commands:
 ```sh
 make fmt        # format
 make test       # run tests
+make test-changed  # run tests of packages affected since origin/main
 make ci         # run every quality gate: fmt, check, clippy, tests, docs,
                 # coverage (>= 80% lines), cargo-deny, cargo-machete
 ```
