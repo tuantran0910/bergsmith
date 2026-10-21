@@ -43,3 +43,4 @@ record's status; never rewrite an accepted decision.
 | [0034](0034-versioned-browser-resource-api.md) | Versioned browser resources and atomic idempotent submission | Accepted |
 | [0035](0035-previews-and-job-commands.md) | Catalog-backed previews and durable job commands | Accepted |
 | [0036](0036-reconnectable-job-event-streams.md) | Reconnectable job event streams | Accepted |
+| [0037](0037-web-ui-and-generated-client.md) | Web UI and generated API client | Accepted |

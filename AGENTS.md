@@ -35,6 +35,7 @@ metadata authority.
 | `crates/coordinator` | Coordinator services |
 | `crates/worker` | Worker supervisor and task subprocess |
 | `bin/coordinator`, `bin/worker` | Thin binaries: startup wiring only |
+| `web/` | Browser UI (React, TypeScript, Vite) and its client generated from the OpenAPI contract |
 | `scripts/` | Developer tooling, such as affected-package selection for `make test-changed` |
 | `deploy/` | Container, Compose, and Kubernetes assets (see below) |
 | `docs/` | ADRs, support matrix, operator documentation |
@@ -86,10 +87,14 @@ Everything used to build, run, or deploy Bergsmith outside `cargo` lives under
 | `make ci` | Every gate above, in CI order (coverage runs the tests, and clippy type-checks every target) |
 | `make services-up` / `make services-down` | Start or discard PostgreSQL, RustFS, and Lakekeeper (Docker Compose) |
 | `make proto-lint` / `make proto-breaking` | buf lint and breaking-change checks (Docker) |
+| `make web` | Web UI gates: generated-client freshness, format, lint, typecheck, tests with 80% line coverage, build |
+| `make web-audit` | `npm audit`: production dependencies at any severity, all at high |
+| `make web-dev` | Serve the UI, proxying `/api` and `/auth` to `BERGSMITH_COORDINATOR_URL` |
 
 Required tools: rustup (the toolchain comes from `rust-toolchain.toml`),
 `cargo-nextest` (the version required by `.config/nextest.toml`, which CI
-installs exactly), `cargo-llvm-cov`, `cargo-deny`, `cargo-machete`, and Docker.
+installs exactly), `cargo-llvm-cov`, `cargo-deny`, `cargo-machete`, Docker, and
+Node.js 24 LTS with npm (`web/.nvmrc`) for the web UI.
 
 Integration tests use the Compose services in `deploy/docker/`, which `make
 test` and `make coverage` start first. They read `DATABASE_URL`,
@@ -122,7 +127,8 @@ definition of done (§4) requires it, not for every edit.
   that depend on them, transitively. Changes to shared inputs (root manifests,
   `Cargo.lock`, the toolchain, `.cargo/`, `.config/`, `.github/`, `deploy/`,
   `scripts/`, the `Makefile`, lint and dependency policy) select every package.
-  A documentation-only change runs nothing.
+  A documentation-only change runs nothing, and so does a change under
+  `web/`; run `make web` for those.
 - Preview a selection before paying for it:
   `cargo nextest list -E 'rdeps(=bergsmith-storage)'`.
 - Never change `RUSTFLAGS`, `RUSTC_WRAPPER`, or the linker for the shared
@@ -228,6 +234,23 @@ tracking task.
 - Adding a dependency needs a reason in the pull request. Prefer the standard
   library and crates already in the tree. New Git sources must be allowed in
   `deny.toml`.
+
+### Web UI
+
+- `web/` follows the same rules where they apply: no secrets, no logging of
+  tokens, typed errors, and tests for every behavior change. TypeScript runs
+  in strict mode; lint warnings fail the gate.
+- Never edit `web/src/api/schema.d.ts` by hand. After changing
+  `crates/coordinator/src/api/openapi.json`, run
+  `npm --prefix web run generate` in the same change.
+- Declare npm dependencies with exact versions and commit
+  `web/package-lock.json`. Adding one needs a reason in the pull request,
+  like a Rust crate.
+- Values that can exceed 2^53, such as snapshot IDs, cross the API as decimal
+  strings; browsers parse JSON numbers as doubles.
+- Test pages through the fake coordinator in `web/src/test/fakes.ts`, with
+  fixtures typed by the generated schema, so a contract change breaks the
+  tests at compile time.
 
 ## 6. Testing
 

@@ -81,6 +81,19 @@ jobs:
           name: lcov
           path: lcov.info
 
+  web:
+    name: Web UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: make web
+      - run: make web-audit
+
   dependencies:
     name: Dependency policy
     runs-on: ubuntu-latest

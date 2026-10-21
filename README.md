@@ -38,6 +38,7 @@ crates/
 bin/
   coordinator/   bergsmith-coordinator binary
   worker/        bergsmith-worker binary
+web/             browser UI (React, TypeScript) and its generated API client
 deploy/          Docker (images, Compose) and k8s assets
 docs/            ADRs, support matrix, operator docs, and measurements
 ```
@@ -53,6 +54,7 @@ Prerequisites:
   `.config/nextest.toml`; CI installs exactly that version.
 - Docker, for the PostgreSQL, RustFS, and Lakekeeper services that `make test`
   starts (`make services-down` stops them).
+- Node.js 24 LTS with npm, for the web UI (`web/.nvmrc`).
 
 Common commands:
 
@@ -60,9 +62,13 @@ Common commands:
 make fmt        # format
 make test       # run tests
 make test-changed  # run tests of packages affected since origin/main
+make web       # web UI gates: generated client, lint, types, tests, build
 make ci         # run every quality gate: fmt, check, clippy, tests, docs,
-                # coverage (>= 80% lines), cargo-deny, cargo-machete
+                # coverage (>= 80% lines), cargo-deny, cargo-machete, web UI
 ```
+
+The [web UI guide](docs/operations/web-ui.md) explains the browser journeys and
+how to run the UI against a coordinator.
 
 The [local execution command](docs/operations/local-execution.md) runs a verified
 filesystem plan and writes receipts without a coordinator or catalog publication.

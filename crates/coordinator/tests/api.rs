@@ -1414,8 +1414,12 @@ async fn preview_assesses_a_table_without_creating_work(pool: PgPool) {
     assert_eq!(body["bins_truncated"], false);
     assert_eq!(body["estimate"]["tasks"], 1);
     assert_eq!(
-        body["baseline"]["snapshot_id"].as_i64(),
-        fixture.metadata().current_snapshot_id()
+        body["baseline"]["snapshot_id"].as_str(),
+        fixture
+            .metadata()
+            .current_snapshot_id()
+            .map(|id| id.to_string())
+            .as_deref()
     );
     // The baseline exposes no metadata or table location.
     assert!(body["baseline"].get("metadata_location").is_none());
