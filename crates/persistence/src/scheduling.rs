@@ -407,6 +407,12 @@ pub(crate) async fn authorize_publication(
         bergsmith_common::permission::Permission::SubmitJobs,
     )
     .await?;
+    // A scheduled job also needs its policy to be enabled at publication. A
+    // disabled schedule does not block an existing job; disabling it only
+    // stops future admission.
+    if crate::occurrences::job_policy_disabled(conn, job.id).await? {
+        return Err(PersistenceError::MaintenancePolicyDisabled { job: job.id });
+    }
     guard(conn).await?;
     let blocked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM execution_admissions WHERE table_identity_id=$1 AND job_id<>$2 AND NOT released)")
         .bind(job.table_id.as_uuid()).bind(job.id.as_uuid()).fetch_one(conn).await?;

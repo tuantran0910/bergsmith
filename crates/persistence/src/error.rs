@@ -99,6 +99,12 @@ pub enum PersistenceError {
         /// The table it was meant to run against.
         table: TableId,
     },
+    /// A scheduled job's maintenance policy was disabled before publication.
+    #[error("job {job} belongs to a disabled maintenance policy")]
+    MaintenancePolicyDisabled {
+        /// The scheduled job.
+        job: JobId,
+    },
     /// The job lifecycle forbids the change.
     #[error(transparent)]
     JobTransition(#[from] JobTransitionError),

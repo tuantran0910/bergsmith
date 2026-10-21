@@ -16,6 +16,7 @@ pub mod grants;
 pub mod idempotency;
 pub mod jobs;
 pub mod leadership;
+pub mod occurrences;
 pub mod plans;
 pub mod publications;
 pub mod schedules;

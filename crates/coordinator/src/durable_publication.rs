@@ -125,7 +125,8 @@ pub async fn prepare_publication(
 /// Manifest creation and object verification run outside database transactions.
 /// Every storage step is bounded by `config.operation_timeout`; catalog calls
 /// are bounded by the connection's request timeout. A failed database write
-/// leaves harmless unreferenced metadata; it never sends.
+/// leaves harmless unreferenced metadata; it never sends. A scheduled job whose
+/// policy was disabled resolves as `Failed` before an intent is written.
 ///
 /// # Errors
 /// Returns baseline drift, invalid receipts, cancellation, stale revision/leadership,
@@ -202,7 +203,36 @@ pub async fn prepare_publication_with(
         request_body: prepared.request.body().to_vec(),
         request_hash: prepared.request.sha256().to_hex(),
     };
-    Ok(publications::create_intent(conn, &intent, job.state_revision, epoch, &receipts).await?)
+    match publications::create_intent(conn, &intent, job.state_revision, epoch, &receipts).await {
+        Ok(committing) => Ok(committing),
+        Err(PersistenceError::MaintenancePolicyDisabled { .. }) => {
+            // No intent or send exists, so the denial proves non-publication.
+            // The job is still `ReadyToCommit`; failing it releases its table
+            // for later occurrences instead of leaving them coalesced forever.
+            let reason = "PolicyDisabled";
+            let resolved = publications::resolve_pre_intent_denial(
+                conn,
+                job.id,
+                job.state_revision,
+                epoch,
+                reason,
+            )
+            .await?;
+            record_publication_decision(
+                conn,
+                job,
+                bergsmith_common::audit::AuditAction::JobPublicationDenied,
+                bergsmith_common::audit::AuditOutcome::Denied,
+                reason,
+            )
+            .await;
+            match resolved {
+                Some(failed) => Ok(failed),
+                None => Err(PersistenceError::MaintenancePolicyDisabled { job: job.id }.into()),
+            }
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Restores the exact request and expected snapshot from the immutable intent.
@@ -368,6 +398,33 @@ pub async fn publish(
                 bergsmith_common::audit::AuditAction::JobPublicationDenied,
                 bergsmith_common::audit::AuditOutcome::Denied,
                 "AuthorizationRevoked",
+            )
+            .await;
+            return Ok(match resolved {
+                Some(resolved) => resolved,
+                None => jobs::job(conn, job.organization_id, job.id).await?,
+            });
+        }
+        Err(PublicationError::NotAuthorized(PersistenceError::MaintenancePolicyDisabled {
+            ..
+        })) => {
+            // The policy was disabled after admission and before send
+            // authorization. Nothing was sent, so non-publication is proven.
+            let reason = "PolicyDisabled";
+            let resolved = Box::pin(publications::resolve_publication_denied(
+                conn,
+                job.id,
+                job.state_revision,
+                epoch,
+                reason,
+            ))
+            .await?;
+            record_publication_decision(
+                conn,
+                job,
+                bergsmith_common::audit::AuditAction::JobPublicationDenied,
+                bergsmith_common::audit::AuditOutcome::Denied,
+                reason,
             )
             .await;
             return Ok(match resolved {

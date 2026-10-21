@@ -359,6 +359,22 @@ pub async fn resolve_authorization_denied(
     revision: i64,
     epoch: i64,
 ) -> Result<Option<Job>, PersistenceError> {
+    resolve_publication_denied(conn, job_id, revision, epoch, "AuthorizationRevoked").await
+}
+
+/// Resolves a publication denial with a stable reason before any send was
+/// authorized, mirroring [`resolve_authorization_denied`].
+///
+/// # Errors
+///
+/// As [`resolve_authorization_denied`].
+pub async fn resolve_publication_denied(
+    conn: &mut PgConnection,
+    job_id: JobId,
+    revision: i64,
+    epoch: i64,
+    denied_reason: &'static str,
+) -> Result<Option<Job>, PersistenceError> {
     let mut tx = conn.begin().await?;
     let job = lock_job(&mut tx, job_id).await?;
     ensure_leadership(&mut tx, epoch).await?;
@@ -368,8 +384,7 @@ pub async fn resolve_authorization_denied(
     {
         return Ok(None);
     }
-    let (to, reason) =
-        non_success_target(&mut tx, &job, JobState::Failed, "AuthorizationRevoked").await?;
+    let (to, reason) = non_success_target(&mut tx, &job, JobState::Failed, denied_reason).await?;
     let updated = transition_job(
         &mut tx,
         &Transition {
@@ -383,6 +398,62 @@ pub async fn resolve_authorization_denied(
     )
     .await?;
     // transition_job releases only this job's barrier on a terminal transition.
+    ensure_leadership(&mut tx, epoch).await?;
+    tx.commit().await?;
+    Ok(Some(updated))
+}
+
+/// Resolves a publication denial decided before an intent was written, when
+/// the job is still `ReadyToCommit`.
+///
+/// Intent creation checks authorization before it writes anything. A denial
+/// therefore proves non-publication, and leaving the job `ReadyToCommit` would
+/// keep every later scheduled occurrence coalesced into work that can never
+/// run. The resolution checks the revision, the coordinator epoch, and that no
+/// intent exists, all under the job lock, before failing the job.
+///
+/// # Errors
+///
+/// Returns lost leadership, database errors, or an invalid transition. A job
+/// that moved on, changed revision, already authorized a send, or already has
+/// an intent yields `Ok(None)`.
+pub async fn resolve_pre_intent_denial(
+    conn: &mut PgConnection,
+    job_id: JobId,
+    revision: i64,
+    epoch: i64,
+    denied_reason: &'static str,
+) -> Result<Option<Job>, PersistenceError> {
+    let mut tx = conn.begin().await?;
+    let job = lock_job(&mut tx, job_id).await?;
+    ensure_leadership(&mut tx, epoch).await?;
+    if job.state != JobState::ReadyToCommit
+        || job.state_revision != revision
+        || job.publication_started_at.is_some()
+    {
+        return Ok(None);
+    }
+    let has_intent: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM publication_intents WHERE job_id = $1)")
+            .bind(job_id.as_uuid())
+            .fetch_one(&mut *tx)
+            .await?;
+    if has_intent {
+        return Ok(None);
+    }
+    let (to, reason) = non_success_target(&mut tx, &job, JobState::Failed, denied_reason).await?;
+    let updated = transition_job(
+        &mut tx,
+        &Transition {
+            job_id,
+            expected_revision: revision,
+            to,
+            reason: Some(reason),
+            actor: None,
+            non_publication_proven: true,
+        },
+    )
+    .await?;
     ensure_leadership(&mut tx, epoch).await?;
     tx.commit().await?;
     Ok(Some(updated))
