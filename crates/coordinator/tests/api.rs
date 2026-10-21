@@ -11,7 +11,7 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bergsmith_common::ids::{PrincipalId, RoleGrantId};
 use bergsmith_common::permission::{GrantScope, Role};
-use bergsmith_coordinator::api::{self, ApiState};
+use bergsmith_coordinator::api::{self, ApiState, EventStreamLimits, JobEventHub};
 use bergsmith_coordinator::identity::{
     CSRF_HEADER,
     session::{self, SessionConfig},
@@ -33,6 +33,10 @@ fn previewer() -> CatalogPreviewer {
         PlannerConfig::default(),
     )
     .unwrap()
+}
+
+fn event_hub() -> JobEventHub {
+    JobEventHub::new(EventStreamLimits::default()).unwrap()
 }
 
 struct Browser {
@@ -58,6 +62,27 @@ impl Browser {
         subject: &str,
         previews: CatalogPreviewer,
     ) -> Self {
+        Self::with_state(pool, tenant, principal, subject, previews, event_hub()).await
+    }
+
+    async fn with_events(
+        pool: &PgPool,
+        tenant: &support::Tenant,
+        principal: PrincipalId,
+        subject: &str,
+        events: JobEventHub,
+    ) -> Self {
+        Self::with_state(pool, tenant, principal, subject, previewer(), events).await
+    }
+
+    async fn with_state(
+        pool: &PgPool,
+        tenant: &support::Tenant,
+        principal: PrincipalId,
+        subject: &str,
+        previews: CatalogPreviewer,
+        events: JobEventHub,
+    ) -> Self {
         let config = SessionConfig {
             secure: false,
             ..SessionConfig::default()
@@ -78,6 +103,7 @@ impl Browser {
                 database: Database::from_pool(pool.clone()),
                 sessions: config.clone(),
                 previews,
+                events,
             }),
             cookie: format!("{}={}", config.cookie_name, issued.token.expose()),
             csrf: issued.csrf.expose().into(),
@@ -126,6 +152,7 @@ fn router_with(pool: &PgPool, config: SessionConfig) -> Router {
         database: Database::from_pool(pool.clone()),
         sessions: config,
         previews: previewer(),
+        events: event_hub(),
     })
 }
 
@@ -735,7 +762,7 @@ async fn audit_reads_are_tenant_scoped_and_replay_returns_original_after_transit
         audit["items"][0]["actor_principal_id"],
         tenant.user.to_string()
     );
-    let id: bergsmith_common::ids::JobId = original.1["job_id"].as_str().unwrap().parse().unwrap();
+    let id: JobId = original.1["job_id"].as_str().unwrap().parse().unwrap();
     let mut conn = pool.acquire().await.unwrap();
     support::force_job_state(&mut conn, id, JobState::NoOp).await;
     drop(conn);
@@ -1014,6 +1041,7 @@ fn openapi_documents_every_route() {
         ("/api/v1/jobs/{id}", "get"),
         ("/api/v1/jobs/{id}/cancel", "post"),
         ("/api/v1/jobs/{id}/retry", "post"),
+        ("/api/v1/jobs/{id}/events", "get"),
         ("/api/v1/audit", "get"),
         ("/api/v1/previews", "post"),
         ("/api/v1/schedules", "get"),
@@ -2387,4 +2415,637 @@ async fn retry_and_cancel_require_the_csrf_header(pool: PgPool) {
             .0,
         StatusCode::ACCEPTED
     );
+}
+
+// ---------------------------------------------------------------------------
+// BS-018.T3: job event streams.
+// ---------------------------------------------------------------------------
+
+use std::time::Duration;
+
+use axum::body::BodyDataStream;
+use axum::response::Response;
+use bergsmith_common::ids::JobId;
+use bergsmith_persistence::cancellation::{self as cancellations, CancelJob};
+use bergsmith_persistence::jobs::{self as job_ledger, Transition};
+use futures::StreamExt;
+
+/// The lifecycle every replay test drives a job through, after `Created`.
+const LIFECYCLE: [JobState; 5] = [
+    JobState::Queued,
+    JobState::Running,
+    JobState::ReadyToCommit,
+    JobState::Committing,
+    JobState::Succeeded,
+];
+
+/// Limits that never wake a stream on their own, so a test controls exactly
+/// which mechanism delivers an event.
+fn quiet_limits() -> EventStreamLimits {
+    EventStreamLimits {
+        poll_interval: Duration::from_secs(3_600),
+        keep_alive: Duration::from_secs(3_600),
+        recheck_interval: Duration::from_secs(3_600),
+        ..EventStreamLimits::default()
+    }
+}
+
+fn hub(limits: EventStreamLimits) -> JobEventHub {
+    JobEventHub::new(limits).unwrap()
+}
+
+/// One parsed server-sent event.
+#[derive(Debug)]
+struct StreamedEvent {
+    id: i64,
+    event: String,
+    data: Value,
+}
+
+/// Reads server-sent events from a response body, skipping comments.
+struct EventReader {
+    body: BodyDataStream,
+    buffer: String,
+}
+
+impl EventReader {
+    fn new(response: Response) -> Self {
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "text/event-stream");
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        Self {
+            body: response.into_body().into_data_stream(),
+            buffer: String::new(),
+        }
+    }
+
+    /// The next event, or `None` once the server ends the stream.
+    async fn next(&mut self) -> Option<StreamedEvent> {
+        loop {
+            if let Some(end) = self.buffer.find("\n\n") {
+                let block: String = self.buffer.drain(..end + 2).collect();
+                if let Some(event) = parse_event(&block) {
+                    return Some(event);
+                }
+                continue;
+            }
+            // A timeout fails the test rather than hanging it.
+            let chunk = tokio::time::timeout(Duration::from_secs(20), self.body.next())
+                .await
+                .unwrap()?;
+            self.buffer
+                .push_str(std::str::from_utf8(&chunk.unwrap()).unwrap());
+        }
+    }
+
+    /// Every remaining event, requiring the server to end the stream.
+    async fn rest(&mut self) -> Vec<StreamedEvent> {
+        let mut events = Vec::new();
+        while let Some(event) = self.next().await {
+            events.push(event);
+        }
+        events
+    }
+}
+
+fn parse_event(block: &str) -> Option<StreamedEvent> {
+    let (mut id, mut event, mut data) = (None, None, None);
+    for line in block.lines() {
+        if let Some(value) = line.strip_prefix("id: ") {
+            id = Some(value.parse().unwrap());
+        } else if let Some(value) = line.strip_prefix("event: ") {
+            event = Some(value.to_owned());
+        } else if let Some(value) = line.strip_prefix("data: ") {
+            data = Some(serde_json::from_str::<Value>(value).unwrap());
+        }
+    }
+    let data = data?;
+    let document: Value = serde_json::from_str(include_str!("../src/api/openapi.json")).unwrap();
+    check_schema(
+        &document,
+        &document["components"]["schemas"]["JobEvent"],
+        &data,
+    );
+    let id = id.unwrap();
+    assert_eq!(data["sequence"], id);
+    let event = event.unwrap();
+    assert_eq!(data["kind"], event);
+    Some(StreamedEvent { id, event, data })
+}
+
+async fn open_stream(browser: &Browser, uri: &str, last_event_id: Option<&str>) -> Response {
+    let mut request = Request::builder()
+        .uri(uri)
+        .header("cookie", &browser.cookie)
+        .header("accept", "text/event-stream");
+    if let Some(last) = last_event_id {
+        request = request.header("last-event-id", last);
+    }
+    browser
+        .router
+        .clone()
+        .oneshot(request.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn advance(pool: &PgPool, job: JobId, expected_revision: i64, to: JobState) {
+    let mut conn = pool.acquire().await.unwrap();
+    job_ledger::transition_job(
+        &mut conn,
+        &Transition {
+            job_id: job,
+            expected_revision,
+            to,
+            reason: Some("TestStep".to_owned()),
+            actor: None,
+            non_publication_proven: false,
+        },
+    )
+    .await
+    .unwrap();
+}
+
+async fn finished_job(pool: &PgPool, tenant: &support::Tenant) -> JobId {
+    let mut conn = pool.acquire().await.unwrap();
+    let job = support::job(&mut conn, tenant).await;
+    drop(conn);
+    for (revision, state) in (0..).zip(LIFECYCLE) {
+        advance(pool, job, revision, state).await;
+    }
+    job
+}
+
+fn ids(events: &[StreamedEvent]) -> Vec<i64> {
+    events.iter().map(|event| event.id).collect()
+}
+
+/// Waits until the hub's listener has subscribed, observed through
+/// PostgreSQL rather than a timed sleep.
+async fn wait_for_listener(pool: &PgPool) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let listening: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_stat_activity
+                 WHERE datname = current_database() AND query LIKE 'LISTEN %'",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            if listening > 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_finished_job_replays_its_history_and_resumes_after_any_event(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    let job = finished_job(&pool, &tenant).await;
+    // A page smaller than the history exercises page boundaries.
+    let admin = Browser::with_events(
+        &pool,
+        &tenant,
+        tenant.user,
+        "alice",
+        hub(EventStreamLimits {
+            replay_page: 2,
+            ..quiet_limits()
+        }),
+    )
+    .await;
+    let uri = format!("/api/v1/jobs/{job}/events");
+
+    let all = EventReader::new(open_stream(&admin, &uri, None).await)
+        .rest()
+        .await;
+    assert_eq!(ids(&all), [1, 2, 3, 4, 5, 6]);
+    assert_eq!(all[0].event, "created");
+    assert_eq!(all[0].data["to_state"], "Planning");
+    assert!(all[0].data["from_state"].is_null());
+    assert_eq!(all[0].data["actor_id"], tenant.user.to_string());
+    let last = &all[5];
+    assert_eq!(last.event, "transitioned");
+    assert_eq!(last.data["from_state"], "Committing");
+    assert_eq!(last.data["to_state"], "Succeeded");
+    assert_eq!(last.data["state_revision"], 5);
+    assert_eq!(last.data["reason"], "TestStep");
+
+    let resumed = EventReader::new(open_stream(&admin, &uri, Some("3")).await)
+        .rest()
+        .await;
+    assert_eq!(ids(&resumed), [4, 5, 6]);
+    let queried = EventReader::new(open_stream(&admin, &format!("{uri}?after=4"), None).await)
+        .rest()
+        .await;
+    assert_eq!(ids(&queried), [5, 6]);
+    // The header a reconnecting EventSource sends wins over the query.
+    let both = EventReader::new(open_stream(&admin, &format!("{uri}?after=1"), Some("5")).await)
+        .rest()
+        .await;
+    assert_eq!(ids(&both), [6]);
+    // Resuming at or past the end of a finished job ends immediately.
+    for last in ["6", "60"] {
+        assert!(
+            EventReader::new(open_stream(&admin, &uri, Some(last)).await)
+                .rest()
+                .await
+                .is_empty()
+        );
+    }
+    let document: Value = serde_json::from_str(include_str!("../src/api/openapi.json")).unwrap();
+    assert!(
+        document["paths"]["/api/v1/jobs/{id}/events"]["get"]["responses"]["200"]["content"]
+            ["text/event-stream"]
+            .is_object()
+    );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn notifications_deliver_live_events_and_operator_reasons_stay_private(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let job = support::job(&mut conn, &tenant).await;
+    drop(conn);
+    // Polling and rechecks never fire, so only a notification can deliver.
+    let events = hub(quiet_limits());
+    let listener = events.listen(&Database::from_pool(pool.clone()));
+    wait_for_listener(&pool).await;
+    let admin = Browser::with_events(&pool, &tenant, tenant.user, "alice", events).await;
+    let mut reader =
+        EventReader::new(open_stream(&admin, &format!("/api/v1/jobs/{job}/events"), None).await);
+    assert_eq!(reader.next().await.unwrap().event, "created");
+
+    let mut conn = pool.acquire().await.unwrap();
+    cancellations::request_cancellation(
+        &mut conn,
+        &CancelJob {
+            job_id: job,
+            requested_by: Some(tenant.user),
+            reason: Some("private operator note".to_owned()),
+        },
+    )
+    .await
+    .unwrap();
+    drop(conn);
+
+    let requested = reader.next().await.unwrap();
+    assert_eq!(requested.id, 2);
+    assert_eq!(requested.event, "cancellation_requested");
+    assert!(requested.data["reason"].is_null());
+    let transitioned = reader.next().await.unwrap();
+    assert_eq!(transitioned.id, 3);
+    assert_eq!(transitioned.data["to_state"], "Cancelling");
+    assert_eq!(transitioned.data["reason"], "CancellationRequested");
+
+    advance(&pool, job, 1, JobState::Cancelled).await;
+    let ended = reader.rest().await;
+    assert_eq!(ids(&ended), [4]);
+    assert_eq!(ended[0].data["to_state"], "Cancelled");
+    listener.abort();
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn polling_delivers_events_when_no_notification_arrives(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let job = support::job(&mut conn, &tenant).await;
+    drop(conn);
+    // No listener is started, as if every notification were lost.
+    let admin = Browser::with_events(
+        &pool,
+        &tenant,
+        tenant.user,
+        "alice",
+        hub(EventStreamLimits {
+            poll_interval: Duration::from_millis(20),
+            ..quiet_limits()
+        }),
+    )
+    .await;
+    let mut reader =
+        EventReader::new(open_stream(&admin, &format!("/api/v1/jobs/{job}/events"), None).await);
+    assert_eq!(reader.next().await.unwrap().id, 1);
+    advance(&pool, job, 0, JobState::Queued).await;
+    let queued = reader.next().await.unwrap();
+    assert_eq!(queued.id, 2);
+    assert_eq!(queued.data["to_state"], "Queued");
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_client_that_reconnects_during_concurrent_changes_sees_each_event_once(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let job = support::job(&mut conn, &tenant).await;
+    drop(conn);
+    let events = hub(EventStreamLimits {
+        poll_interval: Duration::from_millis(20),
+        ..quiet_limits()
+    });
+    let listener = events.listen(&Database::from_pool(pool.clone()));
+    let admin = Browser::with_events(&pool, &tenant, tenant.user, "alice", events).await;
+    let uri = format!("/api/v1/jobs/{job}/events");
+
+    let writer = tokio::spawn({
+        let pool = pool.clone();
+        async move {
+            for (revision, state) in (0..).zip(LIFECYCLE) {
+                advance(&pool, job, revision, state).await;
+            }
+        }
+    });
+    let mut first = EventReader::new(open_stream(&admin, &uri, None).await);
+    let mut seen = vec![first.next().await.unwrap(), first.next().await.unwrap()];
+    drop(first);
+    let last = seen.last().unwrap().id.to_string();
+    seen.extend(
+        EventReader::new(open_stream(&admin, &uri, Some(&last)).await)
+            .rest()
+            .await,
+    );
+    writer.await.unwrap();
+
+    assert_eq!(ids(&seen), [1, 2, 3, 4, 5, 6]);
+    let revisions: Vec<_> = seen
+        .iter()
+        .map(|event| event.data["state_revision"].as_i64().unwrap())
+        .collect();
+    assert_eq!(revisions, [0, 1, 2, 3, 4, 5]);
+    listener.abort();
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn streams_end_after_session_revocation_grant_revocation_or_the_deadline(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let job = support::job(&mut conn, &tenant).await;
+    drop(conn);
+    let uri = format!("/api/v1/jobs/{job}/events");
+    let rechecking = EventStreamLimits {
+        recheck_interval: Duration::from_millis(20),
+        ..quiet_limits()
+    };
+
+    // Session revocation.
+    let admin = Browser::with_events(&pool, &tenant, tenant.user, "alice", hub(rechecking)).await;
+    let mut reader = EventReader::new(open_stream(&admin, &uri, None).await);
+    assert_eq!(reader.next().await.unwrap().id, 1);
+    sqlx::query("UPDATE auth_sessions SET revoked_at = now(), revoked_reason = 'logout'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(reader.rest().await.is_empty());
+
+    // Grant revocation.
+    let mut conn = pool.acquire().await.unwrap();
+    let viewer = support::user(&mut conn, tenant.organization, "viewer").await;
+    let grant = RoleGrantId::generate();
+    grants::create_grant(
+        &mut conn,
+        &NewRoleGrant {
+            id: grant,
+            organization_id: tenant.organization,
+            principal_id: viewer,
+            role: Role::Viewer,
+            scope: GrantScope::table(tenant.table),
+            granted_by: None,
+        },
+    )
+    .await
+    .unwrap();
+    drop(conn);
+    let browser = Browser::with_events(&pool, &tenant, viewer, "viewer", hub(rechecking)).await;
+    let mut reader = EventReader::new(open_stream(&browser, &uri, None).await);
+    assert_eq!(reader.next().await.unwrap().id, 1);
+    sqlx::query("UPDATE principal_role_grants SET revoked_at = now() WHERE id = $1")
+        .bind(grant.as_uuid())
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(reader.rest().await.is_empty());
+
+    // The deadline.
+    let bounded = Browser::with_events(
+        &pool,
+        &tenant,
+        tenant.user,
+        "alice",
+        hub(EventStreamLimits {
+            max_duration: Duration::from_millis(50),
+            ..quiet_limits()
+        }),
+    )
+    .await;
+    let events = EventReader::new(open_stream(&bounded, &uri, None).await)
+        .rest()
+        .await;
+    assert_eq!(ids(&events), [1]);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn invalid_or_unauthorized_stream_requests_fail_before_streaming(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let other = support::tenant(&mut conn, "other").await;
+    let job = support::job(&mut conn, &tenant).await;
+    let foreign = support::job(&mut conn, &other).await;
+    drop(conn);
+    let admin = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+    let uri = format!("/api/v1/jobs/{job}/events");
+
+    for query in ["after=-1", "after=x", "after=", "cursor=1"] {
+        let (status, body) = admin
+            .request("GET", &format!("{uri}?{query}"), None, None)
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
+        assert_eq!(body["reason"], "invalid_request");
+    }
+    let response = open_stream(&admin, &uri, Some("not-a-number")).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    for missing in [foreign, JobId::generate()] {
+        let (status, body) = admin
+            .request("GET", &format!("/api/v1/jobs/{missing}/events"), None, None)
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["reason"], "resource_not_found");
+    }
+    let (status, _, _) = raw(&admin.router, "GET", &uri).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn stream_capacity_is_bounded_per_principal_and_released_on_disconnect(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let job = support::job(&mut conn, &tenant).await;
+    drop(conn);
+    let admin = Browser::with_events(
+        &pool,
+        &tenant,
+        tenant.user,
+        "alice",
+        hub(EventStreamLimits {
+            max_streams_per_principal: 1,
+            ..quiet_limits()
+        }),
+    )
+    .await;
+    let uri = format!("/api/v1/jobs/{job}/events");
+
+    let held = open_stream(&admin, &uri, None).await;
+    assert_eq!(held.status(), StatusCode::OK);
+    let (status, body) = admin.request("GET", &uri, None, None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["reason"], "event_stream_capacity_exhausted");
+    assert_eq!(body["disposition"], "RetrySameRequest");
+    drop(held);
+    assert_eq!(
+        open_stream(&admin, &uri, None).await.status(),
+        StatusCode::OK
+    );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn buffered_events_stop_after_revocation_or_the_deadline(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    // One read buffers the whole history, so every later event comes from
+    // the buffer rather than a fresh ledger read.
+    let job = finished_job(&pool, &tenant).await;
+    let uri = format!("/api/v1/jobs/{job}/events");
+
+    // A recheck is due before every event.
+    let admin = Browser::with_events(
+        &pool,
+        &tenant,
+        tenant.user,
+        "alice",
+        hub(EventStreamLimits {
+            recheck_interval: Duration::from_nanos(1),
+            ..quiet_limits()
+        }),
+    )
+    .await;
+    let mut reader = EventReader::new(open_stream(&admin, &uri, None).await);
+    assert_eq!(reader.next().await.unwrap().id, 1);
+    sqlx::query("UPDATE auth_sessions SET revoked_at = now(), revoked_reason = 'logout'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(reader.rest().await.is_empty());
+
+    // The deadline passes while the consumer holds unread buffered events.
+    let lifetime = Duration::from_millis(500);
+    let bounded = Browser::with_events(
+        &pool,
+        &tenant,
+        tenant.user,
+        "alice",
+        hub(EventStreamLimits {
+            max_duration: lifetime,
+            ..quiet_limits()
+        }),
+    )
+    .await;
+    let mut reader = EventReader::new(open_stream(&bounded, &uri, None).await);
+    assert_eq!(reader.next().await.unwrap().id, 1);
+    // The behavior under test is time-based: outlive the stream's lifetime.
+    tokio::time::sleep(lifetime).await;
+    assert!(reader.rest().await.is_empty());
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn the_listener_does_not_consume_the_request_pool(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let job = support::job(&mut conn, &tenant).await;
+    drop(conn);
+    // A request pool with a single connection: a listener that kept a pooled
+    // connection would leave every request waiting for this one.
+    let small = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(2))
+        .connect_with((*pool.connect_options()).clone())
+        .await
+        .unwrap();
+    let events = hub(quiet_limits());
+    let listener = events.listen(&Database::from_pool(small.clone()));
+    wait_for_listener(&pool).await;
+    let admin = Browser::with_events(&small, &tenant, tenant.user, "alice", events).await;
+
+    let (status, body) = admin
+        .request("GET", &format!("/api/v1/jobs/{job}"), None, None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // Notifications still arrive through the dedicated connection.
+    let mut reader =
+        EventReader::new(open_stream(&admin, &format!("/api/v1/jobs/{job}/events"), None).await);
+    assert_eq!(reader.next().await.unwrap().id, 1);
+    advance(&pool, job, 0, JobState::Queued).await;
+    assert_eq!(reader.next().await.unwrap().id, 2);
+    listener.abort();
+}
+
+/// A one-connection request pool whose acquire timeout far exceeds any
+/// stream deadline used with it, so only the deadline can end a stalled wait.
+async fn single_connection_pool(pool: &PgPool) -> PgPool {
+    sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(3_600))
+        .connect_with((*pool.connect_options()).clone())
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn the_deadline_ends_streams_whose_database_calls_stall(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let job = support::job(&mut conn, &tenant).await;
+    drop(conn);
+    let uri = format!("/api/v1/jobs/{job}/events");
+    let lifetime = Duration::from_secs(1);
+
+    for (stalled, limits) in [
+        // A recheck is due before every event.
+        (
+            "recheck",
+            EventStreamLimits {
+                max_duration: lifetime,
+                recheck_interval: Duration::from_nanos(1),
+                ..quiet_limits()
+            },
+        ),
+        // The next replay read follows a short poll.
+        (
+            "replay read",
+            EventStreamLimits {
+                max_duration: lifetime,
+                poll_interval: Duration::from_millis(20),
+                ..quiet_limits()
+            },
+        ),
+    ] {
+        let small = single_connection_pool(&pool).await;
+        let admin = Browser::with_events(&small, &tenant, tenant.user, "alice", hub(limits)).await;
+        let mut reader = EventReader::new(open_stream(&admin, &uri, None).await);
+        assert_eq!(reader.next().await.unwrap().id, 1, "{stalled}");
+        // Hold the only connection: the stream's next database call waits
+        // indefinitely unless the deadline interrupts it.
+        let held = small.acquire().await.unwrap();
+        let started = std::time::Instant::now();
+        assert!(reader.rest().await.is_empty(), "{stalled}");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{stalled} wait outlived the deadline"
+        );
+        drop(held);
+    }
 }

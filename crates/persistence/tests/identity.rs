@@ -165,6 +165,45 @@ async fn a_short_idle_timeout_is_refreshed_before_it_expires(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn verifying_a_session_never_extends_its_idle_window(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let fixtures = tenant(&mut conn, "acme").await;
+    let token_hash = open_session(&mut conn, fixtures.organization, fixtures.user, "stream").await;
+    let idle_timeout = std::time::Duration::from_secs(10);
+    sqlx::query(
+        "UPDATE auth_sessions
+         SET created_at = clock_timestamp() - interval '2 minutes',
+             last_seen_at = clock_timestamp() - interval '6 seconds'
+         WHERE token_hash = $1",
+    )
+    .bind(token_hash.as_bytes().as_slice())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    let last_seen = || {
+        sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>(
+            "SELECT last_seen_at FROM auth_sessions WHERE token_hash = $1",
+        )
+        .bind(token_hash.as_bytes().as_slice())
+        .fetch_one(&pool)
+    };
+    let before = last_seen().await.unwrap();
+
+    auth::verify_session(&mut conn, token_hash, idle_timeout)
+        .await
+        .expect("the session is inside its idle window");
+    assert_eq!(last_seen().await.unwrap(), before);
+
+    auth::revoke_session(&mut conn, token_hash, "logout")
+        .await
+        .unwrap();
+    assert!(matches!(
+        auth::verify_session(&mut conn, token_hash, idle_timeout).await,
+        Err(PersistenceError::SessionRejected { reason: "revoked" })
+    ));
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
 async fn an_unknown_session_is_indistinguishable_from_a_missing_one(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let _ = tenant(&mut conn, "acme").await;

@@ -1,10 +1,11 @@
 # Browser API
 
-BS-018.T1 and T2 provide `bergsmith_coordinator::api::router(ApiState)` for
+BS-018.T1–T3 provide `bergsmith_coordinator::api::router(ApiState)` for
 composition with `identity::routes::router`. Supply the same database and
 `SessionConfig` to both. `ApiState` also carries a `CatalogPreviewer` built from
 the configured storage profiles and planner configuration, because previews read
-table metadata through the catalog. The coordinator binary currently provides
+table metadata through the catalog, and a `JobEventHub` that admits and wakes
+job event streams. The coordinator binary currently provides
 migration and administrator bootstrap commands; it does not yet start an HTTP
 server.
 
@@ -134,6 +135,46 @@ operation ID, Location, and `retry_of_job_id`. The new job starts in `Planning`;
 no plan, output, grant, or accepted result of the source is reused, and a fresh
 key creates another independent retry. Job creation, the idempotency binding,
 and the `job.retry_requested` audit record commit together.
+
+## Job events
+
+`GET /api/v1/jobs/{id}/events` streams one job's history as server-sent events
+(`text/event-stream`). It requires `jobs:read` on the job's table, checked
+exactly as for `GET /api/v1/jobs/{id}` before the stream starts; unknown and
+inaccessible jobs are both 404.
+
+Each event's `id` is the job's sequence (1, 2, 3, ...), its `event` is one of
+`created`, `transitioned`, `cancellation_requested`, or
+`publication_authorized`, and its `data` is a JSON object with `sequence`,
+`kind`, `from_state`, `to_state`, `state_revision`, `reason`, `actor_id`, and
+`occurred_at`. `reason` is the typed state reason of a transition and is null
+otherwise; an operator's cancellation text is never streamed.
+
+Sequences are assigned while the job row is locked, so they commit in order.
+To resume, send the last ID received as `Last-Event-ID` (a browser
+`EventSource` does this automatically) or as `?after=`; the header wins. The
+stream then contains every later event exactly once. Values must be
+non-negative decimals; anything else is 400.
+
+The stream sends a keep-alive comment every 15 seconds. It ends, and the client
+should reconnect with its last ID, when:
+
+- the event that reaches a terminal state has been sent (a later reconnect
+  ends immediately);
+- the session is revoked, expires, or goes idle, or the caller loses access to
+  the job (checked at most every 30 seconds; the check does not keep the
+  session alive);
+- the stream has been open for one hour.
+
+Each process serves at most 256 streams, and 8 per principal; beyond that the
+request returns 503 `event_stream_capacity_exhausted` with `RetrySameRequest`.
+Delivery is woken by a PostgreSQL notification on the `bergsmith_job_events`
+channel; if notifications are lost, streams still poll the ledger every 2
+seconds. A runtime that serves the router starts `JobEventHub::listen`, which
+holds one dedicated PostgreSQL connection per process in addition to the request
+pool.
+
+## Pagination, errors, and authentication
 
 Lists accept `limit` (default 50, maximum 100) and an opaque `cursor`. Follow
 `next_cursor` until it is null. The cursor binds the resource, principal, and

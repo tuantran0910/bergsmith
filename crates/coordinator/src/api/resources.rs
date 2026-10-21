@@ -1,6 +1,7 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use bergsmith_common::job::JobState;
 use bergsmith_common::permission::{Permission, ResourceScope};
 use bergsmith_persistence::grants;
 use serde_json::{Value, json};
@@ -289,6 +290,23 @@ pub(super) async fn job(
         Some(id.map_err(|_| ApiError::invalid())?.0),
     )
     .await
+}
+
+/// The state of a job the caller may view, using the same predicate as
+/// `GET /api/v1/jobs/{id}`: an unknown or inaccessible job is 404.
+pub(super) async fn visible_job_state(
+    state: &ApiState,
+    caller: &bergsmith_persistence::auth::Session,
+    id: Uuid,
+) -> Result<JobState, ApiError> {
+    let Json(job) = read(state, caller, Resource::Job, PageQuery::default(), Some(id)).await?;
+    job["state"]
+        .as_str()
+        .and_then(JobState::from_name)
+        .ok_or_else(|| {
+            tracing::error!(job_id = %id, "job resource has no valid state");
+            ApiError::internal()
+        })
 }
 
 pub(super) async fn require(
