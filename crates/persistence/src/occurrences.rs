@@ -9,8 +9,16 @@
 //!
 //! Admission rechecks everything the plan requires at that moment: the
 //! schedule and policy are enabled, the service principal still holds
-//! `jobs:submit` for the table, and no other job already owns the table.
-//! A schedule that is disabled has no state row, so it cannot become due.
+//! `jobs:submit` for the table, the instant is inside the schedule's
+//! maintenance window, and no other job already owns the table. A schedule
+//! that is disabled has no state row, so it cannot become due.
+//!
+//! An evaluation outside its window is routine, so it is recorded as one
+//! skipped row covering the due span and the cursor jumps to the first
+//! occurrence at or after the next opening. It is not audited: a disabled
+//! policy or an ineligible service identity is an operator problem worth an
+//! audit record, while a tick outside the quiet interval is the window doing
+//! its job.
 
 use bergsmith_common::audit::{ActorKind, AuditAction, AuditOutcome};
 use bergsmith_common::ids::{JobId, OrganizationId, PolicyId, PrincipalId, ScheduleId, TableId};
@@ -26,6 +34,40 @@ use crate::{PersistenceError, audit, schedules};
 
 /// Upper bound for a due scan and an occurrence listing.
 const MAX_PAGE: i64 = 1_000;
+
+/// The stable persisted reason for an occurrence evaluated outside its window.
+pub const OUTSIDE_WINDOW_REASON: &str = "OutsideWindow";
+
+/// Why admission skipped an evaluation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SkipReason {
+    /// The policy is disabled.
+    PolicyDisabled,
+    /// The service principal no longer satisfies the execution grant.
+    ServiceIdentityIneligible,
+    /// The evaluation fell outside the schedule's maintenance window.
+    OutsideWindow,
+}
+
+impl SkipReason {
+    /// The stable reason persisted on the occurrence and in the audit record.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::PolicyDisabled => "PolicyDisabled",
+            Self::ServiceIdentityIneligible => "ServiceIdentityIneligible",
+            Self::OutsideWindow => OUTSIDE_WINDOW_REASON,
+        }
+    }
+
+    /// Whether the skip is an operator problem worth an audit record.
+    ///
+    /// A tick outside the maintenance window is expected behavior for a
+    /// schedule whose cron is more frequent than its window, so auditing every
+    /// one would bury real denials. The occurrence row still records the span.
+    const fn audited(self) -> bool {
+        !matches!(self, Self::OutsideWindow)
+    }
+}
 
 /// Durable state of one schedule evaluation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -136,6 +178,8 @@ struct DueSchedule {
     table_identity_id: Uuid,
     cron_expression: String,
     time_zone: String,
+    window_start_minute: Option<i32>,
+    window_end_minute: Option<i32>,
     service_principal_id: Uuid,
     enabled: bool,
     policy_enabled: bool,
@@ -304,7 +348,11 @@ pub async fn occurrences(
     rows.into_iter().map(TryInto::try_into).collect()
 }
 
-/// Admits the schedule's next due evaluation, if one is due at `now`.
+/// Admits the schedule's next due evaluation at the current instant.
+///
+/// The admission clock is sampled **after** the schedule and state rows are
+/// locked, so a scheduler pass that waited on a lock cannot admit a run after
+/// its maintenance window closed while the pass was blocked.
 ///
 /// The whole decision is one transaction: leadership is fenced, the schedule
 /// row is locked so a concurrent edit cannot change the timing under the
@@ -315,19 +363,61 @@ pub async fn occurrences(
 /// # Errors
 ///
 /// Lost leadership, database, corrupt-timing, and audit errors. An ineligible
-/// service identity or a disabled policy is recorded as a `Skipped` occurrence,
-/// not an error.
+/// service identity, a disabled policy, or an instant outside the maintenance
+/// window is recorded as a `Skipped` occurrence, not an error.
 pub async fn admit(
+    conn: &mut PgConnection,
+    schedule_id: ScheduleId,
+    epoch: i64,
+) -> Result<Option<Occurrence>, PersistenceError> {
+    admit_with_clock(conn, schedule_id, epoch, Utc::now).await
+}
+
+/// Admits the schedule's next due evaluation at `now`.
+///
+/// The explicit instant keeps tests and replay diagnostics deterministic. Like
+/// [`admit`], it is applied after the schedule and state rows are locked.
+///
+/// # Errors
+///
+/// As [`admit`].
+pub async fn admit_at(
     conn: &mut PgConnection,
     schedule_id: ScheduleId,
     now: DateTime<Utc>,
     epoch: i64,
 ) -> Result<Option<Occurrence>, PersistenceError> {
+    admit_with_clock(conn, schedule_id, epoch, move || now).await
+}
+
+/// Admits with an injected clock sampled after the admission locks.
+///
+/// The clock is evaluated once `lock_due` has taken both row locks. Tests use
+/// this to prove that a pass which waited on the schedule row uses the instant
+/// at which it actually decides, not the instant at which the pass started.
+/// Prefer [`admit`] or [`admit_at`].
+///
+/// # Errors
+///
+/// As [`admit`].
+#[doc(hidden)]
+pub async fn admit_with_clock<F>(
+    conn: &mut PgConnection,
+    schedule_id: ScheduleId,
+    epoch: i64,
+    clock: F,
+) -> Result<Option<Occurrence>, PersistenceError>
+where
+    F: FnOnce() -> DateTime<Utc> + Send,
+{
     let mut tx = conn.begin().await?;
     crate::leadership::ensure_leadership(&mut tx, epoch).await?;
     let Some((schedule, first)) = lock_due(&mut tx, schedule_id).await? else {
         return Ok(None);
     };
+    // Sample only after both locks: a pass that waited here must decide with
+    // the clock it has now, not the clock it had when the pass began.
+    let now = clock();
     if first > now {
         return Ok(None);
     }
@@ -353,7 +443,7 @@ pub async fn admit(
         })?;
     let until = coalesced_until(&timing, first, now);
     let next = timing.next_occurrence(now);
-    let occurrence = decide(&mut tx, &schedule, first, until, next).await?;
+    let occurrence = decide(&mut tx, &schedule, &timing, first, until, next, now).await?;
     // Recheck the epoch before committing the job and its occurrence, so a
     // coordinator that lost leadership mid-decision cannot add work.
     crate::leadership::ensure_leadership(&mut tx, epoch).await?;
@@ -368,7 +458,8 @@ async fn lock_due(
 ) -> Result<Option<(DueSchedule, DateTime<Utc>)>, PersistenceError> {
     let schedule = sqlx::query_as::<_, DueSchedule>(
         "SELECT s.id, s.organization_id, s.policy_id, s.table_identity_id,
-                s.cron_expression, s.time_zone, s.service_principal_id, s.enabled,
+                s.cron_expression, s.time_zone, s.window_start_minute,
+                s.window_end_minute, s.service_principal_id, s.enabled,
                 p.enabled AS policy_enabled
          FROM maintenance_schedules s
          JOIN maintenance_policies p
@@ -399,15 +490,31 @@ async fn lock_due(
 }
 
 /// Applies one due evaluation: skip, coalesce, or create the job.
+///
+/// The maintenance window is checked against `now`, the instant at which the
+/// job would start, not against the nominal occurrence time. A missed
+/// occurrence that is evaluated after its window closed is skipped rather than
+/// starting maintenance during active writes; the next recurrence can admit
+/// again.
 async fn decide(
     conn: &mut PgConnection,
     schedule: &DueSchedule,
+    timing: &CronSchedule,
     first: DateTime<Utc>,
     until: Option<DateTime<Utc>>,
     next: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
 ) -> Result<Occurrence, PersistenceError> {
     if !schedule.policy_enabled {
-        return skip(conn, schedule, first, until, next, "PolicyDisabled").await;
+        return skip(
+            conn,
+            schedule,
+            first,
+            until,
+            next,
+            SkipReason::PolicyDisabled,
+        )
+        .await;
     }
     if let Err(error) = schedules::require_execution_identity(
         conn,
@@ -425,12 +532,34 @@ async fn decide(
                     first,
                     until,
                     next,
-                    "ServiceIdentityIneligible",
+                    SkipReason::ServiceIdentityIneligible,
                 )
                 .await
             }
             error => Err(error),
         };
+    }
+    let window =
+        schedules::window_from_row(schedule.window_start_minute, schedule.window_end_minute)?;
+    if let Some(window) = window
+        && !window.contains_instant(now, timing.time_zone.zone())
+    {
+        // Skip the due span in one evaluation: jump to the first
+        // occurrence at or after the next opening instead of recording one row
+        // per cron tick. A window opening always exists for a valid schedule, but
+        // a corrupt time-zone transition leaves the schedule dormant.
+        let next_in_window = window
+            .next_opening(now, timing.time_zone.zone())
+            .and_then(|opening| timing.next_occurrence(opening - chrono::Duration::seconds(1)));
+        return skip(
+            conn,
+            schedule,
+            first,
+            until,
+            next_in_window,
+            SkipReason::OutsideWindow,
+        )
+        .await;
     }
     let occurrence = insert_pending(conn, schedule, first, until).await?;
     let blocking: Option<Uuid> = sqlx::query_scalar(
@@ -577,28 +706,49 @@ async fn skip(
     first: DateTime<Utc>,
     until: Option<DateTime<Utc>>,
     next: Option<DateTime<Utc>>,
-    reason: &'static str,
+    reason: SkipReason,
 ) -> Result<Occurrence, PersistenceError> {
-    let occurrence = insert_pending(conn, schedule, first, until).await?;
-    let occurrence = finish(conn, occurrence.id, "Skipped", None, Some(reason)).await?;
-    audit::record(
-        conn,
-        &NewAuditEvent {
-            organization_id: Some(OrganizationId::from_uuid(schedule.organization_id)),
-            actor_principal_id: Some(PrincipalId::from_uuid(schedule.service_principal_id)),
-            actor_kind: ActorKind::Service,
-            action: AuditAction::JobAdmissionDenied.as_str(),
-            resource_type: "schedule",
-            resource_id: Some(&ScheduleId::from_uuid(schedule.id).to_string()),
-            outcome: AuditOutcome::Denied,
-            detail: json!({
-                "table_id": TableId::from_uuid(schedule.table_identity_id),
-                "scheduled_for": first.to_rfc3339(),
-                "reason": reason,
-            }),
-        },
-    )
-    .await?;
+    // A skip is final before the row exists, so it is written in one statement
+    // rather than inserted as `Pending` and updated. The row is still the
+    // durable identity that prevents a replay from admitting a second job.
+    let row = sqlx::query_as::<_, OccurrenceRow>(concat!(
+        "INSERT INTO maintenance_schedule_occurrences
+             (id, organization_id, schedule_id, scheduled_for, coalesced_until,
+              state, reason)
+         VALUES ($1, $2, $3, $4, $5, 'Skipped', $6)
+         RETURNING ",
+        occurrence_columns!()
+    ))
+    .bind(Uuid::now_v7())
+    .bind(schedule.organization_id)
+    .bind(schedule.id)
+    .bind(first)
+    .bind(until)
+    .bind(reason.as_str())
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(|error| PersistenceError::from_write("schedule occurrence", error))?;
+    let occurrence: Occurrence = row.try_into()?;
+    if reason.audited() {
+        audit::record(
+            conn,
+            &NewAuditEvent {
+                organization_id: Some(OrganizationId::from_uuid(schedule.organization_id)),
+                actor_principal_id: Some(PrincipalId::from_uuid(schedule.service_principal_id)),
+                actor_kind: ActorKind::Service,
+                action: AuditAction::JobAdmissionDenied.as_str(),
+                resource_type: "schedule",
+                resource_id: Some(&ScheduleId::from_uuid(schedule.id).to_string()),
+                outcome: AuditOutcome::Denied,
+                detail: json!({
+                    "table_id": TableId::from_uuid(schedule.table_identity_id),
+                    "scheduled_for": first.to_rfc3339(),
+                    "reason": reason.as_str(),
+                }),
+            },
+        )
+        .await?;
+    }
     advance(conn, schedule, next).await?;
     Ok(occurrence)
 }

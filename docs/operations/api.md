@@ -183,20 +183,38 @@ pool.
 ## Policies and schedules
 
 A policy is the reusable "what": an operation (`Compact` in this release), a
-target file size between 1 MiB and 1 GiB, and a minimum input-file count between
-2 and 1000. It names no table. A schedule binds one policy to one canonical
-table, a five-field cron expression in an IANA time zone, and a service
-principal. A policy runs at most once per table; changing the timing updates
-that schedule instead of adding another.
+target file size between 1 MiB and 1 GiB, a minimum input-file count between
+2 and 1000, and `max_input_bytes`, the most input one run may rewrite. The run
+budget is between 1 MiB and 100 GiB, defaults to 100 GiB, and must be at least
+the target file size. It is applied at planning together with the coordinator's
+global admission cap, so the effective limit is the smaller of the two. A policy
+names no table.
+
+A schedule binds one policy to one canonical table, a five-field cron expression
+in an IANA time zone, an optional daily maintenance window, and a service
+principal. The window is a local-time range in the schedule's zone:
+`start_minute` is inclusive, `end_minute` exclusive, both are minutes after
+midnight in `0..=1439`, and a start later than the end wraps past midnight. A
+window gates the start: admission checks the instant at which the job would be
+created, and an occurrence evaluated outside the window is skipped with reason
+`OutsideWindow`; the skipped span is recorded once and the next run waits for
+the next opening. The window does not limit how long a started run may take. A
+policy runs at most once per table; changing the timing updates that schedule
+instead of adding another.
 
 `POST /api/v1/policies` accepts `name` and optional `operation`,
-`target_file_size_bytes`, and `min_input_files`, defaulting to 256 MiB and five
-files. `PATCH` accepts the `revision` the caller read plus any of `name`,
-`operation`, `target_file_size_bytes`, `min_input_files`, and `enabled`.
+`target_file_size_bytes`, `min_input_files`, and `max_input_bytes`, defaulting
+to 256 MiB, five files, and 100 GiB. `PATCH` accepts the `revision` the caller
+read plus any of `name`, `operation`, `target_file_size_bytes`,
+`min_input_files`, `max_input_bytes`, and `enabled`.
 `POST /api/v1/schedules` accepts `policy_id`, `table_id`, `cron_expression`,
-`time_zone`, and `service_principal_id`; `PATCH` accepts `revision` plus any of
-`cron_expression`, `time_zone`, and `enabled`. A schedule's policy and table
-cannot change.
+`time_zone`, an optional `window` object with `start_minute` and `end_minute`,
+and `service_principal_id`; `PATCH` accepts `revision` plus any of
+`cron_expression`, `time_zone`, `window`, and `enabled`. For `window`, an absent
+field keeps the stored value, an explicit `null` clears it, and an object
+replaces it. Changing the window recomputes a future next-due cursor so a skip
+under the old window cannot hide newly eligible runs; an overdue cursor is still
+evaluated under the new window. A schedule's policy and table cannot change.
 
 Edits are optimistic. A request whose `revision` is stale returns 409
 `revision_conflict` and changes nothing. `POST` on an existing policy name or an
@@ -212,16 +230,22 @@ not an occurrence, and a local time repeated by fall-back runs once at the
 earlier instant. The time zone must be `UTC` or a regional IANA name containing
 a `/`; abbreviations such as `EST` or `HST` are rejected because they pin a
 fixed offset and would not follow daylight saving. Cron syntax and an unknown
-time zone return 400 `invalid_cron_expression` and `invalid_time_zone`. Out-of-range policy
-parameters return 400 `invalid_policy_parameters`, an unknown operation returns
+time zone return 400 `invalid_cron_expression` and `invalid_time_zone`. A window
+whose bounds are equal or outside one day returns 400
+`invalid_maintenance_window`. Out-of-range policy parameters return 400
+`invalid_policy_parameters`, a run budget below the target file size returns
+`run_budget_below_target_file_size`, an unknown operation returns
 `invalid_policy_operation`, and a service principal that is not a service
 account with a current `jobs:submit` grant for the table returns 400
 `service_identity_not_eligible`.
 
-These resources define configuration only. Occurrence persistence,
-deduplication, coalescing, and admission are BS-019.T2; windows and budgets are
-BS-019.T3. Disabling a schedule or policy stores the change now, and enforcement
-at admission follows with T2.
+Admission persists an occurrence before creating a job, coalesces missed
+occurrences and overlapping runs on one table, and rechecks the enabled policy
+and service grant. A disabled policy also stops a scheduled job before it
+publishes. Disabling only a schedule stops future admission; cancelling an
+existing job remains an explicit command. See
+[Scheduling and reconciliation](scheduling.md) for occurrence and window
+semantics.
 
 ## Pagination, errors, and authentication
 

@@ -286,7 +286,7 @@ export interface components {
     schemas: {
         ApiError: {
             /** @enum {string} */
-            reason: "authentication_required" | "csrf_rejected" | "invalid_request" | "resource_not_found" | "permission_denied" | "idempotency_key_reused" | "ledger_unavailable" | "method_not_allowed" | "request_too_large" | "internal_error" | "catalog_credential_unavailable" | "catalog_connection_invalid" | "storage_profile_unavailable" | "storage_unavailable" | "catalog_access_denied" | "catalog_unavailable" | "table_staged" | "job_not_terminal" | "job_already_succeeded" | "table_identity_changed" | "catalog_table_missing" | "inventory_too_large" | "table_metadata_inconsistent" | "preview_capacity_exhausted" | "catalog_unsupported" | "catalog_credentials_unavailable" | "catalog_request_rejected" | "event_stream_capacity_exhausted" | "invalid_policy_parameters" | "invalid_policy_operation" | "invalid_cron_expression" | "invalid_time_zone" | "revision_conflict" | "service_identity_not_eligible" | "resource_already_exists";
+            reason: "authentication_required" | "csrf_rejected" | "invalid_request" | "resource_not_found" | "permission_denied" | "idempotency_key_reused" | "ledger_unavailable" | "method_not_allowed" | "request_too_large" | "internal_error" | "catalog_credential_unavailable" | "catalog_connection_invalid" | "storage_profile_unavailable" | "storage_unavailable" | "catalog_access_denied" | "catalog_unavailable" | "table_staged" | "job_not_terminal" | "job_already_succeeded" | "table_identity_changed" | "catalog_table_missing" | "inventory_too_large" | "table_metadata_inconsistent" | "preview_capacity_exhausted" | "catalog_unsupported" | "catalog_credentials_unavailable" | "catalog_request_rejected" | "event_stream_capacity_exhausted" | "invalid_policy_parameters" | "invalid_policy_operation" | "invalid_cron_expression" | "invalid_time_zone" | "invalid_maintenance_window" | "run_budget_below_target_file_size" | "revision_conflict" | "service_identity_not_eligible" | "resource_already_exists";
             /** @enum {string} */
             disposition: "RetrySameRequest" | "RetryTask" | "ReplanRequired" | "PermanentFailure" | "ResolvePublication";
             operator_action: string;
@@ -508,6 +508,8 @@ export interface components {
             target_file_size_bytes: number;
             /** Format: int32 */
             min_input_files: number;
+            /** Format: int64 */
+            max_input_bytes: number;
             enabled: boolean;
             /** Format: int64 */
             revision: number;
@@ -524,6 +526,8 @@ export interface components {
             target_file_size_bytes?: number;
             /** Format: int32 */
             min_input_files?: number;
+            /** Format: int64 */
+            max_input_bytes?: number;
         };
         MaintenancePolicyPage: {
             items: components["schemas"]["MaintenancePolicy"][];
@@ -539,6 +543,8 @@ export interface components {
             target_file_size_bytes?: number;
             /** Format: int32 */
             min_input_files?: number;
+            /** Format: int64 */
+            max_input_bytes?: number;
             enabled?: boolean;
         };
         MaintenanceSchedule: {
@@ -550,6 +556,7 @@ export interface components {
             table_id: string;
             cron_expression: string;
             time_zone: string;
+            window: components["schemas"]["MaintenanceWindow"] | null;
             /** Format: uuid */
             service_principal_id: string;
             enabled: boolean;
@@ -567,6 +574,7 @@ export interface components {
             table_id: string;
             cron_expression: string;
             time_zone: string;
+            window?: components["schemas"]["MaintenanceWindow"] | null;
             /** Format: uuid */
             service_principal_id: string;
         };
@@ -579,7 +587,14 @@ export interface components {
             revision: number;
             cron_expression?: string;
             time_zone?: string;
+            window?: components["schemas"]["MaintenanceWindow"] | null;
             enabled?: boolean;
+        };
+        MaintenanceWindow: {
+            /** Format: int32 */
+            start_minute: number;
+            /** Format: int32 */
+            end_minute: number;
         };
     };
     responses: never;

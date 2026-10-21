@@ -46,3 +46,4 @@ record's status; never rewrite an accepted decision.
 | [0037](0037-web-ui-and-generated-client.md) | Web UI and generated API client | Accepted |
 | [0038](0038-maintenance-policies-and-schedule-timing.md) | Maintenance policies and schedule timing | Accepted |
 | [0039](0039-schedule-occurrence-admission.md) | Schedule occurrence admission and coalescing | Accepted |
+| [0040](0040-schedule-windows-and-run-budgets.md) | Schedule windows and per-run input budgets | Accepted |

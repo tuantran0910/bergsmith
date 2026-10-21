@@ -2344,6 +2344,8 @@
               "invalid_policy_operation",
               "invalid_cron_expression",
               "invalid_time_zone",
+              "invalid_maintenance_window",
+              "run_budget_below_target_file_size",
               "revision_conflict",
               "service_identity_not_eligible",
               "resource_already_exists"
@@ -3341,6 +3343,7 @@
           "operation",
           "target_file_size_bytes",
           "min_input_files",
+          "max_input_bytes",
           "enabled",
           "revision",
           "created_at",
@@ -3373,6 +3376,12 @@
             "format": "int32",
             "minimum": 2,
             "maximum": 1000
+          },
+          "max_input_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1048576,
+            "maximum": 107374182400
           },
           "enabled": {
             "type": "boolean"
@@ -3421,6 +3430,12 @@
             "format": "int32",
             "minimum": 2,
             "maximum": 1000
+          },
+          "max_input_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1048576,
+            "maximum": 107374182400
           }
         }
       },
@@ -3485,6 +3500,12 @@
             "minimum": 2,
             "maximum": 1000
           },
+          "max_input_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1048576,
+            "maximum": 107374182400
+          },
           "enabled": {
             "type": "boolean"
           }
@@ -3499,6 +3520,7 @@
           "table_id",
           "cron_expression",
           "time_zone",
+          "window",
           "service_principal_id",
           "enabled",
           "revision",
@@ -3527,6 +3549,16 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 64
+          },
+          "window": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MaintenanceWindow"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "service_principal_id": {
             "type": "string",
@@ -3578,6 +3610,16 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 64
+          },
+          "window": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MaintenanceWindow"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "service_principal_id": {
             "type": "string",
@@ -3633,8 +3675,40 @@
             "minLength": 1,
             "maxLength": 64
           },
+          "window": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MaintenanceWindow"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "enabled": {
             "type": "boolean"
+          }
+        }
+      },
+      "MaintenanceWindow": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "start_minute",
+          "end_minute"
+        ],
+        "properties": {
+          "start_minute": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0,
+            "maximum": 1439
+          },
+          "end_minute": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0,
+            "maximum": 1439
           }
         }
       }

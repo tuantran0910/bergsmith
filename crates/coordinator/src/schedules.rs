@@ -7,7 +7,7 @@
 //! occurrence row it writes is what makes admission idempotent.
 
 use bergsmith_persistence::PersistenceError;
-use bergsmith_persistence::occurrences::{self, OccurrenceState};
+use bergsmith_persistence::occurrences::{self, OUTSIDE_WINDOW_REASON, OccurrenceState};
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -56,11 +56,12 @@ impl ScheduleRunner {
     /// schedule, such as a corrupt stored timing, is logged and skipped so the
     /// remaining schedules still run.
     pub async fn admit_due(&self) -> Result<AdmissionSummary, PersistenceError> {
-        self.admit_due_at(Utc::now()).await
+        self.admit_due_with(Utc::now(), Utc::now).await
     }
 
     /// Admits everything due at `now`. The explicit instant keeps tests and
-    /// replay diagnostics deterministic.
+    /// replay diagnostics deterministic; each admission applies it after the
+    /// schedule locks.
     ///
     /// # Errors
     ///
@@ -69,15 +70,35 @@ impl ScheduleRunner {
         &self,
         now: DateTime<Utc>,
     ) -> Result<AdmissionSummary, PersistenceError> {
+        self.admit_due_with(now, move || now).await
+    }
+
+    /// Runs one pass with a separate scan clock and admission clock.
+    ///
+    /// The scan clock selects due schedules; the admission clock is sampled per
+    /// schedule after its row locks, so a pass that blocked cannot admit a run
+    /// after its window closed. Production passes `Utc::now` for both.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::admit_due`].
+    async fn admit_due_with<F>(
+        &self,
+        scan_now: DateTime<Utc>,
+        clock: F,
+    ) -> Result<AdmissionSummary, PersistenceError>
+    where
+        F: Fn() -> DateTime<Utc> + Send + Sync,
+    {
         let mut conn = self.pool.acquire().await?;
         // Schedules that predate the state table (or lost their row) are armed
         // once, before the due scan. This is also the upgrade path from T1.
-        occurrences::arm_missing(&mut conn, now, self.limit).await?;
+        occurrences::arm_missing(&mut conn, scan_now, self.limit).await?;
         let cursor = *self
             .cursor
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let schedules = occurrences::due_after(&mut conn, now, cursor, self.limit).await?;
+        let schedules = occurrences::due_after(&mut conn, scan_now, cursor, self.limit).await?;
         if let Some(last) = schedules.last() {
             *self
                 .cursor
@@ -88,7 +109,7 @@ impl ScheduleRunner {
         let mut summary = AdmissionSummary::default();
         for schedule in schedules {
             let mut conn = self.pool.acquire().await?;
-            match occurrences::admit(&mut conn, schedule, now, self.epoch).await {
+            match occurrences::admit_with_clock(&mut conn, schedule, self.epoch, &clock).await {
                 Ok(Some(occurrence)) => match occurrence.state {
                     OccurrenceState::Admitted => {
                         summary.admitted += 1;
@@ -111,11 +132,21 @@ impl ScheduleRunner {
                     }
                     OccurrenceState::Skipped => {
                         summary.skipped += 1;
-                        tracing::warn!(
-                            schedule_id = %schedule,
-                            reason = occurrence.reason.as_deref().unwrap_or_default(),
-                            "schedule occurrence skipped"
-                        );
+                        // A tick outside the window is expected for a cron more
+                        // frequent than its window; only an operator-actionable
+                        // denial deserves a warning.
+                        if occurrence.reason.as_deref() == Some(OUTSIDE_WINDOW_REASON) {
+                            tracing::debug!(
+                                schedule_id = %schedule,
+                                "schedule occurrence skipped outside its maintenance window"
+                            );
+                        } else {
+                            tracing::warn!(
+                                schedule_id = %schedule,
+                                reason = occurrence.reason.as_deref().unwrap_or_default(),
+                                "schedule occurrence skipped"
+                            );
+                        }
                     }
                     OccurrenceState::Pending => {}
                 },

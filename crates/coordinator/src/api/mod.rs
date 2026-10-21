@@ -305,6 +305,13 @@ impl ApiError {
             "correct_policy_parameters",
         )
     }
+    const fn invalid_maintenance_window() -> Self {
+        Self::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_maintenance_window",
+            "use_a_daily_time_range",
+        )
+    }
     const fn conflict(reason: &'static str, operator_action: &'static str) -> Self {
         Self::permanent(StatusCode::CONFLICT, reason, operator_action)
     }
