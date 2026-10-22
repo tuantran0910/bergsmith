@@ -383,7 +383,9 @@ async fn connect(config: &CoordinatorConfig) -> Result<Database, ServeError> {
             constraint: error.to_string(),
         })
     })?;
-    let mut settings = DatabaseConfig::new(DatabaseUrl::new(url));
+    let url = DatabaseUrl::new(url);
+    crate::database::warn_unless_verified(&url);
+    let mut settings = DatabaseConfig::new(url);
     settings.max_connections = config.database.max_connections;
     settings.acquire_timeout = Duration::from_secs(config.database.acquire_timeout_seconds);
     Ok(Database::connect(&settings).await?)

@@ -25,5 +25,5 @@ pub mod tables;
 pub mod tenancy;
 pub mod workers;
 
-pub use database::{Database, DatabaseConfig, DatabaseUrl, MIGRATOR};
+pub use database::{Database, DatabaseConfig, DatabaseTlsMode, DatabaseUrl, MIGRATOR};
 pub use error::PersistenceError;
