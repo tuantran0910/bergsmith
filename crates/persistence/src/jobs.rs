@@ -345,6 +345,57 @@ pub async fn job(
     .try_into()
 }
 
+/// Reads a job by identifier without an organization scope.
+///
+/// Runtime loops already hold a job from a state scan and need its requester
+/// and organization; they never use this to bypass an API authorization
+/// check.
+///
+/// # Errors
+///
+/// [`PersistenceError::NotFound`] when no job has that identifier.
+pub async fn job_by_id(conn: &mut PgConnection, id: JobId) -> Result<Job, PersistenceError> {
+    sqlx::query_as::<_, JobRow>(concat!(
+        "SELECT ",
+        job_columns!(),
+        " FROM jobs WHERE id = $1"
+    ))
+    .bind(id.as_uuid())
+    .fetch_optional(conn)
+    .await?
+    .ok_or_else(|| job_not_found(id))?
+    .try_into()
+}
+
+/// Reads one bounded page of jobs in `state`, ordered by identifier.
+///
+/// The keyset cursor makes repeated scans independent of concurrent state
+/// changes: a job that leaves `state` between pages is simply absent, and a new
+/// one is picked up on the next pass.
+///
+/// # Errors
+///
+/// Returns a database error or [`PersistenceError::CorruptValue`] for a stored
+/// state that this release does not know.
+pub async fn in_state_after(
+    conn: &mut PgConnection,
+    state: JobState,
+    after: Uuid,
+    limit: i64,
+) -> Result<Vec<Job>, PersistenceError> {
+    let rows = sqlx::query_as::<_, JobRow>(concat!(
+        "SELECT ",
+        job_columns!(),
+        " FROM jobs WHERE state = $1 AND id > $2 ORDER BY id LIMIT $3"
+    ))
+    .bind(state.as_str())
+    .bind(after)
+    .bind(limit)
+    .fetch_all(conn)
+    .await?;
+    rows.into_iter().map(Job::try_from).collect()
+}
+
 /// Returns a job's events, oldest first.
 ///
 /// # Errors

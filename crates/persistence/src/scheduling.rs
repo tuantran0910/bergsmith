@@ -128,6 +128,26 @@ async fn guard(conn: &mut PgConnection) -> Result<(), PersistenceError> {
     Ok(())
 }
 
+/// Registers dispatch only while `epoch` holds live leadership.
+///
+/// # Errors
+/// Returns lost leadership or the validation/database errors of [`register_dispatch`].
+pub async fn register_dispatch_at_epoch(
+    conn: &mut PgConnection,
+    job: JobId,
+    specs: &[DispatchSpec],
+    retry: RetryPolicy,
+    epoch: i64,
+) -> Result<(), PersistenceError> {
+    let mut tx = conn.begin().await?;
+    jobs::lock_job(&mut tx, job).await?;
+    leadership::ensure_leadership(&mut tx, epoch).await?;
+    register_dispatch(&mut tx, job, specs, retry).await?;
+    leadership::ensure_leadership(&mut tx, epoch).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Persists all of a job's dispatch fields atomically and immutably.
 ///
 /// # Errors

@@ -29,7 +29,7 @@ WORKER_BIN ?= $(abspath $(or $(CARGO_TARGET_DIR),target)/debug/bergsmith-worker)
 
 .PHONY: help fmt fmt-check check clippy test test-changed doc coverage coverage-html deny machete ci \
 	services-up services-down proto-lint proto-breaking bench-executor test-distributed coverage-distributed \
-	web-install web web-dev web-audit
+	web-install web web-dev web-audit images app-up app-down app-worker app-bootstrap-check profraw-clean
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -139,3 +139,31 @@ web-audit: web-install ## Audit npm dependencies: production at any severity, al
 # `coverage-distributed` runs the whole test suite and `clippy` checks every target,
 # so `test` and `check` would only repeat them.
 ci: fmt-check proto-lint proto-breaking clippy doc coverage-distributed deny machete web web-audit ## Run every quality gate
+
+# Application images and Compose stack (BS-020.T1).
+APP_COMPOSE := docker compose --file deploy/docker/compose.app.yaml
+
+images: ## Build the coordinator and worker images
+	$(APP_COMPOSE) build
+
+app-up: images ## Start the development application stack; UI on 127.0.0.1:8080
+	$(APP_COMPOSE) up --detach --wait
+
+app-worker: ## Start the optional worker (Linux cgroup v2 delegation required)
+	$(APP_COMPOSE) --profile worker up --detach --wait worker
+
+app-bootstrap-check: ## Verify warehouse bootstrap replay and private worker-state permissions
+	$(APP_COMPOSE) run --rm lakekeeper-init
+	$(APP_COMPOSE) run --rm lakekeeper-init
+	$(APP_COMPOSE) --profile worker run --rm worker-init
+	$(APP_COMPOSE) --profile worker run --rm --no-deps worker-init /bin/sh -c \
+		'test "$$(stat -c %a /state)" = 700 && test "$$(stat -c %u:%g /state)" = 10001:10001'
+
+app-down: ## Stop the application stack and discard its volumes
+	$(APP_COMPOSE) --profile worker down --volumes
+
+# Instrumented worker task subprocesses clear their environment, so LLVM writes
+# default_*.profraw into their working directory instead of target/. These are
+# ignored by git but can accumulate after coverage-distributed runs.
+profraw-clean: ## Remove llvm-cov profile fragments left outside target/
+	find . -path ./target -prune -o -name '*.profraw' -print -delete

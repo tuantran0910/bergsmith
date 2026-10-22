@@ -14,7 +14,7 @@
 //! that is not a service account or that holds no grant covering
 //! `jobs:submit` for the table.
 
-use bergsmith_common::ids::{OrganizationId, PolicyId, PrincipalId, ScheduleId, TableId};
+use bergsmith_common::ids::{JobId, OrganizationId, PolicyId, PrincipalId, ScheduleId, TableId};
 use bergsmith_common::permission::{Permission, ResourceScope};
 use bergsmith_common::policy::{MaintenanceOperation, PolicySpec};
 use bergsmith_common::schedule::CronSchedule;
@@ -367,6 +367,41 @@ pub async fn policy(
         id: id.to_string(),
     })?;
     row.try_into()
+}
+
+/// The policy that admitted `job`, when the job came from a schedule.
+///
+/// A scheduled job is planned with its policy's target size, minimum input
+/// count, and per-run budget (ADR 0039/0040). A manual job has no row here and
+/// keeps the base planner configuration.
+///
+/// # Errors
+///
+/// Returns a database error if the read fails.
+pub async fn policy_for_job(
+    conn: &mut PgConnection,
+    job: JobId,
+) -> Result<Option<MaintenancePolicy>, PersistenceError> {
+    let row: Option<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT o.organization_id, s.policy_id
+         FROM maintenance_schedule_occurrences o
+         JOIN maintenance_schedules s
+           ON s.organization_id = o.organization_id AND s.id = o.schedule_id
+         WHERE o.job_id = $1 AND o.state = 'Admitted'",
+    )
+    .bind(job.as_uuid())
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((organization, policy_id)) = row else {
+        return Ok(None);
+    };
+    policy(
+        conn,
+        OrganizationId::from_uuid(organization),
+        PolicyId::from_uuid(policy_id),
+    )
+    .await
+    .map(Some)
 }
 
 /// Lists an organization's policies in identifier order.

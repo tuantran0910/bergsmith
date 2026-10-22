@@ -604,6 +604,7 @@ dependencies = [
 name = "bergsmith-coordinator-bin"
 version = "0.1.0"
 dependencies = [
+ "bergsmith-common",
  "bergsmith-coordinator",
  "clap",
  "tokio",

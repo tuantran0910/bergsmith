@@ -1,0 +1,307 @@
+# Development application stack (BS-020.T1).
+#
+#   make images
+#   make app-up
+#
+# This is a development deployment, not a production reference. Every
+# credential is fake, PostgreSQL runs with fsync=off, cookies are not Secure,
+# and the OIDC issuer is a plain-HTTP local hostname. Base images are pinned by
+# digest; the two Bergsmith images are built from this checkout.
+#
+# The UI is at http://127.0.0.1:8080. Sign in as alice with the development
+# password from deploy/docker/keycloak/realm.json. `idp.localtest.me` resolves
+# to 127.0.0.1 in a browser and to the Keycloak service on the Compose network,
+# so one issuer works for both discovery and the browser redirect.
+name: bergsmith-app
+
+x-coordinator-image: &coordinator-image
+  image: ${BERGSMITH_COORDINATOR_IMAGE:-bergsmith-coordinator:0.1.0}
+  build:
+    context: ../..
+    dockerfile: deploy/docker/Dockerfile
+    target: coordinator
+
+x-worker-image: &worker-image
+  image: ${BERGSMITH_WORKER_IMAGE:-bergsmith-worker:0.1.0}
+  build:
+    context: ../..
+    dockerfile: deploy/docker/Dockerfile
+    target: worker
+
+x-web-image: &web-image
+  image: ${BERGSMITH_WEB_IMAGE:-bergsmith-web:0.1.0}
+  build:
+    context: ../..
+    dockerfile: deploy/docker/Dockerfile
+    target: web
+
+services:
+  postgres:
+    image: postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
+    environment:
+      POSTGRES_USER: bergsmith
+      POSTGRES_PASSWORD: bergsmith
+      POSTGRES_DB: bergsmith
+    # Development only: no durability guarantee across a host crash.
+    command: ["postgres", "-c", "fsync=off"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bergsmith -d bergsmith"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  rustfs:
+    image: rustfs/rustfs:1.0.1@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c
+    environment:
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: ":9000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -o /dev/null http://localhost:9000/ || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+    volumes:
+      - rustfs-data:/data
+
+  rustfs-init:
+    image: amazon/aws-cli:2.27.0@sha256:e3e329e1d2894b7b4bbb0aacacd0a155262159b2e7a3b4275eb1f24046d3e06c
+    environment:
+      AWS_ACCESS_KEY_ID: rustfsadmin
+      AWS_SECRET_ACCESS_KEY: rustfsadmin
+      AWS_DEFAULT_REGION: us-east-1
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket warehouse 2>/dev/null \
+          || aws --endpoint-url http://rustfs:9000 s3api create-bucket --bucket warehouse
+        aws --endpoint-url http://rustfs:9000 s3api put-bucket-lifecycle-configuration \
+          --bucket warehouse --lifecycle-configuration \
+          '{"Rules":[{"ID":"abort-incomplete-uploads","Status":"Enabled","Filter":{"Prefix":""},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}}]}'
+    depends_on:
+      rustfs:
+        condition: service_healthy
+
+  catalog-db:
+    image: postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
+    environment:
+      POSTGRES_USER: lakekeeper
+      POSTGRES_PASSWORD: lakekeeper
+      POSTGRES_DB: lakekeeper
+    command: ["postgres", "-c", "fsync=off"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lakekeeper -d lakekeeper"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - catalog-data:/var/lib/postgresql/data
+
+  lakekeeper-migrate:
+    image: quay.io/lakekeeper/catalog:v0.14.0@sha256:de87eaca929f208ec0ea4594706d3d70cec50620b62fea07c17e18fdb1a4c592
+    command: ["migrate"]
+    environment: &lakekeeper-env
+      LAKEKEEPER__PG_DATABASE_URL_READ: postgres://lakekeeper:lakekeeper@catalog-db:5432/lakekeeper
+      LAKEKEEPER__PG_DATABASE_URL_WRITE: postgres://lakekeeper:lakekeeper@catalog-db:5432/lakekeeper
+      LAKEKEEPER__PG_ENCRYPTION_KEY: development-only-not-a-real-key
+      LAKEKEEPER__BASE_URI: http://lakekeeper:8181
+    depends_on:
+      catalog-db:
+        condition: service_healthy
+
+  lakekeeper:
+    image: quay.io/lakekeeper/catalog:v0.14.0@sha256:de87eaca929f208ec0ea4594706d3d70cec50620b62fea07c17e18fdb1a4c592
+    command: ["serve"]
+    environment: *lakekeeper-env
+    healthcheck:
+      test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+    depends_on:
+      lakekeeper-migrate:
+        condition: service_completed_successfully
+      rustfs-init:
+        condition: service_completed_successfully
+
+  lakekeeper-init:
+    image: alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+    command: ["/bin/sh", "-c", "apk add --no-cache curl jq >/dev/null && sh /bootstrap/init.sh"]
+    environment:
+      # Development-only RustFS credentials.
+      AWS_ACCESS_KEY_ID: rustfsadmin
+      AWS_SECRET_ACCESS_KEY: rustfsadmin
+    volumes:
+      - ./lakekeeper-init.sh:/bootstrap/init.sh:ro
+      - ./lakekeeper-warehouse.json:/bootstrap/warehouse.json:ro
+    depends_on:
+      lakekeeper:
+        condition: service_healthy
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0.7@sha256:4388e2379b7e870a447adbe7b80bd61f5fbf04e925832b19669fda4957f05a81
+    command: ["start-dev", "--import-realm", "--http-port=58081"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: development-only-not-a-real-password
+      KC_HEALTH_ENABLED: "true"
+      KC_HOSTNAME: "http://idp.localtest.me:58081"
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+    ports:
+      - "127.0.0.1:58081:58081"
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+    networks:
+      default:
+        aliases:
+          - idp.localtest.me
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - |
+          exec 3<>/dev/tcp/127.0.0.1/9000; \
+          printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3; \
+          grep -q '"status": "UP"' <&3
+      interval: 2s
+      timeout: 5s
+      retries: 60
+
+  certificates:
+    image: alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        apk add --no-cache openssl >/dev/null
+        mkdir -p /tls
+        if [ ! -s /tls/cert.pem ] || [ ! -s /tls/key.pem ]; then
+          openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 365 \
+            -subj '/CN=coordinator' \
+            -addext 'subjectAltName=DNS:coordinator,DNS:localhost,IP:127.0.0.1' \
+            -keyout /tls/key.pem -out /tls/cert.pem
+          chmod 644 /tls/key.pem
+        fi
+    volumes:
+      - bergsmith-tls:/tls
+
+  worker-init:
+    profiles: ["worker"]
+    image: alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+    command: ["/bin/sh", "-c", "mkdir -p /state && chown 10001:10001 /state && chmod 700 /state"]
+    volumes:
+      - worker-state:/state
+
+  coordinator-migrate:
+    <<: *coordinator-image
+    command:
+      - migrate
+      - --database-url
+      - postgres://bergsmith:bergsmith@postgres:5432/bergsmith
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  bootstrap:
+    image: postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
+    environment:
+      PGPASSWORD: bergsmith
+    command:
+      - psql
+      - --host
+      - postgres
+      - --username
+      - bergsmith
+      - --dbname
+      - bergsmith
+      - --set
+      - ON_ERROR_STOP=1
+      - --file
+      - /bootstrap.sql
+    volumes:
+      - ./bootstrap.sql:/bootstrap.sql:ro
+    depends_on:
+      coordinator-migrate:
+        condition: service_completed_successfully
+      lakekeeper-init:
+        condition: service_completed_successfully
+
+  coordinator:
+    <<: *coordinator-image
+    command: ["serve", "--config", "/etc/bergsmith/coordinator.json"]
+    ports:
+      - "127.0.0.1:7443:7443"
+    volumes:
+      - ./coordinator.json:/etc/bergsmith/coordinator.json:ro
+      - ./oidc-client-secret:/run/secrets/oidc-client-secret:ro
+      - bergsmith-tls:/tls:ro
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      lakekeeper:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      certificates:
+        condition: service_completed_successfully
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  web:
+    <<: *web-image
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  worker:
+    profiles: ["worker"]
+    <<: *worker-image
+    # Linux worker execution needs a delegated cgroup v2 subtree. This is a
+    # development convenience; production delegation is a host/runtime
+    # responsibility (docs/operations/workers.md).
+    privileged: true
+    cgroup: host
+    command:
+      - run
+      - --config
+      - /etc/bergsmith/worker.json
+      - --token-file
+      - /run/secrets/worker-token
+    volumes:
+      - ./worker.json:/etc/bergsmith/worker.json:ro
+      - ./worker-token:/run/secrets/worker-token:ro
+      - bergsmith-tls:/tls:ro
+      - worker-state:/var/lib/bergsmith/worker
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    depends_on:
+      coordinator:
+        condition: service_healthy
+      worker-init:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-data:
+  catalog-data:
+  rustfs-data:
+  bergsmith-tls:
+  worker-state:

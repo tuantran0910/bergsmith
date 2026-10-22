@@ -145,6 +145,36 @@ pub async fn table_by_alias(
     Ok(row.map(TableIdentity::from))
 }
 
+/// The canonical name a table uses through one connection, if it has one.
+///
+/// Publication recovery uses this because the immutable intent names the
+/// connection; a later grant change must not make retained evidence
+/// unreachable.
+///
+/// # Errors
+///
+/// Returns a database error if the read fails.
+pub async fn alias_for_connection(
+    conn: &mut PgConnection,
+    connection_id: CatalogConnectionId,
+    table_id: TableId,
+) -> Result<Option<TableAlias>, PersistenceError> {
+    let row: Option<(Vec<String>, String)> = sqlx::query_as(
+        "SELECT namespace, table_name FROM table_aliases
+         WHERE catalog_connection_id = $1 AND table_identity_id = $2
+         ORDER BY namespace, table_name LIMIT 1",
+    )
+    .bind(connection_id.as_uuid())
+    .bind(table_id.as_uuid())
+    .fetch_optional(conn)
+    .await?;
+    Ok(row.map(|(namespace, name)| TableAlias {
+        connection_id,
+        namespace,
+        name,
+    }))
+}
+
 /// One catalog name for a table, with the connection that serves it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TableAliasConnection {

@@ -63,10 +63,14 @@ make fmt        # format
 make test       # run tests
 make test-changed  # run tests of packages affected since origin/main
 make web       # web UI gates: generated client, lint, types, tests, build
+make images    # build the coordinator and worker container images
+make app-up    # run the development application stack; UI on :8080
 make ci         # run every quality gate: fmt, check, clippy, tests, docs,
                 # coverage (>= 80% lines), cargo-deny, cargo-machete, web UI
 ```
 
+The [serving guide](docs/operations/serving.md) explains the coordinator
+`serve` runtime, its JSON configuration, and the development Compose stack.
 The [web UI guide](docs/operations/web-ui.md) explains the browser journeys and
 how to run the UI against a coordinator.
 

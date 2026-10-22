@@ -1350,3 +1350,208 @@ async fn a_token_failure_before_authorization_leaves_the_intent_publishable(pool
     assert_eq!(run.job.state, JobState::Succeeded);
     commit.assert_async().await;
 }
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn an_unsent_stop_cannot_override_authorization_at_the_same_revision(pool: PgPool) {
+    use sqlx::Connection as _;
+
+    let mut conn = pool.acquire().await.unwrap();
+    let mut run = setup(&mut conn, false).await;
+    run.execute(&mut conn, true).await;
+    run.prepare(&mut conn).await;
+    let revision = run.job.state_revision;
+    // An unlocked read still sees an unsent job while authorization holds
+    // the job lock. The stop must check again after that lock is released.
+    let mut authorization = conn.begin().await.unwrap();
+    run.authorize(&mut authorization).await;
+    assert_eq!(run.job.state_revision, revision);
+
+    let mut stopper = pool.acquire().await.unwrap();
+    let name = format!("unsent-stop-{}", uuid::Uuid::now_v7());
+    sqlx::query("SELECT set_config('application_name', $1, false)")
+        .bind(&name)
+        .execute(&mut *stopper)
+        .await
+        .unwrap();
+    let job_id = run.job.id;
+    let epoch = run.epoch;
+    let stopping = tokio::spawn(async move {
+        publications::resolve_unsent(
+            &mut stopper,
+            job_id,
+            revision,
+            epoch,
+            JobState::Failed,
+            "PublicationFailed",
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut tick = tokio::time::interval(Duration::from_millis(10));
+        loop {
+            tick.tick().await;
+            let blocked: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity
+                 WHERE application_name=$1 AND wait_event_type='Lock')",
+            )
+            .bind(&name)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            if blocked {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    authorization.commit().await.unwrap();
+    assert!(stopping.await.unwrap().unwrap().is_none());
+
+    let stopped = publications::resolve_unsent(
+        &mut conn,
+        job_id,
+        revision,
+        epoch,
+        JobState::ReplanRequired,
+        "PublicationBaselineChanged",
+    )
+    .await
+    .unwrap();
+    assert!(
+        stopped.is_none(),
+        "an authorized send must retain its barrier"
+    );
+    run.refresh(&mut conn).await;
+    assert_eq!(run.job.state, JobState::Committing);
+    assert!(run.job.publication_started_at.is_some());
+    assert_eq!(run.barrier(&mut conn).await, 1);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn an_unsent_stop_is_fenced_by_the_coordinator_epoch(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let mut run = setup(&mut conn, false).await;
+    run.execute(&mut conn, true).await;
+    run.prepare(&mut conn).await;
+    let holder: String = sqlx::query_scalar("SELECT holder FROM coordinator_leadership")
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+    bergsmith_persistence::leadership::release_leadership(&mut conn, &holder, run.epoch)
+        .await
+        .unwrap();
+    let next = support::leader(&mut conn).await;
+    let error = publications::resolve_unsent(
+        &mut conn,
+        run.job.id,
+        run.job.state_revision,
+        run.epoch,
+        JobState::Failed,
+        "PublicationFailed",
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(error, PersistenceError::LeadershipLost { .. }));
+    assert_eq!(run.barrier(&mut conn).await, 1);
+
+    let resolved = publications::resolve_unsent(
+        &mut conn,
+        run.job.id,
+        run.job.state_revision,
+        next,
+        JobState::ReplanRequired,
+        "PublicationBaselineChanged",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(resolved.state, JobState::ReplanRequired);
+    assert!(resolved.publication_started_at.is_none());
+    assert_eq!(run.barrier(&mut conn).await, 0);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn the_runtime_retries_a_401_before_authorizing_an_intent(pool: PgPool) {
+    use bergsmith_coordinator::runtime::config::RuntimeProfiles;
+    use bergsmith_coordinator::runtime::{PublicationService, RuntimeCatalogs};
+    use bergsmith_persistence::scheduling::RetryPolicy;
+    use bergsmith_persistence::{Database, DatabaseConfig, DatabaseUrl};
+    use sqlx::ConnectOptions as _;
+    use std::sync::Arc;
+
+    let mut conn = pool.acquire().await.unwrap();
+    let mut run = setup(&mut conn, false).await;
+    run.execute(&mut conn, true).await;
+    run.prepare(&mut conn).await;
+    sqlx::query(
+        "UPDATE catalog_connections SET uri=$2, warehouse=NULL, credential_ref=NULL WHERE id=$1",
+    )
+    .bind(run.tenant.connection.as_uuid())
+    .bind(run.server.url())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    drop(conn);
+
+    let mut config = DatabaseConfig::new(DatabaseUrl::new(
+        pool.connect_options().to_url_lossy().to_string(),
+    ));
+    config.max_connections = 1;
+    let database = Database::connect(&config).await.unwrap();
+    let catalogs = Arc::new(RuntimeCatalogs::new(
+        database,
+        RuntimeProfiles {
+            default: bergsmith_storage::StorageProfiles::default(),
+            connections: std::collections::BTreeMap::new(),
+        },
+    ));
+    let service = PublicationService::new(
+        pool.clone(),
+        catalogs,
+        run.epoch,
+        publication::PublicationConfig::default(),
+        RetryPolicy::default(),
+    );
+    run.load.remove_async().await;
+    let rejected = run
+        .server
+        .mock("GET", TABLE_PATH)
+        .with_status(401)
+        .expect(1)
+        .create_async()
+        .await;
+    let commit = run
+        .server
+        .mock("POST", TABLE_PATH)
+        .with_status(200)
+        .with_body("{}")
+        .expect(1)
+        .create_async()
+        .await;
+    let summary = service.pass().await.unwrap();
+    assert_eq!(summary.deferred, 1);
+    assert_eq!(summary.failed, 0);
+    rejected.assert_async().await;
+    let mut conn = pool.acquire().await.unwrap();
+    run.refresh(&mut conn).await;
+    assert_eq!(run.job.state, JobState::Committing);
+    assert!(run.job.publication_started_at.is_none());
+    assert_eq!(run.barrier(&mut conn).await, 1);
+    drop(conn);
+
+    rejected.remove_async().await;
+    run.load = load_mock(&mut run.server, &run.fixture, run.fixture.metadata()).await;
+    // Advance only the retry clock, then restore real time before network I/O.
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(61)).await;
+    tokio::time::resume();
+    let summary = service.pass().await.unwrap();
+    assert_eq!(summary.published, 1);
+    let mut conn = pool.acquire().await.unwrap();
+    run.refresh(&mut conn).await;
+    assert_eq!(run.job.state, JobState::Succeeded);
+    assert!(run.job.publication_started_at.is_some());
+    assert_eq!(run.barrier(&mut conn).await, 0);
+    commit.assert_async().await;
+}

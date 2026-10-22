@@ -2,13 +2,13 @@
 
 BS-018.T1–T4 provide `bergsmith_coordinator::api::router(ApiState)` for
 composition with `identity::routes::router`. BS-019.T1 adds the policy and
-schedule configuration resources. Supply the same database and
-`SessionConfig` to both. `ApiState` also carries a `CatalogPreviewer` built from
-the configured storage profiles and planner configuration, because previews read
-table metadata through the catalog, and a `JobEventHub` that admits and wakes
-job event streams. The coordinator binary currently provides
-migration and administrator bootstrap commands; it does not yet start an HTTP
-server.
+schedule configuration resources. BS-020.T1 composes both into the coordinator
+`serve` runtime, which serves `/api/v1`, `/auth`, and the built UI on one
+origin. Supply the same database and `SessionConfig` to both. `ApiState` also
+carries a `CatalogPreviewer` built from the configured storage profiles and
+planner configuration, because previews read table metadata through the
+catalog, and a `JobEventHub` that admits and wakes job event streams. Runbook:
+[serving](serving.md).
 
 The contract is [OpenAPI 3.1](../../crates/coordinator/src/api/openapi.json), also
 available at `GET /api/v1/openapi.json` without a session. The document is
@@ -176,9 +176,8 @@ Each process serves at most 256 streams, and 8 per principal; beyond that the
 request returns 503 `event_stream_capacity_exhausted` with `RetrySameRequest`.
 Delivery is woken by a PostgreSQL notification on the `bergsmith_job_events`
 channel; if notifications are lost, streams still poll the ledger every 2
-seconds. A runtime that serves the router starts `JobEventHub::listen`, which
-holds one dedicated PostgreSQL connection per process in addition to the request
-pool.
+seconds. The `serve` runtime starts `JobEventHub::listen`, which holds one dedicated
+PostgreSQL connection per process in addition to the request pool.
 
 ## Policies and schedules
 

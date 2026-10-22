@@ -4,11 +4,11 @@
 mod support;
 
 use bergsmith_common::ids::{
-    AttemptId, JobId, OrganizationId, PrincipalId, TaskId, WorkerSessionId,
+    AttemptId, JobId, OrganizationId, PrincipalId, PublicationId, TaskId, WorkerSessionId,
 };
 use bergsmith_common::job::JobState;
 use bergsmith_persistence::{
-    attempts, cancellation, jobs, plans, scheduling as scheduler, workers,
+    attempts, cancellation, jobs, plans, publications, scheduling as scheduler, workers,
 };
 use sqlx::{PgConnection, PgPool};
 use std::time::Duration;
@@ -436,11 +436,11 @@ async fn execution_ownership_and_publication_creation_cannot_bypass_each_other(p
         .unwrap()
     );
     support::force_job_state(&mut conn, publication, JobState::ReadyToCommit).await;
-    let error = bergsmith_persistence::publications::create_intent(
+    let error = publications::create_intent(
         &mut conn,
-        &bergsmith_persistence::publications::Intent {
+        &publications::Intent {
             job_id: publication,
-            publication_id: bergsmith_common::ids::PublicationId::generate(),
+            publication_id: PublicationId::generate(),
             content: serde_json::json!({}),
             request_body: vec![],
             request_hash: support::digest('a'),
@@ -731,4 +731,148 @@ async fn validation_is_needed_only_to_admit_or_release_a_due_retry(pool: PgPool)
         need(&mut conn, org, job, one).await,
         ValidationNeed::RetryRelease
     );
+}
+
+#[sqlx::test]
+async fn unauthorized_publication_intents_are_listed_for_resume(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "resume").await;
+    let job = support::job(&mut conn, &tenant).await;
+    support::force_job_state(&mut conn, job, JobState::ReadyToCommit).await;
+    let publication = PublicationId::generate();
+    sqlx::query("INSERT INTO publications (id, job_id) VALUES ($1, $2)")
+        .bind(publication.as_uuid())
+        .bind(job.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO publication_intents
+             (job_id, publication_id, content, request_body, request_hash)
+         VALUES ($1, $2, '{}'::jsonb, $3, $4)",
+    )
+    .bind(job.as_uuid())
+    .bind(publication.as_uuid())
+    .bind(Vec::<u8>::new())
+    .bind("0".repeat(64))
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    support::force_job_state(&mut conn, job, JobState::Committing).await;
+
+    let found = publications::unauthorized_sends_after(&mut conn, Uuid::nil(), 8)
+        .await
+        .unwrap();
+    assert_eq!(found.iter().map(|job| job.id).collect::<Vec<_>>(), [job]);
+
+    sqlx::query("UPDATE jobs SET publication_started_at = now() WHERE id = $1")
+        .bind(job.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    assert!(
+        publications::unauthorized_sends_after(&mut conn, Uuid::nil(), 8)
+            .await
+            .unwrap()
+            .is_empty(),
+        "an authorized send belongs to evidence recovery"
+    );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn planning_and_dispatch_writes_are_fenced_after_leadership_handoff(pool: PgPool) {
+    use bergsmith_persistence::{PersistenceError, leadership};
+    use sqlx::Connection as _;
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let job = support::job(&mut conn, &tenant).await;
+    let first = leadership::acquire_leadership(&mut conn, "first", Duration::from_secs(60))
+        .await
+        .unwrap()
+        .unwrap();
+    {
+        let mut tx = conn.begin().await.unwrap();
+        let locked = plans::lock_for_planning(&mut tx, job, 0, first.epoch)
+            .await
+            .unwrap();
+        assert_eq!(locked.state, JobState::Planning);
+        tx.rollback().await.unwrap();
+    }
+    leadership::release_leadership(&mut conn, &first.holder, first.epoch)
+        .await
+        .unwrap();
+    let second = support::leader(&mut conn).await;
+    {
+        let mut tx = conn.begin().await.unwrap();
+        assert!(matches!(
+            plans::lock_for_planning(&mut tx, job, 0, first.epoch).await,
+            Err(PersistenceError::LeadershipLost { .. })
+        ));
+        tx.rollback().await.unwrap();
+    }
+    let tasks = support::plan(&mut conn, job, 1).await;
+    let queued = jobs::transition_job(
+        &mut conn,
+        &jobs::Transition {
+            job_id: job,
+            expected_revision: 0,
+            to: JobState::Queued,
+            reason: None,
+            actor: None,
+            non_publication_proven: false,
+        },
+    )
+    .await
+    .unwrap();
+    let specs = vec![spec(tasks[0])];
+    assert!(matches!(
+        scheduler::register_dispatch_at_epoch(
+            &mut conn,
+            job,
+            &specs,
+            scheduler::RetryPolicy::default(),
+            first.epoch,
+        )
+        .await,
+        Err(PersistenceError::LeadershipLost { .. })
+    ));
+    assert!(
+        scheduler::dispatch_registration(&mut conn, job)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        !scheduler::stop(
+            &mut conn,
+            job,
+            0,
+            second,
+            JobState::Failed,
+            "StalePlanningError"
+        )
+        .await
+        .unwrap()
+    );
+    assert_eq!(jobs::job_by_id(&mut conn, job).await.unwrap(), queued);
+    scheduler::register_dispatch_at_epoch(
+        &mut conn,
+        job,
+        &specs,
+        scheduler::RetryPolicy::default(),
+        second,
+    )
+    .await
+    .unwrap();
+    let mut tx = conn.begin().await.unwrap();
+    assert!(matches!(
+        plans::lock_for_planning(&mut tx, job, 0, second).await,
+        Err(PersistenceError::RevisionConflict { .. })
+    ));
+    tx.rollback().await.unwrap();
+    let mut tx = conn.begin().await.unwrap();
+    assert!(matches!(
+        plans::lock_for_planning(&mut tx, job, queued.state_revision, second).await,
+        Err(PersistenceError::JobNotInState { .. })
+    ));
 }

@@ -39,7 +39,7 @@ tonic = { workspace = true, features = ["transport", "router", "tls-aws-lc"] }
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["time", "sync"] }
+tokio = { workspace = true, features = ["time", "sync", "fs", "net", "signal"] }
 uuid.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
