@@ -63,6 +63,12 @@ updates:
         applies-to: security-updates
         patterns:
           - "*"
+    ignore:
+      # @types/node follows the Node.js runtime in web/.nvmrc (24 LTS). A newer
+      # major would type APIs that runtime lacks; bump it with the runtime.
+      - dependency-name: "@types/node"
+        update-types:
+          - version-update:semver-major
 
   # GitHub Actions used by the CI, dependency-review, and future release jobs.
   - package-ecosystem: github-actions
