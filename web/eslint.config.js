@@ -1,4 +1,5 @@
 import js from "@eslint/js";
+import jsxA11y from "eslint-plugin-jsx-a11y-x";
 import reactHooks from "eslint-plugin-react-hooks";
 import globals from "globals";
 import tseslint from "typescript-eslint";
@@ -24,11 +25,22 @@ export default tseslint.config(
         },
     },
     reactHooks.configs.flat.recommended,
+    jsxA11y.configs.strict,
     {
         rules: {
             "@typescript-eslint/restrict-template-expressions": [
                 "error",
                 { allowNumber: true },
+            ],
+            // Raw HTML from any source bypasses React's escaping (ADR 0046).
+            "no-restricted-syntax": [
+                "error",
+                {
+                    selector:
+                        "JSXAttribute[name.name='dangerouslySetInnerHTML']",
+                    message:
+                        "Render text through React; raw HTML is not allowed.",
+                },
             ],
         },
     },

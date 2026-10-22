@@ -5,6 +5,9 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { createQueryClient } from "./queryClient";
 import "./styles.css";
+import { applyThemePreference, readThemePreference } from "./theme";
+
+applyThemePreference(readThemePreference());
 
 const root = document.getElementById("root");
 if (root !== null) {

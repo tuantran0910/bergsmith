@@ -7,6 +7,7 @@ import {
     signOut,
 } from "./api/auth";
 import { ErrorNotice } from "./components/ErrorNotice";
+import { ThemeToggle } from "./components/ThemeToggle";
 import { AuditPage } from "./pages/AuditPage";
 import { JobPage } from "./pages/JobPage";
 import { JobsPage } from "./pages/JobsPage";
@@ -82,6 +83,7 @@ function Shell({ session, route }: { session: SessionInfo; route: Route }) {
                     )}
                     {canReadAudit(session) && <Link to="/audit">Audit</Link>}
                 </nav>
+                <ThemeToggle />
                 <span className="who">{session.display_name}</span>
                 <button
                     type="button"
