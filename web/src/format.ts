@@ -57,6 +57,19 @@ export function aliasName(
 }
 
 /**
+ * A table's name through the first alias the caller may see, or the table's
+ * short ID when it sees none.
+ */
+export function tableName(
+    aliases: readonly Schemas["TableAlias"][],
+    tableId: string,
+    catalogs: ReadonlyMap<string, string>,
+): string {
+    const [alias] = aliases;
+    return alias === undefined ? shortId(tableId) : aliasName(alias, catalogs);
+}
+
+/**
  * A short form of a UUID for dense lists; the full value stays in the title.
  * It keeps the tail: UUIDv7 IDs begin with their creation time, so IDs made
  * within a minute share their first eight characters but not their last.

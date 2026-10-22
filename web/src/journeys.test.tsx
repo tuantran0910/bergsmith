@@ -711,22 +711,20 @@ describe("job progress", () => {
         ).not.toBeInTheDocument();
     });
 
-    it("names the job's table, or shows its ID without access to it", async () => {
+    it("names the job's table and requester, or shows the table's ID without a visible name", async () => {
         fake.on("GET", "/api/v1/jobs/{id}", () => json(200, job("Running")));
         start(`/jobs/${JOB_ID}`);
 
         expect(
             await screen.findByRole("link", { name: "lake.sales.orders" }),
         ).toHaveAttribute("href", `/tables/${TABLE_ID}`);
+        expect(
+            screen.getByText("Requested by").nextElementSibling,
+        ).toHaveTextContent("Alice");
         cleanup();
 
-        fake.on("GET", "/api/v1/tables/{id}", () =>
-            apiError(
-                404,
-                "resource_not_found",
-                "PermanentFailure",
-                "check_resource_and_grants",
-            ),
+        fake.on("GET", "/api/v1/jobs/{id}", () =>
+            json(200, job("Running", { table_aliases: [] })),
         );
         start(`/jobs/${JOB_ID}`);
         expect(
@@ -1108,7 +1106,7 @@ describe("jobs and audit", () => {
                 schema("JobPage", {
                     items: [
                         job("ReadyToCommit"),
-                        job("NoOp", { id: RETRY_JOB_ID }),
+                        job("NoOp", { id: RETRY_JOB_ID, table_aliases: [] }),
                     ],
                     next_cursor: null,
                 }),
@@ -1117,6 +1115,17 @@ describe("jobs and audit", () => {
         start("/jobs");
 
         const rows = await screen.findAllByRole("row");
+        // The table's first visible name, or its short ID without one.
+        expect(
+            await within(rows[1] as HTMLElement).findByRole("link", {
+                name: "lake.sales.orders",
+            }),
+        ).toHaveAttribute("title", TABLE_ID);
+        expect(
+            within(rows[2] as HTMLElement).getByRole("link", {
+                name: TABLE_ID.slice(-8),
+            }),
+        ).toHaveAttribute("href", `/tables/${TABLE_ID}`);
         expect(
             within(rows[1] as HTMLElement).getByText("Outputs ready"),
         ).toBeInTheDocument();
@@ -1170,6 +1179,7 @@ describe("jobs and audit", () => {
                         {
                             id: "9007199254740993",
                             actor_principal_id: null,
+                            actor_display_name: null,
                             actor_kind: "Anonymous",
                             action: "session.denied",
                             resource_type: "session",
@@ -1177,6 +1187,18 @@ describe("jobs and audit", () => {
                             outcome: "Denied",
                             detail: { reason: "invalid_csrf" },
                             occurred_at: "2026-10-21T10:00:00Z",
+                        },
+                        {
+                            id: "9007199254740994",
+                            actor_principal_id: PRINCIPAL_ID,
+                            actor_display_name: "Alice",
+                            actor_kind: "User",
+                            action: "job.submitted",
+                            resource_type: "job",
+                            resource_id: JOB_ID,
+                            outcome: "Allowed",
+                            detail: {},
+                            occurred_at: "2026-10-21T10:01:00Z",
                         },
                     ],
                     next_cursor: null,
@@ -1186,6 +1208,15 @@ describe("jobs and audit", () => {
         start("/audit");
 
         expect(await screen.findByText("session.denied")).toBeInTheDocument();
+        // A user is named, with the principal ID kept in the title; an
+        // anonymous actor has no principal, so only its kind shows.
+        const grid = within(screen.getByRole("table"));
+        expect(grid.getByText("Alice")).toHaveAttribute("title", PRINCIPAL_ID);
+        expect(
+            grid.getByRole("button", { name: "Copy principal ID" }),
+        ).toBeInTheDocument();
+        expect(grid.getByText("Anonymous")).toBeInTheDocument();
+        expect(grid.queryByText(PRINCIPAL_ID)).not.toBeInTheDocument();
         expect(screen.getByRole("link", { name: "Audit" })).toHaveAttribute(
             "aria-current",
             "page",

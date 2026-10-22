@@ -6,6 +6,7 @@ import {
     count,
     duration,
     shortId,
+    tableName,
     timestamp,
     words,
 } from "./format";
@@ -60,6 +61,22 @@ describe("format", () => {
                 new Map([["c", "lake"]]),
             ),
         ).toBe("lake.a.b.t");
+    });
+
+    it("names a table by its first visible alias, or its short ID", () => {
+        const id = "0190f3c4-0000-7000-8000-000000000001";
+        const catalogs = new Map([["c", "lake"]]);
+        expect(
+            tableName(
+                [
+                    { catalog_id: "c", namespace: ["a"], name: "t" },
+                    { catalog_id: "c", namespace: ["b"], name: "u" },
+                ],
+                id,
+                catalogs,
+            ),
+        ).toBe("lake.a.t");
+        expect(tableName([], id, catalogs)).toBe("00000001");
     });
 });
 

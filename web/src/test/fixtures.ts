@@ -43,11 +43,13 @@ export function job(state: JobState, overrides: Partial<Job> = {}): Job {
     return schema("Job", {
         id: JOB_ID,
         table_id: TABLE_ID,
+        table_aliases: table.aliases,
         state,
         revision: 1,
         state_reason: null,
         retry_of_job_id: null,
         created_by: PRINCIPAL_ID,
+        created_by_name: "Alice",
         created_at: "2026-10-21T10:00:00Z",
         updated_at: "2026-10-21T10:05:00Z",
         cancellation_requested: false,

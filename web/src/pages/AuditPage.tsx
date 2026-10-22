@@ -4,6 +4,7 @@ import { ApiFailure, type Schemas } from "../api/client";
 import { useAudit } from "../api/queries";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { GrantRequired } from "../components/GrantRequired";
+import { CopyButton } from "../components/ResourceId";
 import {
     EmptyState,
     GridFrame,
@@ -12,7 +13,7 @@ import {
     PageHeader,
 } from "../components/Page";
 import { StatusBadge } from "../components/StatusBadge";
-import { timestamp, words } from "../format";
+import { shortId, timestamp, words } from "../format";
 import type { Tone } from "../jobs/status";
 import {
     Table,
@@ -31,6 +32,30 @@ const OUTCOME_TONES: Record<Schemas["AuditEvent"]["outcome"], Tone> = {
 
 const DESCRIPTION =
     "Who did what in this organization, including refused requests.";
+
+/**
+ * The actor by display name and kind, with the principal ID in the title and
+ * a copy button; events without a principal show only the kind.
+ */
+function Actor({ event }: { event: Schemas["AuditEvent"] }) {
+    const id = event.actor_principal_id;
+    if (id === null) {
+        return <span>{event.actor_kind}</span>;
+    }
+    return (
+        <span className="inline-flex flex-col">
+            <span className="inline-flex items-center gap-1">
+                <span title={id} className="font-medium">
+                    {event.actor_display_name ?? shortId(id)}
+                </span>
+                <CopyButton value={id} label="principal ID" />
+            </span>
+            <span className="text-xs text-muted-foreground">
+                {event.actor_kind}
+            </span>
+        </span>
+    );
+}
 
 /** Organization audit history; requires organization-wide `audit:read`. */
 export function AuditPage() {
@@ -90,18 +115,7 @@ export function AuditPage() {
                                             {timestamp(event.occurred_at)}
                                         </TableCell>
                                         <TableCell>
-                                            {event.actor_kind}
-                                            {event.actor_principal_id !==
-                                                null && (
-                                                <>
-                                                    {" "}
-                                                    <code>
-                                                        {
-                                                            event.actor_principal_id
-                                                        }
-                                                    </code>
-                                                </>
-                                            )}
+                                            <Actor event={event} />
                                         </TableCell>
                                         <TableCell>
                                             <code>{event.action}</code>

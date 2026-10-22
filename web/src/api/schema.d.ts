@@ -329,6 +329,7 @@ export interface components {
             id: string;
             /** Format: uuid */
             table_id: string;
+            table_aliases: components["schemas"]["TableAlias"][];
             /** @enum {string} */
             state: "Planning" | "Queued" | "Running" | "ReadyToCommit" | "Committing" | "CommitOutcomeUnknown" | "Cancelling" | "Succeeded" | "NoOp" | "Cancelled" | "ReplanRequired" | "Failed";
             /** Format: int64 */
@@ -337,6 +338,7 @@ export interface components {
             retry_of_job_id: string | null;
             /** Format: uuid */
             created_by: string;
+            created_by_name: string;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -363,6 +365,7 @@ export interface components {
         AuditEvent: {
             id: string;
             actor_principal_id: string | null;
+            actor_display_name: string | null;
             /** @enum {string} */
             actor_kind: "User" | "Service" | "Anonymous" | "System";
             action: string;

@@ -37,19 +37,56 @@ macro_rules! catalog_access {
     };
 }
 
-macro_rules! table_summary {
-    () => {
-        "jsonb_build_object('id', r.id, 'table_uuid', r.table_uuid, 'created_at', r.created_at,
-          'aliases', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+// The aliases of table `$table` the caller may see: an organization or table
+// grant reveals every alias, a connection grant only that connection's.
+macro_rules! visible_aliases {
+    ($table:literal) => {
+        concat!(
+            "COALESCE((SELECT jsonb_agg(jsonb_build_object(
               'catalog_id', a.catalog_connection_id, 'namespace', a.namespace, 'name', a.table_name)
               ORDER BY a.catalog_connection_id, a.namespace, a.table_name)
-            FROM table_aliases a WHERE a.organization_id = $1 AND a.table_identity_id = r.id
+            FROM table_aliases a WHERE a.organization_id = $1 AND a.table_identity_id = ",
+            $table,
+            "
               AND EXISTS (SELECT 1 FROM principal_role_grants g
                 WHERE g.organization_id = $1 AND g.principal_id = $2
                   AND g.revoked_at IS NULL AND g.role = ANY($3::text[])
                   AND ((g.catalog_connection_id IS NULL AND g.table_identity_id IS NULL)
-                    OR g.table_identity_id = r.id
-                    OR g.catalog_connection_id = a.catalog_connection_id))), '[]'::jsonb))"
+                    OR g.table_identity_id = ",
+            $table,
+            "
+                    OR g.catalog_connection_id = a.catalog_connection_id))), '[]'::jsonb)"
+        )
+    };
+}
+
+macro_rules! table_summary {
+    () => {
+        concat!(
+            "jsonb_build_object('id', r.id, 'table_uuid', r.table_uuid, 'created_at', r.created_at,
+          'aliases', ",
+            visible_aliases!("r.id"),
+            ")"
+        )
+    };
+}
+
+// Names are for display; `table_id` and `created_by` stay the keys. The
+// requester's foreign key names a principal of the job's organization, and
+// display names are required, so `created_by_name` is never null.
+macro_rules! job_summary {
+    () => {
+        concat!(
+            "jsonb_build_object('id', r.id, 'table_id', r.table_identity_id, 'table_aliases', ",
+            visible_aliases!("r.table_identity_id"),
+            ", 'state', r.state, 'revision', r.state_revision, 'state_reason', r.state_reason, \
+             'retry_of_job_id', r.retry_of_job_id, 'created_by', r.created_by, \
+             'created_by_name', (SELECT p.display_name FROM principals p \
+                WHERE p.id = r.created_by AND p.organization_id = r.organization_id), \
+             'created_at', r.created_at, 'updated_at', r.updated_at, \
+             'cancellation_requested', r.cancellation_requested_at IS NOT NULL, \
+             'publication_started', r.publication_started_at IS NOT NULL)"
+        )
     };
 }
 
@@ -129,7 +166,7 @@ impl Resource {
             ),
             Self::Job => variants!(
                 "jobs r JOIN table_identities t ON t.id = r.table_identity_id AND t.organization_id = r.organization_id",
-                "jsonb_build_object('id', r.id, 'table_id', r.table_identity_id, 'state', r.state, 'revision', r.state_revision, 'state_reason', r.state_reason, 'retry_of_job_id', r.retry_of_job_id, 'created_by', r.created_by, 'created_at', r.created_at, 'updated_at', r.updated_at, 'cancellation_requested', r.cancellation_requested_at IS NOT NULL, 'publication_started', r.publication_started_at IS NOT NULL)",
+                job_summary!(),
                 table_access!()
             ),
         }
@@ -402,7 +439,8 @@ pub(super) async fn audit(
     let rows = rows.into_iter().map(|row| (row.id.to_string(), json!({
         // Encode bigint IDs as decimal strings so JavaScript preserves precision.
         "id": row.id.to_string(), "actor_principal_id": row.actor_principal_id,
-        "actor_kind": row.actor_kind.as_str(), "action": row.action,
+        "actor_display_name": row.actor_display_name, "actor_kind": row.actor_kind.as_str(),
+        "action": row.action,
         "resource_type": row.resource_type, "resource_id": row.resource_id,
         "outcome": row.outcome.as_str(), "detail": row.detail, "occurred_at": row.occurred_at,
     }))).collect();

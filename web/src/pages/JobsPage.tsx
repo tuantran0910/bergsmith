@@ -1,7 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { ListChecksIcon } from "lucide-react";
 
-import { useJobs } from "../api/queries";
+import { useCatalogNames, useJobs } from "../api/queries";
 import { ErrorNotice } from "../components/ErrorNotice";
 import {
     EmptyState,
@@ -11,7 +11,7 @@ import {
     PageHeader,
 } from "../components/Page";
 import { StatusBadge } from "../components/StatusBadge";
-import { shortId, timestamp } from "../format";
+import { shortId, tableName, timestamp } from "../format";
 import { executionStatus, publicationStatus } from "../jobs/status";
 import {
     Table,
@@ -25,6 +25,8 @@ import {
 /** Jobs the session may see, with execution and publication side by side. */
 export function JobsPage() {
     const jobs = useJobs();
+    const catalogs = useCatalogNames();
+    const names = catalogs.data ?? new Map<string, string>();
     const items = jobs.data?.pages.flatMap((page) => page.items) ?? [];
 
     return (
@@ -86,9 +88,18 @@ export function JobsPage() {
                                                     tableId: job.table_id,
                                                 }}
                                                 title={job.table_id}
-                                                className="font-mono"
+                                                className={
+                                                    job.table_aliases.length ===
+                                                    0
+                                                        ? "font-mono"
+                                                        : undefined
+                                                }
                                             >
-                                                {shortId(job.table_id)}
+                                                {tableName(
+                                                    job.table_aliases,
+                                                    job.table_id,
+                                                    names,
+                                                )}
                                             </Link>
                                         </TableCell>
                                         <TableCell>

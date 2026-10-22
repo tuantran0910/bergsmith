@@ -654,13 +654,20 @@ async fn audit_records_are_append_only_and_secret_free(pool: PgPool) {
 async fn audit_listing_pages_in_identifier_order(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let fixtures = tenant(&mut conn, "acme").await;
-    for action in [AuditAction::JobAdmitted, AuditAction::JobPublished] {
+    for (action, actor, kind) in [
+        (
+            AuditAction::JobAdmitted,
+            Some(fixtures.user),
+            ActorKind::User,
+        ),
+        (AuditAction::AuthLoginFailed, None, ActorKind::Anonymous),
+    ] {
         audit::record(
             &mut conn,
             &NewAuditEvent {
                 organization_id: Some(fixtures.organization),
-                actor_principal_id: Some(fixtures.user),
-                actor_kind: ActorKind::User,
+                actor_principal_id: actor,
+                actor_kind: kind,
                 action: action.as_str(),
                 resource_type: "job",
                 resource_id: None,
@@ -676,11 +683,13 @@ async fn audit_listing_pages_in_identifier_order(pool: PgPool) {
         .unwrap();
     assert_eq!(page.len(), 2);
     assert_eq!(page[0].action, AuditAction::JobAdmitted.as_str());
+    assert_eq!(page[0].actor_display_name.as_deref(), Some("alice"));
     let next = audit::list(&mut conn, fixtures.organization, Some(page[0].id), 10)
         .await
         .unwrap();
     assert_eq!(next.len(), 1);
-    assert_eq!(next[0].action, AuditAction::JobPublished.as_str());
+    assert_eq!(next[0].action, AuditAction::AuthLoginFailed.as_str());
+    assert_eq!(next[0].actor_display_name, None);
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]

@@ -10,7 +10,7 @@ import { type ReactNode, useId, useState } from "react";
 
 import { type Job, api, call, csrfHeader } from "../api/client";
 import { useKeyedMutation } from "../api/keyed";
-import { useCatalogNames, useJob, useTable } from "../api/queries";
+import { useCatalogNames, useJob } from "../api/queries";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { LoadingDetail, PageHeader } from "../components/Page";
 import { ResourceId } from "../components/ResourceId";
@@ -229,11 +229,9 @@ function Lane({
 }
 
 function JobFacts({ job }: { job: Job }) {
-    const table = useTable(job.table_id);
     const catalogs = useCatalogNames();
-    const [alias] = table.data?.aliases ?? [];
-    // The name needs a read the job does not; until then, or without access
-    // to the table, the ID stands in.
+    const [alias] = job.table_aliases;
+    // Without a visible alias, the full ID stands in for the name.
     const tableName =
         alias === undefined
             ? job.table_id
@@ -258,6 +256,10 @@ function JobFacts({ job }: { job: Job }) {
                         >
                             {tableName}
                         </Link>
+                    </dd>
+                    <dt className="text-muted-foreground">Requested by</dt>
+                    <dd className="m-0" title={job.created_by}>
+                        {job.created_by_name}
                     </dd>
                     {job.retry_of_job_id !== null && (
                         <>
