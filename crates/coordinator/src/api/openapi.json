@@ -2522,11 +2522,13 @@
         "required": [
           "id",
           "table_id",
+          "table_aliases",
           "state",
           "revision",
           "state_reason",
           "retry_of_job_id",
           "created_by",
+          "created_by_name",
           "created_at",
           "updated_at",
           "cancellation_requested",
@@ -2540,6 +2542,12 @@
           "table_id": {
             "type": "string",
             "format": "uuid"
+          },
+          "table_aliases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TableAlias"
+            }
           },
           "state": {
             "type": "string",
@@ -2587,6 +2595,9 @@
           "created_by": {
             "type": "string",
             "format": "uuid"
+          },
+          "created_by_name": {
+            "type": "string"
           },
           "created_at": {
             "type": "string",
@@ -2712,6 +2723,7 @@
         "required": [
           "id",
           "actor_principal_id",
+          "actor_display_name",
           "actor_kind",
           "action",
           "resource_type",
@@ -2730,6 +2742,16 @@
               {
                 "type": "string",
                 "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "actor_display_name": {
+            "anyOf": [
+              {
+                "type": "string"
               },
               {
                 "type": "null"

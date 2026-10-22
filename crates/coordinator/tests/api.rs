@@ -374,12 +374,17 @@ async fn reads_filter_before_pagination_and_hide_foreign_resources(pool: PgPool)
         );
         assert!(!body.to_string().contains("credential"));
         assert!(!body.to_string().contains("secret/catalog"));
-        if resource == "tables" {
-            assert_eq!(body["items"][0]["aliases"].as_array().unwrap().len(), 1);
-            assert_eq!(
-                body["items"][0]["aliases"][0]["catalog_id"],
-                tenant.connection.to_string()
-            );
+        // A job names its table with the same caller-visible aliases as the
+        // table itself: the alias on the hidden connection never appears.
+        let aliases = match resource {
+            "tables" => Some(&body["items"][0]["aliases"]),
+            "jobs" => Some(&body["items"][0]["table_aliases"]),
+            _ => None,
+        };
+        if let Some(aliases) = aliases {
+            assert_eq!(aliases.as_array().unwrap().len(), 1);
+            assert_eq!(aliases[0]["catalog_id"], tenant.connection.to_string());
+            assert_eq!(aliases[0]["name"], "events");
             assert!(!body.to_string().contains("hidden-alias"));
         }
     }
@@ -497,6 +502,7 @@ async fn submission_is_atomic_idempotent_and_actor_bound_under_concurrency(pool:
         .await;
     assert_eq!(job.1["state"], "Planning");
     assert_eq!(job.1["created_by"], tenant.user.to_string());
+    assert_eq!(job.1["created_by_name"], "alice");
     assert_eq!(job.1["revision"], 0);
     assert_eq!(job.1["publication_started"], false);
     let count: (i64, i64, i64) = sqlx::query_as("SELECT (SELECT count(*) FROM jobs), (SELECT count(*) FROM job_events), (SELECT count(*) FROM audit_events WHERE action = 'job.submitted')").fetch_one(&pool).await.unwrap();
@@ -763,6 +769,7 @@ async fn audit_reads_are_tenant_scoped_and_replay_returns_original_after_transit
         audit["items"][0]["actor_principal_id"],
         tenant.user.to_string()
     );
+    assert_eq!(audit["items"][0]["actor_display_name"], "alice");
     let id: JobId = original.1["job_id"].as_str().unwrap().parse().unwrap();
     let mut conn = pool.acquire().await.unwrap();
     support::force_job_state(&mut conn, id, JobState::NoOp).await;

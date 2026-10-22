@@ -370,6 +370,7 @@ async fn identity_and_maintenance_decisions_are_auditable(pool: PgPool) {
         .unwrap();
     assert_eq!(anonymous.actor_kind, ActorKind::Anonymous);
     assert_eq!(anonymous.actor_principal_id, None);
+    assert_eq!(anonymous.actor_display_name, None);
 }
 
 async fn record_denied_publication(

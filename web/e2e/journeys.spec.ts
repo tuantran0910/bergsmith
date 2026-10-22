@@ -5,6 +5,7 @@ import { schema } from "../src/test/fakes";
 import {
     CATALOG_ID,
     JOB_ID,
+    PRINCIPAL_ID,
     RETRY_JOB_ID,
     TABLE_ID,
     catalogs,
@@ -51,6 +52,7 @@ test("signs in through the organization and returns to the requested page", asyn
             signedInYet = true;
             return { status: 200, body: "", contentType: "text/html" };
         })
+        .on("GET", "/api/v1/catalogs", () => json(200, catalogs))
         .on("GET", "/api/v1/jobs", () =>
             json(200, schema("JobPage", { items: [], next_cursor: null })),
         );
@@ -277,6 +279,7 @@ test("shows audit history and workers to an administrator", async ({
                         {
                             id: "9007199254740993",
                             actor_principal_id: null,
+                            actor_display_name: null,
                             actor_kind: "Anonymous",
                             action: "session.denied",
                             resource_type: "session",
@@ -284,6 +287,18 @@ test("shows audit history and workers to an administrator", async ({
                             outcome: "Denied",
                             detail: { reason: "invalid_csrf" },
                             occurred_at: "2026-10-21T10:00:00Z",
+                        },
+                        {
+                            id: "9007199254740994",
+                            actor_principal_id: PRINCIPAL_ID,
+                            actor_display_name: "Alice",
+                            actor_kind: "User",
+                            action: "job.submitted",
+                            resource_type: "job",
+                            resource_id: JOB_ID,
+                            outcome: "Allowed",
+                            detail: {},
+                            occurred_at: "2026-10-21T10:01:00Z",
                         },
                     ],
                     next_cursor: null,
@@ -317,6 +332,9 @@ test("shows audit history and workers to an administrator", async ({
 
     await page.goto("/audit");
     await expect(page.getByText("session.denied")).toBeVisible();
+    await expect(
+        page.getByRole("table").getByText("Alice", { exact: true }),
+    ).toHaveAttribute("title", PRINCIPAL_ID);
     await expect(page.getByRole("link", { name: "Audit" })).toHaveAttribute(
         "aria-current",
         "page",

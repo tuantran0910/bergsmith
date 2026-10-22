@@ -21,6 +21,9 @@ pub struct AuditEvent {
     pub organization_id: Option<OrganizationId>,
     /// Acting principal, if authenticated.
     pub actor_principal_id: Option<PrincipalId>,
+    /// The acting principal's current display name, for display only; `None`
+    /// when there is no actor principal.
+    pub actor_display_name: Option<String>,
     /// Kind of actor.
     pub actor_kind: ActorKind,
     /// Stable action name, such as `job.publication_denied`.
@@ -63,6 +66,7 @@ struct AuditEventRow {
     id: i64,
     organization_id: Option<Uuid>,
     actor_principal_id: Option<Uuid>,
+    actor_display_name: Option<String>,
     actor_kind: String,
     action: String,
     resource_type: String,
@@ -80,6 +84,7 @@ impl TryFrom<AuditEventRow> for AuditEvent {
             id: row.id,
             organization_id: row.organization_id.map(OrganizationId::from_uuid),
             actor_principal_id: row.actor_principal_id.map(PrincipalId::from_uuid),
+            actor_display_name: row.actor_display_name,
             actor_kind: ActorKind::from_name(&row.actor_kind).ok_or_else(|| {
                 PersistenceError::CorruptValue {
                     entity: "audit actor kind",
@@ -107,12 +112,18 @@ impl TryFrom<AuditEventRow> for AuditEvent {
 /// organization-scoped read, so they need no ordering lock.
 const AUDIT_APPEND_LOCK_NAMESPACE: i64 = 0x0042_5341_5544_4954;
 
-/// Columns selected for [`AuditEvent`], in [`AuditEventRow`] order. A macro so
-/// queries stay `&'static str` literals.
+/// Columns selected for [`AuditEvent`] from `audit_events e`, in
+/// [`AuditEventRow`] order. A macro so queries stay `&'static str` literals.
+/// The display name is read at query time, so it follows renames, and only
+/// from the event's own organization.
 macro_rules! audit_columns {
     () => {
-        "id, organization_id, actor_principal_id, actor_kind, action, \
-         resource_type, resource_id, outcome, detail, occurred_at"
+        "e.id, e.organization_id, e.actor_principal_id, \
+         (SELECT p.display_name FROM principals p \
+           WHERE p.id = e.actor_principal_id AND p.organization_id = e.organization_id) \
+           AS actor_display_name, \
+         e.actor_kind, e.action, e.resource_type, e.resource_id, e.outcome, e.detail, \
+         e.occurred_at"
     };
 }
 
@@ -181,9 +192,9 @@ pub async fn list(
         sqlx::query_as::<_, AuditEventRow>(concat!(
             "SELECT ",
             audit_columns!(),
-            " FROM audit_events
-             WHERE organization_id = $1 AND id > $2
-             ORDER BY id LIMIT $3"
+            " FROM audit_events e
+             WHERE e.organization_id = $1 AND e.id > $2
+             ORDER BY e.id LIMIT $3"
         ))
         .bind(organization_id.as_uuid())
         .bind(after)
@@ -194,9 +205,9 @@ pub async fn list(
         sqlx::query_as::<_, AuditEventRow>(concat!(
             "SELECT ",
             audit_columns!(),
-            " FROM audit_events
-             WHERE organization_id = $1
-             ORDER BY id LIMIT $2"
+            " FROM audit_events e
+             WHERE e.organization_id = $1
+             ORDER BY e.id LIMIT $2"
         ))
         .bind(organization_id.as_uuid())
         .bind(limit)

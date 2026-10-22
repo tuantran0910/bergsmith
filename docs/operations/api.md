@@ -22,12 +22,12 @@ as `x-csrf-token`. All responses use `Cache-Control: no-store`.
 | `GET /api/v1/openapi.json` | Public OpenAPI 3.1 contract; no session required |
 | `GET /api/v1/catalogs`, `GET /api/v1/catalogs/{id}` | Authorized catalog identity summaries |
 | `GET /api/v1/tables`, `GET /api/v1/tables/{id}` | Authorized canonical table identities |
-| `GET /api/v1/jobs`, `GET /api/v1/jobs/{id}` | Authorized job state, revision, requester, cancellation/publication boundary, retry link |
+| `GET /api/v1/jobs`, `GET /api/v1/jobs/{id}` | Authorized job state, revision, requester and their display name, the table's caller-visible aliases, cancellation/publication boundary, retry link |
 | `POST /api/v1/jobs` | Idempotent durable submission; returns 202 with job and operation IDs and Location |
 | `POST /api/v1/jobs/{id}/cancel` | Record a cancellation request and report what it achieved |
 | `POST /api/v1/jobs/{id}/retry` | Create a fresh-plan retry of a terminal job; 202 with the new job |
 | `POST /api/v1/previews` | Assess a table without creating work |
-| `GET /api/v1/audit` | Organization audit history; requires organization-wide `audit:read` |
+| `GET /api/v1/audit` | Organization audit history with each actor's current display name; requires organization-wide `audit:read` |
 | `GET /api/v1/workers` | Current worker sessions and their lease status; requires organization-wide `workers:manage` |
 | `GET /api/v1/policies`, `GET /api/v1/policies/{id}` | Maintenance policies; requires organization-wide `schedules:manage` |
 | `POST /api/v1/policies` | Create a policy; 201 with the stored row |
