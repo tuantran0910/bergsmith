@@ -4,6 +4,9 @@
 #[path = "../../persistence/tests/support/mod.rs"]
 mod support;
 
+#[path = "api/catalogs.rs"]
+mod catalog_management;
+
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, Request, StatusCode};
@@ -1041,7 +1044,9 @@ fn openapi_documents_every_route() {
     // Keep in sync with `api::router`.
     const ROUTES: &[(&str, &str)] = &[
         ("/api/v1/catalogs", "get"),
+        ("/api/v1/catalogs", "post"),
         ("/api/v1/catalogs/{id}", "get"),
+        ("/api/v1/catalogs/{id}", "patch"),
         ("/api/v1/tables", "get"),
         ("/api/v1/tables/{id}", "get"),
         ("/api/v1/jobs", "get"),

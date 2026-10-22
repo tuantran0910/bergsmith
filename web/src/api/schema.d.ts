@@ -14,7 +14,8 @@ export interface paths {
         /** @description Authorized summaries in ascending UUID order; authorization filters before pagination. */
         get: operations["listCatalogs"];
         put?: never;
-        post?: never;
+        /** @description Requires connections:manage. Create requires organization scope; edits require connection scope. PATCH checks expected_revision. Disabling preserves recovery. Routing edits conflict while nonterminal jobs depend on the connection. */
+        post: operations["createCatalog"];
         delete?: never;
         options?: never;
         head?: never;
@@ -28,14 +29,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Unknown and inaccessible identifiers both return 404. */
+        /** @description Unknown and inaccessible identifiers both return 404. Administrators also receive URI, warehouse and credential_ref; other inventory readers receive the summary. */
         get: operations["getCatalog"];
         put?: never;
         post?: never;
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        /** @description Requires connections:manage. Create requires organization scope; edits require connection scope. PATCH checks expected_revision. Disabling preserves recovery. Routing edits conflict while nonterminal jobs depend on the connection. */
+        patch: operations["updateCatalog"];
         trace?: never;
     };
     "/api/v1/tables": {
@@ -303,7 +305,7 @@ export interface components {
     schemas: {
         ApiError: {
             /** @enum {string} */
-            reason: "authentication_required" | "csrf_rejected" | "invalid_request" | "resource_not_found" | "permission_denied" | "idempotency_key_reused" | "ledger_unavailable" | "method_not_allowed" | "request_too_large" | "internal_error" | "catalog_credential_unavailable" | "catalog_connection_invalid" | "storage_profile_unavailable" | "storage_unavailable" | "catalog_access_denied" | "catalog_unavailable" | "table_staged" | "job_not_terminal" | "job_already_succeeded" | "table_identity_changed" | "catalog_table_missing" | "inventory_too_large" | "table_metadata_inconsistent" | "preview_capacity_exhausted" | "catalog_unsupported" | "catalog_credentials_unavailable" | "catalog_request_rejected" | "event_stream_capacity_exhausted" | "invalid_policy_parameters" | "invalid_policy_operation" | "invalid_cron_expression" | "invalid_time_zone" | "invalid_maintenance_window" | "run_budget_below_target_file_size" | "revision_conflict" | "service_identity_not_eligible" | "resource_already_exists";
+            reason: "authentication_required" | "csrf_rejected" | "invalid_request" | "resource_not_found" | "permission_denied" | "idempotency_key_reused" | "ledger_unavailable" | "method_not_allowed" | "request_too_large" | "internal_error" | "catalog_credential_unavailable" | "catalog_connection_invalid" | "storage_profile_unavailable" | "storage_unavailable" | "catalog_access_denied" | "catalog_unavailable" | "table_staged" | "job_not_terminal" | "job_already_succeeded" | "table_identity_changed" | "catalog_table_missing" | "inventory_too_large" | "table_metadata_inconsistent" | "preview_capacity_exhausted" | "catalog_unsupported" | "catalog_credentials_unavailable" | "catalog_request_rejected" | "event_stream_capacity_exhausted" | "invalid_policy_parameters" | "invalid_policy_operation" | "invalid_cron_expression" | "invalid_time_zone" | "invalid_maintenance_window" | "run_budget_below_target_file_size" | "revision_conflict" | "service_identity_not_eligible" | "resource_already_exists" | "catalog_connection_disabled" | "catalog_connection_in_use";
             /** @enum {string} */
             disposition: "RetrySameRequest" | "RetryTask" | "ReplanRequired" | "PermanentFailure" | "ResolvePublication";
             operator_action: string;
@@ -314,6 +316,15 @@ export interface components {
             name: string;
             /** Format: date-time */
             created_at: string;
+            enabled: boolean;
+            revision: number;
+            /** Format: date-time */
+            updated_at: string;
+            /** @description Only returned to connection administrators. */
+            uri?: string;
+            warehouse?: string | null;
+            /** @description External credential reference, never a secret. Only returned to administrators. */
+            credential_ref?: string | null;
         };
         Table: {
             /** Format: uuid */
@@ -643,6 +654,25 @@ export interface components {
             items: components["schemas"]["WorkerSession"][];
             next_cursor: string | null;
         };
+        CreateCatalog: {
+            name: string;
+            /** @description Catalog HTTP(S) base URI without user information, query parameters, fragments, or whitespace. */
+            uri: string;
+            warehouse?: string | null;
+            /** @description Reference to an externally held credential; never supply a secret value. */
+            credential_ref?: string | null;
+        };
+        /** @description Supply expected_revision and at least one editable field. Only supplied fields are validated; omitted legacy values are preserved. */
+        UpdateCatalog: {
+            expected_revision: number;
+            name?: string;
+            /** @description Catalog HTTP(S) base URI without user information, query parameters, fragments, or whitespace. */
+            uri?: string;
+            warehouse?: string | null;
+            /** @description Reference to an externally held credential; never supply a secret value. */
+            credential_ref?: string | null;
+            enabled?: boolean;
+        };
     };
     responses: never;
     parameters: never;
@@ -730,6 +760,122 @@ export interface operations {
             };
         };
     };
+    createCatalog: {
+        parameters: {
+            query?: never;
+            header: {
+                "x-csrf-token": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateCatalog"];
+            };
+        };
+        responses: {
+            /** @description Audited catalog configuration */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Catalog"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
     getCatalog: {
         parameters: {
             query?: never;
@@ -805,6 +951,124 @@ export interface operations {
                 };
             };
             /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    updateCatalog: {
+        parameters: {
+            query?: never;
+            header: {
+                "x-csrf-token": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateCatalog"];
+            };
+        };
+        responses: {
+            /** @description Audited catalog configuration */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Catalog"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -1757,7 +2021,7 @@ export interface operations {
                     "application/json": components["schemas"]["ApiError"];
                 };
             };
-            /** @description The table is staged or its metadata cannot be planned */
+            /** @description The table is staged, its metadata is inconsistent, its identity changed, the inventory is too large, or every usable catalog connection is disabled. */
             409: {
                 headers: {
                     [name: string]: unknown;

@@ -107,12 +107,148 @@
             }
           }
         ]
+      },
+      "post": {
+        "operationId": "createCatalog",
+        "description": "Requires connections:manage. Create requires organization scope; edits require connection scope. PATCH checks expected_revision. Disabling preserves recovery. Routing edits conflict while nonterminal jobs depend on the connection.",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCatalog"
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Audited catalog configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Catalog"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/catalogs/{id}": {
       "get": {
         "operationId": "getCatalog",
-        "description": "Unknown and inaccessible identifiers both return 404.",
+        "description": "Unknown and inaccessible identifiers both return 404. Administrators also receive URI, warehouse and credential_ref; other inventory readers receive the summary.",
         "responses": {
           "400": {
             "description": "Invalid request or cursor",
@@ -206,6 +342,151 @@
             }
           }
         ]
+      },
+      "patch": {
+        "operationId": "updateCatalog",
+        "description": "Requires connections:manage. Create requires organization scope; edits require connection scope. PATCH checks expected_revision. Disabling preserves recovery. Routing edits conflict while nonterminal jobs depend on the connection.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateCatalog"
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Audited catalog configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Catalog"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/tables": {
@@ -1411,7 +1692,7 @@
             }
           },
           "409": {
-            "description": "The table is staged or its metadata cannot be planned",
+            "description": "The table is staged, its metadata is inconsistent, its identity changed, the inventory is too large, or every usable catalog connection is disabled.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2446,7 +2727,9 @@
               "run_budget_below_target_file_size",
               "revision_conflict",
               "service_identity_not_eligible",
-              "resource_already_exists"
+              "resource_already_exists",
+              "catalog_connection_disabled",
+              "catalog_connection_in_use"
             ]
           },
           "disposition": {
@@ -2470,7 +2753,10 @@
         "required": [
           "id",
           "name",
-          "created_at"
+          "created_at",
+          "enabled",
+          "revision",
+          "updated_at"
         ],
         "properties": {
           "id": {
@@ -2483,6 +2769,42 @@
           "created_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "uri": {
+            "type": "string",
+            "description": "Only returned to connection administrators."
+          },
+          "warehouse": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "credential_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "External credential reference, never a secret. Only returned to administrators."
           }
         }
       },
@@ -3937,6 +4259,89 @@
             ]
           }
         }
+      },
+      "CreateCatalog": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "uri"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "uri": {
+            "type": "string",
+            "description": "Catalog HTTP(S) base URI without user information, query parameters, fragments, or whitespace."
+          },
+          "warehouse": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "credential_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Reference to an externally held credential; never supply a secret value."
+          }
+        }
+      },
+      "UpdateCatalog": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "uri": {
+            "type": "string",
+            "description": "Catalog HTTP(S) base URI without user information, query parameters, fragments, or whitespace."
+          },
+          "warehouse": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "credential_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Reference to an externally held credential; never supply a secret value."
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "description": "Supply expected_revision and at least one editable field. Only supplied fields are validated; omitted legacy values are preserved."
       }
     }
   }

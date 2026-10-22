@@ -27,6 +27,144 @@ fn spec(task: TaskId) -> scheduler::DispatchSpec {
     }
 }
 
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn admission_waiting_for_a_connection_edit_observes_disable(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let epoch = support::leader(&mut conn).await;
+    let (job, _) = configured(&mut conn, &tenant, 1).await;
+    let mut editing = pool.begin().await.unwrap();
+    let blocker: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *editing)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE catalog_connections SET enabled=false WHERE id=$1")
+        .bind(tenant.connection.as_uuid())
+        .execute(&mut *editing)
+        .await
+        .unwrap();
+    let mut admitting = pool.acquire().await.unwrap();
+    let waiter: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *admitting)
+        .await
+        .unwrap();
+    let admission = tokio::spawn(async move {
+        scheduler::admit(
+            &mut admitting,
+            job,
+            epoch,
+            scheduler::AdmissionLimits::default(),
+        )
+        .await
+    });
+    support::wait_until_blocked(&mut conn, waiter, blocker).await;
+    editing.commit().await.unwrap();
+    assert!(!admission.await.unwrap().unwrap());
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn disabled_connections_block_new_admission_but_preserve_admitted_jobs(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let epoch = support::leader(&mut conn).await;
+    let (job, _) = configured(&mut conn, &tenant, 1).await;
+    sqlx::query("UPDATE catalog_connections SET enabled=false WHERE id=$1")
+        .bind(tenant.connection.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    assert!(
+        !scheduler::admit(&mut conn, job, epoch, scheduler::AdmissionLimits::default())
+            .await
+            .unwrap()
+    );
+    sqlx::query("UPDATE catalog_connections SET enabled=true WHERE id=$1")
+        .bind(tenant.connection.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    assert!(
+        scheduler::admit(&mut conn, job, epoch, scheduler::AdmissionLimits::default())
+            .await
+            .unwrap()
+    );
+    sqlx::query("UPDATE catalog_connections SET enabled=false WHERE id=$1")
+        .bind(tenant.connection.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    assert!(
+        scheduler::admit(&mut conn, job, epoch, scheduler::AdmissionLimits::default())
+            .await
+            .unwrap()
+    );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn an_inaccessible_enabled_alias_cannot_bypass_a_disabled_connection(pool: PgPool) {
+    use bergsmith_common::permission::{GrantScope, Role};
+    use bergsmith_persistence::tables;
+    let mut conn = pool.acquire().await.unwrap();
+    let mut tenant = support::tenant(&mut conn, "acme").await;
+    let hidden = support::connection(&mut conn, tenant.organization, "hidden").await;
+    let identity = tables::table_identity(&mut conn, tenant.organization, tenant.table)
+        .await
+        .unwrap();
+    tables::resolve_table(
+        &mut conn,
+        tenant.organization,
+        &support::alias(hidden, "events"),
+        identity.table_uuid,
+    )
+    .await
+    .unwrap();
+    let operator = support::user(&mut conn, tenant.organization, "operator").await;
+    bergsmith_persistence::grants::create_grant(
+        &mut conn,
+        &bergsmith_persistence::grants::NewRoleGrant {
+            id: bergsmith_common::ids::RoleGrantId::generate(),
+            organization_id: tenant.organization,
+            principal_id: operator,
+            role: Role::Operator,
+            scope: GrantScope::connection(tenant.connection),
+            granted_by: None,
+        },
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE catalog_connections SET enabled=false WHERE id=$1")
+        .bind(tenant.connection.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    tenant.user = operator;
+    let epoch = support::leader(&mut conn).await;
+    let (job, _) = configured(&mut conn, &tenant, 1).await;
+    assert!(
+        !scheduler::admit(&mut conn, job, epoch, scheduler::AdmissionLimits::default())
+            .await
+            .unwrap()
+    );
+    bergsmith_persistence::grants::create_grant(
+        &mut conn,
+        &bergsmith_persistence::grants::NewRoleGrant {
+            id: bergsmith_common::ids::RoleGrantId::generate(),
+            organization_id: tenant.organization,
+            principal_id: operator,
+            role: Role::Operator,
+            scope: GrantScope::table(tenant.table),
+            granted_by: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        scheduler::admit(&mut conn, job, epoch, scheduler::AdmissionLimits::default())
+            .await
+            .unwrap()
+    );
+}
+
 async fn configured(
     conn: &mut PgConnection,
     tenant: &support::Tenant,

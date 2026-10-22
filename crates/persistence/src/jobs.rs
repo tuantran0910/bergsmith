@@ -289,6 +289,7 @@ pub(crate) fn job_not_found(id: JobId) -> PersistenceError {
 /// creator does not exist in the organization.
 pub async fn create_job(conn: &mut PgConnection, new: &NewJob) -> Result<Job, PersistenceError> {
     let mut tx = conn.begin().await?;
+    crate::tenancy::lock_table_connections(&mut tx, new.organization_id, new.table_id).await?;
     let job: Job = sqlx::query_as::<_, JobRow>(concat!(
         "INSERT INTO jobs (id, organization_id, table_identity_id, state, retry_of_job_id, created_by)
          VALUES ($1, $2, $3, $4, $5, $6)

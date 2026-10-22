@@ -4,6 +4,7 @@
 //! server-side session; mutations additionally require the session's CSRF token.
 //! Organization and actor identifiers always come from that session.
 
+mod catalogs;
 mod commands;
 mod creation;
 mod events;
@@ -64,8 +65,14 @@ pub fn router(state: ApiState) -> Router {
         tracing::error!("embedded OpenAPI document could not be prepared");
     }
     let protected = Router::new()
-        .route("/api/v1/catalogs", get(resources::catalogs))
-        .route("/api/v1/catalogs/{id}", get(resources::catalog))
+        .route(
+            "/api/v1/catalogs",
+            get(resources::catalogs).post(catalogs::create),
+        )
+        .route(
+            "/api/v1/catalogs/{id}",
+            get(resources::catalog).patch(catalogs::update),
+        )
         .route("/api/v1/tables", get(resources::tables))
         .route("/api/v1/tables/{id}", get(resources::table))
         .route(
@@ -369,6 +376,9 @@ impl From<sqlx::Error> for ApiError {
 impl From<PersistenceError> for ApiError {
     fn from(error: PersistenceError) -> Self {
         match error {
+            PersistenceError::CatalogConnectionInUse { .. } => {
+                Self::conflict("catalog_connection_in_use", "wait_for_jobs_to_resolve")
+            }
             PersistenceError::NotFound { .. } => Self::not_found(),
             PersistenceError::PermissionDenied { .. } => Self::new(
                 StatusCode::FORBIDDEN,

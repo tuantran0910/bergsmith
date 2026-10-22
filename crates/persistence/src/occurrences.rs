@@ -41,6 +41,8 @@ pub const OUTSIDE_WINDOW_REASON: &str = "OutsideWindow";
 /// Why admission skipped an evaluation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SkipReason {
+    /// No enabled connection is usable by the service identity.
+    ConnectionDisabled,
     /// The policy is disabled.
     PolicyDisabled,
     /// The service principal no longer satisfies the execution grant.
@@ -53,6 +55,7 @@ impl SkipReason {
     /// The stable reason persisted on the occurrence and in the audit record.
     const fn as_str(self) -> &'static str {
         match self {
+            Self::ConnectionDisabled => "ConnectionDisabled",
             Self::PolicyDisabled => "PolicyDisabled",
             Self::ServiceIdentityIneligible => "ServiceIdentityIneligible",
             Self::OutsideWindow => OUTSIDE_WINDOW_REASON,
@@ -539,6 +542,24 @@ async fn decide(
             error => Err(error),
         };
     }
+    if !crate::tenancy::lock_enabled_execution_connection(
+        conn,
+        OrganizationId::from_uuid(schedule.organization_id),
+        PrincipalId::from_uuid(schedule.service_principal_id),
+        TableId::from_uuid(schedule.table_identity_id),
+    )
+    .await?
+    {
+        return skip(
+            conn,
+            schedule,
+            first,
+            until,
+            next,
+            SkipReason::ConnectionDisabled,
+        )
+        .await;
+    }
     let window =
         schedules::window_from_row(schedule.window_start_minute, schedule.window_end_minute)?;
     if let Some(window) = window
@@ -561,6 +582,17 @@ async fn decide(
         )
         .await;
     }
+    admit_or_coalesce(conn, schedule, first, until, next).await
+}
+
+/// Records a permitted evaluation and its job or existing table owner.
+async fn admit_or_coalesce(
+    conn: &mut PgConnection,
+    schedule: &DueSchedule,
+    first: DateTime<Utc>,
+    until: Option<DateTime<Utc>>,
+    next: Option<DateTime<Utc>>,
+) -> Result<Occurrence, PersistenceError> {
     let occurrence = insert_pending(conn, schedule, first, until).await?;
     let blocking: Option<Uuid> = sqlx::query_scalar(
         "SELECT id FROM jobs

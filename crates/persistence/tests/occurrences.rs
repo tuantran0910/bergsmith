@@ -33,6 +33,41 @@ struct Fixture {
     epoch: i64,
 }
 
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn disabled_connections_skip_due_occurrences_and_resume_after_enable(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let fixture = fixture(&mut conn, "acme", "0 * * * *", "UTC").await;
+    let now = at(2026, 5, 1, 10, 0);
+    set_due(&mut conn, &fixture, now).await;
+    sqlx::query("UPDATE catalog_connections SET enabled=false WHERE id=$1")
+        .bind(fixture.tenant.connection.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    let occurrence = occurrences::admit_at(&mut conn, fixture.schedule, now, fixture.epoch)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(occurrence.state, OccurrenceState::Skipped);
+    assert_eq!(occurrence.reason.as_deref(), Some("ConnectionDisabled"));
+    assert_eq!(jobs_on_table(&mut conn, &fixture.tenant).await, 0);
+    sqlx::query("UPDATE catalog_connections SET enabled=true WHERE id=$1")
+        .bind(fixture.tenant.connection.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    let occurrence = occurrences::admit_at(
+        &mut conn,
+        fixture.schedule,
+        at(2026, 5, 1, 11, 0),
+        fixture.epoch,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(occurrence.state, OccurrenceState::Admitted);
+}
+
 async fn fixture(conn: &mut PgConnection, slug: &str, cron: &str, zone: &str) -> Fixture {
     let tenant = support::tenant(conn, slug).await;
     let service = service_principal(conn, tenant.organization, "scheduler").await;

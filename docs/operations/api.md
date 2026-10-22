@@ -20,7 +20,9 @@ as `x-csrf-token`. All responses use `Cache-Control: no-store`.
 | Endpoint | Behavior |
 |---|---|
 | `GET /api/v1/openapi.json` | Public OpenAPI 3.1 contract; no session required |
-| `GET /api/v1/catalogs`, `GET /api/v1/catalogs/{id}` | Authorized catalog identity summaries |
+| `GET /api/v1/catalogs`, `GET /api/v1/catalogs/{id}` | Authorized catalog summaries; detail also includes settings for connection managers |
+| `POST /api/v1/catalogs` | Create a connection under organization-wide `connections:manage`; 201 |
+| `PATCH /api/v1/catalogs/{id}` | Edit, enable, or disable under connection-scoped `connections:manage`, using `expected_revision`; 409 for stale revisions or routing edits while jobs depend on the connection |
 | `GET /api/v1/tables`, `GET /api/v1/tables/{id}` | Authorized canonical table identities |
 | `GET /api/v1/jobs`, `GET /api/v1/jobs/{id}` | Authorized job state, revision, requester and their display name, the table's caller-visible aliases, cancellation/publication boundary, retry link |
 | `POST /api/v1/jobs` | Idempotent durable submission; returns 202 with job and operation IDs and Location |
@@ -51,6 +53,35 @@ publication evidence. `ReplanRequired` requires a new job and fresh plan; old
 accepted outputs cannot be transferred. T3 supplies SSE; this task does not
 certify M4.
 
+## Catalog configuration
+
+Create accepts `name`, `uri`, optional `warehouse`, and optional
+`credential_ref`. The name uses lowercase letters, digits, underscores, and
+hyphens, starts with a letter or digit, and is at most 63 characters. The URI
+must be HTTP(S), with no user information, query, or fragment; credentials
+stay outside the API as references. Reference identifiers contain only ASCII
+letters, digits, `/`, `_`, `-`, and `.`, at most 200 bytes. Creating a
+connection does not check catalog capabilities or certify write support.
+
+PATCH accepts those fields plus `enabled` and a required `expected_revision`.
+Omitted fields keep their values; null clears `warehouse` or `credential_ref`.
+Only supplied fields are validated, so legacy settings do not prevent renaming
+or disabling a connection. A PATCH with no editable fields returns 400.
+Each change increments the revision and commits an audit record atomically.
+An administrator reading the connection detail receives its settings. Other
+inventory readers, and all list responses, receive the summary with enabled
+state, revision, and timestamps, without the settings. Detail responses strip
+URI user information, query, and fragment from legacy connections; an
+unparseable legacy URI is omitted.
+
+Disabling stops new previews and execution admissions. Due schedules record
+`ConnectionDisabled` without creating work when they have no enabled alias
+their service identity may use. Queued jobs wait; admitted jobs and publication
+recovery continue. No alias or job is deleted. Endpoint, warehouse, and
+credential-reference edits return `catalog_connection_in_use` while any
+nonterminal job belongs to a table registered through the connection. Resolve
+those jobs before changing routing; disabling remains available.
+
 ## Previews
 
 `POST /api/v1/previews` accepts `{"table_id":"<canonical table UUID>"}` and
@@ -58,8 +89,10 @@ requires `jobs:submit` on that table. It creates no job, plan, task, output,
 idempotency key, or audit record; denials are audited. Unknown tables return 404
 and inaccessible ones 403 before any catalog request.
 
-The catalog name is chosen only among the table's aliases whose connection the
-caller's grant covers, in canonical order. A connection-scoped grant therefore
+The catalog name is chosen only among enabled connections of the table's aliases
+whose connection the caller's grant covers, in canonical order. If every usable
+alias is disabled, the preview returns 409 `catalog_connection_disabled` before
+catalog I/O. A connection-scoped grant therefore
 never causes a request through another connection. Every response is bounded:
 at most 1,000 bins are returned, with `bins_total` and `bins_truncated` telling
 the client what was omitted, and at most 100,000 manifest entries are read. At

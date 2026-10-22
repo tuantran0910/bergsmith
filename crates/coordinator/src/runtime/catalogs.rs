@@ -193,7 +193,13 @@ impl RuntimeCatalogs {
             job.table_id,
         )
         .await?;
-        let Some(target) = aliases.into_iter().next() else {
+        // Prefer an enabled route for planning and existing execution alike;
+        // aliases share the canonical UUID, checked after loading. Fall back to
+        // a disabled route when existing work still needs the connection.
+        let Some(target) = aliases
+            .into_iter()
+            .min_by_key(|alias| !alias.connection.enabled)
+        else {
             return Err(AccessError::NoAlias(job.table_id));
         };
         drop(conn);

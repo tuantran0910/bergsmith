@@ -9,6 +9,38 @@ use bergsmith_persistence::{Database, DatabaseConfig, DatabaseUrl, PersistenceEr
 use sqlx::PgPool;
 
 #[sqlx::test(migrations = false)]
+async fn connection_management_migration_preserves_existing_connections_as_enabled(pool: PgPool) {
+    let earlier = sqlx::migrate::Migrator {
+        migrations: std::borrow::Cow::Owned(
+            bergsmith_persistence::MIGRATOR
+                .iter()
+                .filter(|migration| migration.version < 17)
+                .cloned()
+                .collect(),
+        ),
+        ..sqlx::migrate::Migrator::DEFAULT
+    };
+    earlier.run(&pool).await.unwrap();
+    let organization = uuid::Uuid::now_v7();
+    let connection = uuid::Uuid::now_v7();
+    sqlx::query("INSERT INTO organizations (id,slug,display_name) VALUES ($1,'acme','Acme')")
+        .bind(organization)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO catalog_connections (id,organization_id,name,uri) VALUES ($1,$2,'legacy','https://catalog.example/api')")
+        .bind(connection).bind(organization).execute(&pool).await.unwrap();
+    bergsmith_persistence::MIGRATOR.run(&pool).await.unwrap();
+    let stored: (bool, i64, String) =
+        sqlx::query_as("SELECT enabled,revision,uri FROM catalog_connections WHERE id=$1")
+            .bind(connection)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, (true, 0, "https://catalog.example/api".to_owned()));
+}
+
+#[sqlx::test(migrations = false)]
 async fn migrations_apply_and_reapply_without_changes(pool: PgPool) {
     let database = Database::from_pool(pool);
 

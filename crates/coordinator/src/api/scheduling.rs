@@ -113,7 +113,7 @@ impl WindowBody {
     clippy::option_option,
     reason = "this is the standard serde double-option deserializer"
 )]
-fn double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+pub(super) fn double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,

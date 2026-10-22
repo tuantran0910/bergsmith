@@ -156,7 +156,7 @@ impl Resource {
         match self {
             Self::Catalog => variants!(
                 "catalog_connections r",
-                "jsonb_build_object('id', r.id, 'name', r.name, 'created_at', r.created_at)",
+                "jsonb_build_object('id', r.id, 'name', r.name, 'enabled', r.enabled, 'revision', r.revision, 'updated_at', r.updated_at, 'created_at', r.created_at)",
                 catalog_access!()
             ),
             Self::Table => variants!(
@@ -290,14 +290,35 @@ pub(super) async fn catalog(
     caller: Caller,
     id: Result<Path<Uuid>, axum::extract::rejection::PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    read(
+    let id = id.map_err(|_| ApiError::invalid())?.0;
+    let summary = read(
         &state,
         &caller.0,
         Resource::Catalog,
         PageQuery::default(),
-        Some(id.map_err(|_| ApiError::invalid())?.0),
+        Some(id),
     )
-    .await
+    .await?;
+    let mut conn = state.database.pool().acquire().await?;
+    let connection_id = bergsmith_common::ids::CatalogConnectionId::from_uuid(id);
+    if grants::has_permission(
+        &mut conn,
+        caller.organization_id,
+        caller.principal_id,
+        Permission::ManageConnections,
+        ResourceScope::Connection(connection_id),
+    )
+    .await?
+    {
+        let connection = bergsmith_persistence::tenancy::catalog_connection(
+            &mut conn,
+            caller.organization_id,
+            connection_id,
+        )
+        .await?;
+        return Ok(Json(super::catalogs::document(&connection)));
+    }
+    Ok(summary)
 }
 pub(super) async fn table(
     State(state): State<ApiState>,

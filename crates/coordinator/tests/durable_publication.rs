@@ -1612,6 +1612,67 @@ async fn unknown_outcome(conn: &mut PgConnection) -> Run {
     run
 }
 
+async fn disabled_runtime_recovery(pool: PgPool, mark_unknown: bool) {
+    use bergsmith_coordinator::runtime::catalogs::{RuntimeCatalogs, RuntimeWorkerAccess};
+    use bergsmith_coordinator::runtime::config::RuntimeProfiles;
+    use bergsmith_coordinator::scheduling::SchedulingAccess as _;
+    use bergsmith_persistence::Database;
+    use std::sync::Arc;
+
+    let mut conn = pool.acquire().await.unwrap();
+    let mut run = setup(&mut conn, false).await;
+    run.execute(&mut conn, true).await;
+    run.prepare(&mut conn).await;
+    run.authorize(&mut conn).await;
+    if mark_unknown {
+        run.job = publication::reconcile(&mut conn, &run.job, run.epoch, &run.catalog)
+            .await
+            .unwrap();
+        assert_eq!(run.job.state, JobState::CommitOutcomeUnknown);
+    }
+    run.expose_publication(&mut conn).await;
+    expose_connection(&mut conn, &mut run).await;
+    sqlx::query("UPDATE catalog_connections SET enabled=false WHERE id=$1")
+        .bind(run.tenant.connection.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    let never_send = run
+        .server
+        .mock("POST", TABLE_PATH)
+        .expect(0)
+        .create_async()
+        .await;
+    let catalogs = Arc::new(RuntimeCatalogs::new(
+        Database::from_pool(pool.clone()),
+        RuntimeProfiles {
+            default: bergsmith_storage::StorageProfiles::default(),
+            connections: std::collections::BTreeMap::new(),
+        },
+    ));
+    let access = RuntimeWorkerAccess::new(catalogs);
+    drop(conn);
+    access
+        .recover_publication(&pool, &run.job, run.epoch)
+        .await
+        .unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    run.refresh(&mut conn).await;
+    assert_eq!(run.job.state, JobState::Succeeded);
+    assert_eq!(run.barrier(&mut conn).await, 0);
+    never_send.assert_async().await;
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn disabled_connections_allow_runtime_recovery_of_committing_jobs(pool: PgPool) {
+    disabled_runtime_recovery(pool, false).await;
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn disabled_connections_allow_runtime_recovery_of_unknown_outcomes(pool: PgPool) {
+    disabled_runtime_recovery(pool, true).await;
+}
+
 fn attestation(run: &Run, revision: i64, reason: &str) -> operator::NonPublicationAttestation {
     operator::NonPublicationAttestation {
         organization: "acme".into(),

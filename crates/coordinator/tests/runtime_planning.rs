@@ -67,7 +67,7 @@ async fn runtime_epoch(conn: &mut sqlx::PgConnection) -> i64 {
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
-async fn a_planning_pass_records_a_plan_and_registers_dispatch(pool: PgPool) {
+async fn a_planning_pass_prefers_enabled_connections_and_registers_dispatch(pool: PgPool) {
     let fixture = fixture().await;
     let mut server = mockito::Server::new_async().await;
     let _config = server
@@ -126,6 +126,30 @@ async fn a_planning_pass_records_a_plan_and_registers_dispatch(pool: PgPool) {
         location: Location::parse(fixture.metadata().location()).unwrap(),
     };
     let table_id = record_observation(&mut conn, organization, connection, &observed)
+        .await
+        .unwrap();
+    // This inaccessible endpoint sorts first, but a disabled connection must
+    // not displace the enabled route used to preview and admit this table.
+    let disabled = CatalogConnectionId::from_uuid(uuid::Uuid::nil());
+    tenancy::create_catalog_connection(
+        &mut conn,
+        &NewCatalogConnection {
+            id: disabled,
+            organization_id: organization,
+            name: "disabled".into(),
+            uri: "http://127.0.0.1:9".into(),
+            warehouse: None,
+            credential_ref: None,
+        },
+    )
+    .await
+    .unwrap();
+    record_observation(&mut conn, organization, disabled, &observed)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE catalog_connections SET enabled=false WHERE id=$1")
+        .bind(disabled.as_uuid())
+        .execute(&mut *conn)
         .await
         .unwrap();
     let created_by = PrincipalId::generate();
@@ -191,7 +215,7 @@ async fn a_planning_pass_records_a_plan_and_registers_dispatch(pool: PgPool) {
     let scheduler = Arc::new(Scheduler::new(worker, access, SchedulerConfig::default()).unwrap());
     let planner = PlannerService::new(
         pool.clone(),
-        catalogs,
+        catalogs.clone(),
         scheduler,
         PlannerConfig {
             min_input_files: 2,
@@ -228,6 +252,23 @@ async fn a_planning_pass_records_a_plan_and_registers_dispatch(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(specs, 1);
+    let mut conn = pool.acquire().await.unwrap();
+    assert!(
+        bergsmith_persistence::scheduling::admit(
+            &mut conn,
+            job.id,
+            epoch,
+            bergsmith_persistence::scheduling::AdmissionLimits::default()
+        )
+        .await
+        .unwrap()
+    );
+    drop(conn);
+    let binding = catalogs.binding_for_job(&current).await.unwrap();
+    assert_eq!(
+        binding.connection.id, connection,
+        "admitted work also prefers the enabled alias"
+    );
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]

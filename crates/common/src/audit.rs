@@ -90,6 +90,10 @@ pub enum AuditAction {
     ScheduleUpdated,
     /// A public API command was refused by scoped authorization.
     ApiPermissionDenied,
+    /// A catalog connection was created.
+    CatalogCreated,
+    /// A catalog connection was edited, enabled, or disabled.
+    CatalogUpdated,
 }
 
 impl AuditAction {
@@ -118,6 +122,8 @@ impl AuditAction {
             Self::ScheduleCreated => "schedule.created",
             Self::ScheduleUpdated => "schedule.updated",
             Self::ApiPermissionDenied => "api.permission_denied",
+            Self::CatalogCreated => "catalog.created",
+            Self::CatalogUpdated => "catalog.updated",
         }
     }
 
@@ -153,6 +159,8 @@ impl AuditAction {
         Self::ScheduleCreated,
         Self::ScheduleUpdated,
         Self::ApiPermissionDenied,
+        Self::CatalogCreated,
+        Self::CatalogUpdated,
     ];
 }
 
