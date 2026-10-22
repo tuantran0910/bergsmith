@@ -87,7 +87,7 @@ export function jobPath(id: string): string {
 type LinkProps = AnchorHTMLAttributes<HTMLAnchorElement> & { to: string };
 
 /** An in-application link; modified clicks keep the browser's behavior. */
-export function Link({ to, onClick, ...rest }: LinkProps) {
+export function Link({ to, onClick, children, ...rest }: LinkProps) {
     const handle = (event: MouseEvent<HTMLAnchorElement>) => {
         onClick?.(event);
         if (
@@ -103,5 +103,9 @@ export function Link({ to, onClick, ...rest }: LinkProps) {
         event.preventDefault();
         navigate(to);
     };
-    return <a href={to} onClick={handle} {...rest} />;
+    return (
+        <a href={to} onClick={handle} {...rest}>
+            {children}
+        </a>
+    );
 }

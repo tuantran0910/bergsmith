@@ -1,196 +1,219 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens (ADR 0046). Each token holds a light and a dark value in
+ * `light-dark()`, chosen by `color-scheme`: the system decides by default,
+ * and `data-theme` on the root element pins one. No script is needed for the
+ * system theme, so the first paint is already in the right theme.
+ *
+ * Neutral graphite surfaces with one glacier-blue accent. Status colors are
+ * always paired with text and an icon.
+ */
 :root {
-    --text: #1c1f23;
-    --muted: #5b636d;
-    --surface: #ffffff;
-    --raised: #f4f6f8;
-    --border: #d5dae0;
-    --accent: #1f5fae;
-    --ok: #1d6b3a;
-    --warning: #8a5a00;
-    --error: #a3222b;
     color-scheme: light dark;
-    font-family: system-ui, sans-serif;
-    line-height: 1.5;
+
+    --background: light-dark(oklch(0.99 0.002 250), oklch(0.17 0.006 250));
+    --foreground: light-dark(oklch(0.22 0.012 250), oklch(0.94 0.005 250));
+    --card: light-dark(oklch(1 0 0), oklch(0.2 0.007 250));
+    --card-foreground: var(--foreground);
+    --popover: light-dark(oklch(1 0 0), oklch(0.22 0.008 250));
+    --popover-foreground: var(--foreground);
+    --primary: light-dark(oklch(0.5 0.13 245), oklch(0.74 0.11 240));
+    --primary-foreground: light-dark(
+        oklch(0.98 0.01 245),
+        oklch(0.18 0.02 245)
+    );
+    --secondary: light-dark(oklch(0.96 0.004 250), oklch(0.26 0.008 250));
+    --secondary-foreground: var(--foreground);
+    --muted: light-dark(oklch(0.96 0.004 250), oklch(0.26 0.008 250));
+    --muted-foreground: light-dark(oklch(0.49 0.012 250), oklch(0.73 0.01 250));
+    --destructive: light-dark(oklch(0.53 0.2 25), oklch(0.72 0.16 22));
+    --success: light-dark(oklch(0.5 0.12 150), oklch(0.76 0.13 150));
+    --warning: light-dark(oklch(0.52 0.11 70), oklch(0.81 0.12 75));
+    --border: light-dark(oklch(0.91 0.005 250), oklch(1 0 0 / 0.1));
+    --input: light-dark(oklch(0.87 0.006 250), oklch(1 0 0 / 0.16));
+    --ring: light-dark(oklch(0.6 0.12 245), oklch(0.66 0.1 240));
+    --radius: 0.625rem;
 }
 
-@media (prefers-color-scheme: dark) {
-    :root {
-        --text: #e6e9ed;
-        --muted: #9aa4af;
-        --surface: #15181c;
-        --raised: #1f2329;
-        --border: #353b43;
-        --accent: #7fb0ec;
-        --ok: #74c792;
-        --warning: #e3b45b;
-        --error: #ef8a90;
+:root[data-theme="light"] {
+    color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+    color-scheme: dark;
+}
+
+@theme inline {
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-card: var(--card);
+    --color-card-foreground: var(--card-foreground);
+    --color-popover: var(--popover);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-secondary: var(--secondary);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-destructive: var(--destructive);
+    --color-success: var(--success);
+    --color-warning: var(--warning);
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-ring: var(--ring);
+    --radius-sm: calc(var(--radius) - 4px);
+    --radius-md: calc(var(--radius) - 2px);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+    * {
+        @apply border-border outline-ring/50;
+    }
+
+    body {
+        @apply bg-background text-foreground antialiased;
+        line-height: 1.5;
+    }
+
+    h1 {
+        @apply mb-4 text-2xl font-semibold tracking-tight;
+    }
+
+    h2 {
+        @apply mt-6 mb-2 text-lg font-semibold;
+    }
+
+    a {
+        @apply text-primary underline-offset-4 hover:underline;
+    }
+
+    code {
+        @apply font-mono text-[0.85em];
+        overflow-wrap: anywhere;
+    }
+
+    :focus-visible {
+        @apply outline-2 outline-offset-2 outline-ring;
     }
 }
 
-body {
-    margin: 0;
-    background: var(--surface);
-    color: var(--text);
-}
+/*
+ * The pages' semantic classes, restyled with the tokens. BS-021.T3 replaces
+ * them with the primitives in `src/ui/`.
+ */
+@layer components {
+    header.shell {
+        @apply sticky top-0 z-40 flex items-center gap-4 border-b bg-background/90 px-4 py-2 backdrop-blur;
+    }
 
-main {
-    padding: 1rem;
-    max-width: 72rem;
-    margin: 0 auto;
-}
+    header.shell nav {
+        @apply flex flex-1 items-center gap-1;
+    }
 
-a {
-    color: var(--accent);
-}
+    header.shell nav a {
+        @apply rounded-md px-2.5 py-1.5 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground hover:no-underline;
+    }
 
-code {
-    font-size: 0.875em;
-    overflow-wrap: anywhere;
-}
+    main {
+        @apply mx-auto w-full max-w-6xl px-4 py-6;
+    }
 
-header.shell {
-    display: flex;
-    gap: 1rem;
-    align-items: center;
-    padding: 0.5rem 1rem;
-    border-bottom: 1px solid var(--border);
-    background: var(--raised);
-}
+    .who {
+        @apply text-sm text-muted-foreground;
+    }
 
-header.shell nav {
-    display: flex;
-    gap: 1rem;
-    flex: 1;
-}
+    main table {
+        @apply my-2 mb-4 w-full border-collapse text-sm tabular-nums;
+    }
 
-.who {
-    color: var(--muted);
-}
+    main th {
+        @apply h-10 border-b px-2 text-left align-middle font-medium text-muted-foreground;
+    }
 
-table {
-    border-collapse: collapse;
-    width: 100%;
-    margin: 0.5rem 0 1rem;
-}
+    main td {
+        @apply border-b p-2 align-top;
+    }
 
-th,
-td {
-    text-align: left;
-    padding: 0.375rem 0.5rem;
-    border-bottom: 1px solid var(--border);
-    vertical-align: top;
-}
+    main tbody tr {
+        @apply transition-colors hover:bg-muted/50;
+    }
 
-.facts {
-    display: grid;
-    grid-template-columns: max-content 1fr;
-    gap: 0.25rem 1rem;
-}
+    .facts {
+        @apply grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1.5 text-sm;
+    }
 
-.facts dd {
-    margin: 0;
-}
+    .facts dt {
+        @apply text-muted-foreground;
+    }
 
-.facts ul {
-    margin: 0;
-    padding-left: 1rem;
-}
+    .facts ul {
+        @apply m-0 list-disc pl-4;
+    }
 
-.actions,
-.commands {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.75rem;
-    align-items: end;
-    margin: 1rem 0;
-}
+    .actions,
+    .commands {
+        @apply my-4 flex flex-wrap items-end gap-3;
+    }
 
-.hint {
-    color: var(--muted);
-}
+    .hint {
+        @apply text-sm text-muted-foreground;
+    }
 
-.notice {
-    border: 1px solid var(--border);
-    border-left-width: 4px;
-    padding: 0.5rem 0.75rem;
-    margin: 0.75rem 0;
-    background: var(--raised);
-}
+    .notice {
+        @apply my-3 rounded-lg border border-l-4 bg-card px-3 py-2 text-sm;
+    }
 
-.notice p {
-    margin: 0.25rem 0 0;
-}
+    .notice p {
+        @apply mt-1 mb-0;
+    }
 
-.notice-error {
-    border-left-color: var(--error);
-}
+    .notice-error {
+        @apply border-l-destructive;
+    }
 
-.notice-warning {
-    border-left-color: var(--warning);
-}
+    .notice-warning {
+        @apply border-l-warning;
+    }
 
-.notice-ok {
-    border-left-color: var(--ok);
-}
+    .notice-ok {
+        @apply border-l-success;
+    }
 
-.badge {
-    display: inline-block;
-    padding: 0 0.5rem;
-    border: 1px solid currentColor;
-    border-radius: 0.75rem;
-    font-size: 0.875em;
-}
+    .events {
+        @apply list-decimal space-y-1 pl-6 text-sm;
+    }
 
-.badge-ok {
-    color: var(--ok);
-}
+    .event-time {
+        @apply text-muted-foreground tabular-nums;
+    }
 
-.badge-warning {
-    color: var(--warning);
-}
+    main label {
+        @apply flex flex-col gap-1.5 text-sm font-medium;
+    }
 
-.badge-error {
-    color: var(--error);
-}
+    main input,
+    main select {
+        @apply h-8 rounded-lg border border-input bg-transparent px-2.5 text-sm font-normal focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none;
+    }
 
-.badge-progress {
-    color: var(--accent);
-}
+    main button:not([data-slot]),
+    header.shell > button:not([data-slot]) {
+        @apply inline-flex h-8 items-center justify-center rounded-lg border border-input bg-background px-2.5 text-sm font-medium transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-50;
+    }
 
-.badge-neutral {
-    color: var(--muted);
-}
+    main button[type="submit"]:not([data-slot]) {
+        @apply border-transparent bg-primary text-primary-foreground hover:bg-primary/85;
+    }
 
-.events {
-    padding-left: 1.5rem;
-}
+    .sign-in {
+        @apply mx-auto mt-[12vh] max-w-sm rounded-xl bg-card p-6 ring-1 ring-foreground/10;
+    }
 
-.event-time {
-    color: var(--muted);
-}
-
-label {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-}
-
-input {
-    font: inherit;
-    padding: 0.25rem 0.5rem;
-}
-
-button {
-    font: inherit;
-    padding: 0.25rem 0.75rem;
-}
-
-.sign-in {
-    max-width: 24rem;
-}
-
-.sign-in form {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
+    .sign-in form {
+        @apply flex flex-col gap-3;
+    }
 }

@@ -640,7 +640,9 @@ describe("job progress", () => {
         start(`/jobs/${JOB_ID}`);
 
         expect(
-            await screen.findByText("Running", { selector: ".badge" }),
+            await screen.findByText("Running", {
+                selector: '[data-slot="badge"]',
+            }),
         ).toBeInTheDocument();
         expect(screen.getByText("Not started")).toBeInTheDocument();
         const stream = FakeEventSource.latest();
@@ -679,7 +681,7 @@ describe("job progress", () => {
         let current = job("Running");
         fake.on("GET", "/api/v1/jobs/{id}", () => json(200, current));
         start(`/jobs/${JOB_ID}`);
-        await screen.findByText("Running", { selector: ".badge" });
+        await screen.findByText("Running", { selector: '[data-slot="badge"]' });
         const stream = FakeEventSource.latest();
 
         current = job("ReadyToCommit", { publication_started: true });
@@ -713,7 +715,7 @@ describe("job progress", () => {
             () => json(200, job("Queued")),
         );
         start(`/jobs/${JOB_ID}`);
-        await screen.findByText("Running", { selector: ".badge" });
+        await screen.findByText("Running", { selector: '[data-slot="badge"]' });
 
         // A read stalls; a newer read of the same job replaces it.
         void client.refetchQueries({ queryKey: ["job", JOB_ID] });
@@ -724,14 +726,16 @@ describe("job progress", () => {
 
         expect(signals[0]?.aborted).toBe(true);
         expect(
-            await screen.findByText("Queued", { selector: ".badge" }),
+            await screen.findByText("Queued", {
+                selector: '[data-slot="badge"]',
+            }),
         ).toBeInTheDocument();
     });
 
     it("stops a terminal job's stream from reconnecting forever", async () => {
         fake.on("GET", "/api/v1/jobs/{id}", () => json(200, job("Failed")));
         start(`/jobs/${JOB_ID}`);
-        await screen.findByText("Failed", { selector: ".badge" });
+        await screen.findByText("Failed", { selector: '[data-slot="badge"]' });
         const stream = FakeEventSource.latest();
 
         act(() => {
@@ -746,7 +750,7 @@ describe("job progress", () => {
     it("resumes after the last event when the user reconnects", async () => {
         fake.on("GET", "/api/v1/jobs/{id}", () => json(200, job("Running")));
         const user = start(`/jobs/${JOB_ID}`);
-        await screen.findByText("Running", { selector: ".badge" });
+        await screen.findByText("Running", { selector: '[data-slot="badge"]' });
         const first = FakeEventSource.latest();
         act(() => {
             first.emit(event(4, "Running", "Queued"));
@@ -776,7 +780,7 @@ describe("job progress", () => {
     it("ignores data that is not a job event", async () => {
         fake.on("GET", "/api/v1/jobs/{id}", () => json(200, job("Running")));
         start(`/jobs/${JOB_ID}`);
-        await screen.findByText("Running", { selector: ".badge" });
+        await screen.findByText("Running", { selector: '[data-slot="badge"]' });
         const stream = FakeEventSource.latest() as unknown as {
             listeners: Map<string, ((event: MessageEvent<string>) => void)[]>;
         };
