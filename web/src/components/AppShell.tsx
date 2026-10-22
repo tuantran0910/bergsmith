@@ -136,7 +136,9 @@ export function AppShell({
                         <ErrorNotice error={logout.error} />
                     </div>
                 )}
-                <main>{children}</main>
+                <main className="mx-auto w-full max-w-6xl px-4 py-6 md:px-8 md:py-8">
+                    {children}
+                </main>
             </div>
         </div>
     );

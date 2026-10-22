@@ -1,5 +1,25 @@
+import {
+    CircleCheckIcon,
+    CircleMinusIcon,
+    CircleXIcon,
+    type LucideIcon,
+} from "lucide-react";
+import type { ReactNode } from "react";
+
 import type { Schemas } from "../api/client";
-import { bytes, duration, words } from "../format";
+import { GridFrame } from "../components/Page";
+import { bytes, count, duration, words } from "../format";
+import { Alert, AlertDescription, AlertTitle } from "../ui/Alert";
+import { Badge } from "../ui/Badge";
+import { Card, CardContent, CardHeader, CardTitle } from "../ui/Card";
+import {
+    Table,
+    TableBody,
+    TableCell,
+    TableHead,
+    TableHeader,
+    TableRow,
+} from "../ui/Table";
 
 type Preview = Schemas["Preview"];
 
@@ -15,6 +35,15 @@ export function binKey(bin: Schemas["Bin"]): string {
     ]);
 }
 
+const OUTCOMES: Record<
+    Preview["outcome"],
+    { variant: "success" | "neutral" | "destructive"; icon: LucideIcon }
+> = {
+    planned: { variant: "success", icon: CircleCheckIcon },
+    no_op: { variant: "neutral", icon: CircleMinusIcon },
+    rejected: { variant: "destructive", icon: CircleXIcon },
+};
+
 function outcomeText(preview: Preview): string {
     switch (preview.outcome) {
         case "planned":
@@ -28,67 +57,120 @@ function outcomeText(preview: Preview): string {
     }
 }
 
+/** One figure of the estimate, with an optional line under it. */
+function Stat({
+    label,
+    value,
+    detail,
+}: {
+    label: string;
+    value: ReactNode;
+    detail?: ReactNode;
+}) {
+    return (
+        <div className="rounded-xl bg-card px-4 py-3 ring-1 ring-foreground/10">
+            <dt className="text-xs font-medium text-muted-foreground">
+                {label}
+            </dt>
+            <dd className="m-0 mt-1 text-xl font-semibold tabular-nums">
+                {value}
+            </dd>
+            {detail !== undefined && (
+                <dd className="m-0 text-xs text-muted-foreground tabular-nums">
+                    {detail}
+                </dd>
+            )}
+        </div>
+    );
+}
+
 /** What a job would be built from, including why a table is unsupported. */
 export function PreviewView({ preview }: { preview: Preview }) {
+    const outcome = OUTCOMES[preview.outcome];
+    const OutcomeIcon = outcome.icon;
     return (
-        <section aria-label="Preview">
-            <h2>Preview</h2>
-            <p>
-                <strong>{outcomeText(preview)}</strong>
+        <section aria-label="Preview" className="mt-8 grid gap-4">
+            <h2 className="m-0 text-lg font-semibold">Preview</h2>
+            <Alert variant={outcome.variant}>
+                <OutcomeIcon aria-hidden="true" />
+                <AlertTitle>{outcomeText(preview)}</AlertTitle>
                 {preview.baseline && (
-                    <>
-                        {" "}
-                        (snapshot <code>{preview.baseline.snapshot_id}</code>,
-                        sequence {preview.baseline.sequence_number})
-                    </>
+                    <AlertDescription>
+                        <p>
+                            From snapshot{" "}
+                            <code>{preview.baseline.snapshot_id}</code>,
+                            sequence {preview.baseline.sequence_number}.
+                        </p>
+                    </AlertDescription>
                 )}
-            </p>
+            </Alert>
 
             {preview.rejections.length > 0 && (
-                <>
-                    <h3>Capability</h3>
-                    <ul>
-                        {preview.rejections.map((rejection, index) => (
-                            <li key={index}>
-                                <strong>{words(rejection.reason)}</strong>:{" "}
-                                {rejection.detail}
-                                {rejection.path !== null && (
-                                    <>
-                                        {" "}
-                                        <code>{rejection.path}</code>
-                                    </>
-                                )}
-                            </li>
-                        ))}
-                    </ul>
-                </>
+                <Card>
+                    <CardHeader>
+                        <CardTitle>Capability</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <ul className="m-0 grid list-none gap-2 p-0">
+                            {preview.rejections.map((rejection, index) => (
+                                <li key={index} className="flex gap-2">
+                                    <CircleXIcon
+                                        aria-hidden="true"
+                                        className="mt-0.5 size-4 shrink-0 text-destructive"
+                                    />
+                                    <span>
+                                        <strong>
+                                            {words(rejection.reason)}
+                                        </strong>
+                                        : {rejection.detail}
+                                        {rejection.path !== null && (
+                                            <>
+                                                {" "}
+                                                <code>{rejection.path}</code>
+                                            </>
+                                        )}
+                                    </span>
+                                </li>
+                            ))}
+                        </ul>
+                    </CardContent>
+                </Card>
             )}
 
             {preview.outcome === "planned" && (
-                <dl className="facts">
-                    <dt>Tasks</dt>
-                    <dd>{preview.estimate.tasks}</dd>
-                    <dt>Input</dt>
-                    <dd>
-                        {preview.estimate.files} files,{" "}
-                        {bytes(preview.estimate.bytes)}
-                    </dd>
-                    <dt>Files removed</dt>
-                    <dd>{preview.estimate.files_removed}</dd>
-                    <dt>Expected duration</dt>
-                    <dd>{duration(preview.estimate.duration_millis)}</dd>
-                    <dt>Candidates</dt>
-                    <dd>
-                        {preview.candidates.files} files,{" "}
-                        {bytes(preview.candidates.bytes)}
-                    </dd>
+                <dl className="m-0 grid grid-cols-2 gap-3 md:grid-cols-5">
+                    <Stat
+                        label="Bins"
+                        value={preview.bins_total}
+                        detail={count(preview.estimate.tasks, "task")}
+                    />
+                    <Stat
+                        label="Input"
+                        value={bytes(preview.estimate.bytes)}
+                        detail={count(preview.estimate.files, "file")}
+                    />
+                    <Stat
+                        label="Files removed"
+                        value={preview.estimate.files_removed}
+                    />
+                    <Stat
+                        label="Expected duration"
+                        value={duration(preview.estimate.duration_millis)}
+                    />
+                    <Stat
+                        label="Candidates"
+                        value={bytes(preview.candidates.bytes)}
+                        detail={count(preview.candidates.files, "file")}
+                    />
                 </dl>
             )}
 
             {preview.skipped.length > 0 && (
-                <>
-                    <h3>Not selected</h3>
-                    <ul>
+                <div>
+                    <h3 className="mt-0 mb-2 text-sm font-semibold">
+                        Not selected
+                    </h3>
+                    <ul className="m-0 grid list-disc gap-1 pl-5 text-sm text-muted-foreground">
                         {preview.skipped.map((skipped) => (
                             <li key={skipped.reason}>
                                 {words(skipped.reason)}: {skipped.files} files,{" "}
@@ -96,53 +178,84 @@ export function PreviewView({ preview }: { preview: Preview }) {
                             </li>
                         ))}
                     </ul>
-                </>
+                </div>
             )}
 
             {preview.bins.length > 0 && (
-                <>
-                    <h3>Bins</h3>
-                    {preview.bins_truncated && (
-                        <p>
-                            Showing {preview.bins.length} of{" "}
-                            {preview.bins_total} bins.
-                        </p>
-                    )}
-                    <table>
-                        <thead>
-                            <tr>
-                                <th scope="col">Partition</th>
-                                <th scope="col">Input</th>
-                                <th scope="col">Files removed</th>
-                                <th scope="col">Deletes</th>
-                                <th scope="col">Admission</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {preview.bins.map((bin) => (
-                                <tr key={binKey(bin)}>
-                                    <td>
-                                        spec {bin.partition.spec_id}
-                                        {bin.partition.values.map((value) => (
-                                            <span key={value.field_id}>
-                                                {" "}
-                                                {value.field_id}=
-                                                {value.value ?? "null"}
+                <div>
+                    <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+                        <h3 className="m-0 text-sm font-semibold">Bins</h3>
+                        {preview.bins_truncated && (
+                            <p className="m-0 text-sm text-muted-foreground">
+                                Showing {preview.bins.length} of{" "}
+                                {preview.bins_total} bins.
+                            </p>
+                        )}
+                    </div>
+                    <GridFrame>
+                        <Table>
+                            <TableHeader>
+                                <TableRow>
+                                    <TableHead className="pl-4">
+                                        Partition
+                                    </TableHead>
+                                    <TableHead>Input</TableHead>
+                                    <TableHead>Files removed</TableHead>
+                                    <TableHead>Deletes</TableHead>
+                                    <TableHead className="pr-4">
+                                        Admission
+                                    </TableHead>
+                                </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                                {preview.bins.map((bin) => (
+                                    <TableRow key={binKey(bin)}>
+                                        <TableCell className="pl-4">
+                                            <span className="flex flex-wrap gap-1">
+                                                <code>
+                                                    spec {bin.partition.spec_id}
+                                                </code>
+                                                {bin.partition.values.map(
+                                                    (value) => (
+                                                        <code
+                                                            key={value.field_id}
+                                                        >
+                                                            {value.field_id}=
+                                                            {value.value ??
+                                                                "null"}
+                                                        </code>
+                                                    ),
+                                                )}
                                             </span>
-                                        ))}
-                                    </td>
-                                    <td>
-                                        {bin.input.files} files,{" "}
-                                        {bytes(bin.input.bytes)}
-                                    </td>
-                                    <td>{bin.files_removed}</td>
-                                    <td>{bin.has_deletes ? "yes" : "no"}</td>
-                                    <td>{words(bin.disposition)}</td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </>
+                                        </TableCell>
+                                        <TableCell>
+                                            {bin.input.files} files,{" "}
+                                            {bytes(bin.input.bytes)}
+                                        </TableCell>
+                                        <TableCell>
+                                            {bin.files_removed}
+                                        </TableCell>
+                                        <TableCell>
+                                            {bin.has_deletes ? "Yes" : "No"}
+                                        </TableCell>
+                                        <TableCell className="pr-4">
+                                            <Badge
+                                                variant={
+                                                    bin.disposition ===
+                                                    "admitted"
+                                                        ? "success"
+                                                        : "neutral"
+                                                }
+                                            >
+                                                {words(bin.disposition)}
+                                            </Badge>
+                                        </TableCell>
+                                    </TableRow>
+                                ))}
+                            </TableBody>
+                        </Table>
+                    </GridFrame>
+                </div>
             )}
         </section>
     );

@@ -3,6 +3,7 @@ import { ApiFailure, call, csrfToken } from "./api/client";
 import {
     aliasName,
     bytes,
+    count,
     duration,
     shortId,
     timestamp,
@@ -38,9 +39,21 @@ describe("format", () => {
         );
     });
 
+    it("counts in the singular and the plural", () => {
+        expect(count(1, "task")).toBe("1 task");
+        expect(count(0, "task")).toBe("0 tasks");
+        expect(count(2, "entry", "entries")).toBe("2 entries");
+    });
+
     it("turns codes into words and shortens IDs", () => {
         expect(words("retry_same_request")).toBe("Retry same request");
-        expect(shortId("0190f3c4-0000")).toBe("0190f3c4");
+        // IDs created in the same minute differ only after their prefix.
+        expect(shortId("0190f3c4-0000-7000-8000-00000000000a")).toBe(
+            "0000000a",
+        );
+        expect(shortId("0190f3c4-0000-7000-8000-00000000000b")).not.toBe(
+            shortId("0190f3c4-0000-7000-8000-00000000000a"),
+        );
         expect(
             aliasName(
                 { catalog_id: "c", namespace: ["a", "b"], name: "t" },

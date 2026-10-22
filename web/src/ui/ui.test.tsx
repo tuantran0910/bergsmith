@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { StatusBadge } from "../components/StatusBadge";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { THEME_STORAGE_KEY } from "../theme";
+import { Alert, AlertDescription, AlertTitle } from "./Alert";
 import { Badge } from "./Badge";
 import { Button } from "./Button";
 import {
@@ -97,6 +98,26 @@ describe("Button", () => {
         const button = screen.getByRole("button", { name: "Wide" });
         expect(button).toHaveClass("h-12");
         expect(button).not.toHaveClass("h-7");
+    });
+});
+
+describe("Alert", () => {
+    it("carries the role the caller gives and its tone", () => {
+        render(
+            <Alert role="alert" variant="destructive">
+                <AlertTitle>Ledger unavailable</AlertTitle>
+                <AlertDescription>Try again.</AlertDescription>
+            </Alert>,
+        );
+        const alert = screen.getByRole("alert");
+        expect(alert).toHaveTextContent("Ledger unavailableTry again.");
+        expect(alert).toHaveClass("border-l-destructive");
+    });
+
+    it("is a standing note without a role", () => {
+        render(<Alert>Note</Alert>);
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+        expect(screen.getByText("Note")).toHaveAttribute("data-slot", "alert");
     });
 });
 

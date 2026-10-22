@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Outlet, useRouterState } from "@tanstack/react-router";
+import { LoaderCircleIcon } from "lucide-react";
 
 import { AppShell } from "./components/AppShell";
 import { ErrorNotice } from "./components/ErrorNotice";
@@ -18,11 +19,22 @@ export function Root() {
     });
 
     if (session.isPending) {
-        return <p className="p-4">Loading…</p>;
+        return (
+            <p
+                role="status"
+                className="flex min-h-dvh items-center justify-center gap-2 text-sm text-muted-foreground"
+            >
+                <LoaderCircleIcon
+                    aria-hidden="true"
+                    className="size-4 animate-spin motion-reduce:animate-none"
+                />
+                Loading…
+            </p>
+        );
     }
     if (session.error) {
         return (
-            <main>
+            <main className="mx-auto w-full max-w-xl px-4 pt-[12vh]">
                 <ErrorNotice
                     error={session.error}
                     onRetry={() => {

@@ -1,8 +1,25 @@
 import { Link } from "@tanstack/react-router";
+import { Table2Icon } from "lucide-react";
 
 import { useCatalogNames, useTables } from "../api/queries";
 import { ErrorNotice } from "../components/ErrorNotice";
+import {
+    EmptyState,
+    GridFrame,
+    LoadMore,
+    LoadingRows,
+    PageHeader,
+} from "../components/Page";
+import { ResourceId } from "../components/ResourceId";
 import { aliasName, timestamp } from "../format";
+import {
+    Table,
+    TableBody,
+    TableCell,
+    TableHead,
+    TableHeader,
+    TableRow,
+} from "../ui/Table";
 
 /** Canonical tables the session may see, named through their aliases. */
 export function TablesPage() {
@@ -13,8 +30,11 @@ export function TablesPage() {
 
     return (
         <section>
-            <h1>Tables</h1>
-            {tables.isPending && <p>Loading tables…</p>}
+            <PageHeader
+                title="Tables"
+                description="Iceberg tables you may maintain, by catalog, namespace, and name."
+            />
+            {tables.isPending && <LoadingRows label="Loading tables…" />}
             {tables.error && (
                 <ErrorNotice
                     error={tables.error}
@@ -24,60 +44,83 @@ export function TablesPage() {
                 />
             )}
             {tables.isSuccess && items.length === 0 && (
-                <p>No tables are visible to you.</p>
+                <EmptyState
+                    icon={Table2Icon}
+                    title="No tables are visible to you."
+                >
+                    A table appears here once its catalog is connected and you
+                    hold a grant on the catalog or the table.
+                </EmptyState>
             )}
             {items.length > 0 && (
-                <table>
-                    <thead>
-                        <tr>
-                            <th scope="col">Table</th>
-                            <th scope="col">Other names</th>
-                            <th scope="col">Table UUID</th>
-                            <th scope="col">Registered</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {items.map((table) => {
-                            const [primary, ...others] = table.aliases;
-                            return (
-                                <tr key={table.id}>
-                                    <td>
-                                        <Link
-                                            to="/tables/$tableId"
-                                            params={{ tableId: table.id }}
-                                        >
-                                            {primary
-                                                ? aliasName(primary, names)
-                                                : table.id}
-                                        </Link>
-                                    </td>
-                                    <td>
-                                        {others
-                                            .map((alias) =>
-                                                aliasName(alias, names),
-                                            )
-                                            .join(", ")}
-                                    </td>
-                                    <td>
-                                        <code>{table.table_uuid}</code>
-                                    </td>
-                                    <td>{timestamp(table.created_at)}</td>
-                                </tr>
-                            );
-                        })}
-                    </tbody>
-                </table>
-            )}
-            {tables.hasNextPage && (
-                <button
-                    type="button"
-                    disabled={tables.isFetchingNextPage}
-                    onClick={() => {
-                        void tables.fetchNextPage();
-                    }}
-                >
-                    Load more tables
-                </button>
+                <>
+                    <GridFrame>
+                        <Table>
+                            <TableHeader>
+                                <TableRow>
+                                    <TableHead className="pl-4">
+                                        Table
+                                    </TableHead>
+                                    <TableHead>Other names</TableHead>
+                                    <TableHead>Table UUID</TableHead>
+                                    <TableHead className="pr-4">
+                                        Registered
+                                    </TableHead>
+                                </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                                {items.map((table) => {
+                                    const [primary, ...others] = table.aliases;
+                                    return (
+                                        <TableRow key={table.id}>
+                                            <TableCell className="pl-4 font-medium">
+                                                <Link
+                                                    to="/tables/$tableId"
+                                                    params={{
+                                                        tableId: table.id,
+                                                    }}
+                                                >
+                                                    {primary
+                                                        ? aliasName(
+                                                              primary,
+                                                              names,
+                                                          )
+                                                        : table.id}
+                                                </Link>
+                                            </TableCell>
+                                            <TableCell className="text-muted-foreground">
+                                                {others
+                                                    .map((alias) =>
+                                                        aliasName(alias, names),
+                                                    )
+                                                    .join(", ")}
+                                            </TableCell>
+                                            <TableCell>
+                                                <ResourceId
+                                                    id={table.table_uuid}
+                                                    label="table UUID"
+                                                    short
+                                                />
+                                            </TableCell>
+                                            <TableCell className="pr-4 whitespace-nowrap text-muted-foreground">
+                                                {timestamp(table.created_at)}
+                                            </TableCell>
+                                        </TableRow>
+                                    );
+                                })}
+                            </TableBody>
+                        </Table>
+                    </GridFrame>
+                    <LoadMore
+                        shown={items.length}
+                        noun="tables"
+                        hasMore={tables.hasNextPage}
+                        loading={tables.isFetchingNextPage}
+                        onLoad={() => {
+                            void tables.fetchNextPage();
+                        }}
+                    />
+                </>
             )}
         </section>
     );
