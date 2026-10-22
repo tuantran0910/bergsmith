@@ -84,9 +84,10 @@ on. The coordinator logs the number of unresolved publications every pass.
    send is still retained ([catalog-connections.md](catalog-connections.md)).
    Most unknown outcomes resolve on their own once the catalog answers.
 2. If the history is gone, the outcome can only be settled by operator
-   attestation; follow [Resolving an unknown outcome](publication.md#resolving-an-unknown-outcome).
-   This release has no command for it yet, so leave the job unresolved. The
-   table stays blocked, which is safe.
+   attestation with `bergsmith-coordinator attest-non-publication`; follow
+   [Resolving an unknown outcome](publication.md#resolving-an-unknown-outcome).
+   Until you have that proof, leave the job unresolved. The table stays
+   blocked, which is safe.
 
 ## Worker loss
 

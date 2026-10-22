@@ -75,6 +75,33 @@ confidential `bergsmith` client, and the user `alice`. The issuer is
 the service uses an in-memory database; it is never used in production or by
 the automated tests.
 
+## Granting roles
+
+People other than the first administrator get roles from the command line.
+Each command takes `--database-url` (or `BERGSMITH_DATABASE_URL`) and an
+`--actor`, the principal ID of an administrator. Database access authenticates
+the command; the actor attributes it and must hold `grants:manage` over the
+changed scope, so the audit log never names a principal that could not make
+the change.
+
+```sh
+# Viewer, Operator, or Administrator; add --connection <id> or --table <id>
+# to narrow the scope. A new issuer and subject is provisioned first.
+bergsmith-coordinator grant-role --organization acme --actor <admin-principal-id> \
+  --issuer https://idp.example/realms/bergsmith --subject <oidc-subject> --role viewer
+bergsmith-coordinator list-grants --organization acme --actor <admin-principal-id>
+bergsmith-coordinator revoke-role --organization acme --actor <admin-principal-id> \
+  --grant <grant-id>
+```
+
+Provisioning a new principal needs `grants:manage` over the organization, so
+a connection- or table-scoped administrator can grant only to existing
+principals. Listing grants needs `grants:manage` over the organization.
+`grant-role` grants only to people: an issuer and subject that belong to a
+service principal is refused, and `MaintenanceService` is granted by
+`bootstrap-service`. Every change writes `identity.provisioned`, `grant.created`, or
+`grant.revoked` audit records.
+
 ## Operator duties
 
 - Provision principals and grants before onboarding a user; login does not

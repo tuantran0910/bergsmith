@@ -294,6 +294,29 @@ pub async fn active_grants(
     rows.into_iter().map(TryInto::try_into).collect()
 }
 
+/// Lists every active grant in an organization, by principal, role, and scope.
+///
+/// # Errors
+///
+/// Returns a database error if the query fails.
+pub async fn organization_grants(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+) -> Result<Vec<RoleGrant>, PersistenceError> {
+    let rows = sqlx::query_as::<_, RoleGrantRow>(concat!(
+        "SELECT ",
+        grant_columns!(),
+        " FROM principal_role_grants
+         WHERE organization_id = $1 AND revoked_at IS NULL
+         ORDER BY principal_id, role, catalog_connection_id NULLS FIRST,
+                  table_identity_id NULLS FIRST"
+    ))
+    .bind(organization_id.as_uuid())
+    .fetch_all(conn)
+    .await?;
+    rows.into_iter().map(TryInto::try_into).collect()
+}
+
 /// Whether `principal` holds `permission` over `resource`.
 ///
 /// # Errors

@@ -520,18 +520,21 @@ pub async fn reconcile(
 /// Retained evidence is rechecked first, read-only: a matching snapshot always
 /// wins and records `Succeeded`, whatever was attested. Otherwise the job takes
 /// its cancellation or pending disposition, or `Failed`, and the transition
-/// event records `actor` and `OperatorAttestedNonPublication`. Catalog failure
-/// changes nothing. Nothing is ever resent.
+/// event records `actor` and `OperatorAttestedNonPublication`. Either way the
+/// `job.non_publication_attested` audit record, with `evidence`, commits with
+/// the transition. Catalog failure changes nothing. Nothing is ever resent.
 ///
 /// # Errors
 /// Rejects a job that is not `CommitOutcomeUnknown`, a changed revision,
-/// lost leadership, or unavailable catalog evidence, without changing state.
+/// lost leadership, unavailable catalog evidence, or a failed audit record,
+/// without changing state.
 pub async fn attest_non_publication(
     conn: &mut PgConnection,
     job: &Job,
     epoch: i64,
     catalog: &CatalogConnection,
     actor: bergsmith_common::ids::PrincipalId,
+    evidence: &str,
 ) -> Result<Job, DurablePublicationError> {
     let current = jobs::job(conn, job.organization_id, job.id).await?;
     if current.state != JobState::CommitOutcomeUnknown
@@ -544,28 +547,22 @@ pub async fn attest_non_publication(
         }
         .into());
     }
-    if let SnapshotEvidence::Published { .. } = observe(conn, job.id, catalog).await? {
-        return Ok(publications::resolve(
-            conn,
-            current.id,
-            current.state_revision,
-            epoch,
-            JobState::Succeeded,
-            "SnapshotEvidenceMatched",
-            false,
-        )
-        .await?);
-    }
-    Ok(
-        publications::attest_non_publication(
-            conn,
-            current.id,
-            current.state_revision,
+    let snapshot_matched = matches!(
+        observe(conn, job.id, catalog).await?,
+        SnapshotEvidence::Published { .. }
+    );
+    Ok(publications::attest_non_publication(
+        conn,
+        &publications::Attestation {
+            job_id: current.id,
+            expected_revision: current.state_revision,
             epoch,
             actor,
-        )
-        .await?,
+            evidence,
+            snapshot_matched,
+        },
     )
+    .await?)
 }
 
 /// Reads retained snapshot evidence for a job's immutable intent.

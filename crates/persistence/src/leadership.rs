@@ -130,6 +130,23 @@ pub async fn release_leadership(
     Ok(())
 }
 
+/// The epoch of the live lease, or `None` when no coordinator holds one.
+///
+/// Operator commands run outside the leader use it to fence their writes by
+/// the running coordinator's leadership; the fence still refuses them if
+/// leadership changes before they commit.
+///
+/// # Errors
+///
+/// [`PersistenceError::Database`] when the query fails.
+pub async fn live_epoch(conn: &mut PgConnection) -> Result<Option<i64>, PersistenceError> {
+    Ok(sqlx::query_scalar(
+        "SELECT epoch FROM coordinator_leadership WHERE lease_expires_at > now()",
+    )
+    .fetch_optional(conn)
+    .await?)
+}
+
 /// Checks, inside the caller's transaction, that `epoch` still holds a live
 /// lease after the row lock is acquired, and holds a share lock so leadership
 /// cannot change before commit. Callers lock their job before this row and

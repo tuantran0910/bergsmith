@@ -76,6 +76,8 @@ pub enum AuditAction {
     JobCancellationRequested,
     /// A fresh-plan retry was requested.
     JobRetryRequested,
+    /// An operator attested that an unknown commit outcome did not publish.
+    JobNonPublicationAttested,
     /// The public API durably accepted a new job submission.
     JobSubmitted,
     /// A maintenance policy was created.
@@ -109,6 +111,7 @@ impl AuditAction {
             Self::JobPublicationDenied => "job.publication_denied",
             Self::JobCancellationRequested => "job.cancellation_requested",
             Self::JobRetryRequested => "job.retry_requested",
+            Self::JobNonPublicationAttested => "job.non_publication_attested",
             Self::JobSubmitted => "job.submitted",
             Self::PolicyCreated => "policy.created",
             Self::PolicyUpdated => "policy.updated",
@@ -143,6 +146,7 @@ impl AuditAction {
         Self::JobPublicationDenied,
         Self::JobCancellationRequested,
         Self::JobRetryRequested,
+        Self::JobNonPublicationAttested,
         Self::JobSubmitted,
         Self::PolicyCreated,
         Self::PolicyUpdated,
