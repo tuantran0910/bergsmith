@@ -1,6 +1,6 @@
 # 0046. Web UI refresh and BYOC delivery
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-22
 - Plan reference: BS-021, public API and UI; open decisions (SaaS deployment
   model)
