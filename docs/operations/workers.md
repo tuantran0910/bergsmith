@@ -1,5 +1,9 @@
 # Worker sessions and task grants
 
+The coordinator `serve` runtime ([serving](serving.md)) exposes the worker
+endpoint over TLS. It plans and registers each immutable task artifact before
+the scheduler offers it.
+
 The coordinator library exposes `workers::WorkerService`, implementing
 `bergsmith.cluster.v1.ClusterService`. Serve it with tonic's
 `ClusterServiceServer` over `worker_tls_config(identity)`. Every RPC rejects a
@@ -104,7 +108,10 @@ and `pids` controllers enabled for child cgroups. The service manager or contain
 runtime must provide that delegation; the worker does not change host controller
 configuration. Each task gets `memory.max`, zero swap, `cpu.max`, and a 128-PID
 ceiling before local `GetTask` is served. Missing controllers or failed limit
-installation refuse execution. Production packaging is tracked separately.
+installation refuse execution. The development Compose stack exposes an opt-in
+`worker` profile (`make app-worker`); it uses a privileged container and the
+host cgroup namespace for convenience. Production delegation and packaging
+acceptance remain BS-020.T4.
 The single-threaded bootstrap joins that cgroup and re-executes before starting
 the native task runtime, so startup heap allocations are charged to its budget.
 Its dedicated launching thread remains alive for the child process's lifetime.

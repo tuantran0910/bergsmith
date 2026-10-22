@@ -4,11 +4,11 @@
 mod support;
 
 use bergsmith_common::ids::{
-    AttemptId, JobId, OrganizationId, PrincipalId, TaskId, WorkerSessionId,
+    AttemptId, JobId, OrganizationId, PrincipalId, PublicationId, TaskId, WorkerSessionId,
 };
 use bergsmith_common::job::JobState;
 use bergsmith_persistence::{
-    attempts, cancellation, jobs, plans, scheduling as scheduler, workers,
+    attempts, cancellation, jobs, plans, publications, scheduling as scheduler, workers,
 };
 use sqlx::{PgConnection, PgPool};
 use std::time::Duration;
@@ -436,11 +436,11 @@ async fn execution_ownership_and_publication_creation_cannot_bypass_each_other(p
         .unwrap()
     );
     support::force_job_state(&mut conn, publication, JobState::ReadyToCommit).await;
-    let error = bergsmith_persistence::publications::create_intent(
+    let error = publications::create_intent(
         &mut conn,
-        &bergsmith_persistence::publications::Intent {
+        &publications::Intent {
             job_id: publication,
-            publication_id: bergsmith_common::ids::PublicationId::generate(),
+            publication_id: PublicationId::generate(),
             content: serde_json::json!({}),
             request_body: vec![],
             request_hash: support::digest('a'),
@@ -730,5 +730,51 @@ async fn validation_is_needed_only_to_admit_or_release_a_due_retry(pool: PgPool)
     assert_eq!(
         need(&mut conn, org, job, one).await,
         ValidationNeed::RetryRelease
+    );
+}
+
+#[sqlx::test]
+async fn unauthorized_publication_intents_are_listed_for_resume(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "resume").await;
+    let job = support::job(&mut conn, &tenant).await;
+    support::force_job_state(&mut conn, job, JobState::ReadyToCommit).await;
+    let publication = PublicationId::generate();
+    sqlx::query("INSERT INTO publications (id, job_id) VALUES ($1, $2)")
+        .bind(publication.as_uuid())
+        .bind(job.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO publication_intents
+             (job_id, publication_id, content, request_body, request_hash)
+         VALUES ($1, $2, '{}'::jsonb, $3, $4)",
+    )
+    .bind(job.as_uuid())
+    .bind(publication.as_uuid())
+    .bind(Vec::<u8>::new())
+    .bind("0".repeat(64))
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    support::force_job_state(&mut conn, job, JobState::Committing).await;
+
+    let found = publications::unauthorized_sends_after(&mut conn, Uuid::nil(), 8)
+        .await
+        .unwrap();
+    assert_eq!(found.iter().map(|job| job.id).collect::<Vec<_>>(), [job]);
+
+    sqlx::query("UPDATE jobs SET publication_started_at = now() WHERE id = $1")
+        .bind(job.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    assert!(
+        publications::unauthorized_sends_after(&mut conn, Uuid::nil(), 8)
+            .await
+            .unwrap()
+            .is_empty(),
+        "an authorized send belongs to evidence recovery"
     );
 }

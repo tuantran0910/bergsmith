@@ -14,9 +14,10 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
+bergsmith-common.workspace = true
 bergsmith-coordinator.workspace = true
 clap.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["fs", "macros", "net", "rt-multi-thread", "signal", "time"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

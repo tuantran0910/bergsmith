@@ -1,0 +1,14 @@
+{
+  "endpoint": "https://coordinator:7443",
+  "ca_certificate": "/tls/cert.pem",
+  "worker_name": "worker-1",
+  "pool": "native",
+  "capabilities": ["native-v1"],
+  "memory_bytes": 2147483648,
+  "cpu_millis": 1000,
+  "state_directory": "/var/lib/bergsmith/worker",
+  "cgroup_root": "/sys/fs/cgroup/bergsmith-worker",
+  "s3_region": "us-east-1",
+  "s3_endpoint": "http://rustfs:9000",
+  "s3_path_style": true
+}

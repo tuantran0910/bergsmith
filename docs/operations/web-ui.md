@@ -56,9 +56,14 @@ Signing out, an expired session, or a sign-in as someone else in another tab
 
 ## Development
 
-The UI must be served from the same origin as `/auth` and `/api/v1`. Until the
-coordinator serves it (BS-020.T1), run the development server, which proxies
-both to a coordinator:
+The UI is served from the same origin as `/auth` and `/api/v1`. In the Docker
+stack, an nginx `web` container serves the build and proxies those paths to the
+coordinator (BS-020.T1, [serving](serving.md)). `make app-up` builds the images,
+runs migrations and development bootstrap, and serves the UI at
+`http://127.0.0.1:8080`.
+
+For UI work, run the Vite development server, which proxies both to a
+coordinator:
 
 ```sh
 BERGSMITH_COORDINATOR_URL=http://127.0.0.1:8080 make web-dev

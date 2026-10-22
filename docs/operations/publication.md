@@ -26,11 +26,17 @@ schema that binds their spec, matching the planner after type promotions.
 
 On restart, use `publications::recoverable_jobs` and the persisted connection
 returned by `durable_publication::publication_connection`. An intent without send
-authorization can still be published or cancelled. For an authorized job, call
-`durable_publication::reconcile`; do not call the catalog mutation API again.
-The recovery list also includes intents left in `Cancelling`; reconciliation
-finishes their pre-authorization cancellation and releases the barrier.
-Automatic startup scheduling and worker RPC orchestration are later tasks.
+authorization can still be published or cancelled. Pre-authorization 401, 419,
+and authentication failures retry with backoff. A terminal stop checks the
+decision revision, live coordinator epoch, and absence of send authorization
+under the job lock; it cannot release a barrier belonging to an authorized send.
+The `serve` runtime resumes such intents through `durable_publication::publish`;
+a crash after intent creation therefore cannot leave a table barrier stuck.
+Once a send is
+authorized, only `durable_publication::reconcile` runs; do not call the catalog
+mutation API again. The recovery list also includes intents left in
+`Cancelling`; reconciliation finishes their pre-authorization cancellation and
+releases the barrier.
 
 | Observation | Durable outcome |
 |---|---|

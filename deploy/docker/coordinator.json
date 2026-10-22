@@ -1,0 +1,100 @@
+{
+  "database": {
+    "url": "postgres://bergsmith:bergsmith@postgres:5432/bergsmith",
+    "max_connections": 20
+  },
+  "http": {
+    "bind": "0.0.0.0:8080",
+    "secure_cookies": false
+  },
+  "worker": {
+    "bind": "0.0.0.0:7443",
+    "certificate": "/tls/cert.pem",
+    "private_key": "/tls/key.pem"
+  },
+  "identity": {
+    "issuer": "http://idp.localtest.me:58081/realms/bergsmith",
+    "client_id": "bergsmith",
+    "client_secret_file": "/run/secrets/oidc-client-secret",
+    "redirect_uri": "http://127.0.0.1:8080/auth/callback",
+    "scopes": ["openid", "profile", "email"],
+    "token_endpoint_auth": "client_secret_post",
+    "allow_insecure_http": true
+  },
+  "sessions": {
+    "cookie_name": "bergsmith_session",
+    "absolute_lifetime_hours": 12,
+    "idle_timeout_hours": 2
+  },
+  "storage": {
+    "default": [
+      {
+        "kind": "s3",
+        "endpoint": "http://rustfs:9000",
+        "region": "us-east-1",
+        "path_style_access": true
+      }
+    ]
+  },
+  "planner": {
+    "target_file_size_bytes": 268435456,
+    "min_file_size_bytes": 201326592,
+    "max_group_input_bytes": 2147483648,
+    "max_manifest_entries": 1000000,
+    "max_job_input_bytes": 107374182400,
+    "max_job_files": 10000,
+    "max_concurrent_groups": 3,
+    "min_input_files": 5,
+    "min_files_removed": 2,
+    "throughput_bytes_per_second": 67108864,
+    "task_overhead_millis": 2000,
+    "duration_budget_millis": 180000
+  },
+  "scheduler": {
+    "max_job_input_bytes": 68719476736,
+    "max_job_duration_millis": 180000,
+    "page_size": 128,
+    "interval_millis": 1000,
+    "validation_timeout_millis": 30000,
+    "publication_send_grace_millis": 120000,
+    "admission": {
+      "jobs": 8,
+      "organization_jobs": 4,
+      "pool_jobs": 8,
+      "attempts": 16,
+      "memory_bytes": 68719476736,
+      "cpu_millis": 32000
+    },
+    "retry": {
+      "base_millis": 1000,
+      "max_millis": 60000
+    }
+  },
+  "publication": {
+    "operation_timeout_seconds": 60
+  },
+  "task": {
+    "pool": "native",
+    "capability": "native-v1",
+    "memory_bytes": 1073741824,
+    "cpu_millis": 1000,
+    "max_duration_seconds": 180,
+    "max_output_bytes": 4294967296
+  },
+  "worker_verifiers": [
+    {
+      "organization": "01900000-0000-7000-8000-000000000001",
+      "principal": "01900000-0000-7000-8000-000000000003",
+      "pool": "native",
+      "verifier": "15f607e06466620da32baf750d8be9a88ccdf774ef2aa532a7f68c8d9e6c8728"
+    }
+  ],
+  "leadership": {
+    "lease_seconds": 30,
+    "renew_seconds": 10
+  },
+  "loops": {
+    "planning_millis": 1000,
+    "publication_millis": 1000
+  }
+}

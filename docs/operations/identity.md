@@ -49,7 +49,9 @@ subject. The coordinator never creates a principal or a grant during login.
 
 ## Configuration
 
-The coordinator needs:
+The coordinator `serve` runtime reads these from its JSON configuration
+([serving](serving.md)); the OIDC issuer must be reachable from the coordinator
+and be the same string the browser receives in the ID token.
 
 | Setting | Meaning |
 |---|---|

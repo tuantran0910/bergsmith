@@ -50,6 +50,39 @@ pub async fn recoverable_jobs(conn: &mut PgConnection) -> Result<Vec<Job>, Persi
     .collect()
 }
 
+/// Lists jobs with a durable, still-unauthorized publication intent.
+///
+/// A crash after intent creation, or a catalog failure before send
+/// authorization, leaves `Committing` with `publication_started_at = NULL`.
+/// Evidence recovery cannot resolve that state because no request was sent;
+/// the runtime resumes it through the fenced publish path.
+///
+/// # Errors
+///
+/// Returns decoding/database errors without changing publication authority.
+pub async fn unauthorized_sends_after(
+    conn: &mut PgConnection,
+    after: Uuid,
+    limit: i64,
+) -> Result<Vec<Job>, PersistenceError> {
+    use crate::jobs::{JobRow, job_columns};
+    sqlx::query_as::<_, JobRow>(concat!(
+        "SELECT ",
+        job_columns!(),
+        " FROM jobs
+          WHERE state = 'Committing' AND publication_started_at IS NULL
+            AND EXISTS (SELECT 1 FROM publication_intents i WHERE i.job_id = jobs.id)
+            AND id > $1 ORDER BY id LIMIT $2"
+    ))
+    .bind(after)
+    .bind(limit)
+    .fetch_all(conn)
+    .await?
+    .into_iter()
+    .map(Job::try_from)
+    .collect()
+}
+
 /// Like [`recoverable_jobs`], but omits `Committing` jobs whose send was
 /// authorized less than `send_grace` ago, by database time.
 ///
@@ -451,6 +484,59 @@ pub async fn resolve_pre_intent_denial(
             reason: Some(reason),
             actor: None,
             non_publication_proven: true,
+        },
+    )
+    .await?;
+    ensure_leadership(&mut tx, epoch).await?;
+    tx.commit().await?;
+    Ok(Some(updated))
+}
+
+/// Ends a publication before send authorization, under the job and epoch locks.
+///
+/// Only `ReadyToCommit` and `Committing` at `revision` may be stopped. A send
+/// authorization does not change that revision, so its absence must be checked
+/// under the same lock as the transition. Cancellation and pending dispositions
+/// take precedence over `to`.
+///
+/// # Errors
+///
+/// Returns leadership, database, or transition errors. A changed revision,
+/// another state, or an authorized send yields `Ok(None)`.
+pub async fn resolve_unsent(
+    conn: &mut PgConnection,
+    job_id: JobId,
+    revision: i64,
+    epoch: i64,
+    to: JobState,
+    reason: &str,
+) -> Result<Option<Job>, PersistenceError> {
+    let mut tx = conn.begin().await?;
+    let job = lock_job(&mut tx, job_id).await?;
+    ensure_leadership(&mut tx, epoch).await?;
+    if job.state_revision != revision
+        || !matches!(job.state, JobState::ReadyToCommit | JobState::Committing)
+        || job.publication_started_at.is_some()
+    {
+        return Ok(None);
+    }
+    if !matches!(to, JobState::Failed | JobState::ReplanRequired) {
+        return Err(PersistenceError::InvalidValue {
+            entity: "unsent publication resolution",
+            constraint: "target must be failed or replan required".into(),
+        });
+    }
+    let (to, reason) = non_success_target(&mut tx, &job, to, reason).await?;
+    let updated = transition_job(
+        &mut tx,
+        &Transition {
+            job_id,
+            expected_revision: revision,
+            to,
+            reason: Some(reason),
+            actor: None,
+            // No request was authorized; do not claim evidence about a send.
+            non_publication_proven: false,
         },
     )
     .await?;

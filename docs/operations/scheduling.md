@@ -1,5 +1,9 @@
 # Scheduling and reconciliation
 
+The coordinator `serve` runtime ([serving](serving.md)) constructs the
+scheduler, planning loop, and publication loop in one process. The rest of this
+page describes the contracts the runtime composes.
+
 Construct `scheduling::Scheduler` from the leader's `WorkerService`, a
 `SchedulingAccess` provider, and `SchedulerConfig`. Database and epoch come from
 the worker service. `CatalogWorkerAccess` implements both worker credential access
