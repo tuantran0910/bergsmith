@@ -12,7 +12,7 @@ jobs:
     name: Review dependency changes
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Fails a pull request that introduces a new dependency with a moderate
       # or higher advisory. Existing advisories are reported by Dependabot.
       - uses: actions/dependency-review-action@v5
