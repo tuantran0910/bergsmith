@@ -83,7 +83,13 @@ async fn resolve(
     .await?;
     // The permission check and this query apply the same grant predicate, so
     // an empty result here would mean the grants changed mid-request.
-    let Some(target) = aliases.into_iter().next() else {
+    if !aliases.is_empty() && !aliases.iter().any(|target| target.connection.enabled) {
+        return Err(ApiError::conflict(
+            "catalog_connection_disabled",
+            "enable_catalog_connection",
+        ));
+    }
+    let Some(target) = aliases.into_iter().find(|target| target.connection.enabled) else {
         return Err(ApiError::not_found());
     };
     Ok(PreviewTarget {

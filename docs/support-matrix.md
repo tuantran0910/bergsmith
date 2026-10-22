@@ -94,6 +94,7 @@ Connection restrictions and the retention each connection needs are in
 
 | Capability | Status |
 |---|---|
+| Catalog connection create, edit, enable, and disable API | Implemented (BS-022.T1, proposed ADR 0047): PostgreSQL route, audit rollback, revision, scoped-alias admission, lock-race, and disabled-connection publication recovery tests pass; capability checks, discovery, and connection pages remain BS-022.T2–T5 |
 | `/api/v1` catalog, table, job, and audit reads; idempotent job submission | Implemented as a session-authenticated router (BS-018.T1, ADR 0034); scoped reads, cursor pagination, CSRF, concurrent idempotency, and audit rollback pass PostgreSQL route tests; BS-020.T1 serves it with `/auth` and the UI on one origin |
 | Table previews and cancellation/fresh-plan retry commands | Implemented (BS-018.T2, ADR 0035) for unauthenticated catalog connections: previews resolve a grant-scoped alias, verify the canonical `table-uuid`, and are bounded per response and per process; commands follow the cancellation contract and never reuse a plan. Connections with an external `credential_ref` fail until the runtime resolves credential references |
 | Durable SSE job events | Implemented (BS-018.T3, ADR 0036): per-job sequences as event IDs, `Last-Event-ID`/`after` resume without gaps or duplicates, notification wake-ups with a polling fallback, session and grant rechecks, and bounded capacity pass PostgreSQL route tests; BS-020.T1 serves it through the coordinator `serve` runtime |

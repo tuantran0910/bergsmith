@@ -322,6 +322,16 @@ pub async fn admit(
     if is_admitted(&mut tx, job_id).await? {
         return Ok(true);
     }
+    if !crate::tenancy::lock_enabled_execution_connection(
+        &mut tx,
+        job.organization_id,
+        job.created_by,
+        job.table_id,
+    )
+    .await?
+    {
+        return Ok(false);
+    }
     let Some(pool) = admission_open(&mut tx, &job, limits).await? else {
         return Ok(false);
     };
@@ -377,8 +387,10 @@ pub enum ValidationNeed {
     RetryRelease,
 }
 
-/// Decides, without locks or writes, whether reconciliation must validate `job`,
-/// a recently read snapshot.
+/// Decides, without writes, whether reconciliation must validate `job`, a
+/// recently read snapshot. Brief shared connection locks are used to check
+/// enabled aliases; outside a transaction those locks end with that statement,
+/// and the subsequent grant check is only an admission hint.
 ///
 /// Validation precedes every admission and retry release; an admitted job with
 /// no due retries keeps its earlier validation. A job blocked by its table or
@@ -397,6 +409,16 @@ pub async fn validation_need(
         return Ok(ValidationNeed::None);
     }
     if !is_admitted(conn, job_id).await? {
+        if !crate::tenancy::lock_enabled_execution_connection(
+            conn,
+            job.organization_id,
+            job.created_by,
+            job.table_id,
+        )
+        .await?
+        {
+            return Ok(ValidationNeed::None);
+        }
         return Ok(if admission_open(conn, job, limits).await?.is_some() {
             ValidationNeed::Admission
         } else {

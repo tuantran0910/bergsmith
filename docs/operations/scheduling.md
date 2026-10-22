@@ -115,18 +115,19 @@ covering the due span up to the evaluation instant, and the cursor jumps to the
 first occurrence at or after the next opening; the run itself is dropped, not
 deferred. A cron more frequent than its window therefore does not write one
 skipped row per tick. The skip is logged at debug level and is not audited,
-because it is routine scheduling; only a disabled policy or an ineligible
-service identity is an operator denial. A run that starts inside the window may
+because it is routine scheduling; a disabled policy, an ineligible service
+identity, or no enabled connection usable by that identity is an audited
+operator denial. A run that starts inside the window may
 finish after it closes. The window does not change occurrence identity,
 deduplication, or coalescing, and it is not rechecked at publication.
 
 Checks are ordered `PolicyDisabled`, `ServiceIdentityIneligible`,
-`OutsideWindow`, then `TableBusy`: a run that may not start never folds into
-another job's occurrence. A window uses the zone's wall clock, so a
-spring-forward gap shortens it and a fall-back overlap lengthens it; the cron
-engine still decides which instants exist. A repeated fall-back start is two
-candidate openings: the earlier is preferred, but if it is already past, the
-later reading still opens the window. That differs from cron's deduplication to
+`ConnectionDisabled`, `OutsideWindow`, then `TableBusy`: a run that may not
+start never folds into another job's occurrence. A window uses the zone's wall
+clock, so a spring-forward gap shortens it and a fall-back overlap lengthens it;
+the cron engine still decides which instants exist. A repeated fall-back start
+has two candidate openings. The earlier is preferred; if it is already past,
+the later reading still opens the window. That differs from cron's deduplication to
 the earlier instant, and it keeps a valid run later that morning.
 
 Window eligibility samples the coordinator's clock **after** the schedule and

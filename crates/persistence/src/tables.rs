@@ -195,6 +195,9 @@ struct TableAliasConnectionRow {
     uri: String,
     warehouse: Option<String>,
     credential_ref: Option<String>,
+    enabled: bool,
+    revision: i64,
+    updated_at: DateTime<Utc>,
     created_at: DateTime<Utc>,
 }
 
@@ -213,6 +216,9 @@ impl From<TableAliasConnectionRow> for TableAliasConnection {
                 uri: row.uri,
                 warehouse: row.warehouse,
                 credential_ref: row.credential_ref,
+                enabled: row.enabled,
+                revision: row.revision,
+                updated_at: row.updated_at,
                 created_at: row.created_at,
             },
         }
@@ -270,7 +276,7 @@ pub async fn accessible_aliases_with_connections(
     let rows: Vec<TableAliasConnectionRow> = sqlx::query_as(
         "SELECT a.catalog_connection_id, a.namespace, a.table_name,
                 c.id AS connection_id, c.organization_id, c.name AS connection_name,
-                c.uri, c.warehouse, c.credential_ref, c.created_at
+                c.uri, c.warehouse, c.credential_ref, c.enabled, c.revision, c.updated_at, c.created_at
          FROM table_aliases a
          JOIN catalog_connections c
            ON c.organization_id = a.organization_id AND c.id = a.catalog_connection_id

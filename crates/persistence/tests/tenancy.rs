@@ -16,6 +16,50 @@ use support::{alias, connection, constraint, organization, user};
 use uuid::Uuid;
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn routing_edits_wait_for_job_creation_and_preserve_its_connection(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let current = tenancy::catalog_connection(&mut conn, tenant.organization, tenant.connection)
+        .await
+        .unwrap();
+    let new = NewCatalogConnection {
+        id: current.id,
+        organization_id: current.organization_id,
+        name: current.name,
+        uri: "https://replacement.example/catalog".into(),
+        warehouse: current.warehouse,
+        credential_ref: current.credential_ref,
+    };
+    let mut creating = pool.begin().await.unwrap();
+    let blocker: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *creating)
+        .await
+        .unwrap();
+    support::job(&mut creating, &tenant).await;
+    let mut editing = pool.acquire().await.unwrap();
+    let waiter: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *editing)
+        .await
+        .unwrap();
+    let edit = tokio::spawn(async move {
+        tenancy::update_catalog_connection(&mut editing, &new, 0, true).await
+    });
+    support::wait_until_blocked(&mut conn, waiter, blocker).await;
+    creating.commit().await.unwrap();
+    assert!(matches!(
+        edit.await.unwrap(),
+        Err(PersistenceError::CatalogConnectionInUse { .. })
+    ));
+    assert_eq!(
+        tenancy::catalog_connection(&mut conn, tenant.organization, tenant.connection)
+            .await
+            .unwrap()
+            .uri,
+        "https://catalog.example/catalog"
+    );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
 async fn organization_slugs_are_unique(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     organization(&mut conn, "acme").await;

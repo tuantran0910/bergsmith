@@ -14,6 +14,12 @@ const CHECK_VIOLATION: &str = "23514";
 /// An error from a repository or from database setup.
 #[derive(Debug, thiserror::Error)]
 pub enum PersistenceError {
+    /// Connection routing cannot change while jobs may still need it.
+    #[error("catalog connection {connection} has nonterminal jobs")]
+    CatalogConnectionInUse {
+        /// The connection whose routing must remain stable.
+        connection: CatalogConnectionId,
+    },
     /// Admission or execution resource budgets currently prevent dispatch.
     #[error("scheduler admission capacity is unavailable")]
     AdmissionUnavailable,

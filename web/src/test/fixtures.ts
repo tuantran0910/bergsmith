@@ -24,7 +24,14 @@ export function session(role = "Operator"): SessionInfo {
 
 export const catalogs = schema("CatalogPage", {
     items: [
-        { id: CATALOG_ID, name: "lake", created_at: "2026-10-01T00:00:00Z" },
+        {
+            id: CATALOG_ID,
+            name: "lake",
+            enabled: true,
+            revision: 0,
+            updated_at: "2026-10-01T00:00:00Z",
+            created_at: "2026-10-01T00:00:00Z",
+        },
     ],
     next_cursor: null,
 });

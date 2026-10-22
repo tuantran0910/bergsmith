@@ -1,8 +1,8 @@
 //! Organizations, principals, and catalog connections.
 
-use bergsmith_common::ids::{CatalogConnectionId, OrganizationId, PrincipalId};
+use bergsmith_common::ids::{CatalogConnectionId, OrganizationId, PrincipalId, TableId};
 use chrono::{DateTime, Utc};
-use sqlx::PgConnection;
+use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 
 use crate::PersistenceError;
@@ -115,6 +115,12 @@ pub struct CatalogConnection {
     /// Name of the externally held catalog credential. The secret itself is
     /// never stored in PostgreSQL.
     pub credential_ref: Option<String>,
+    /// Whether new previews and admissions may use this connection.
+    pub enabled: bool,
+    /// Optimistic configuration revision.
+    pub revision: i64,
+    /// When configuration was last changed.
+    pub updated_at: DateTime<Utc>,
     /// When the connection was created (database time).
     pub created_at: DateTime<Utc>,
 }
@@ -190,6 +196,9 @@ struct CatalogConnectionRow {
     uri: String,
     warehouse: Option<String>,
     credential_ref: Option<String>,
+    enabled: bool,
+    revision: i64,
+    updated_at: DateTime<Utc>,
     created_at: DateTime<Utc>,
 }
 
@@ -202,6 +211,9 @@ impl From<CatalogConnectionRow> for CatalogConnection {
             uri: row.uri,
             warehouse: row.warehouse,
             credential_ref: row.credential_ref,
+            enabled: row.enabled,
+            revision: row.revision,
+            updated_at: row.updated_at,
             created_at: row.created_at,
         }
     }
@@ -387,7 +399,7 @@ pub async fn create_catalog_connection(
         "INSERT INTO catalog_connections
              (id, organization_id, name, uri, warehouse, credential_ref)
          VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id, organization_id, name, uri, warehouse, credential_ref, created_at",
+         RETURNING id, organization_id, name, uri, warehouse, credential_ref, enabled, revision, updated_at, created_at",
     )
     .bind(new.id.as_uuid())
     .bind(new.organization_id.as_uuid())
@@ -412,7 +424,7 @@ pub async fn catalog_connection(
     id: CatalogConnectionId,
 ) -> Result<CatalogConnection, PersistenceError> {
     sqlx::query_as::<_, CatalogConnectionRow>(
-        "SELECT id, organization_id, name, uri, warehouse, credential_ref, created_at
+        "SELECT id, organization_id, name, uri, warehouse, credential_ref, enabled, revision, updated_at, created_at
          FROM catalog_connections WHERE organization_id = $1 AND id = $2",
     )
     .bind(organization_id.as_uuid())
@@ -424,6 +436,139 @@ pub async fn catalog_connection(
         entity: "catalog connection",
         id: id.to_string(),
     })
+}
+
+/// Updates connection settings under a row lock and an expected revision.
+///
+/// Routing and credential references remain unchanged while a nonterminal job
+/// may need this connection, including unknown publication outcomes. Disabling
+/// is always allowed and never deletes aliases or publication evidence.
+///
+/// # Errors
+///
+/// Returns missing-row, revision-conflict, in-use, uniqueness, validation, or
+/// database errors. Callers authorize and audit in the enclosing transaction.
+pub async fn update_catalog_connection(
+    conn: &mut PgConnection,
+    new: &NewCatalogConnection,
+    expected_revision: i64,
+    enabled: bool,
+) -> Result<CatalogConnection, PersistenceError> {
+    let mut tx = conn.begin().await?;
+    sqlx::query("SELECT id FROM catalog_connections WHERE organization_id=$1 AND id=$2 FOR UPDATE")
+        .bind(new.organization_id.as_uuid())
+        .bind(new.id.as_uuid())
+        .execute(&mut *tx)
+        .await?;
+    let current = catalog_connection(&mut tx, new.organization_id, new.id).await?;
+    if current.revision != expected_revision {
+        return Err(PersistenceError::ConfigRevisionConflict {
+            entity: "catalog connection",
+            id: new.id.to_string(),
+            expected: expected_revision,
+            actual: current.revision,
+        });
+    }
+    if current.uri != new.uri
+        || current.warehouse != new.warehouse
+        || current.credential_ref != new.credential_ref
+    {
+        let busy: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM jobs j JOIN table_aliases a
+             ON a.organization_id=j.organization_id AND a.table_identity_id=j.table_identity_id
+             WHERE a.organization_id=$1 AND a.catalog_connection_id=$2
+             AND j.state NOT IN ('Succeeded','NoOp','Cancelled','ReplanRequired','Failed'))",
+        )
+        .bind(new.organization_id.as_uuid())
+        .bind(new.id.as_uuid())
+        .fetch_one(&mut *tx)
+        .await?;
+        if busy {
+            return Err(PersistenceError::CatalogConnectionInUse { connection: new.id });
+        }
+    }
+    sqlx::query(
+        "UPDATE catalog_connections SET name=$3, uri=$4, warehouse=$5, credential_ref=$6,
+         enabled=$7, revision=revision+1, updated_at=clock_timestamp()
+         WHERE organization_id=$1 AND id=$2",
+    )
+    .bind(new.organization_id.as_uuid())
+    .bind(new.id.as_uuid())
+    .bind(&new.name)
+    .bind(&new.uri)
+    .bind(&new.warehouse)
+    .bind(&new.credential_ref)
+    .bind(enabled)
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| PersistenceError::from_write("catalog connection", error))?;
+    let updated = catalog_connection(&mut tx, new.organization_id, new.id).await?;
+    tx.commit().await?;
+    Ok(updated)
+}
+
+/// Locks all connections naming a table in ID order until the caller commits.
+/// This serializes job creation and admission with configuration edits without
+/// holding a database lock across network I/O.
+pub(crate) async fn lock_table_connections(
+    conn: &mut PgConnection,
+    organization: OrganizationId,
+    table: TableId,
+) -> Result<Vec<(Uuid, bool)>, PersistenceError> {
+    Ok(sqlx::query_as(
+        "SELECT c.id, c.enabled FROM catalog_connections c
+         WHERE c.organization_id=$1 AND EXISTS(SELECT 1 FROM table_aliases a
+             WHERE a.organization_id=$1 AND a.table_identity_id=$2
+               AND a.catalog_connection_id=c.id)
+         ORDER BY c.id FOR SHARE OF c",
+    )
+    .bind(organization.as_uuid())
+    .bind(table.as_uuid())
+    .fetch_all(conn)
+    .await?)
+}
+
+/// Whether a principal can submit through an enabled alias, locking connection
+/// configuration through the caller's transaction. Without an enclosing
+/// transaction the locks end after the connection query, so the separate grant
+/// query is only a hint; admission must recheck inside its transaction.
+///
+/// # Errors
+///
+/// Returns a database error when configuration or grants cannot be read.
+pub(crate) async fn lock_enabled_execution_connection(
+    conn: &mut PgConnection,
+    organization: OrganizationId,
+    principal: PrincipalId,
+    table: TableId,
+) -> Result<bool, PersistenceError> {
+    let enabled: Vec<Uuid> = lock_table_connections(conn, organization, table)
+        .await?
+        .into_iter()
+        .filter_map(|(id, enabled)| enabled.then_some(id))
+        .collect();
+    if enabled.is_empty() {
+        return Ok(false);
+    }
+    let roles: Vec<&str> = bergsmith_common::permission::Permission::SubmitJobs
+        .roles()
+        .iter()
+        .map(|role| role.as_str())
+        .collect();
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM principal_role_grants g
+         WHERE g.organization_id=$1 AND g.principal_id=$2 AND g.revoked_at IS NULL
+           AND g.role = ANY($4::text[]) AND (
+             (g.catalog_connection_id IS NULL AND g.table_identity_id IS NULL)
+             OR g.table_identity_id=$3 OR g.catalog_connection_id=ANY($5::uuid[])))",
+    )
+    .bind(organization.as_uuid())
+    .bind(principal.as_uuid())
+    .bind(table.as_uuid())
+    .bind(roles)
+    .bind(enabled)
+    .fetch_one(conn)
+    .await?)
 }
 
 #[cfg(test)]

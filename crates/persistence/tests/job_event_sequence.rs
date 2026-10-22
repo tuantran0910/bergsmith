@@ -171,7 +171,18 @@ async fn the_migration_numbers_existing_events_per_job_in_append_order(pool: PgP
     earlier.run(&pool).await.unwrap();
 
     let mut conn = pool.acquire().await.unwrap();
-    let tenant = tenant(&mut conn, "acme").await;
+    // Seed only the historical schema this migration upgrades. Current tenant
+    // fixtures may depend on columns introduced after migration 0013.
+    let organization = support::organization(&mut conn, "acme").await;
+    let principal = support::user(&mut conn, organization, "alice").await;
+    let table = Uuid::now_v7();
+    sqlx::query("INSERT INTO table_identities (id, organization_id, table_uuid) VALUES ($1,$2,$3)")
+        .bind(table)
+        .bind(organization.as_uuid())
+        .bind(Uuid::now_v7())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
     let (first, second) = (Uuid::now_v7(), Uuid::now_v7());
     for id in [first, second] {
         sqlx::query(
@@ -179,9 +190,9 @@ async fn the_migration_numbers_existing_events_per_job_in_append_order(pool: PgP
              VALUES ($1, $2, $3, 'Planning', $4)",
         )
         .bind(id)
-        .bind(tenant.organization.as_uuid())
-        .bind(tenant.table.as_uuid())
-        .bind(tenant.user.as_uuid())
+        .bind(organization.as_uuid())
+        .bind(table)
+        .bind(principal.as_uuid())
         .execute(&mut *conn)
         .await
         .unwrap();
