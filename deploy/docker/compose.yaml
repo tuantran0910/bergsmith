@@ -15,7 +15,7 @@ name: bergsmith
 
 services:
   postgres:
-    image: postgres:17.6-alpine
+    image: postgres:18.4-alpine
     environment:
       POSTGRES_USER: bergsmith
       POSTGRES_PASSWORD: bergsmith
@@ -87,7 +87,7 @@ services:
         condition: service_healthy
 
   catalog-db:
-    image: postgres:17.6-alpine
+    image: postgres:18.4-alpine
     environment:
       POSTGRES_USER: lakekeeper
       POSTGRES_PASSWORD: lakekeeper
