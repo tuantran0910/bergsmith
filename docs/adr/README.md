@@ -52,3 +52,4 @@ record's status; never rewrite an accepted decision.
 | [0043](0043-worker-journal-retention.md) | Worker journal retention | Accepted |
 | [0044](0044-observability-baseline.md) | Observability baseline | Accepted |
 | [0045](0045-operator-commands.md) | Operator commands for roles and non-publication attestation | Accepted |
+| [0046](0046-web-ui-refresh-and-byoc-delivery.md) | Web UI refresh and BYOC delivery | Proposed |
