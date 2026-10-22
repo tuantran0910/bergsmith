@@ -11,6 +11,7 @@ pub mod database;
 pub mod durable_publication;
 pub mod identity;
 pub mod inventory;
+pub mod observability;
 pub mod planning;
 pub mod preview;
 pub mod publication;

@@ -66,6 +66,9 @@ pub struct CoordinatorConfig {
     /// How often the planning and publication loops run.
     #[serde(default)]
     pub loops: LoopSettings,
+    /// Metrics listener and ledger snapshot bounds.
+    #[serde(default)]
+    pub observability: ObservabilitySettings,
 }
 
 /// PostgreSQL connection settings.
@@ -679,6 +682,58 @@ impl Default for LoopSettings {
     }
 }
 
+/// Metrics settings (BS-020.T2).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObservabilitySettings {
+    /// Address for the Prometheus `/metrics` listener, such as
+    /// `0.0.0.0:9464`. Omit it to serve no metrics. It is a separate listener
+    /// from the browser origin and has no authentication, so bind it to a
+    /// network only the metrics collector reaches.
+    #[serde(default)]
+    pub metrics_bind: Option<String>,
+    /// How long a ledger snapshot is reused before PostgreSQL is read again.
+    #[serde(default = "default_ledger_refresh_seconds")]
+    pub ledger_refresh_seconds: u64,
+    /// Statement timeout for the ledger snapshot.
+    #[serde(default = "default_ledger_query_timeout_millis")]
+    pub ledger_query_timeout_millis: u64,
+}
+
+impl Default for ObservabilitySettings {
+    fn default() -> Self {
+        Self {
+            metrics_bind: None,
+            ledger_refresh_seconds: default_ledger_refresh_seconds(),
+            ledger_query_timeout_millis: default_ledger_query_timeout_millis(),
+        }
+    }
+}
+
+impl ObservabilitySettings {
+    /// The metrics snapshot bounds.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError`] when the bind is empty or a bound is zero.
+    pub fn metrics(&self) -> Result<crate::observability::MetricsConfig, ConfigError> {
+        if self.metrics_bind.as_ref().is_some_and(String::is_empty) {
+            return Err(ConfigError::Invalid(
+                "observability.metrics_bind must not be empty".into(),
+            ));
+        }
+        if self.ledger_refresh_seconds == 0 || self.ledger_query_timeout_millis == 0 {
+            return Err(ConfigError::Invalid(
+                "observability ledger refresh and query timeout must be positive".into(),
+            ));
+        }
+        Ok(crate::observability::MetricsConfig {
+            refresh: Duration::from_secs(self.ledger_refresh_seconds),
+            query_timeout: Duration::from_millis(self.ledger_query_timeout_millis),
+        })
+    }
+}
+
 /// A configuration problem, reported before any listener starts.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -863,6 +918,7 @@ impl CoordinatorConfig {
                 "loop intervals must be positive".into(),
             ));
         }
+        self.observability.metrics()?;
         Ok(())
     }
 
@@ -1062,6 +1118,12 @@ const fn default_lease_seconds() -> u64 {
 const fn default_renew_seconds() -> u64 {
     60
 }
+const fn default_ledger_refresh_seconds() -> u64 {
+    15
+}
+const fn default_ledger_query_timeout_millis() -> u64 {
+    5000
+}
 const fn default_loop_millis() -> u64 {
     1_000
 }
@@ -1127,6 +1189,29 @@ mod tests {
         assert_eq!(config.scheduler.page_size, 128);
         assert_eq!(config.planner, PlannerConfig::default());
         assert!(!config.session().unwrap().secure);
+    }
+
+    #[test]
+    fn metrics_are_off_by_default_and_bounds_must_be_positive() {
+        let config = parse(minimal()).unwrap();
+        assert_eq!(config.observability.metrics_bind, None);
+        assert_eq!(
+            config.observability.metrics().unwrap(),
+            crate::observability::MetricsConfig::default()
+        );
+
+        let mut value = minimal();
+        value["observability"] = serde_json::json!({ "metrics_bind": "127.0.0.1:9464" });
+        assert!(parse(value).is_ok());
+        for invalid in [
+            serde_json::json!({ "metrics_bind": "" }),
+            serde_json::json!({ "ledger_refresh_seconds": 0 }),
+            serde_json::json!({ "ledger_query_timeout_millis": 0 }),
+        ] {
+            let mut value = minimal();
+            value["observability"] = invalid;
+            assert!(parse(value).is_err());
+        }
     }
 
     #[test]

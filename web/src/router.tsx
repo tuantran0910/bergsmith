@@ -1,4 +1,4 @@
-// A small path router: the application has six routes and needs no more.
+// A small path router: the application has seven routes and needs no more.
 
 import {
     type AnchorHTMLAttributes,
@@ -12,6 +12,7 @@ export type Route =
     | { name: "jobs" }
     | { name: "job"; id: string }
     | { name: "audit" }
+    | { name: "workers" }
     | { name: "not_found" };
 
 const listeners = new Set<() => void>();
@@ -60,6 +61,9 @@ export function match(path: string): Route {
     }
     if (path === "/audit") {
         return { name: "audit" };
+    }
+    if (path === "/workers") {
+        return { name: "workers" };
     }
     const table = new RegExp(`^/tables/${UUID}$`).exec(path);
     if (table?.[1] !== undefined) {

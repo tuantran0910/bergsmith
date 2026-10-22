@@ -55,6 +55,140 @@ pub struct Session {
     pub lease_expires_at: DateTime<Utc>,
 }
 
+/// A current worker session as operators see it, without credentials.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionSummary {
+    /// Session identifier.
+    pub id: WorkerSessionId,
+    /// Service principal the session is bound to.
+    pub principal_id: PrincipalId,
+    /// Worker pool.
+    pub pool: String,
+    /// Diagnostic worker name.
+    pub worker_name: String,
+    /// Diagnostic build version.
+    pub build_version: String,
+    /// Advertised capabilities.
+    pub capabilities: Vec<String>,
+    /// Advertised memory capacity.
+    pub memory_bytes: i64,
+    /// Advertised CPU capacity.
+    pub cpu_millis: i32,
+    /// Lease state at database time.
+    pub status: SessionStatus,
+    /// When the session registered.
+    pub registered_at: DateTime<Utc>,
+    /// Session deadline in database time.
+    pub lease_expires_at: DateTime<Utc>,
+    /// The granted or running attempt, if any.
+    pub running_attempt_id: Option<AttemptId>,
+}
+
+/// A session's lease state at database time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionStatus {
+    /// Renewing its lease and eligible for grants.
+    Live,
+    /// Renewing its lease but receiving no new grants.
+    Draining,
+    /// Its lease expired; a restarted worker opens a new session.
+    Expired,
+}
+
+impl SessionStatus {
+    /// The stable name used by the API.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::Draining => "draining",
+            Self::Expired => "expired",
+        }
+    }
+}
+
+/// Lists an organization's current (not superseded) worker sessions in ID
+/// order, starting after `after` and returning at most `limit` rows.
+///
+/// # Errors
+/// Returns database errors.
+pub async fn list_sessions(
+    conn: &mut PgConnection,
+    organization: OrganizationId,
+    after: Option<WorkerSessionId>,
+    limit: i64,
+) -> Result<Vec<SessionSummary>, PersistenceError> {
+    type Row = (
+        Uuid,
+        Uuid,
+        String,
+        String,
+        String,
+        Vec<String>,
+        i64,
+        i32,
+        String,
+        DateTime<Utc>,
+        DateTime<Utc>,
+        Option<Uuid>,
+    );
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT s.id, s.principal_id, s.pool, s.worker_name, s.build_version,
+                s.capabilities, s.memory_bytes, s.cpu_millis,
+                CASE WHEN s.lease_expires_at <= now() THEN 'expired'
+                     WHEN s.draining THEN 'draining' ELSE 'live' END,
+                s.created_at, s.lease_expires_at,
+                (SELECT a.id FROM attempts a
+                 WHERE a.worker_session_id = s.id AND a.state IN ('Granted', 'Running')
+                 ORDER BY a.granted_at DESC LIMIT 1)
+         FROM worker_sessions s
+         WHERE s.organization_id = $1 AND NOT s.superseded
+           AND ($2::uuid IS NULL OR s.id > $2)
+         ORDER BY s.id LIMIT $3",
+    )
+    .bind(organization.as_uuid())
+    .bind(after.map(|id| *id.as_uuid()))
+    .bind(limit)
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                id,
+                principal_id,
+                pool,
+                worker_name,
+                build_version,
+                capabilities,
+                memory_bytes,
+                cpu_millis,
+                status,
+                registered_at,
+                lease_expires_at,
+                running,
+            )| SessionSummary {
+                id: WorkerSessionId::from_uuid(id),
+                principal_id: PrincipalId::from_uuid(principal_id),
+                pool,
+                worker_name,
+                build_version,
+                capabilities,
+                memory_bytes,
+                cpu_millis,
+                status: match status.as_str() {
+                    "expired" => SessionStatus::Expired,
+                    "draining" => SessionStatus::Draining,
+                    _ => SessionStatus::Live,
+                },
+                registered_at,
+                lease_expires_at,
+                running_attempt_id: running.map(AttemptId::from_uuid),
+            },
+        )
+        .collect())
+}
+
 fn invalid() -> PersistenceError {
     PersistenceError::InvalidValue {
         entity: "worker session",

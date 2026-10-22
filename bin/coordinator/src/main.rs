@@ -139,15 +139,38 @@ enum Command {
     },
 }
 
+/// Installs the log subscriber. `BERGSMITH_LOG_FORMAT` selects `text` (the
+/// default) or `json`, whose lines include the active span and its parents;
+/// `RUST_LOG` filters both. Returns an unrecognized format after installing
+/// the text format, so the caller can report it.
+fn init_logging() -> Result<(), String> {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
+    match std::env::var("BERGSMITH_LOG_FORMAT").as_deref() {
+        Err(_) | Ok("" | "text") => tracing_subscriber::fmt().with_env_filter(filter).init(),
+        Ok("json") => tracing_subscriber::fmt()
+            .json()
+            .with_current_span(true)
+            .with_span_list(true)
+            .with_env_filter(filter)
+            .init(),
+        Ok(other) => {
+            tracing_subscriber::fmt().with_env_filter(filter).init();
+            return Err(other.to_owned());
+        }
+    }
+    Ok(())
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one match arm per administration command keeps the CLI exhaustive"
 )]
 #[tokio::main]
 async fn main() -> ExitCode {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .init();
+    if let Err(format) = init_logging() {
+        tracing::error!(format, "BERGSMITH_LOG_FORMAT must be text or json");
+        return ExitCode::FAILURE;
+    }
 
     match Cli::parse().command {
         Command::Migrate { database_url } => {

@@ -13,6 +13,7 @@ topic; this index only says where to look.
 | Policies, schedules, windows, and budgets | [scheduling.md](scheduling.md) |
 | Publication outcomes and unknown-outcome resolution | [publication.md](publication.md) |
 | Upgrades and recovery runbooks | [recovery.md](recovery.md) |
+| Metrics, probes, structured logs, and worker health | [observability.md](observability.md) |
 | Browser API and UI | [api.md](api.md), [web-ui.md](web-ui.md) |
 | Unpublished local execution and the distributed acceptance suite | [local-execution.md](local-execution.md), [distributed-acceptance.md](distributed-acceptance.md) |
 

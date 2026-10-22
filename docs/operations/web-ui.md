@@ -13,10 +13,10 @@ The browser application in `web/` covers manual maintenance over the
 | Table | Shows the table's names, previews maintenance (outcome, unsupported features, bins, estimate), and runs it |
 | Jobs | Lists jobs with execution and publication status side by side |
 | Job | Shows execution and publication separately, streams events live, requests cancellation, and retries with a fresh plan |
+| Workers | Current worker sessions with status, running attempt, and capacity; shown only to organization-wide administrators |
 | Audit | Organization audit history; shown only to organization-wide administrators |
 
-Connection setup and worker health are not in the UI yet, because no API
-serves them. Maintenance policies and schedules do have a configuration API
+Connection setup is not in the UI yet, because no API serves it. Maintenance policies and schedules do have a configuration API
 (BS-019.T1, ADR 0038), but the UI for them is not built yet.
 
 ## Reading job status

@@ -22,6 +22,7 @@ import { FakeApi, FakeEventSource, apiError, json, schema } from "./test/fakes";
 import {
     CATALOG_ID,
     JOB_ID,
+    PRINCIPAL_ID,
     RETRY_JOB_ID,
     TABLE_ID,
     catalogs,
@@ -1057,6 +1058,103 @@ describe("jobs and audit", () => {
         expect(screen.getByRole("link", { name: "Audit" })).toBeInTheDocument();
         expect(
             screen.getByText('{"reason":"invalid_csrf"}'),
+        ).toBeInTheDocument();
+    });
+});
+
+describe("workers", () => {
+    it("shows worker health to an administrator", async () => {
+        fake.on("GET", "/auth/session", () =>
+            json(200, session("Administrator")),
+        ).on("GET", "/api/v1/workers", () =>
+            json(
+                200,
+                schema("WorkerSessionPage", {
+                    items: [
+                        {
+                            id: "0190f3c4-0000-7000-8000-0000000000f1",
+                            principal_id: PRINCIPAL_ID,
+                            pool: "native",
+                            worker_name: "worker-1",
+                            build_version: "0.1.0",
+                            capabilities: ["native-v1"],
+                            memory_bytes: 2 * 1024 ** 3,
+                            cpu_millis: 1500,
+                            status: "draining",
+                            registered_at: "2026-10-21T10:00:00Z",
+                            lease_expires_at: "2026-10-21T10:01:30Z",
+                            running_attempt_id:
+                                "0190f3c4-0000-7000-8000-0000000000f2",
+                        },
+                        {
+                            id: "0190f3c4-0000-7000-8000-0000000000f3",
+                            principal_id: PRINCIPAL_ID,
+                            pool: "native",
+                            worker_name: "worker-2",
+                            build_version: "0.1.0",
+                            capabilities: ["native-v1"],
+                            memory_bytes: 1024 ** 3,
+                            cpu_millis: 1000,
+                            status: "expired",
+                            registered_at: "2026-10-21T09:00:00Z",
+                            lease_expires_at: "2026-10-21T09:01:30Z",
+                            running_attempt_id: null,
+                        },
+                    ],
+                    next_cursor: null,
+                }),
+            ),
+        );
+        start("/workers");
+
+        const rows = await screen.findAllByRole("row");
+        expect(
+            screen.getByRole("link", { name: "Workers" }),
+        ).toBeInTheDocument();
+        const first = within(rows[1] as HTMLElement);
+        expect(first.getByText("worker-1")).toBeInTheDocument();
+        expect(first.getByText("Draining")).toBeInTheDocument();
+        expect(first.getByText("0190f3c4")).toBeInTheDocument();
+        expect(first.getByText("2.0 GiB, 1.5 CPU")).toBeInTheDocument();
+        const second = within(rows[2] as HTMLElement);
+        expect(second.getByText("Expired")).toBeInTheDocument();
+        expect(second.getByText("Idle")).toBeInTheDocument();
+    });
+
+    it("explains the grant worker health requires", async () => {
+        fake.on("GET", "/api/v1/workers", () =>
+            apiError(
+                403,
+                "permission_denied",
+                "PermanentFailure",
+                "request_permission",
+            ),
+        );
+        start("/workers");
+
+        expect(
+            await screen.findByText(
+                /Worker health requires an organization-wide grant/,
+            ),
+        ).toBeInTheDocument();
+        expect(
+            screen.queryByRole("link", { name: "Workers" }),
+        ).not.toBeInTheDocument();
+    });
+
+    it("says when no worker has registered", async () => {
+        fake.on("GET", "/auth/session", () =>
+            json(200, session("Administrator")),
+        ).on("GET", "/api/v1/workers", () =>
+            json(
+                200,
+                schema("WorkerSessionPage", { items: [], next_cursor: null }),
+            ),
+        );
+        start("/workers");
+
+        expect(
+            await screen.findByText("No worker has registered yet."),
         ).toBeInTheDocument();
     });
 });

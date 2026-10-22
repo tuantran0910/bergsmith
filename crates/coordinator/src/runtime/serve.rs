@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::api::{self, EventStreamLimits, JobEventHub};
 use crate::identity::oidc::OidcProvider;
 use crate::identity::routes::IdentityState;
+use crate::observability::{Observability, RpcMetrics};
 use crate::preview::{CatalogPreviewer, PreviewProfiles};
 use crate::runtime::catalogs::{RuntimeCatalogs, RuntimeWorkerAccess};
 use crate::runtime::config::CoordinatorConfig;
@@ -138,6 +139,8 @@ pub async fn serve(config: CoordinatorConfig) -> Result<(), ServeError> {
         app,
         http_bind,
         worker_bind,
+        metrics_bind,
+        observability,
         tls,
         events,
         scheduler,
@@ -146,15 +149,38 @@ pub async fn serve(config: CoordinatorConfig) -> Result<(), ServeError> {
     } = started;
     let listener = events.listen(&database);
     let http_shutdown = shutdown.clone();
-    tasks.spawn(async move { ("http", serve_http(app, http_bind, http_shutdown).await) });
+    tasks.spawn(async move {
+        (
+            "http",
+            serve_router(app, http_bind, "http", http_shutdown).await,
+        )
+    });
     let worker_service = scheduler.worker_service();
     let worker_shutdown = shutdown.clone();
+    let rpc_metrics = observability.rpc().clone();
     tasks.spawn(async move {
         (
             "worker",
-            serve_worker(worker_service, worker_bind, tls, worker_shutdown).await,
+            serve_worker(
+                worker_service,
+                worker_bind,
+                tls,
+                rpc_metrics,
+                worker_shutdown,
+            )
+            .await,
         )
     });
+    if let Some(bind) = metrics_bind {
+        let metrics_shutdown = shutdown.clone();
+        let router = crate::observability::router(observability);
+        tasks.spawn(async move {
+            (
+                "metrics",
+                serve_router(router, bind, "metrics", metrics_shutdown).await,
+            )
+        });
+    }
     {
         let shutdown = shutdown.clone();
         let scheduler = scheduler.clone();
@@ -247,6 +273,8 @@ struct Started {
     app: axum::Router,
     http_bind: SocketAddr,
     worker_bind: SocketAddr,
+    metrics_bind: Option<SocketAddr>,
+    observability: Observability,
     tls: Identity,
     events: JobEventHub,
     scheduler: Arc<Scheduler>,
@@ -364,10 +392,28 @@ async fn start(
         scheduler_config.retry,
     );
 
+    let observability = Observability::new(
+        database.clone(),
+        config.observability.metrics().map_err(|error| {
+            ServeError::Database(PersistenceError::InvalidValue {
+                entity: "observability",
+                constraint: error.to_string(),
+            })
+        })?,
+    );
+    let metrics_bind = config
+        .observability
+        .metrics_bind
+        .as_deref()
+        .map(|bind| parse_bind(bind, "metrics"))
+        .transpose()?;
+
     Ok(Started {
         app: http::app(api, identity, config.http.web_root.clone())?,
         http_bind: parse_bind(&config.http.bind, "http")?,
         worker_bind: parse_bind(&config.worker.bind, "worker")?,
+        metrics_bind,
+        observability,
         tls: tls_identity(config)?,
         events,
         scheduler,
@@ -463,19 +509,20 @@ fn tls_identity(config: &CoordinatorConfig) -> Result<Identity, ServeError> {
     Ok(Identity::from_pem(certificate, key))
 }
 
-async fn serve_http(
+async fn serve_router(
     app: axum::Router,
     bind: SocketAddr,
+    listener_name: &'static str,
     shutdown: Shutdown,
 ) -> Result<(), ServeError> {
     let listener =
         tokio::net::TcpListener::bind(bind)
             .await
             .map_err(|error| ServeError::Listener {
-                listener: "http",
+                listener: listener_name,
                 message: error.to_string(),
             })?;
-    info!(%bind, "browser API listening");
+    info!(%bind, listener = listener_name, "http listener started");
     let wait = {
         let shutdown = shutdown.clone();
         async move { shutdown.wait().await }
@@ -484,7 +531,7 @@ async fn serve_http(
         .with_graceful_shutdown(wait)
         .await
         .map_err(|error| ServeError::Listener {
-            listener: "http",
+            listener: listener_name,
             message: error.to_string(),
         })
 }
@@ -493,10 +540,12 @@ async fn serve_worker(
     service: WorkerService,
     bind: SocketAddr,
     identity: Identity,
+    rpc_metrics: RpcMetrics,
     shutdown: Shutdown,
 ) -> Result<(), ServeError> {
     info!(%bind, "worker RPC listening");
     Server::builder()
+        .layer(rpc_metrics.layer())
         .tls_config(worker_tls_config(identity))
         .map_err(|error| ServeError::Listener {
             listener: "worker",
