@@ -14,7 +14,10 @@ PROTO_BASE ?= main
 DATABASE_URL ?= postgres://bergsmith:bergsmith@127.0.0.1:55432/bergsmith
 BERGSMITH_TEST_S3_ENDPOINT ?= http://127.0.0.1:59000
 BERGSMITH_TEST_CATALOG_URL ?= http://127.0.0.1:58181
-export DATABASE_URL BERGSMITH_TEST_S3_ENDPOINT BERGSMITH_TEST_CATALOG_URL
+# Development-only TLS material for the test PostgreSQL (scripts/dev-pki.sh).
+DEV_PKI := deploy/docker/.pki/postgres
+BERGSMITH_TEST_DATABASE_CA ?= $(CURDIR)/$(DEV_PKI)/ca.crt
+export DATABASE_URL BERGSMITH_TEST_S3_ENDPOINT BERGSMITH_TEST_CATALOG_URL BERGSMITH_TEST_DATABASE_CA
 # The change `test-changed` selects packages for: everything since the merge
 # base with BASE, plus uncommitted and untracked files.
 BASE ?= origin/main
@@ -47,6 +50,7 @@ clippy: ## Lint with warnings as errors
 	$(CARGO) clippy --workspace --all-targets --all-features --locked -- -D warnings
 
 services-up: ## Start PostgreSQL, RustFS, and Lakekeeper (Docker Compose)
+	scripts/dev-pki.sh $(DEV_PKI)
 	$(COMPOSE) up --detach --wait postgres rustfs lakekeeper
 
 services-down: ## Stop the test services and discard their data

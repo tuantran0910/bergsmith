@@ -7,7 +7,7 @@ use bergsmith_common::ids::{PrincipalId, RoleGrantId};
 use bergsmith_common::permission::{GrantScope, Role};
 use bergsmith_persistence::grants::{self, NewRoleGrant};
 use bergsmith_persistence::tenancy::{self, NewPrincipal, PrincipalKind};
-use bergsmith_persistence::{Database, DatabaseConfig};
+use bergsmith_persistence::{Database, DatabaseConfig, DatabaseTlsMode};
 pub use bergsmith_persistence::{DatabaseUrl, PersistenceError};
 use sqlx::{Connection, PgConnection};
 
@@ -115,6 +115,7 @@ pub async fn bootstrap_administrator(
 ///
 /// Returns [`PersistenceError::Database`] when the database is unreachable.
 pub async fn connect(url: DatabaseUrl) -> Result<Database, PersistenceError> {
+    warn_unless_verified(&url);
     let mut config = DatabaseConfig::new(url);
     config.max_connections = 1;
     config.acquire_timeout = MIGRATE_ACQUIRE_TIMEOUT;
@@ -339,4 +340,50 @@ pub fn service_token_verifier(
             .verifier()
             .to_hex(),
     )
+}
+
+/// Logs a warning when `url` does not select `sslmode=verify-full`.
+///
+/// Weaker modes either send credentials and ledger data in plaintext or
+/// accept any server certificate. They remain allowed for development; an
+/// invalid URL is reported by the connection attempt that follows.
+pub(crate) fn warn_unless_verified(url: &DatabaseUrl) {
+    if let Some(mode) = unverified_tls_mode(url) {
+        tracing::warn!(
+            sslmode = %mode,
+            "database connection does not verify the server; use sslmode=verify-full with sslrootcert in production"
+        );
+    }
+}
+
+/// The URL's TLS mode when it is weaker than `verify-full`.
+fn unverified_tls_mode(url: &DatabaseUrl) -> Option<DatabaseTlsMode> {
+    url.tls_mode().ok().filter(|mode| !mode.is_verified())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_verify_full_suppresses_the_tls_warning() {
+        let url = |mode: &str| DatabaseUrl::new(format!("postgres://localhost/db?sslmode={mode}"));
+
+        assert_eq!(unverified_tls_mode(&url("verify-full")), None);
+        for (mode, expected) in [
+            ("disable", DatabaseTlsMode::Disable),
+            ("prefer", DatabaseTlsMode::Prefer),
+            ("require", DatabaseTlsMode::Require),
+            ("verify-ca", DatabaseTlsMode::VerifyCa),
+        ] {
+            assert_eq!(unverified_tls_mode(&url(mode)), Some(expected));
+        }
+    }
+
+    #[test]
+    fn an_invalid_url_is_left_to_the_connection_attempt() {
+        let url = DatabaseUrl::new("postgres://localhost/db?sslmode=sometimes");
+        assert_eq!(unverified_tls_mode(&url), None);
+        warn_unless_verified(&url);
+    }
 }

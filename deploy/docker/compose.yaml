@@ -21,8 +21,20 @@ services:
       POSTGRES_PASSWORD: bergsmith
       POSTGRES_DB: bergsmith
     # `#[sqlx::test]` opens a database per test; leave headroom for parallel
-    # runs. fsync=off is for tests only.
-    command: ["postgres", "-c", "max_connections=300", "-c", "fsync=off"]
+    # runs. fsync=off is for tests only. TLS uses the development certificate
+    # from scripts/dev-pki.sh (`make services-up`); plaintext stays allowed.
+    # PostgreSQL refuses a key it does not own, so the entrypoint copies it.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        install -o postgres -g postgres -m 600 /pki/server.key /var/run/postgresql/server.key
+        install -o postgres -g postgres -m 644 /pki/server.crt /var/run/postgresql/server.crt
+        exec docker-entrypoint.sh postgres -c max_connections=300 -c fsync=off \
+          -c ssl=on -c ssl_cert_file=/var/run/postgresql/server.crt \
+          -c ssl_key_file=/var/run/postgresql/server.key
+    volumes:
+      - ./.pki/postgres:/pki:ro
     ports:
       - "127.0.0.1:55432:5432"
     healthcheck:

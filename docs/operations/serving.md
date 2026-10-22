@@ -22,6 +22,38 @@ configuration values: `database.url_file` and
 `identity.client_secret_file`. Worker tokens are read by the worker, not the
 coordinator.
 
+## Database TLS
+
+Every command that connects to PostgreSQL (`serve`, `migrate`, and the
+administration commands) reads TLS settings from the libpq-compatible URL
+parameters or the matching `PGSSL*` environment variables
+([ADR 0042](../adr/0042-postgresql-tls.md)). Workers never connect to
+PostgreSQL.
+
+| Parameter | Environment | Meaning |
+|---|---|---|
+| `sslmode` | `PGSSLMODE` | `disable`, `allow`, `prefer` (default), `require`, `verify-ca`, or `verify-full` |
+| `sslrootcert` | `PGSSLROOTCERT` | PEM CA bundle that signs the server certificate; without it, the bundled WebPKI roots |
+| `sslcert` | `PGSSLCERT` | PEM client certificate, when the server requires one |
+| `sslkey` | `PGSSLKEY` | PEM private key for `sslcert` |
+
+Production deployments must use `sslmode=verify-full` with `sslrootcert`, so
+the coordinator authenticates the server by certificate and host name:
+
+```text
+postgres://bergsmith@db.example:5432/bergsmith?sslmode=verify-full&sslrootcert=/etc/bergsmith/postgres-ca.pem
+```
+
+Keep the URL in `database.url_file`, since it also holds the password. Any
+weaker mode logs a warning at startup. `require` encrypts but accepts any
+certificate, and `prefer` falls back to plaintext. A server certificate that
+does not chain to `sslrootcert`, or does not name the host, fails the
+connection.
+
+The test Compose PostgreSQL serves TLS with a development CA that
+`make services-up` writes to `deploy/docker/.pki/postgres/`, and still accepts
+plaintext. Delete that directory and restart the services to rotate it.
+
 ## Configuration
 
 The JSON document is validated before any listener starts. A minimal document:
@@ -62,7 +94,7 @@ The JSON document is validated before any listener starts. A minimal document:
 
 | Section | Meaning |
 |---|---|
-| `database` | URL or URL file, pool size, acquire timeout |
+| `database` | URL or URL file (TLS parameters included), pool size, acquire timeout |
 | `http` | Browser bind, optional built UI directory, `Secure` cookies |
 | `worker` | gRPC bind and PEM certificate/key presented to workers |
 | `identity` | OIDC issuer, client, secret file, redirect URI, scopes, auth method |

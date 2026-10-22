@@ -48,3 +48,4 @@ record's status; never rewrite an accepted decision.
 | [0039](0039-schedule-occurrence-admission.md) | Schedule occurrence admission and coalescing | Accepted |
 | [0040](0040-schedule-windows-and-run-budgets.md) | Schedule windows and per-run input budgets | Accepted |
 | [0041](0041-coordinator-serve-runtime.md) | Coordinator serve runtime and release packaging | Accepted |
+| [0042](0042-postgresql-tls.md) | PostgreSQL TLS through libpq connection parameters | Accepted |

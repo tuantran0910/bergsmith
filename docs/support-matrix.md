@@ -88,6 +88,7 @@ Connection restrictions and the retention each connection needs are in
 | Mandatory job requester and legacy attribution | Certified (BS-017, ADR 0033): `jobs.created_by` is `NOT NULL`; pre-BS-017 rows are attributed to a revocable per-organization `bergsmith:system` principal |
 | Audit log of identity, grant, and maintenance decisions | Certified (BS-017): append-only and secret-free; read-only API exposure by BS-018.T1; scheduled admissions and denials are audited by BS-019.T2 |
 | Worker pool bearer-token identity and TLS | Implemented (BS-012/013/015, ADRs 0012, 0023, 0026) |
+| Coordinator PostgreSQL TLS | Implemented (BS-020.T6, ADR 0042): rustls with libpq `sslmode`/`sslrootcert`/`sslcert`/`sslkey` URL parameters for `serve`, `migrate`, and administration commands; `require`, `verify-full` with a trusted CA, and rejection of an untrusted CA pass against the TLS-enabled test PostgreSQL; a startup warning flags modes weaker than `verify-full` |
 
 ## Browser API and UI
 
