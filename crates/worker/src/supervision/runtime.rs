@@ -53,7 +53,18 @@ pub struct WorkerConfig {
     pub storage: StorageProfile,
     /// Linux delegated cgroup v2 directory with memory, cpu and pids controllers.
     pub cgroup_root: Option<PathBuf>,
+    /// How long an acknowledged journal record is kept before removal, at
+    /// least [`MIN_JOURNAL_RETENTION`]. Unacknowledged and quarantined records
+    /// are never removed.
+    pub journal_retention: Duration,
 }
+
+/// Default retention for acknowledged journal records.
+pub const DEFAULT_JOURNAL_RETENTION: Duration = Duration::from_secs(30 * 24 * 3600);
+/// Shortest accepted retention, so recent history stays available for inspection.
+pub const MIN_JOURNAL_RETENTION: Duration = Duration::from_secs(3600);
+/// How often a running worker removes expired acknowledged records.
+const RETENTION_INTERVAL: Duration = Duration::from_secs(3600);
 
 impl WorkerConfig {
     fn validate(&self) -> Result<(), WorkerError> {
@@ -80,6 +91,11 @@ impl WorkerConfig {
             StorageProfile::LocalFs | StorageProfile::S3(_)
         ) {
             return Err(WorkerError::Invalid("unsupported storage profile"));
+        }
+        if self.journal_retention < MIN_JOURNAL_RETENTION {
+            return Err(WorkerError::Invalid(
+                "journal retention must be at least one hour",
+            ));
         }
         #[cfg(target_os = "linux")]
         if self.cgroup_root.is_none() {
@@ -153,11 +169,50 @@ pub async fn run(config: WorkerConfig, shutdown: watch::Receiver<bool>) -> Resul
     let client = Client::new(endpoint.connect_lazy())
         .max_decoding_message_size(MAX_MESSAGE)
         .max_encoding_message_size(MAX_MESSAGE);
+    // Remove expired history before the one-time recovery scan reads it.
+    prune(&config).await?;
     let state = config.state_directory.clone();
     let journal = super::blocking(move || Journal::open(&state)).await?;
-    tokio::select! {
+    let retention = AbortOnDrop(tokio::spawn(retain(config.clone())));
+    let result = tokio::select! {
         result = drive(&config, client.clone(), &journal, shutdown.clone()) => result,
         result = reporting(&config, client, journal.clone()) => result,
+    };
+    drop(retention);
+    result
+}
+
+async fn prune(config: &WorkerConfig) -> Result<(), WorkerError> {
+    let state = config.state_directory.clone();
+    let retention = config.journal_retention;
+    let removed =
+        super::blocking(move || journal::prune(&state, retention, SystemTime::now())).await?;
+    if removed > 0 {
+        tracing::info!(removed, "removed expired acknowledged journal records");
+    }
+    Ok(())
+}
+
+/// Periodic retention. A failed pass is logged and retried at the next
+/// interval; it never stops execution or reporting.
+async fn retain(config: WorkerConfig) {
+    let mut tick = tokio::time::interval(RETENTION_INTERVAL);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    tick.tick().await;
+    loop {
+        tick.tick().await;
+        if let Err(error) = prune(&config).await {
+            tracing::warn!(error = %error, "journal retention pass failed");
+        }
+    }
+}
+
+/// Stops a background task when the runtime that owns it returns.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 

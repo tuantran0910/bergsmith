@@ -86,7 +86,8 @@ Run `bergsmith-worker run --config /etc/bergsmith/worker.json --token-file
   "cgroup_root": "/sys/fs/cgroup/bergsmith-worker",
   "s3_region": "us-east-1",
   "s3_endpoint": "https://objects.example",
-  "s3_path_style": true
+  "s3_path_style": true,
+  "journal_retention_hours": 720
 }
 ```
 
@@ -96,6 +97,9 @@ Omitting `s3_region` selects filesystem storage for development. These are
 connection settings; storage authentication always comes from grants and
 heartbeat refreshes. The pool token file contains a `bsw1` service token and
 should be readable only by the worker account. No secret belongs in this JSON.
+`journal_retention_hours` is optional: acknowledged journal records are kept
+for 720 hours (30 days) by default, and at least one hour (see
+[Journal retention](#journal-retention)).
 
 The state directory's parent must exist. The worker creates the directory with
 mode `0700`, refuses a public directory, and takes an exclusive lock. Use a
@@ -175,10 +179,30 @@ its exclusive completion guard. Recovery rejects conflicting completion files.
 An ordered pending index is rebuilt once on startup; normal polling and reporting
 inspect outstanding records without repeatedly traversing acknowledged history.
 
-TODO (BS-020): define an archival or retention policy for acknowledged worker
-journal records. Retained history consumes disk and increases the one-time
-startup recovery scan. Preserve unacknowledged reports and crash-safe recovery
-when bounding that history.
+### Journal retention
+
+Each acknowledged attempt directory is kept for `journal_retention_hours`
+after its `ack.pb` was written (30 days by default), then removed. Removal runs
+at startup, before the recovery scan, and hourly while the worker runs, so
+both disk use and the startup scan stay bounded by the retention window.
+
+- Unacknowledged records (`result.pb` or `failure.pb` without `ack.pb`) are
+  never removed; they are still owed to the coordinator.
+- Quarantined records (`quarantine.pb`) are never removed. Inspect them, then
+  delete the attempt directory by hand while the worker is stopped.
+- A directory is first renamed into the state directory's `.trash/`, the
+  rename is synced, and only then is it deleted. A crash mid-removal leaves
+  content only in `.trash/`, which the next pass empties and recovery never
+  reads.
+- Removing an acknowledged record cannot allow a second execution: an
+  acknowledgment follows the coordinator's decision on an ended attempt, and
+  the coordinator never grants an ended attempt again.
+
+A failed hourly pass is logged (`journal retention pass failed`) and retried
+at the next interval; it does not stop execution or reporting. A failure at
+startup stops the worker, like any other journal I/O error. To archive history
+before it expires, copy attempt directories that contain `ack.pb` out of the
+state directory; never move or edit unacknowledged records.
 
 On restart the worker reports unacknowledged records with their original session
 and receipt digest before requesting more execution. A timeout retries the same

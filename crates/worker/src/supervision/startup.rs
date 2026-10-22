@@ -24,6 +24,8 @@ struct ConfigFile {
     s3_endpoint: Option<String>,
     #[serde(default)]
     s3_path_style: bool,
+    /// Hours to keep acknowledged journal records; 30 days by default.
+    journal_retention_hours: Option<u64>,
 }
 
 /// Loads worker configuration, reads its token file, and handles termination.
@@ -70,6 +72,11 @@ pub async fn serve(config_file: &Path, token_file: &Path) -> Result<(), WorkerEr
         binary: std::env::current_exe()?,
         storage,
         cgroup_root: config.cgroup_root,
+        journal_retention: config
+            .journal_retention_hours
+            .map_or(super::DEFAULT_JOURNAL_RETENTION, |hours| {
+                std::time::Duration::from_secs(hours.saturating_mul(3600))
+            }),
     };
     let (stop, stopped) = tokio::sync::watch::channel(false);
     let runtime = super::run(config, stopped);

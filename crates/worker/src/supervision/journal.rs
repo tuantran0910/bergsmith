@@ -5,6 +5,7 @@ use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
 use bergsmith_protocol::cluster;
 use prost::Message;
@@ -28,6 +29,76 @@ pub(super) const QUARANTINE: &str = "quarantine.pb";
 /// Whether an attempt directory's record is acknowledged or quarantined.
 pub(super) fn settled(directory: &Path) -> bool {
     directory.join("ack.pb").exists() || directory.join(QUARANTINE).exists()
+}
+
+/// Directory, inside the state directory, that holds records being removed.
+///
+/// Retention first renames an attempt directory here, so a crash during the
+/// recursive delete never leaves a partial record in the journal.
+pub(super) const TRASH: &str = ".trash";
+
+/// Removes acknowledged records whose acknowledgment is older than
+/// `retention` at `now`, and finishes any removal a crash interrupted.
+///
+/// Only records with `ack.pb` and without `quarantine.pb` are removed:
+/// unacknowledged reports must still be delivered, and quarantined ones are
+/// kept for inspection. An acknowledgment follows the coordinator's definitive
+/// decision on an ended attempt, and the coordinator never grants an ended
+/// attempt again, so a removed record can never be needed to prevent a second
+/// execution. Returns the number of records removed.
+///
+/// # Errors
+/// Returns local I/O errors; records already removed stay removed, and the
+/// next pass resumes from the trash directory.
+pub(super) fn prune(
+    root: &Path,
+    retention: Duration,
+    now: SystemTime,
+) -> Result<usize, WorkerError> {
+    let trash = root.join(TRASH);
+    if !trash.exists() {
+        std::fs::DirBuilder::new().mode(0o700).create(&trash)?;
+    }
+    empty(&trash)?;
+    let mut removed = 0;
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() || entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        let directory = entry.path();
+        if directory.join(QUARANTINE).exists() {
+            continue;
+        }
+        let acknowledged = match std::fs::metadata(directory.join("ack.pb")) {
+            Ok(metadata) => metadata.modified()?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if now.duration_since(acknowledged).unwrap_or_default() < retention {
+            continue;
+        }
+        std::fs::rename(&directory, trash.join(entry.file_name()))?;
+        removed += 1;
+    }
+    if removed > 0 {
+        // The renames are durable before any content disappears.
+        std::fs::File::open(root)?.sync_all()?;
+        empty(&trash)?;
+    }
+    Ok(removed)
+}
+
+fn empty(trash: &Path) -> Result<(), WorkerError> {
+    for entry in std::fs::read_dir(trash)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            std::fs::remove_dir_all(entry.path())?;
+        } else {
+            std::fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn lock(path: &Path) -> Result<std::fs::File, WorkerError> {
@@ -99,7 +170,9 @@ impl Journal {
         let mut paths = Vec::new();
         for entry in std::fs::read_dir(root)? {
             let entry = entry?;
-            if !entry.file_type()?.is_dir() {
+            // Hidden directories, such as the retention trash, hold no records.
+            if !entry.file_type()?.is_dir() || entry.file_name().to_string_lossy().starts_with('.')
+            {
                 continue;
             }
             let directory = entry.path();
@@ -175,5 +248,100 @@ impl Journal {
             return Err(WorkerError::Invalid("corrupt receipt digest"));
         }
         Ok(report)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DAY: Duration = Duration::from_secs(24 * 3600);
+
+    fn record(root: &Path, name: &str, files: &[&str], age: Duration) -> PathBuf {
+        let directory = root.join(name);
+        private_dir(&directory).unwrap();
+        for file in files {
+            let path = directory.join(file);
+            std::fs::write(&path, b"record").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(SystemTime::now().checked_sub(age).unwrap())
+                .unwrap();
+        }
+        directory
+    }
+
+    fn state() -> (tempfile::TempDir, PathBuf) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("worker");
+        private_dir(&root).unwrap();
+        (directory, root)
+    }
+
+    #[test]
+    fn only_expired_acknowledged_records_are_removed() {
+        let (_directory, root) = state();
+        let expired = record(&root, "expired", &["result.pb", "ack.pb"], 8 * DAY);
+        let failed = record(&root, "failed", &["failure.pb", "ack.pb"], 8 * DAY);
+        let recent = record(&root, "recent", &["result.pb", "ack.pb"], DAY);
+        let pending = record(&root, "pending", &["result.pb"], 30 * DAY);
+        let quarantined = record(
+            &root,
+            "quarantined",
+            &["result.pb", "ack.pb", QUARANTINE],
+            30 * DAY,
+        );
+        std::fs::write(root.join("worker.lock"), b"").unwrap();
+
+        let removed = prune(&root, 7 * DAY, SystemTime::now()).unwrap();
+
+        assert_eq!(removed, 2);
+        assert!(!expired.exists());
+        assert!(!failed.exists());
+        assert!(recent.join("ack.pb").exists());
+        assert!(pending.join("result.pb").exists());
+        assert!(quarantined.join(QUARANTINE).exists());
+        assert!(root.join("worker.lock").exists());
+        assert_eq!(std::fs::read_dir(root.join(TRASH)).unwrap().count(), 0);
+        assert_eq!(
+            Journal::open(&root).unwrap().pending().unwrap(),
+            vec![pending.join("result.pb")]
+        );
+    }
+
+    #[test]
+    fn an_interrupted_removal_finishes_and_never_reaches_the_journal() {
+        let (_directory, root) = state();
+        // A crash after the rename leaves a partial record in the trash.
+        let interrupted = root.join(TRASH).join("interrupted");
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&interrupted)
+            .unwrap();
+        std::fs::write(interrupted.join("result.pb"), b"partial").unwrap();
+        std::fs::write(root.join(TRASH).join("stray"), b"").unwrap();
+
+        assert!(Journal::open(&root).unwrap().pending().unwrap().is_empty());
+        assert_eq!(prune(&root, 7 * DAY, SystemTime::now()).unwrap(), 0);
+
+        assert_eq!(std::fs::read_dir(root.join(TRASH)).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn retention_is_measured_from_the_acknowledgment() {
+        let (_directory, root) = state();
+        // An old report acknowledged recently is still within retention.
+        let directory = record(&root, "late-ack", &["result.pb"], 30 * DAY);
+        record(&root, "late-ack", &["ack.pb"], DAY);
+
+        assert_eq!(prune(&root, 7 * DAY, SystemTime::now()).unwrap(), 0);
+        assert_eq!(
+            prune(&root, 7 * DAY, SystemTime::now() + 7 * DAY).unwrap(),
+            1
+        );
+        assert!(!directory.exists());
     }
 }
