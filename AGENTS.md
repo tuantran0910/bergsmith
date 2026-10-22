@@ -87,7 +87,8 @@ Everything used to build, run, or deploy Bergsmith outside `cargo` lives under
 | `make ci` | Every gate above, in CI order (coverage runs the tests, and clippy type-checks every target) |
 | `make services-up` / `make services-down` | Start or discard PostgreSQL, RustFS, and Lakekeeper (Docker Compose) |
 | `make proto-lint` / `make proto-breaking` | buf lint and breaking-change checks (Docker) |
-| `make web` | Web UI gates: generated-client freshness, format, lint, typecheck, tests with 80% line coverage, build |
+| `make web` | Web UI gates: generated-client freshness, format, lint, typecheck, tests with 80% line coverage, build within the JavaScript size budget |
+| `make web-e2e` | Browser gate: the built UI's journeys in Playwright's Chromium under the coordinator's CSP, with axe (WCAG 2.2 AA) |
 | `make web-audit` | `npm audit`: production dependencies at any severity, all at high |
 | `make web-dev` | Serve the UI, proxying `/api` and `/auth` to `BERGSMITH_COORDINATOR_URL` |
 

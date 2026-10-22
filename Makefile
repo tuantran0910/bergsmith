@@ -32,7 +32,7 @@ WORKER_BIN ?= $(abspath $(or $(CARGO_TARGET_DIR),target)/debug/bergsmith-worker)
 
 .PHONY: help fmt fmt-check check clippy test test-changed doc coverage coverage-html deny machete ci \
 	services-up services-down proto-lint proto-breaking bench-executor test-distributed coverage-distributed \
-	web-install web web-dev web-audit images app-up app-down app-worker app-bootstrap-check profraw-clean
+	web-install web web-e2e web-dev web-audit images app-up app-down app-worker app-bootstrap-check profraw-clean
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -133,6 +133,14 @@ web: web-install ## Web UI gates: generated client, format, lint, types, tests w
 	$(WEB) run coverage
 	$(WEB) run build
 
+# The browser gate (BS-021.T4): the built UI in Playwright's pinned Chromium,
+# under the coordinator's CSP, with axe. On Linux, CI first runs
+# `playwright install --with-deps chromium` for the system libraries.
+web-e2e: web-install ## Browser gate: journeys in Chromium under the coordinator's CSP, with axe
+	$(WEB) run build
+	$(WEB) exec -- playwright install chromium
+	$(WEB) run e2e
+
 web-dev: web-install ## Serve the web UI, proxying /api and /auth to BERGSMITH_COORDINATOR_URL
 	$(WEB) run dev
 
@@ -142,7 +150,7 @@ web-audit: web-install ## Audit npm dependencies: production at any severity, al
 
 # `coverage-distributed` runs the whole test suite and `clippy` checks every target,
 # so `test` and `check` would only repeat them.
-ci: fmt-check proto-lint proto-breaking clippy doc coverage-distributed deny machete web web-audit ## Run every quality gate
+ci: fmt-check proto-lint proto-breaking clippy doc coverage-distributed deny machete web web-e2e web-audit ## Run every quality gate
 
 # Application images and Compose stack (BS-020.T1).
 APP_COMPOSE := docker compose --file deploy/docker/compose.app.yaml

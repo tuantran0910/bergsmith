@@ -3,13 +3,19 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
+// Vite loads its configuration natively, which needs the file extension.
+import { bundleBudget } from "./tooling/bundleBudget.ts";
+
+/** Gzipped JavaScript the browser downloads: 152 kB when the budget was set. */
+const JAVASCRIPT_BUDGET_BYTES = 175_000;
+
 // The development server proxies the coordinator so the session and CSRF
 // cookies stay same-origin, exactly as when the coordinator serves the build.
 const coordinator =
     process.env.BERGSMITH_COORDINATOR_URL ?? "http://127.0.0.1:8080";
 
 export default defineConfig({
-    plugins: [react(), tailwindcss()],
+    plugins: [react(), tailwindcss(), bundleBudget(JAVASCRIPT_BUDGET_BYTES)],
     server: {
         host: "127.0.0.1",
         port: 5173,
@@ -24,6 +30,8 @@ export default defineConfig({
     },
     test: {
         environment: "jsdom",
+        // `e2e/` holds the Playwright browser gate, which Vitest must not run.
+        include: ["src/**/*.test.{ts,tsx}", "tooling/**/*.test.ts"],
         globals: true,
         setupFiles: ["src/test/setup.ts"],
         restoreMocks: true,

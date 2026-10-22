@@ -16,11 +16,12 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "types": [
       "vite/client",
       "vitest/globals",
       "@testing-library/jest-dom/vitest"
     ]
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src", "e2e", "tooling", "vite.config.ts", "playwright.config.ts"]
 }

@@ -3,3 +3,5 @@ src/api/schema.d.ts
 dist/
 coverage/
 package-lock.json
+test-results/
+playwright-report/

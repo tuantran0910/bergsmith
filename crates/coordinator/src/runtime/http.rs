@@ -19,16 +19,23 @@ use crate::api::{self, ApiState};
 use crate::identity::routes::{self as identity_routes, IdentityState};
 
 /// The restrictive policy for the bundled single-page application.
+///
+/// Styles come only from the built stylesheet: React sets `style` through the
+/// CSSOM, which the policy does not restrict. Trusted Types with no policy
+/// make every string-to-script sink, such as `innerHTML`, throw. The web UI's
+/// browser gate (`web/e2e`) reads this constant and fails on any violation.
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
      script-src 'self'; \
-     style-src 'self' 'unsafe-inline'; \
+     style-src 'self'; \
      img-src 'self' data:; \
      font-src 'self'; \
      connect-src 'self'; \
      object-src 'none'; \
      base-uri 'none'; \
      form-action 'self'; \
-     frame-ancestors 'none'";
+     frame-ancestors 'none'; \
+     require-trusted-types-for 'script'; \
+     trusted-types 'none'";
 
 /// Why the browser surface could not be assembled.
 #[derive(Debug, thiserror::Error)]
@@ -248,6 +255,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_entry_point_is_revalidated_on_every_load() {
+        let directory = web_root();
+        for path in ["/", "/index.html", "/jobs/abc"] {
+            let response = request(directory.path(), path).await;
+            assert_eq!(
+                response.headers().get(header::CACHE_CONTROL).unwrap(),
+                "no-cache",
+                "{path}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn assets_are_immutable_and_typed() {
         let directory = web_root();
         let response = request(directory.path(), "/assets/app.js").await;
@@ -305,5 +325,39 @@ mod tests {
             "nosniff"
         );
         assert_eq!(headers.get(header::REFERRER_POLICY).unwrap(), "no-referrer");
+        assert_eq!(
+            headers.get(header::CONTENT_SECURITY_POLICY).unwrap(),
+            CONTENT_SECURITY_POLICY
+        );
+    }
+
+    fn directives() -> Vec<&'static str> {
+        CONTENT_SECURITY_POLICY.split("; ").collect()
+    }
+
+    #[test]
+    fn styles_come_only_from_the_origin() {
+        assert!(directives().contains(&"style-src 'self'"));
+        assert!(!CONTENT_SECURITY_POLICY.contains("'unsafe-inline'"));
+        assert!(!CONTENT_SECURITY_POLICY.contains("'unsafe-eval'"));
+    }
+
+    #[test]
+    fn script_sinks_require_trusted_types_and_none_may_be_created() {
+        let directives = directives();
+        assert!(directives.contains(&"require-trusted-types-for 'script'"));
+        assert!(directives.contains(&"trusted-types 'none'"));
+    }
+
+    #[test]
+    fn every_directive_is_well_formed() {
+        for directive in directives() {
+            let name = directive.split(' ').next().unwrap();
+            assert!(
+                !name.is_empty() && name.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'),
+                "{directive:?}"
+            );
+            assert_eq!(directive.trim(), directive, "{directive:?}");
+        }
     }
 }

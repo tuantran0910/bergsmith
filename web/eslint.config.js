@@ -9,6 +9,8 @@ export default tseslint.config(
         ignores: [
             "dist",
             "coverage",
+            "test-results",
+            "playwright-report",
             "src/api/schema.d.ts",
             "eslint.config.js",
         ],
