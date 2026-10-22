@@ -109,6 +109,26 @@ export function useJob(id: string) {
     });
 }
 
+export function useWorkers() {
+    const client = useQueryClient();
+    return useInfiniteQuery({
+        queryKey: ["workers"],
+        initialPageParam: null as string | null,
+        queryFn: ({ pageParam, signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/workers", {
+                        params: { query: page(pageParam) },
+                        signal,
+                    }),
+                ),
+            ),
+        getNextPageParam: (last) => last.next_cursor,
+        // Lease status changes on its own; keep the list current while open.
+        refetchInterval: 15_000,
+    });
+}
+
 export function useAudit() {
     const client = useQueryClient();
     return useInfiniteQuery({

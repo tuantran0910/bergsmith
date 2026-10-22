@@ -28,6 +28,7 @@ as `x-csrf-token`. All responses use `Cache-Control: no-store`.
 | `POST /api/v1/jobs/{id}/retry` | Create a fresh-plan retry of a terminal job; 202 with the new job |
 | `POST /api/v1/previews` | Assess a table without creating work |
 | `GET /api/v1/audit` | Organization audit history; requires organization-wide `audit:read` |
+| `GET /api/v1/workers` | Current worker sessions and their lease status; requires organization-wide `workers:manage` |
 | `GET /api/v1/policies`, `GET /api/v1/policies/{id}` | Maintenance policies; requires organization-wide `schedules:manage` |
 | `POST /api/v1/policies` | Create a policy; 201 with the stored row |
 | `PATCH /api/v1/policies/{id}` | Edit or disable a policy using the revision read; 409 when it is stale |

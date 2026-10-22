@@ -50,3 +50,4 @@ record's status; never rewrite an accepted decision.
 | [0041](0041-coordinator-serve-runtime.md) | Coordinator serve runtime and release packaging | Accepted |
 | [0042](0042-postgresql-tls.md) | PostgreSQL TLS through libpq connection parameters | Accepted |
 | [0043](0043-worker-journal-retention.md) | Worker journal retention | Accepted |
+| [0044](0044-observability-baseline.md) | Observability baseline | Accepted |

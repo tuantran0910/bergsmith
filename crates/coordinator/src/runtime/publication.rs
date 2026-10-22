@@ -241,6 +241,7 @@ impl PublicationService {
         Ok(summary)
     }
 
+    #[tracing::instrument(skip_all, fields(job_id = %job.id))]
     async fn resume_intent(&self, job: &jobs::Job) -> Result<Outcome, PublicationError> {
         let connection = {
             let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
@@ -279,6 +280,7 @@ impl PublicationService {
         }
     }
 
+    #[tracing::instrument(skip_all, fields(job_id = %job.id))]
     async fn publish_job(&self, job: &jobs::Job) -> Result<Outcome, PublicationError> {
         let binding = self
             .catalogs

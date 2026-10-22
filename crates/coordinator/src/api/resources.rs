@@ -408,3 +408,62 @@ pub(super) async fn audit(
     }))).collect();
     Ok(Json(page.finish(rows)?))
 }
+
+/// `GET /api/v1/workers`: the organization's current worker sessions.
+///
+/// Requires organization-wide `workers:manage`. Sessions never expose tokens
+/// or credentials; byte counts fit a JSON number.
+pub(super) async fn workers(
+    State(state): State<ApiState>,
+    caller: Caller,
+    query: Result<Query<PageQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let page = Page::parse(
+        query.map_err(|_| ApiError::invalid())?.0,
+        caller.organization_id,
+        caller.principal_id,
+        "workers",
+    )?;
+    let after = page
+        .after
+        .as_deref()
+        .map(str::parse::<Uuid>)
+        .transpose()
+        .map_err(|_| ApiError::invalid())?
+        .map(bergsmith_common::ids::WorkerSessionId::from_uuid);
+    let mut conn = state.database.pool().acquire().await?;
+    require(
+        &mut conn,
+        &caller.0,
+        Permission::ManageWorkers,
+        ResourceScope::Organization,
+    )
+    .await?;
+    let sessions = bergsmith_persistence::workers::list_sessions(
+        &mut conn,
+        caller.organization_id,
+        after,
+        i64::try_from(page.limit + 1).map_err(|_| ApiError::invalid())?,
+    )
+    .await?;
+    let rows = sessions
+        .into_iter()
+        .map(|session| {
+            (
+                session.id.to_string(),
+                json!({
+                    "id": session.id, "principal_id": session.principal_id,
+                    "pool": session.pool, "worker_name": session.worker_name,
+                    "build_version": session.build_version,
+                    "capabilities": session.capabilities,
+                    "memory_bytes": session.memory_bytes, "cpu_millis": session.cpu_millis,
+                    "status": session.status.as_str(),
+                    "registered_at": session.registered_at,
+                    "lease_expires_at": session.lease_expires_at,
+                    "running_attempt_id": session.running_attempt_id,
+                }),
+            )
+        })
+        .collect();
+    Ok(Json(page.finish(rows)?))
+}

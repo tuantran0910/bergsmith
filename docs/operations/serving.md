@@ -107,6 +107,7 @@ The JSON document is validated before any listener starts. A minimal document:
 | `worker_verifiers` | Organization, service principal, pool, and token verifier |
 | `leadership` | Lease and renewal durations; renewal must be shorter than the lease |
 | `loops` | Planning and publication scan intervals |
+| `observability` | Optional metrics listener and ledger snapshot bounds ([observability](observability.md)) |
 
 The OIDC issuer is used for discovery from the coordinator and must be the
 same string the browser receives in the ID token. In a container, make that
@@ -138,8 +139,9 @@ Every response carries a restrictive `Content-Security-Policy`,
 front of the listener (a reverse proxy or load balancer) and set
 `http.secure_cookies` to `true`.
 
-`/healthz` answers `200` while the HTTP listener is up. It does not check the
-database, the catalog, or leadership; deeper diagnostics are BS-020.T2.
+`/healthz` answers `200` while the HTTP listener is up, for liveness.
+`/readyz` answers `200` only when PostgreSQL responds, for readiness. Metrics,
+log formats, and worker health are in [observability](observability.md).
 
 ## Runtime order
 

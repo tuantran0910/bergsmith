@@ -48,13 +48,14 @@ pub enum HttpError {
 /// # Errors
 ///
 /// [`HttpError::WebRoot`] when a web root is configured but its `index.html`
-/// is missing. Without a web root, only `/auth`, `/api/v1`, and `/healthz`
-/// are served; a reverse proxy serves the UI.
+/// is missing. Without a web root, only `/auth`, `/api/v1`, `/healthz`, and
+/// `/readyz` are served; a reverse proxy serves the UI.
 pub fn app(
     api: ApiState,
     identity: IdentityState,
     web_root: Option<PathBuf>,
 ) -> Result<Router, HttpError> {
+    let database = api.database.clone();
     let root = match web_root {
         Some(web_root) => {
             if !web_root.join("index.html").is_file() {
@@ -78,6 +79,12 @@ pub fn app(
     };
     Ok(Router::new()
         .route("/healthz", axum::routing::get(health))
+        .route(
+            "/readyz",
+            axum::routing::get(
+                move || async move { crate::observability::readiness(&database).await },
+            ),
+        )
         .merge(api::router(api))
         .merge(identity_routes::router(identity))
         .fallback(fallback)
@@ -90,6 +97,10 @@ pub fn app(
 async fn health() -> StatusCode {
     StatusCode::OK
 }
+
+// `/readyz` answers `503` while PostgreSQL does not respond within two
+// seconds, so a load balancer stops routing to a coordinator that cannot
+// serve requests; see `observability::readiness`.
 
 async fn security_headers(mut response: Response) -> Response {
     let headers = response.headers_mut();

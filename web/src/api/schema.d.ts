@@ -175,6 +175,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Requires organization-wide workers:manage. Current (not superseded) worker sessions in ascending session ID order, with lease status at database time. No tokens or credentials are returned. */
+        get: operations["listWorkers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/previews": {
         parameters: {
             query?: never;
@@ -595,6 +612,33 @@ export interface components {
             start_minute: number;
             /** Format: int32 */
             end_minute: number;
+        };
+        WorkerSession: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            principal_id: string;
+            pool: string;
+            worker_name: string;
+            build_version: string;
+            capabilities: string[];
+            memory_bytes: number;
+            cpu_millis: number;
+            /**
+             * @description live renews its lease and may receive grants; draining renews but receives no new grants; expired stopped renewing.
+             * @enum {string}
+             */
+            status: "live" | "draining" | "expired";
+            /** Format: date-time */
+            registered_at: string;
+            /** Format: date-time */
+            lease_expires_at: string;
+            /** @description The granted or running attempt, if any. */
+            running_attempt_id: string | null;
+        };
+        WorkerSessionPage: {
+            items: components["schemas"]["WorkerSession"][];
+            next_cursor: string | null;
         };
     };
     responses: never;
@@ -1505,6 +1549,84 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AuditEventPage"];
+                };
+            };
+            /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    listWorkers: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque continuation bound to organization, principal, and resource. Current grants are rechecked. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Resource or page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkerSessionPage"];
                 };
             };
             /** @description Invalid request or cursor */

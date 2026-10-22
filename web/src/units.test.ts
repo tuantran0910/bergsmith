@@ -1,4 +1,4 @@
-import { canReadAudit, loginUrl } from "./api/auth";
+import { canManageWorkers, canReadAudit, loginUrl } from "./api/auth";
 import { ApiFailure, call, csrfToken } from "./api/client";
 import {
     aliasName,
@@ -23,6 +23,7 @@ describe("router", () => {
         ["/jobs", { name: "jobs" }],
         [`/jobs/${id}`, { name: "job", id }],
         ["/audit", { name: "audit" }],
+        ["/workers", { name: "workers" }],
         ["/jobs/not-a-uuid", { name: "not_found" }],
         [`/jobs/${id}/extra`, { name: "not_found" }],
         ["/schedules", { name: "not_found" }],
@@ -228,6 +229,11 @@ describe("auth", () => {
         expect(loginUrl("acme corp", "/jobs?x=1")).toBe(
             "/auth/login?organization=acme+corp&return_to=%2Fjobs%3Fx%3D1",
         );
+    });
+
+    it("shows workers only to organization-wide administrators", () => {
+        expect(canManageWorkers(session("Administrator"))).toBe(true);
+        expect(canManageWorkers(session("Operator"))).toBe(false);
     });
 
     it("shows audit only to organization-wide administrators", () => {

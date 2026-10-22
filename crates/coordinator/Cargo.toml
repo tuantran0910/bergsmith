@@ -44,6 +44,8 @@ uuid.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# Times worker RPCs as a layer on the tonic server.
+tower.workspace = true
 
 [dev-dependencies]
 # Observe a real task process and gate its metadata read during crash acceptance.
@@ -55,7 +57,6 @@ mockito.workspace = true
 # Capture tracing events so a regression test proves logs never carry upstream
 # catalog text.
 tracing-subscriber.workspace = true
-tower = { workspace = true, features = ["util"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "test-util"] }
 
 [lints]

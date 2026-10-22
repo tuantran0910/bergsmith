@@ -77,6 +77,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/jobs/{id}/retry", post(commands::retry))
         .route("/api/v1/jobs/{id}/events", get(events::events))
         .route("/api/v1/audit", get(resources::audit))
+        .route("/api/v1/workers", get(resources::workers))
         .route("/api/v1/previews", post(preview::preview))
         .route(
             "/api/v1/policies",

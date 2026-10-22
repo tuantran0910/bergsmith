@@ -1,6 +1,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { type SessionInfo, canReadAudit, signOut } from "./api/auth";
+import {
+    type SessionInfo,
+    canManageWorkers,
+    canReadAudit,
+    signOut,
+} from "./api/auth";
 import { ErrorNotice } from "./components/ErrorNotice";
 import { AuditPage } from "./pages/AuditPage";
 import { JobPage } from "./pages/JobPage";
@@ -8,6 +13,7 @@ import { JobsPage } from "./pages/JobsPage";
 import { SignIn } from "./pages/SignIn";
 import { TablePage } from "./pages/TablePage";
 import { TablesPage } from "./pages/TablesPage";
+import { WorkersPage } from "./pages/WorkersPage";
 import {
     SESSION_KEY,
     identityOf,
@@ -71,6 +77,9 @@ function Shell({ session, route }: { session: SessionInfo; route: Route }) {
                 <nav aria-label="Main">
                     <Link to="/tables">Tables</Link>
                     <Link to="/jobs">Jobs</Link>
+                    {canManageWorkers(session) && (
+                        <Link to="/workers">Workers</Link>
+                    )}
                     {canReadAudit(session) && <Link to="/audit">Audit</Link>}
                 </nav>
                 <span className="who">{session.display_name}</span>
@@ -104,6 +113,8 @@ function Page({ route }: { route: Route }) {
             return <JobPage key={route.id} id={route.id} />;
         case "audit":
             return <AuditPage />;
+        case "workers":
+            return <WorkersPage />;
         case "not_found":
             return <p role="alert">This page does not exist.</p>;
     }

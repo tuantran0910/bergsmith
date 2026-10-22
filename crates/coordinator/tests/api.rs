@@ -1044,6 +1044,7 @@ fn openapi_documents_every_route() {
         ("/api/v1/jobs/{id}/retry", "post"),
         ("/api/v1/jobs/{id}/events", "get"),
         ("/api/v1/audit", "get"),
+        ("/api/v1/workers", "get"),
         ("/api/v1/previews", "post"),
         ("/api/v1/schedules", "get"),
         ("/api/v1/schedules", "post"),
@@ -3816,4 +3817,58 @@ async fn policy_updates_reject_nonpositive_revisions(pool: PgPool) {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["reason"], "invalid_request");
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn worker_sessions_are_listed_for_administrators_only(pool: PgPool) {
+    use bergsmith_common::ids::WorkerSessionId;
+    use bergsmith_persistence::workers;
+
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let other = support::tenant(&mut conn, "other").await;
+    for (organization, name) in [
+        (tenant.organization, "worker-1"),
+        (other.organization, "worker-2"),
+    ] {
+        let principal = support::service_principal(&mut conn, organization, name).await;
+        workers::register(
+            &mut conn,
+            &workers::Identity {
+                organization,
+                principal,
+                pool: "native".into(),
+            },
+            &workers::Registration {
+                id: WorkerSessionId::generate(),
+                worker_name: name.into(),
+                capabilities: vec!["native-v1".into()],
+                memory_bytes: 2_147_483_648,
+                cpu_millis: 1000,
+                build_version: "0.1.0".into(),
+            },
+            Duration::from_secs(90),
+        )
+        .await
+        .unwrap();
+    }
+    drop(conn);
+    let administrator = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+    let (viewer, _) = scoped(&pool, &tenant, Role::Viewer, GrantScope::organization()).await;
+
+    let (status, page) = administrator
+        .request("GET", "/api/v1/workers", None, None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let items = page["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["worker_name"], "worker-1");
+    assert_eq!(items[0]["status"], "live");
+    assert_eq!(items[0]["memory_bytes"], 2_147_483_648_i64);
+    assert!(items[0]["running_attempt_id"].is_null());
+    assert!(page["next_cursor"].is_null());
+
+    let (status, denied) = viewer.request("GET", "/api/v1/workers", None, None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(denied.get("items").is_none());
 }

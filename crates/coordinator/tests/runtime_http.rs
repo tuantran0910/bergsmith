@@ -101,6 +101,18 @@ async fn the_ui_api_and_auth_share_one_origin(pool: PgPool) {
         .unwrap();
     assert_eq!(health.status(), StatusCode::OK);
 
+    let ready = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/readyz")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ready.status(), StatusCode::OK);
+
     let index = app
         .clone()
         .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())

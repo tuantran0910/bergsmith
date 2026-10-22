@@ -278,6 +278,7 @@ impl PlannerService {
         Ok(registered)
     }
 
+    #[tracing::instrument(skip_all, fields(job_id = %job.id))]
     async fn plan_job(&self, job: &jobs::Job) -> Result<(PlanOutcome, jobs::Job), PlanningError> {
         let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
         let policy = schedules::policy_for_job(&mut conn, job.id).await?;

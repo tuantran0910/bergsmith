@@ -72,6 +72,18 @@ export function loginUrl(organization: string, returnTo: string): string {
  * organization-wide Administrator grant carries `audit:read`.
  */
 export function canReadAudit(session: SessionInfo): boolean {
+    return isOrganizationAdministrator(session);
+}
+
+/**
+ * Whether the session can list worker sessions: only an organization-wide
+ * Administrator grant carries `workers:manage`.
+ */
+export function canManageWorkers(session: SessionInfo): boolean {
+    return isOrganizationAdministrator(session);
+}
+
+function isOrganizationAdministrator(session: SessionInfo): boolean {
     return session.grants.some(
         (grant) =>
             grant.role === "Administrator" &&
