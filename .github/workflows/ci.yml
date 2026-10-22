@@ -76,7 +76,7 @@ jobs:
             --setenv="RUST_BACKTRACE=$RUST_BACKTRACE" --setenv="CARGO_TERM_COLOR=$CARGO_TERM_COLOR" \
             /bin/bash deploy/docker/distributed-scope.sh coverage-distributed \
             NEXTEST_PROFILE=ci COVERAGE_REPORT="--lcov --output-path lcov.info"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: lcov
           path: lcov.info
