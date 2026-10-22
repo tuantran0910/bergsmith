@@ -32,6 +32,20 @@ export default tseslint.config(
                 "error",
                 { allowNumber: true },
             ],
+            // TanStack Router ends a route's loading by throwing `notFound()`
+            // or `redirect()`, which are values the router catches, not errors.
+            "@typescript-eslint/only-throw-error": [
+                "error",
+                {
+                    allow: [
+                        {
+                            from: "package",
+                            package: "@tanstack/router-core",
+                            name: ["NotFoundError", "Redirect"],
+                        },
+                    ],
+                },
+            ],
             // Raw HTML from any source bypasses React's escaping (ADR 0046).
             "no-restricted-syntax": [
                 "error",

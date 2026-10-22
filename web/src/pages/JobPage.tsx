@@ -1,4 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { type Job, api, call, csrfHeader } from "../api/client";
@@ -18,7 +19,6 @@ import {
     publicationStatus,
 } from "../jobs/status";
 import { useSessionMutation } from "../queryClient";
-import { Link, jobPath, navigate, tablePath } from "../router";
 
 /** One job: live progress, cancellation, and fresh-plan retry. */
 export function JobPage({ id }: { id: string }) {
@@ -68,13 +68,21 @@ function JobDetail({ job }: { job: Job }) {
                 </dd>
                 <dt>Table</dt>
                 <dd>
-                    <Link to={tablePath(job.table_id)}>{job.table_id}</Link>
+                    <Link
+                        to="/tables/$tableId"
+                        params={{ tableId: job.table_id }}
+                    >
+                        {job.table_id}
+                    </Link>
                 </dd>
                 {job.retry_of_job_id !== null && (
                     <>
                         <dt>Retry of</dt>
                         <dd>
-                            <Link to={jobPath(job.retry_of_job_id)}>
+                            <Link
+                                to="/jobs/$jobId"
+                                params={{ jobId: job.retry_of_job_id }}
+                            >
                                 {job.retry_of_job_id}
                             </Link>
                         </dd>
@@ -115,7 +123,7 @@ function JobDetail({ job }: { job: Job }) {
                     </>
                 )}
             </p>
-            <ol className="events">
+            <ol className="events" aria-label="Job events">
                 {live.events.map((event) => (
                     <li key={event.sequence}>
                         <span className="event-time">
@@ -139,6 +147,7 @@ function JobDetail({ job }: { job: Job }) {
 
 function JobCommands({ job }: { job: Job }) {
     const queryClient = useQueryClient();
+    const navigate = useNavigate();
     const [reason, setReason] = useState("");
 
     const cancel = useSessionMutation({
@@ -170,7 +179,10 @@ function JobCommands({ job }: { job: Job }) {
             ),
         (accepted) => {
             void queryClient.invalidateQueries({ queryKey: ["jobs"] });
-            navigate(jobPath(accepted.job_id));
+            void navigate({
+                to: "/jobs/$jobId",
+                params: { jobId: accepted.job_id },
+            });
         },
     );
 

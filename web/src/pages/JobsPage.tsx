@@ -1,9 +1,10 @@
+import { Link } from "@tanstack/react-router";
+
 import { useJobs } from "../api/queries";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { StatusBadge } from "../components/StatusBadge";
 import { shortId, timestamp } from "../format";
 import { executionStatus, publicationStatus } from "../jobs/status";
-import { Link, jobPath, tablePath } from "../router";
 
 /** Jobs the session may see, with execution and publication side by side. */
 export function JobsPage() {
@@ -41,13 +42,18 @@ export function JobsPage() {
                         {items.map((job) => (
                             <tr key={job.id}>
                                 <td>
-                                    <Link to={jobPath(job.id)} title={job.id}>
+                                    <Link
+                                        to="/jobs/$jobId"
+                                        params={{ jobId: job.id }}
+                                        title={job.id}
+                                    >
                                         {shortId(job.id)}
                                     </Link>
                                 </td>
                                 <td>
                                     <Link
-                                        to={tablePath(job.table_id)}
+                                        to="/tables/$tableId"
+                                        params={{ tableId: job.table_id }}
                                         title={job.table_id}
                                     >
                                         {shortId(job.table_id)}

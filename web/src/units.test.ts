@@ -10,27 +10,7 @@ import {
 } from "./format";
 import { coalesced, mergeEvent, parseEvent } from "./jobs/events";
 import { binKey } from "./pages/PreviewView";
-import { match } from "./router";
 import { event, session } from "./test/fixtures";
-
-describe("router", () => {
-    const id = "0190f3c4-0000-7000-8000-000000000001";
-
-    it.each([
-        ["/", { name: "tables" }],
-        ["/tables", { name: "tables" }],
-        [`/tables/${id}`, { name: "table", id }],
-        ["/jobs", { name: "jobs" }],
-        [`/jobs/${id}`, { name: "job", id }],
-        ["/audit", { name: "audit" }],
-        ["/workers", { name: "workers" }],
-        ["/jobs/not-a-uuid", { name: "not_found" }],
-        [`/jobs/${id}/extra`, { name: "not_found" }],
-        ["/schedules", { name: "not_found" }],
-    ])("matches %s", (path, route) => {
-        expect(match(path)).toEqual(route);
-    });
-});
 
 describe("format", () => {
     it.each([

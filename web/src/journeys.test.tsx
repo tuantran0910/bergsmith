@@ -64,6 +64,11 @@ function start(path: string) {
     return user;
 }
 
+/** The job page's event list. */
+function events() {
+    return within(screen.getByRole("list", { name: "Job events" }));
+}
+
 describe("sign-in", () => {
     it("offers sign-in without a session and returns to the requested page", async () => {
         fake.on("GET", "/auth/session", () =>
@@ -283,6 +288,12 @@ describe("browsing", () => {
         expect(
             await screen.findByRole("link", { name: "lake.sales.orders" }),
         ).toHaveAttribute("href", `/tables/${TABLE_ID}`);
+        // The home page is the tables page, under one address.
+        expect(window.location.pathname).toBe("/tables");
+        expect(screen.getByRole("link", { name: "Tables" })).toHaveAttribute(
+            "aria-current",
+            "page",
+        );
         expect(screen.getByText("lake.legacy.orders_v1")).toBeInTheDocument();
         await user.click(
             screen.getByRole("button", { name: "Load more tables" }),
@@ -354,12 +365,18 @@ describe("browsing", () => {
         ).not.toBeInTheDocument();
     });
 
-    it("reports an unknown route", async () => {
-        start("/nowhere");
-        expect(
-            await screen.findByText("This page does not exist."),
-        ).toBeInTheDocument();
-    });
+    it.each(["/nowhere", `/jobs/${JOB_ID}/extra`, "/tables/not-a-uuid"])(
+        "reports %s as a page that does not exist, inside the shell",
+        async (path) => {
+            start(path);
+            expect(
+                await screen.findByText("This page does not exist."),
+            ).toBeInTheDocument();
+            expect(
+                screen.getByRole("navigation", { name: "Main" }),
+            ).toBeInTheDocument();
+        },
+    );
 });
 
 describe("preview and run", () => {
@@ -660,7 +677,7 @@ describe("job progress", () => {
         });
         expect(await screen.findByText("Outputs ready")).toBeInTheDocument();
         expect(screen.getByText("Commit authorized")).toBeInTheDocument();
-        expect(screen.getAllByRole("listitem")).toHaveLength(2);
+        expect(events().getAllByRole("listitem")).toHaveLength(2);
 
         current = job("Succeeded", { publication_started: true });
         act(() => {
@@ -695,7 +712,7 @@ describe("job progress", () => {
         expect(
             await screen.findByText("Commit authorized"),
         ).toBeInTheDocument();
-        expect(screen.getAllByRole("listitem")).toHaveLength(100);
+        expect(events().getAllByRole("listitem")).toHaveLength(100);
         // The initial read plus at most one running and one trailing refresh.
         expect(
             fake.sent("GET", `/api/v1/jobs/${JOB_ID}`).length,
@@ -794,7 +811,7 @@ describe("job progress", () => {
             }
         });
 
-        expect(screen.queryAllByRole("listitem")).toHaveLength(0);
+        expect(events().queryAllByRole("listitem")).toHaveLength(0);
     });
 });
 
@@ -1059,7 +1076,13 @@ describe("jobs and audit", () => {
         start("/audit");
 
         expect(await screen.findByText("session.denied")).toBeInTheDocument();
-        expect(screen.getByRole("link", { name: "Audit" })).toBeInTheDocument();
+        expect(screen.getByRole("link", { name: "Audit" })).toHaveAttribute(
+            "aria-current",
+            "page",
+        );
+        expect(screen.getByRole("link", { name: "Jobs" })).not.toHaveAttribute(
+            "aria-current",
+        );
         expect(
             screen.getByText('{"reason":"invalid_csrf"}'),
         ).toBeInTheDocument();

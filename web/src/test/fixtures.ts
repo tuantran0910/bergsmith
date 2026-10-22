@@ -16,7 +16,8 @@ export function session(role = "Operator"): SessionInfo {
         organization_id: "0190f3c4-0000-7000-8000-0000000000e1",
         principal_id: PRINCIPAL_ID,
         display_name: "Alice",
-        expires_at: "2026-10-22T00:00:00Z",
+        // Far enough ahead that no journey sees the expiry notice.
+        expires_at: "2099-01-01T00:00:00Z",
         grants: [{ role, scope: { catalog_connection: null, table: null } }],
     };
 }

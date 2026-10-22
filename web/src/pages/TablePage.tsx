@@ -1,14 +1,16 @@
+import { useNavigate } from "@tanstack/react-router";
+
 import { api, call, csrfHeader } from "../api/client";
 import { useKeyedMutation } from "../api/keyed";
 import { useCatalogNames, useTable } from "../api/queries";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { aliasName } from "../format";
 import { useSessionMutation } from "../queryClient";
-import { jobPath, navigate } from "../router";
 import { PreviewView } from "./PreviewView";
 
 /** One table: preview what maintenance would do, then run it. */
 export function TablePage({ id }: { id: string }) {
+    const navigate = useNavigate();
     const table = useTable(id);
     const catalogs = useCatalogNames();
     const names = catalogs.data ?? new Map<string, string>();
@@ -34,7 +36,10 @@ export function TablePage({ id }: { id: string }) {
                 }),
             ),
         (accepted) => {
-            navigate(jobPath(accepted.job_id));
+            void navigate({
+                to: "/jobs/$jobId",
+                params: { jobId: accepted.job_id },
+            });
         },
     );
 
