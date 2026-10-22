@@ -53,7 +53,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
 
   rustfs:
-    image: rustfs/rustfs:1.0.1@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c
+    image: rustfs/rustfs:1.0.3@sha256:9ca9559533b537d10482fe923288b676ad08f92a7069d9a17327fbae3cab688b
     environment:
       RUSTFS_ACCESS_KEY: rustfsadmin
       RUSTFS_SECRET_KEY: rustfsadmin
@@ -68,7 +68,7 @@ services:
       - rustfs-data:/data
 
   rustfs-init:
-    image: amazon/aws-cli:2.27.0@sha256:e3e329e1d2894b7b4bbb0aacacd0a155262159b2e7a3b4275eb1f24046d3e06c
+    image: amazon/aws-cli:2.38.1@sha256:733d5be1015825e4038c6016f3fa9954868ddee1f611b73be795a9cc2e706bfd
     environment:
       AWS_ACCESS_KEY_ID: rustfsadmin
       AWS_SECRET_ACCESS_KEY: rustfsadmin
@@ -102,7 +102,7 @@ services:
       - catalog-data:/var/lib/postgresql/data
 
   lakekeeper-migrate:
-    image: quay.io/lakekeeper/catalog:v0.14.0@sha256:de87eaca929f208ec0ea4594706d3d70cec50620b62fea07c17e18fdb1a4c592
+    image: quay.io/lakekeeper/catalog:v0.14.1@sha256:7c5d6b178a1b5ae230bd7d3e7a09da4704ce58fafc66a8b90c3b6edb69ba9817
     command: ["migrate"]
     environment: &lakekeeper-env
       LAKEKEEPER__PG_DATABASE_URL_READ: postgres://lakekeeper:lakekeeper@catalog-db:5432/lakekeeper
@@ -114,7 +114,7 @@ services:
         condition: service_healthy
 
   lakekeeper:
-    image: quay.io/lakekeeper/catalog:v0.14.0@sha256:de87eaca929f208ec0ea4594706d3d70cec50620b62fea07c17e18fdb1a4c592
+    image: quay.io/lakekeeper/catalog:v0.14.1@sha256:7c5d6b178a1b5ae230bd7d3e7a09da4704ce58fafc66a8b90c3b6edb69ba9817
     command: ["serve"]
     environment: *lakekeeper-env
     healthcheck:
@@ -143,7 +143,7 @@ services:
         condition: service_healthy
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.0.7@sha256:4388e2379b7e870a447adbe7b80bd61f5fbf04e925832b19669fda4957f05a81
+    image: quay.io/keycloak/keycloak:26.8.1@sha256:79c623a22abacf3fe6c00a5fb30f5b7843d717b234033b80995891c06116d244
     command: ["start-dev", "--import-realm", "--http-port=58081"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
