@@ -30,6 +30,11 @@ export function duration(millis: number): string {
     return `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
 }
 
+/** A count with its noun, for example `1 task` or `3 tasks`. */
+export function count(amount: number, one: string, many = `${one}s`): string {
+    return `${amount} ${amount === 1 ? one : many}`;
+}
+
 /** A timestamp in the viewer's locale. */
 export function timestamp(value: string): string {
     const date = new Date(value);
@@ -51,7 +56,11 @@ export function aliasName(
     return [catalog, ...alias.namespace, alias.name].join(".");
 }
 
-/** A short form of a UUID for dense lists; the full value stays in the title. */
+/**
+ * A short form of a UUID for dense lists; the full value stays in the title.
+ * It keeps the tail: UUIDv7 IDs begin with their creation time, so IDs made
+ * within a minute share their first eight characters but not their last.
+ */
 export function shortId(id: string): string {
-    return id.slice(0, 8);
+    return id.slice(-8);
 }

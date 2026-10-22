@@ -41,11 +41,10 @@ beforeEach(() => {
     fake = new FakeApi();
     vi.stubGlobal("fetch", fake.fetch);
     document.cookie = "bergsmith_csrf=csrf-value";
-    fake.on("GET", "/auth/session", () => json(200, session())).on(
-        "GET",
-        "/api/v1/catalogs",
-        () => json(200, catalogs),
-    );
+    fake.on("GET", "/auth/session", () => json(200, session()))
+        .on("GET", "/api/v1/catalogs", () => json(200, catalogs))
+        // The job page names its table.
+        .on("GET", "/api/v1/tables/{id}", () => json(200, table));
 });
 
 afterEach(() => {
@@ -312,6 +311,24 @@ describe("browsing", () => {
         expect(
             screen.queryByRole("button", { name: "Load more tables" }),
         ).not.toBeInTheDocument();
+    });
+
+    it("copies a table's full UUID from its short form", async () => {
+        fake.on("GET", "/api/v1/tables", () =>
+            json(200, { items: [table], next_cursor: null }),
+        );
+        const user = start("/tables");
+
+        expect(await screen.findByText("55556666")).toHaveAttribute(
+            "title",
+            table.table_uuid,
+        );
+        await user.click(
+            screen.getByRole("button", { name: "Copy table UUID" }),
+        );
+
+        expect(await navigator.clipboard.readText()).toBe(table.table_uuid);
+        expect(screen.getByText("Copied table UUID")).toBeInTheDocument();
     });
 
     it("opens a table from the list", async () => {
@@ -687,11 +704,34 @@ describe("job progress", () => {
         expect(stream.readyState).toBe(FakeEventSource.CLOSED);
         expect(screen.getByText("The job has ended.")).toBeInTheDocument();
         expect(
-            screen.queryByRole("button", { name: "Request cancellation" }),
+            screen.queryByRole("button", { name: "Cancel job" }),
         ).not.toBeInTheDocument();
         expect(
             screen.queryByRole("button", { name: "Retry with a fresh plan" }),
         ).not.toBeInTheDocument();
+    });
+
+    it("names the job's table, or shows its ID without access to it", async () => {
+        fake.on("GET", "/api/v1/jobs/{id}", () => json(200, job("Running")));
+        start(`/jobs/${JOB_ID}`);
+
+        expect(
+            await screen.findByRole("link", { name: "lake.sales.orders" }),
+        ).toHaveAttribute("href", `/tables/${TABLE_ID}`);
+        cleanup();
+
+        fake.on("GET", "/api/v1/tables/{id}", () =>
+            apiError(
+                404,
+                "resource_not_found",
+                "PermanentFailure",
+                "check_resource_and_grants",
+            ),
+        );
+        start(`/jobs/${JOB_ID}`);
+        expect(
+            await screen.findByRole("link", { name: TABLE_ID }),
+        ).toHaveAttribute("href", `/tables/${TABLE_ID}`);
     });
 
     it("coalesces refreshes while replaying many events", async () => {
@@ -834,6 +874,9 @@ describe("job commands", () => {
         );
         const user = start(`/jobs/${JOB_ID}`);
 
+        await user.click(
+            await screen.findByRole("button", { name: "Cancel job" }),
+        );
         await user.type(
             await screen.findByLabelText("Cancellation reason (optional)"),
             " wrong table ",
@@ -872,6 +915,9 @@ describe("job commands", () => {
         const user = start(`/jobs/${JOB_ID}`);
 
         await user.click(
+            await screen.findByRole("button", { name: "Cancel job" }),
+        );
+        await user.click(
             await screen.findByRole("button", { name: "Request cancellation" }),
         );
 
@@ -885,6 +931,70 @@ describe("job commands", () => {
         ).toEqual({
             reason: null,
         });
+    });
+
+    it("keeps the reported outcome when the job ends meanwhile, until closed", async () => {
+        let current = job("Queued");
+        fake.on("GET", "/api/v1/jobs/{id}", () => json(200, current)).on(
+            "POST",
+            "/api/v1/jobs/{id}/cancel",
+            () => {
+                current = job("Cancelled", { cancellation_requested: true });
+                return json(
+                    200,
+                    schema("CancelJobResult", {
+                        job_id: JOB_ID,
+                        state: "Cancelled",
+                        revision: 2,
+                        cancellation: "cancelled",
+                        cancellation_requested: true,
+                        publication_started: false,
+                    }),
+                );
+            },
+        );
+        const user = start(`/jobs/${JOB_ID}`);
+
+        await user.click(
+            await screen.findByRole("button", { name: "Cancel job" }),
+        );
+        await user.click(
+            await screen.findByRole("button", { name: "Request cancellation" }),
+        );
+
+        // The refreshed job is terminal, yet the dialog still reports.
+        expect(
+            await screen.findByText("Stopped: cancelled"),
+        ).toBeInTheDocument();
+        const dialog = screen.getByRole("dialog");
+        expect(
+            within(dialog).getByText("The job is already cancelled."),
+        ).toBeInTheDocument();
+        await user.click(within(dialog).getByRole("button", { name: "Done" }));
+
+        await waitFor(() => {
+            expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        });
+        expect(
+            screen.queryByRole("button", { name: "Cancel job" }),
+        ).not.toBeInTheDocument();
+    });
+
+    it("sends nothing when the confirmation is dismissed", async () => {
+        fake.on("GET", "/api/v1/jobs/{id}", () => json(200, job("Running")));
+        const user = start(`/jobs/${JOB_ID}`);
+
+        await user.click(
+            await screen.findByRole("button", { name: "Cancel job" }),
+        );
+        await user.click(
+            await screen.findByRole("button", { name: "Keep running" }),
+        );
+
+        await waitFor(() => {
+            expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        });
+        expect(fake.sent("POST", `/api/v1/jobs/${JOB_ID}/cancel`)).toEqual([]);
     });
 
     it("retries a failed job with a fresh plan and opens the new job", async () => {
@@ -1141,7 +1251,7 @@ describe("workers", () => {
         const first = within(rows[1] as HTMLElement);
         expect(first.getByText("worker-1")).toBeInTheDocument();
         expect(first.getByText("Draining")).toBeInTheDocument();
-        expect(first.getByText("0190f3c4")).toBeInTheDocument();
+        expect(first.getByText("000000f2")).toBeInTheDocument();
         expect(first.getByText("2.0 GiB, 1.5 CPU")).toBeInTheDocument();
         const second = within(rows[2] as HTMLElement);
         expect(second.getByText("Expired")).toBeInTheDocument();

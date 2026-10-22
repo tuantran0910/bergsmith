@@ -1,10 +1,26 @@
 import { Link } from "@tanstack/react-router";
+import { ListChecksIcon } from "lucide-react";
 
 import { useJobs } from "../api/queries";
 import { ErrorNotice } from "../components/ErrorNotice";
+import {
+    EmptyState,
+    GridFrame,
+    LoadMore,
+    LoadingRows,
+    PageHeader,
+} from "../components/Page";
 import { StatusBadge } from "../components/StatusBadge";
 import { shortId, timestamp } from "../format";
 import { executionStatus, publicationStatus } from "../jobs/status";
+import {
+    Table,
+    TableBody,
+    TableCell,
+    TableHead,
+    TableHeader,
+    TableRow,
+} from "../ui/Table";
 
 /** Jobs the session may see, with execution and publication side by side. */
 export function JobsPage() {
@@ -13,8 +29,11 @@ export function JobsPage() {
 
     return (
         <section>
-            <h1>Jobs</h1>
-            {jobs.isPending && <p>Loading jobs…</p>}
+            <PageHeader
+                title="Jobs"
+                description="Maintenance runs, newest first. Execution and publication are reported separately: only a confirmed publication changed the table."
+            />
+            {jobs.isPending && <LoadingRows label="Loading jobs…" />}
             {jobs.error && (
                 <ErrorNotice
                     error={jobs.error}
@@ -24,68 +43,85 @@ export function JobsPage() {
                 />
             )}
             {jobs.isSuccess && items.length === 0 && (
-                <p>No jobs are visible to you.</p>
+                <EmptyState
+                    icon={ListChecksIcon}
+                    title="No jobs are visible to you."
+                >
+                    Run maintenance from a table's page to start one.
+                </EmptyState>
             )}
             {items.length > 0 && (
-                <table>
-                    <thead>
-                        <tr>
-                            <th scope="col">Job</th>
-                            <th scope="col">Table</th>
-                            <th scope="col">State</th>
-                            <th scope="col">Execution</th>
-                            <th scope="col">Publication</th>
-                            <th scope="col">Created</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {items.map((job) => (
-                            <tr key={job.id}>
-                                <td>
-                                    <Link
-                                        to="/jobs/$jobId"
-                                        params={{ jobId: job.id }}
-                                        title={job.id}
-                                    >
-                                        {shortId(job.id)}
-                                    </Link>
-                                </td>
-                                <td>
-                                    <Link
-                                        to="/tables/$tableId"
-                                        params={{ tableId: job.table_id }}
-                                        title={job.table_id}
-                                    >
-                                        {shortId(job.table_id)}
-                                    </Link>
-                                </td>
-                                <td>{job.state}</td>
-                                <td>
-                                    <StatusBadge
-                                        status={executionStatus(job)}
-                                    />
-                                </td>
-                                <td>
-                                    <StatusBadge
-                                        status={publicationStatus(job)}
-                                    />
-                                </td>
-                                <td>{timestamp(job.created_at)}</td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-            )}
-            {jobs.hasNextPage && (
-                <button
-                    type="button"
-                    disabled={jobs.isFetchingNextPage}
-                    onClick={() => {
-                        void jobs.fetchNextPage();
-                    }}
-                >
-                    Load more jobs
-                </button>
+                <>
+                    <GridFrame>
+                        <Table>
+                            <TableHeader>
+                                <TableRow>
+                                    <TableHead className="pl-4">Job</TableHead>
+                                    <TableHead>Table</TableHead>
+                                    <TableHead>Execution</TableHead>
+                                    <TableHead>Publication</TableHead>
+                                    <TableHead>State</TableHead>
+                                    <TableHead className="pr-4">
+                                        Created
+                                    </TableHead>
+                                </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                                {items.map((job) => (
+                                    <TableRow key={job.id}>
+                                        <TableCell className="pl-4">
+                                            <Link
+                                                to="/jobs/$jobId"
+                                                params={{ jobId: job.id }}
+                                                title={job.id}
+                                                className="font-mono"
+                                            >
+                                                {shortId(job.id)}
+                                            </Link>
+                                        </TableCell>
+                                        <TableCell>
+                                            <Link
+                                                to="/tables/$tableId"
+                                                params={{
+                                                    tableId: job.table_id,
+                                                }}
+                                                title={job.table_id}
+                                                className="font-mono"
+                                            >
+                                                {shortId(job.table_id)}
+                                            </Link>
+                                        </TableCell>
+                                        <TableCell>
+                                            <StatusBadge
+                                                status={executionStatus(job)}
+                                            />
+                                        </TableCell>
+                                        <TableCell>
+                                            <StatusBadge
+                                                status={publicationStatus(job)}
+                                            />
+                                        </TableCell>
+                                        <TableCell className="text-muted-foreground">
+                                            {job.state}
+                                        </TableCell>
+                                        <TableCell className="pr-4 whitespace-nowrap text-muted-foreground">
+                                            {timestamp(job.created_at)}
+                                        </TableCell>
+                                    </TableRow>
+                                ))}
+                            </TableBody>
+                        </Table>
+                    </GridFrame>
+                    <LoadMore
+                        shown={items.length}
+                        noun="jobs"
+                        hasMore={jobs.hasNextPage}
+                        loading={jobs.isFetchingNextPage}
+                        onLoad={() => {
+                            void jobs.fetchNextPage();
+                        }}
+                    />
+                </>
             )}
         </section>
     );

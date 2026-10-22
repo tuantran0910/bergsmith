@@ -1,11 +1,16 @@
 import { useNavigate } from "@tanstack/react-router";
+import { PlayIcon, ScanSearchIcon } from "lucide-react";
 
 import { api, call, csrfHeader } from "../api/client";
 import { useKeyedMutation } from "../api/keyed";
 import { useCatalogNames, useTable } from "../api/queries";
 import { ErrorNotice } from "../components/ErrorNotice";
-import { aliasName } from "../format";
+import { LoadingDetail, PageHeader } from "../components/Page";
+import { ResourceId } from "../components/ResourceId";
+import { aliasName, timestamp } from "../format";
 import { useSessionMutation } from "../queryClient";
+import { Button } from "../ui/Button";
+import { Card, CardContent } from "../ui/Card";
 import { PreviewView } from "./PreviewView";
 
 /** One table: preview what maintenance would do, then run it. */
@@ -44,7 +49,7 @@ export function TablePage({ id }: { id: string }) {
     );
 
     if (table.isPending) {
-        return <p>Loading table…</p>;
+        return <LoadingDetail label="Loading table…" />;
     }
     if (table.error) {
         return (
@@ -60,47 +65,68 @@ export function TablePage({ id }: { id: string }) {
 
     return (
         <section>
-            <h1>{primary ? aliasName(primary, names) : table.data.id}</h1>
-            <dl className="facts">
-                <dt>Table UUID</dt>
-                <dd>
-                    <code>{table.data.table_uuid}</code>
-                </dd>
-                <dt>Names</dt>
-                <dd>
-                    <ul>
-                        {table.data.aliases.map((alias) => {
-                            const name = aliasName(alias, names);
-                            return <li key={name}>{name}</li>;
-                        })}
-                    </ul>
-                </dd>
-            </dl>
+            <PageHeader
+                title={primary ? aliasName(primary, names) : table.data.id}
+                description="A preview reads current table metadata and creates no job. Running maintenance plans again from the table as it is then."
+                actions={
+                    <>
+                        <Button
+                            variant="outline"
+                            disabled={preview.isPending}
+                            onClick={() => {
+                                preview.mutate();
+                            }}
+                        >
+                            <ScanSearchIcon aria-hidden="true" />
+                            {preview.isPending
+                                ? "Previewing…"
+                                : "Preview maintenance"}
+                        </Button>
+                        <Button
+                            disabled={submit.isPending}
+                            onClick={() => {
+                                submit.mutate(undefined);
+                            }}
+                        >
+                            <PlayIcon aria-hidden="true" />
+                            {submit.isPending
+                                ? "Submitting…"
+                                : "Run maintenance"}
+                        </Button>
+                    </>
+                }
+            />
 
-            <div className="actions">
-                <button
-                    type="button"
-                    disabled={preview.isPending}
-                    onClick={() => {
-                        preview.mutate();
-                    }}
-                >
-                    {preview.isPending ? "Previewing…" : "Preview maintenance"}
-                </button>
-                <button
-                    type="button"
-                    disabled={submit.isPending}
-                    onClick={() => {
-                        submit.mutate(undefined);
-                    }}
-                >
-                    {submit.isPending ? "Submitting…" : "Run maintenance"}
-                </button>
-            </div>
-            <p className="hint">
-                A preview reads current table metadata and creates no job.
-                Running maintenance plans again from the table as it is then.
-            </p>
+            <Card>
+                <CardContent>
+                    <dl className="m-0 grid gap-x-6 gap-y-3 sm:grid-cols-[max-content_1fr]">
+                        <dt className="text-muted-foreground">Table UUID</dt>
+                        <dd className="m-0">
+                            <ResourceId
+                                id={table.data.table_uuid}
+                                label="table UUID"
+                            />
+                        </dd>
+                        <dt className="text-muted-foreground">Names</dt>
+                        <dd className="m-0">
+                            <ul className="m-0 grid list-none gap-1 p-0">
+                                {table.data.aliases.map((alias) => {
+                                    const name = aliasName(alias, names);
+                                    return (
+                                        <li key={name}>
+                                            <code>{name}</code>
+                                        </li>
+                                    );
+                                })}
+                            </ul>
+                        </dd>
+                        <dt className="text-muted-foreground">Registered</dt>
+                        <dd className="m-0">
+                            {timestamp(table.data.created_at)}
+                        </dd>
+                    </dl>
+                </CardContent>
+            </Card>
 
             {submit.error !== null && (
                 <ErrorNotice

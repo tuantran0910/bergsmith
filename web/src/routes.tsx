@@ -3,6 +3,7 @@
 // session; every other route renders inside the shell.
 
 import {
+    Link,
     type RouterHistory,
     createRootRoute,
     createRoute,
@@ -11,7 +12,10 @@ import {
     redirect,
 } from "@tanstack/react-router";
 
+import { CompassIcon } from "lucide-react";
+
 import { Root } from "./Root";
+import { EmptyState } from "./components/Page";
 import { AuditPage } from "./pages/AuditPage";
 import { JobPage } from "./pages/JobPage";
 import { JobsPage } from "./pages/JobsPage";
@@ -28,7 +32,14 @@ export function isResourceId(value: string): boolean {
 
 /** Shown for any path the application does not serve. */
 export function NotFound() {
-    return <p role="alert">This page does not exist.</p>;
+    return (
+        <div role="alert">
+            <EmptyState icon={CompassIcon} title="This page does not exist.">
+                Check the address, or <Link to="/tables">go to the tables</Link>
+                .
+            </EmptyState>
+        </div>
+    );
 }
 
 const rootRoute = createRootRoute({
