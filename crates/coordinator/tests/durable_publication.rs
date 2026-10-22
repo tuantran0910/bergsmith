@@ -11,6 +11,7 @@ mod support;
 use bergsmith_catalog::{Baseline, CatalogConnection, ConnectionConfig, LoadedTable, TableName};
 use bergsmith_common::ids::{AttemptId, PlanId};
 use bergsmith_common::job::JobState;
+use bergsmith_coordinator::operator::{self, OperatorError};
 use bergsmith_coordinator::{durable_publication as publication, planning, results};
 use bergsmith_fixtures::{Fixture, live_rows, spike};
 use bergsmith_maintenance::{
@@ -1071,10 +1072,16 @@ async fn startup_recovery_marks_an_authorized_send_unknown_and_a_lost_rejection_
     );
     // An operator who has established non-publication resolves it, audited.
     let operator = run.tenant.user;
-    let failed =
-        publication::attest_non_publication(&mut conn, &unknown, run.epoch, &run.catalog, operator)
-            .await
-            .unwrap();
+    let failed = publication::attest_non_publication(
+        &mut conn,
+        &unknown,
+        run.epoch,
+        &run.catalog,
+        operator,
+        "INC-0",
+    )
+    .await
+    .unwrap();
     assert_eq!(failed.state, JobState::Failed);
     assert_eq!(
         failed.state_reason.as_deref(),
@@ -1110,15 +1117,28 @@ async fn operator_attestation_never_overrides_matching_publication_evidence(pool
         ..run.job.clone()
     };
     assert!(
-        publication::attest_non_publication(&mut conn, &stale, run.epoch, &run.catalog, operator)
-            .await
-            .is_err()
+        publication::attest_non_publication(
+            &mut conn,
+            &stale,
+            run.epoch,
+            &run.catalog,
+            operator,
+            "INC-0"
+        )
+        .await
+        .is_err()
     );
     run.expose_publication(&mut conn).await;
-    let job =
-        publication::attest_non_publication(&mut conn, &run.job, run.epoch, &run.catalog, operator)
-            .await
-            .unwrap();
+    let job = publication::attest_non_publication(
+        &mut conn,
+        &run.job,
+        run.epoch,
+        &run.catalog,
+        operator,
+        "INC-0",
+    )
+    .await
+    .unwrap();
     assert_eq!(job.state, JobState::Succeeded);
 }
 
@@ -1169,10 +1189,14 @@ async fn a_fenced_epoch_cannot_record_publication_outcomes(pool: PgPool) {
     let operator = run.tenant.user;
     let error = publications::attest_non_publication(
         &mut conn,
-        run.job.id,
-        run.job.state_revision,
-        fenced,
-        operator,
+        &publications::Attestation {
+            job_id: run.job.id,
+            expected_revision: run.job.state_revision,
+            epoch: fenced,
+            actor: operator,
+            evidence: "INC-0",
+            snapshot_matched: false,
+        },
     )
     .await
     .unwrap_err();
@@ -1554,4 +1578,190 @@ async fn the_runtime_retries_a_401_before_authorizing_an_intent(pool: PgPool) {
     assert!(run.job.publication_started_at.is_some());
     assert_eq!(run.barrier(&mut conn).await, 0);
     commit.assert_async().await;
+}
+
+/// Points the tenant's stored connection at the mock catalog, so the operator
+/// command reopens it the way a deployment would.
+async fn expose_connection(conn: &mut PgConnection, run: &mut Run) {
+    sqlx::query(
+        "UPDATE catalog_connections SET uri = $1, warehouse = NULL, credential_ref = NULL
+         WHERE id = $2",
+    )
+    .bind(run.server.url())
+    .bind(run.tenant.connection.as_uuid())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    run.server
+        .mock("GET", "/v1/config")
+        .with_body(r#"{"defaults":{},"overrides":{}}"#)
+        .create_async()
+        .await;
+}
+
+async fn unknown_outcome(conn: &mut PgConnection) -> Run {
+    let mut run = setup(conn, false).await;
+    run.execute(conn, true).await;
+    run.prepare(conn).await;
+    run.authorize(conn).await;
+    run.job = publication::reconcile(conn, &run.job, run.epoch, &run.catalog)
+        .await
+        .unwrap();
+    assert_eq!(run.job.state, JobState::CommitOutcomeUnknown);
+    expose_connection(conn, &mut run).await;
+    run
+}
+
+fn attestation(run: &Run, revision: i64, reason: &str) -> operator::NonPublicationAttestation {
+    operator::NonPublicationAttestation {
+        organization: "acme".into(),
+        actor: run.tenant.user,
+        job: run.job.id,
+        revision,
+        reason: reason.into(),
+    }
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn the_attestation_command_resolves_an_unknown_outcome_with_an_audit_record(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let run = unknown_outcome(&mut conn).await;
+    let revision = run.job.state_revision;
+
+    let error = operator::attest_non_publication(&mut conn, &attestation(&run, revision, "  "))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, OperatorError::InvalidReason), "{error}");
+    let long = "x".repeat(operator::MAX_ATTESTATION_REASON_CHARS + 1);
+    let error = operator::attest_non_publication(&mut conn, &attestation(&run, revision, &long))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, OperatorError::InvalidReason), "{error}");
+    let error =
+        operator::attest_non_publication(&mut conn, &attestation(&run, revision - 1, "INC-1"))
+            .await
+            .unwrap_err();
+    assert!(
+        matches!(error, OperatorError::NotInspectedOutcome { inspected, .. } if inspected == revision - 1),
+        "{error}"
+    );
+    let viewer = support::user(&mut conn, run.tenant.organization, "bob").await;
+    let mut refused = attestation(&run, revision, "INC-1");
+    refused.actor = viewer;
+    let error = operator::attest_non_publication(&mut conn, &refused)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, OperatorError::Authorization(_)), "{error}");
+    assert_eq!(
+        current(&pool, &run).await.state,
+        JobState::CommitOutcomeUnknown
+    );
+
+    let job = operator::attest_non_publication(&mut conn, &attestation(&run, revision, " INC-1 "))
+        .await
+        .unwrap();
+
+    assert_eq!(job.state, JobState::Failed);
+    assert_eq!(run.barrier(&mut conn).await, 0);
+    let last = jobs::job_events(&mut conn, run.job.id)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(last.actor, Some(run.tenant.user));
+    let (actor, detail): (uuid::Uuid, serde_json::Value) = sqlx::query_as(
+        "SELECT actor_principal_id, detail FROM audit_events
+         WHERE action = 'job.non_publication_attested' AND resource_id = $1",
+    )
+    .bind(run.job.id.to_string())
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(actor, *run.tenant.user.as_uuid());
+    assert_eq!(
+        detail,
+        json!({"revision": revision, "state": "Failed", "reason": "INC-1"})
+    );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn the_attestation_command_lets_matching_evidence_win(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let mut run = unknown_outcome(&mut conn).await;
+    run.expose_publication(&mut conn).await;
+
+    let job = operator::attest_non_publication(
+        &mut conn,
+        &attestation(&run, run.job.state_revision, "INC-2"),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(job.state, JobState::Succeeded);
+    let detail: serde_json::Value = sqlx::query_scalar(
+        "SELECT detail FROM audit_events
+         WHERE action = 'job.non_publication_attested' AND resource_id = $1",
+    )
+    .bind(run.job.id.to_string())
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(
+        detail,
+        json!({"revision": run.job.state_revision, "state": "Succeeded", "reason": "INC-2"})
+    );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_failed_audit_record_leaves_the_attested_job_unresolved(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let run = unknown_outcome(&mut conn).await;
+    sqlx::raw_sql(
+        "CREATE FUNCTION refuse_audit() RETURNS trigger LANGUAGE plpgsql
+             AS $$ BEGIN RAISE EXCEPTION 'audit unavailable'; END $$;
+         CREATE TRIGGER refuse_audit BEFORE INSERT ON audit_events
+             FOR EACH ROW EXECUTE FUNCTION refuse_audit();",
+    )
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+
+    let error = operator::attest_non_publication(
+        &mut conn,
+        &attestation(&run, run.job.state_revision, "INC-4"),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(matches!(error, OperatorError::Publication(_)), "{error}");
+    let job = current(&pool, &run).await;
+    assert_eq!(job.state, JobState::CommitOutcomeUnknown);
+    assert_eq!(job.state_revision, run.job.state_revision);
+    assert_eq!(run.barrier(&mut conn).await, 1);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn the_attestation_command_needs_a_live_coordinator(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let run = unknown_outcome(&mut conn).await;
+    let holder: String = sqlx::query_scalar("SELECT holder FROM coordinator_leadership")
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+    bergsmith_persistence::leadership::release_leadership(&mut conn, &holder, run.epoch)
+        .await
+        .unwrap();
+
+    let error = operator::attest_non_publication(
+        &mut conn,
+        &attestation(&run, run.job.state_revision, "INC-3"),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(matches!(error, OperatorError::NoLiveLeader), "{error}");
+    assert_eq!(
+        current(&pool, &run).await.state,
+        JobState::CommitOutcomeUnknown
+    );
 }

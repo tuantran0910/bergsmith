@@ -16,8 +16,16 @@ bergsmith-coordinator bootstrap-admin --organization acme \
 
 Commands report identifiers as structured log fields; `create-organization`
 logs `organization_id`, which the worker pool configuration needs.
-`bootstrap-admin` is idempotent. Sign-in never creates principals, so the
-administrator exists before anyone can sign in ([identity.md](identity.md)).
+`bootstrap-admin` is idempotent and logs the administrator's `principal_id`.
+Sign-in never creates principals, so the administrator exists before anyone
+can sign in ([identity.md](identity.md)). Give everyone else a role with
+`grant-role`, acting as that administrator:
+
+```sh
+bergsmith-coordinator grant-role --organization acme --actor <admin-principal-id> \
+  --issuer https://idp.example/realms/bergsmith --subject <oidc-subject> \
+  --display-name "Bob" --role operator
+```
 
 ## 2. Catalog connection
 

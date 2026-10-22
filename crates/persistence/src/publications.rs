@@ -1,5 +1,6 @@
 //! Atomic publication intents, table barriers, and output inventories (BS-012).
 
+use bergsmith_common::audit::{ActorKind, AuditAction, AuditOutcome};
 use bergsmith_common::ids::{AttemptId, JobId, PrincipalId, PublicationId};
 use bergsmith_common::job::JobState;
 use sqlx::{Connection, PgConnection};
@@ -7,6 +8,7 @@ use uuid::Uuid;
 
 use crate::PersistenceError;
 use crate::attempts::{AcceptOutcome, Acceptance, ReceiptSubmission, accept_receipt};
+use crate::audit::NewAuditEvent;
 use crate::jobs::{Job, Transition, lock_job, transition_job};
 use crate::leadership::ensure_leadership;
 
@@ -548,27 +550,54 @@ pub async fn resolve_unsent(
 /// Stable reason recorded when an operator attests non-publication.
 pub const OPERATOR_ATTESTED_NON_PUBLICATION: &str = "OperatorAttestedNonPublication";
 
+/// An operator's attestation, as recorded with the resolution it causes.
+#[derive(Clone, Copy, Debug)]
+pub struct Attestation<'a> {
+    /// The `CommitOutcomeUnknown` job.
+    pub job_id: JobId,
+    /// The job revision the operator inspected.
+    pub expected_revision: i64,
+    /// The live coordinator epoch that fences the write.
+    pub epoch: i64,
+    /// The attesting principal.
+    pub actor: PrincipalId,
+    /// Where the operator's evidence is, such as a ticket reference.
+    pub evidence: &'a str,
+    /// Retained snapshot evidence was rechecked and matched, so the job
+    /// succeeded whatever was attested.
+    pub snapshot_matched: bool,
+}
+
 /// Ends an unresolved publication on an operator's attestation that no
 /// authorized request published or can still publish.
 ///
 /// This is the only path from `CommitOutcomeUnknown` to a non-success state
 /// without a live sender's conclusive response. The caller must first recheck
-/// retained snapshot evidence (see the coordinator's operator resolution).
-/// The transition event records `actor` and [`OPERATOR_ATTESTED_NON_PUBLICATION`]
-/// as the immutable audit record. Cancellation, then any pending disposition,
-/// selects the terminal state; otherwise the job fails. The barrier is released
-/// atomically; intent, receipts, and output inventory remain.
+/// retained snapshot evidence (see the coordinator's operator resolution) and
+/// report a match in `snapshot_matched`, which records `Succeeded` with
+/// `SnapshotEvidenceMatched` instead. Otherwise the transition event records
+/// `actor` and [`OPERATOR_ATTESTED_NON_PUBLICATION`], and cancellation, then
+/// any pending disposition, selects the terminal state; without either the
+/// job fails. The barrier is released, and a `job.non_publication_attested`
+/// audit record with the revision, resulting state, and evidence is appended,
+/// in the same transaction; intent, receipts, and output inventory remain.
 ///
 /// # Errors
 /// Rejects lost leadership, a changed revision, or a job that is not
-/// `CommitOutcomeUnknown`, without changing anything.
+/// `CommitOutcomeUnknown`, and fails if the audit record cannot be written,
+/// without changing anything.
 pub async fn attest_non_publication(
     conn: &mut PgConnection,
-    job_id: JobId,
-    expected_revision: i64,
-    epoch: i64,
-    actor: PrincipalId,
+    attestation: &Attestation<'_>,
 ) -> Result<Job, PersistenceError> {
+    let Attestation {
+        job_id,
+        expected_revision,
+        epoch,
+        actor,
+        evidence,
+        snapshot_matched,
+    } = *attestation;
     let mut tx = conn.begin().await?;
     let job = lock_job(&mut tx, job_id).await?;
     ensure_leadership(&mut tx, epoch).await?;
@@ -586,22 +615,49 @@ pub async fn attest_non_publication(
             operation: "attest non-publication",
         });
     }
-    let (to, _) = non_success_target(
-        &mut tx,
-        &job,
-        JobState::Failed,
-        OPERATOR_ATTESTED_NON_PUBLICATION,
-    )
-    .await?;
-    let updated = transition_job(
-        &mut tx,
-        &Transition {
+    let transition = if snapshot_matched {
+        Transition {
+            job_id,
+            expected_revision,
+            to: JobState::Succeeded,
+            reason: Some("SnapshotEvidenceMatched".to_owned()),
+            actor: Some(actor),
+            non_publication_proven: false,
+        }
+    } else {
+        let (to, _) = non_success_target(
+            &mut tx,
+            &job,
+            JobState::Failed,
+            OPERATOR_ATTESTED_NON_PUBLICATION,
+        )
+        .await?;
+        Transition {
             job_id,
             expected_revision,
             to,
             reason: Some(OPERATOR_ATTESTED_NON_PUBLICATION.to_owned()),
             actor: Some(actor),
             non_publication_proven: true,
+        }
+    };
+    let updated = transition_job(&mut tx, &transition).await?;
+    let resource = job_id.to_string();
+    crate::audit::record(
+        &mut tx,
+        &NewAuditEvent {
+            organization_id: Some(job.organization_id),
+            actor_principal_id: Some(actor),
+            actor_kind: ActorKind::User,
+            action: AuditAction::JobNonPublicationAttested.as_str(),
+            resource_type: "job",
+            resource_id: Some(&resource),
+            outcome: AuditOutcome::Allowed,
+            detail: serde_json::json!({
+                "revision": expected_revision,
+                "state": updated.state.as_str(),
+                "reason": evidence,
+            }),
         },
     )
     .await?;

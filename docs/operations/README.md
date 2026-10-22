@@ -38,9 +38,6 @@ job that wrote them is `Committing` or `CommitOutcomeUnknown`.
 
 ## Known gaps in this release
 
-- Roles other than the first administrator are granted with no command or API
-  yet; `bootstrap-service` grants `MaintenanceService` for schedules.
-- Resolving an unknown publication outcome by attestation
-  (`durable_publication::attest_non_publication`) has no command yet. Until it
-  does, leave the job `CommitOutcomeUnknown`; its table stays blocked and its
-  outputs stay retained, which is safe.
+- Roles are granted and revoked from the command line only
+  ([identity.md](identity.md#granting-roles)); the web UI has no
+  administration pages.

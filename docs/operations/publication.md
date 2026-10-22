@@ -83,9 +83,25 @@ logs and exposes (`Scheduler::unresolved_publications`) the number of unknown
 outcomes; each keeps its table barrier and admission job slots.
 
 When evidence cannot appear (for example, the snapshot history expired), an
-operator may call `durable_publication::attest_non_publication` with the job as
-inspected, the leader's epoch, the catalog connection, and the operator's
-principal. Attest only after establishing all of the following outside Bergsmith:
+administrator may attest non-publication:
+
+```sh
+bergsmith-coordinator attest-non-publication --organization acme \
+  --actor <admin-principal-id> --job <job-id> --revision <inspected-revision> \
+  --reason "INC-1234: catalog log shows the commit was rejected"
+```
+
+The actor needs `grants:manage` over the job's table. `--revision` is the job
+revision you inspected (`GET /api/v1/jobs/{id}` reports it); a job that changed
+since is refused. `--reason` (1 to 500 characters) points at your evidence and
+is kept in the `job.non_publication_attested` audit record, which commits in
+the same transaction as the resolution; if it cannot be written, the job stays
+unresolved and the command can be rerun. A coordinator must
+be running: the command fences its write with the live leader's epoch and
+refuses when no coordinator holds leadership (ADR 0045). The library entry
+point is `durable_publication::attest_non_publication`.
+
+Attest only after establishing all of the following outside Bergsmith:
 
 - the catalog's request or audit logs show the authorized commit request was
   rejected or never applied, and no proxy or client can still deliver it;

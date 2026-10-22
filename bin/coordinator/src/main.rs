@@ -4,8 +4,12 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use bergsmith_common::ids::{CatalogConnectionId, TableId};
+use bergsmith_common::ids::{CatalogConnectionId, JobId, PrincipalId, RoleGrantId, TableId};
+use bergsmith_common::permission::{GrantScope, Role};
 use bergsmith_coordinator::database::{self, BootstrapAdministrator, DatabaseUrl};
+use bergsmith_coordinator::operator::{
+    self, NonPublicationAttestation, OperatorError, RoleAssignment,
+};
 use bergsmith_coordinator::runtime::CoordinatorConfig;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
@@ -133,6 +137,92 @@ enum Command {
         /// Human-readable display name.
         #[arg(long, default_value = "Administrator")]
         display_name: String,
+        /// PostgreSQL connection URL.
+        #[arg(long, env = "BERGSMITH_DATABASE_URL", hide_env_values = true)]
+        database_url: String,
+    },
+    /// Grant a person a role, provisioning their principal if it is new.
+    ///
+    /// The actor must hold `grants:manage` over the scope (and over the
+    /// organization to provision). Omit `--connection` and `--table` for an
+    /// organization-wide grant.
+    GrantRole {
+        /// Organization slug.
+        #[arg(long)]
+        organization: String,
+        /// Principal ID of the administrator making the change.
+        #[arg(long)]
+        actor: PrincipalId,
+        /// OIDC issuer the grantee signs in through.
+        #[arg(long)]
+        issuer: String,
+        /// OIDC subject within that issuer.
+        #[arg(long)]
+        subject: String,
+        /// Display name, used only when the principal is provisioned now.
+        #[arg(long, default_value = "User")]
+        display_name: String,
+        /// `viewer`, `operator`, or `administrator`.
+        #[arg(long, value_parser = parse_role)]
+        role: Role,
+        /// Limit the grant to one catalog connection.
+        #[arg(long, conflicts_with = "table")]
+        connection: Option<CatalogConnectionId>,
+        /// Limit the grant to one canonical table.
+        #[arg(long)]
+        table: Option<TableId>,
+        /// PostgreSQL connection URL.
+        #[arg(long, env = "BERGSMITH_DATABASE_URL", hide_env_values = true)]
+        database_url: String,
+    },
+    /// Revoke an active role grant.
+    RevokeRole {
+        /// Organization slug.
+        #[arg(long)]
+        organization: String,
+        /// Principal ID of the administrator making the change.
+        #[arg(long)]
+        actor: PrincipalId,
+        /// The grant to revoke, as printed by `grant-role` or `list-grants`.
+        #[arg(long)]
+        grant: RoleGrantId,
+        /// PostgreSQL connection URL.
+        #[arg(long, env = "BERGSMITH_DATABASE_URL", hide_env_values = true)]
+        database_url: String,
+    },
+    /// Print the organization's active role grants.
+    ListGrants {
+        /// Organization slug.
+        #[arg(long)]
+        organization: String,
+        /// Principal ID of an organization administrator.
+        #[arg(long)]
+        actor: PrincipalId,
+        /// PostgreSQL connection URL.
+        #[arg(long, env = "BERGSMITH_DATABASE_URL", hide_env_values = true)]
+        database_url: String,
+    },
+    /// Resolve a `CommitOutcomeUnknown` job after proving it did not publish.
+    ///
+    /// Run only after the checks in the recovery runbook. Retained snapshot
+    /// evidence is rechecked first and wins. A coordinator must be running,
+    /// and the actor must hold `grants:manage` over the job's table.
+    AttestNonPublication {
+        /// Organization slug.
+        #[arg(long)]
+        organization: String,
+        /// Principal ID of the administrator attesting.
+        #[arg(long)]
+        actor: PrincipalId,
+        /// The job to resolve.
+        #[arg(long)]
+        job: JobId,
+        /// The job revision you inspected; a changed job is refused.
+        #[arg(long)]
+        revision: i64,
+        /// Where the evidence is, such as a catalog log reference or ticket.
+        #[arg(long)]
+        reason: String,
         /// PostgreSQL connection URL.
         #[arg(long, env = "BERGSMITH_DATABASE_URL", hide_env_values = true)]
         database_url: String,
@@ -280,7 +370,7 @@ async fn main() -> ExitCode {
             DatabaseUrl::new(database_url),
             &organization,
             &display_name,
-            table.map(|_| bergsmith_common::permission::Role::MaintenanceService),
+            table.map(|_| Role::MaintenanceService),
             table,
         )
         .await
@@ -336,6 +426,114 @@ async fn main() -> ExitCode {
                 }
             }
         }
+        Command::GrantRole {
+            organization,
+            actor,
+            issuer,
+            subject,
+            display_name,
+            role,
+            connection,
+            table,
+            database_url,
+        } => {
+            let scope = match (connection, table) {
+                (Some(connection), _) => GrantScope::connection(connection),
+                (None, Some(table)) => GrantScope::table(table),
+                (None, None) => GrantScope::organization(),
+            };
+            let request = RoleAssignment {
+                organization,
+                actor,
+                issuer,
+                subject,
+                display_name,
+                role,
+                scope,
+            };
+            match with_connection(&database_url, async |conn| {
+                operator::grant_role(conn, &request).await
+            })
+            .await
+            {
+                Ok(grant) => {
+                    tracing::info!(grant_id = %grant.id, principal_id = %grant.principal_id, role = %grant.role, "role granted");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => operator_failed(&error, "role grant failed"),
+            }
+        }
+        Command::RevokeRole {
+            organization,
+            actor,
+            grant,
+            database_url,
+        } => match with_connection(&database_url, async |conn| {
+            operator::revoke_role(conn, &organization, actor, grant).await
+        })
+        .await
+        {
+            Ok(grant) => {
+                tracing::info!(grant_id = %grant.id, principal_id = %grant.principal_id, role = %grant.role, "role revoked");
+                ExitCode::SUCCESS
+            }
+            Err(error) => operator_failed(&error, "role revocation failed"),
+        },
+        Command::ListGrants {
+            organization,
+            actor,
+            database_url,
+        } => match with_connection(&database_url, async |conn| {
+            operator::list_grants(conn, &organization, actor).await
+        })
+        .await
+        {
+            Ok(listings) => {
+                for listing in listings {
+                    let scope = listing.grant.scope;
+                    tracing::info!(
+                        grant_id = %listing.grant.id,
+                        principal_id = %listing.principal.id,
+                        issuer = %listing.principal.issuer,
+                        subject = %listing.principal.subject,
+                        display_name = %listing.principal.display_name,
+                        role = %listing.grant.role,
+                        connection = ?scope.catalog_connection.as_ref().map(ToString::to_string),
+                        table = ?scope.table.as_ref().map(ToString::to_string),
+                        "active grant"
+                    );
+                }
+                ExitCode::SUCCESS
+            }
+            Err(error) => operator_failed(&error, "grant listing failed"),
+        },
+        Command::AttestNonPublication {
+            organization,
+            actor,
+            job,
+            revision,
+            reason,
+            database_url,
+        } => {
+            let request = NonPublicationAttestation {
+                organization,
+                actor,
+                job,
+                revision,
+                reason,
+            };
+            match with_connection(&database_url, async |conn| {
+                operator::attest_non_publication(conn, &request).await
+            })
+            .await
+            {
+                Ok(job) => {
+                    tracing::info!(job_id = %job.id, state = %job.state, revision = job.state_revision, "unknown publication outcome resolved");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => operator_failed(&error, "attestation failed"),
+            }
+        }
     }
 }
 
@@ -369,4 +567,52 @@ async fn bootstrap(
     Ok(database::bootstrap_administrator(&mut conn, request)
         .await?
         .to_string())
+}
+
+/// Parses a role a person may be granted.
+fn parse_role(value: &str) -> Result<Role, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "viewer" => Ok(Role::Viewer),
+        "operator" => Ok(Role::Operator),
+        "administrator" => Ok(Role::Administrator),
+        _ => Err("expected viewer, operator, or administrator".to_owned()),
+    }
+}
+
+/// Runs an operator command on one administration connection.
+async fn with_connection<T>(
+    database_url: &str,
+    command: impl AsyncFnOnce(&mut operator::PgConnection) -> Result<T, OperatorError>,
+) -> Result<T, OperatorError> {
+    let database = database::connect(DatabaseUrl::new(database_url)).await?;
+    let mut conn = database
+        .pool()
+        .acquire()
+        .await
+        .map_err(database::PersistenceError::from)?;
+    command(&mut conn).await
+}
+
+fn operator_failed(error: &OperatorError, message: &'static str) -> ExitCode {
+    tracing::error!(error = %error, cause = ?std::error::Error::source(error), "{message}");
+    ExitCode::FAILURE
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_roles_for_people_parse_case_insensitively() {
+        assert_eq!(parse_role("Viewer"), Ok(Role::Viewer));
+        assert_eq!(parse_role("operator"), Ok(Role::Operator));
+        assert_eq!(parse_role("ADMINISTRATOR"), Ok(Role::Administrator));
+        assert!(parse_role("maintenanceservice").is_err());
+    }
+
+    #[test]
+    fn the_command_line_is_consistent() {
+        use clap::CommandFactory as _;
+        Cli::command().debug_assert();
+    }
 }
