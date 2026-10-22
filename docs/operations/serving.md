@@ -143,8 +143,13 @@ This stack is development-only: fake credentials, `fsync=off`, plain-HTTP OIDC,
 and non-`Secure` cookies. It is not a production reference and is not a
 certification. `make app-down` stops it and discards its volumes.
 
-The bootstrap job creates the development organization, administrator, worker
-service principal, and one catalog connection. It does not invent tables.
+The catalog initialization job bootstraps Lakekeeper and creates the
+`development` warehouse with RustFS credential vending. Replaying initialization
+keeps the existing warehouse. The database bootstrap job then creates the
+development organization, administrator, worker service principal, and a catalog
+connection that names that warehouse. Neither job creates tables.
+`make app-bootstrap-check` verifies initialization replay and the worker state
+volume's private `0700` permissions without building the application images.
 Register a table after creating it in Lakekeeper:
 
 ```sh
@@ -158,6 +163,17 @@ bergsmith-coordinator register-table \
 Run that command in the Compose network (for example with
 `docker compose run --rm coordinator register-table …`) so the catalog
 hostname resolves.
+
+Planning outcomes and dispatch registration are fenced by the active coordinator
+epoch. A delayed planning failure applies only to the job revision that was
+examined; it cannot fail a newer plan after a leadership handoff. Shutdown
+cancels an active planning pass. An unexpected background-task exit, including
+a panic, makes the coordinator exit unsuccessfully so a supervisor can restart it.
+
+Storage retention checks use at most 16 concurrent requests within the configured
+scheduler validation deadline. A healthy source file requires one metadata
+request for its size check. Increase `scheduler.validation_timeout_millis` for
+catalogs whose supported table sizes and storage latency require a longer check.
 
 ## Administration commands
 
@@ -175,3 +191,5 @@ Identifiers are logged as structured `tracing` fields. The commands are
 idempotent where the underlying ledger is: re-running `migrate` or
 `bootstrap-admin` is safe, while duplicate organization slugs, connection
 names, and principals are rejected.
+Service provisioning, its optional grant, and their audit records commit in one
+transaction; failure leaves none of those changes behind.

@@ -108,7 +108,7 @@ services:
       LAKEKEEPER__PG_DATABASE_URL_READ: postgres://lakekeeper:lakekeeper@catalog-db:5432/lakekeeper
       LAKEKEEPER__PG_DATABASE_URL_WRITE: postgres://lakekeeper:lakekeeper@catalog-db:5432/lakekeeper
       LAKEKEEPER__PG_ENCRYPTION_KEY: development-only-not-a-real-key
-      LAKEKEEPER__BASE_URI: http://127.0.0.1:58181
+      LAKEKEEPER__BASE_URI: http://lakekeeper:8181
     depends_on:
       catalog-db:
         condition: service_healthy
@@ -127,6 +127,20 @@ services:
         condition: service_completed_successfully
       rustfs-init:
         condition: service_completed_successfully
+
+  lakekeeper-init:
+    image: alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+    command: ["/bin/sh", "-c", "apk add --no-cache curl jq >/dev/null && sh /bootstrap/init.sh"]
+    environment:
+      # Development-only RustFS credentials.
+      AWS_ACCESS_KEY_ID: rustfsadmin
+      AWS_SECRET_ACCESS_KEY: rustfsadmin
+    volumes:
+      - ./lakekeeper-init.sh:/bootstrap/init.sh:ro
+      - ./lakekeeper-warehouse.json:/bootstrap/warehouse.json:ro
+    depends_on:
+      lakekeeper:
+        condition: service_healthy
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.0.7@sha256:4388e2379b7e870a447adbe7b80bd61f5fbf04e925832b19669fda4957f05a81
@@ -181,7 +195,7 @@ services:
   worker-init:
     profiles: ["worker"]
     image: alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
-    command: ["/bin/sh", "-c", "mkdir -p /state && chown 10001:10001 /state"]
+    command: ["/bin/sh", "-c", "mkdir -p /state && chown 10001:10001 /state && chmod 700 /state"]
     volumes:
       - worker-state:/state
 
@@ -207,12 +221,16 @@ services:
       - bergsmith
       - --dbname
       - bergsmith
+      - --set
+      - ON_ERROR_STOP=1
       - --file
       - /bootstrap.sql
     volumes:
       - ./bootstrap.sql:/bootstrap.sql:ro
     depends_on:
       coordinator-migrate:
+        condition: service_completed_successfully
+      lakekeeper-init:
         condition: service_completed_successfully
 
   coordinator:

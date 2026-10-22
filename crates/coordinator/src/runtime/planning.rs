@@ -25,7 +25,7 @@ use bergsmith_persistence::{PersistenceError, jobs, schedules};
 use bergsmith_protocol::hashing::artifact_digest;
 use bergsmith_storage::Location;
 use prost::Message;
-use sqlx::PgPool;
+use sqlx::{Connection, PgPool};
 use tokio::time::Instant;
 use uuid::Uuid;
 
@@ -117,11 +117,16 @@ impl PlannerService {
             tokio::select! {
                 () = &mut shutdown => return,
                 _ = tick.tick() => {
-                    if let Err(error) = self.pass().await {
-                        tracing::warn!(
-                            reason_code = error.reason_code(),
-                            "planning pass failed"
-                        );
+                    tokio::select! {
+                        () = &mut shutdown => return,
+                        result = self.pass() => {
+                            if let Err(error) = result {
+                                tracing::warn!(
+                                    reason_code = error.reason_code(),
+                                    "planning pass failed"
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -164,12 +169,12 @@ impl PlannerService {
                 continue;
             }
             match self.plan_job(&job).await {
-                Ok(outcome) => {
+                Ok((outcome, current)) => {
                     self.clear_retry(job.id).await;
                     match outcome {
                         PlanOutcome::Planned(plan) => {
                             summary.planned += 1;
-                            match self.register_plan(&job, &plan).await {
+                            match self.register_plan(&current, &plan).await {
                                 Ok(()) => summary.registered += 1,
                                 Err(error) if error.is_transient() => {
                                     tracing::warn!(
@@ -185,8 +190,8 @@ impl PlannerService {
                                         reason_code = error.reason_code(),
                                         "dispatch registration failed permanently"
                                     );
-                                    self.fail(job.id, error.reason_code()).await?;
-                                    summary.failed += 1;
+                                    summary.failed +=
+                                        u32::from(self.fail(&current, error.reason_code()).await?);
                                 }
                             }
                         }
@@ -210,8 +215,7 @@ impl PlannerService {
                         reason_code = error.reason_code(),
                         "planning failed permanently"
                     );
-                    self.fail(job.id, error.reason_code()).await?;
-                    summary.failed += 1;
+                    summary.failed += u32::from(self.fail(&job, error.reason_code()).await?);
                 }
             }
         }
@@ -267,14 +271,14 @@ impl PlannerService {
                         reason_code = error.reason_code(),
                         "queued dispatch registration failed permanently"
                     );
-                    self.fail(job.id, error.reason_code()).await?;
+                    self.fail(&job, error.reason_code()).await?;
                 }
             }
         }
         Ok(registered)
     }
 
-    async fn plan_job(&self, job: &jobs::Job) -> Result<PlanOutcome, PlanningError> {
+    async fn plan_job(&self, job: &jobs::Job) -> Result<(PlanOutcome, jobs::Job), PlanningError> {
         let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
         let policy = schedules::policy_for_job(&mut conn, job.id).await?;
         drop(conn);
@@ -309,16 +313,27 @@ impl PlannerService {
             .await
             .map_err(PlanningError::Plan)?;
         let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
-        // The job may have been cancelled while the catalog read ran. The
-        // persisted revision check rejects that without writing a plan.
-        let current = jobs::job_by_id(&mut conn, job.id).await?;
-        if current.state != JobState::Planning || current.state_revision != job.state_revision {
-            return Err(PlanningError::Superseded);
-        }
-        crate::planning::record_outcome(&mut conn, &current, &outcome)
+        let mut tx = conn.begin().await.map_err(PersistenceError::from)?;
+        let current = bergsmith_persistence::plans::lock_for_planning(
+            &mut tx,
+            job.id,
+            job.state_revision,
+            self.scheduler.epoch(),
+        )
+        .await
+        .map_err(|error| match error {
+            PersistenceError::RevisionConflict { .. } | PersistenceError::JobNotInState { .. } => {
+                PlanningError::Superseded
+            }
+            error => PlanningError::Persistence(error),
+        })?;
+        let recorded = crate::planning::record_outcome(&mut tx, &current, &outcome)
             .await
             .map_err(PlanningError::Record)?;
-        Ok(outcome)
+        bergsmith_persistence::scheduling::check_leadership(&mut tx, self.scheduler.epoch())
+            .await?;
+        tx.commit().await.map_err(PersistenceError::from)?;
+        Ok((outcome, recorded))
     }
 
     async fn register_plan(
@@ -385,25 +400,17 @@ impl PlannerService {
             .map_err(|error| RegistrationError::from_scheduler(&error))
     }
 
-    async fn fail(&self, job: JobId, reason: &'static str) -> Result<(), PlanningError> {
+    async fn fail(&self, job: &jobs::Job, reason: &'static str) -> Result<bool, PlanningError> {
         let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
-        let job = jobs::job_by_id(&mut conn, job).await?;
-        if job.state != JobState::Planning && job.state != JobState::Queued {
-            return Ok(());
-        }
-        jobs::transition_job(
+        Ok(bergsmith_persistence::scheduling::stop(
             &mut conn,
-            &jobs::Transition {
-                job_id: job.id,
-                expected_revision: job.state_revision,
-                to: JobState::Failed,
-                reason: Some(reason.to_owned()),
-                actor: None,
-                non_publication_proven: false,
-            },
+            job.id,
+            job.state_revision,
+            self.scheduler.epoch(),
+            JobState::Failed,
+            reason,
         )
-        .await?;
-        Ok(())
+        .await?)
     }
 
     async fn defer(&self, job: JobId) {
@@ -559,8 +566,150 @@ impl RegistrationError {
 }
 
 #[cfg(test)]
+#[path = "../../../persistence/tests/support/mod.rs"]
+mod support;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn service(pool: PgPool, epoch: i64) -> PlannerService {
+        use sqlx::ConnectOptions as _;
+        let url = pool.connect_options().to_url_lossy().to_string();
+        let database =
+            bergsmith_persistence::Database::connect(&bergsmith_persistence::DatabaseConfig::new(
+                bergsmith_persistence::DatabaseUrl::new(url),
+            ))
+            .await
+            .unwrap();
+        let catalogs = Arc::new(RuntimeCatalogs::new(
+            database,
+            crate::runtime::config::RuntimeProfiles {
+                default: bergsmith_storage::StorageProfiles::default(),
+                connections: BTreeMap::new(),
+            },
+        ));
+        let access = Arc::new(crate::runtime::catalogs::RuntimeWorkerAccess::new(
+            catalogs.clone(),
+        ));
+        let worker = crate::workers::WorkerService::new(
+            pool.clone(),
+            epoch,
+            Vec::new(),
+            crate::workers::WorkerConfig::default(),
+            access.clone(),
+        )
+        .unwrap();
+        let scheduler = Arc::new(
+            Scheduler::new(
+                worker,
+                access,
+                crate::scheduling::SchedulerConfig::default(),
+            )
+            .unwrap(),
+        );
+        PlannerService::new(
+            pool,
+            catalogs,
+            scheduler,
+            PlannerConfig::default(),
+            TaskSettings {
+                pool: "native".into(),
+                capability: "native-v1".into(),
+                memory_bytes: 1024,
+                cpu_millis: 1000,
+                max_duration_seconds: 180,
+                max_output_bytes: 1024,
+            },
+            1024,
+            RetryPolicy::default(),
+        )
+        .unwrap()
+    }
+
+    #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+    async fn a_stale_planning_error_cannot_fail_a_queued_job(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+        let tenant = support::tenant(&mut conn, "acme").await;
+        let id = support::job(&mut conn, &tenant).await;
+        let original = jobs::job_by_id(&mut conn, id).await.unwrap();
+        let epoch = support::leader(&mut conn).await;
+        support::plan(&mut conn, id, 1).await;
+        let queued = jobs::transition_job(
+            &mut conn,
+            &jobs::Transition {
+                job_id: id,
+                expected_revision: original.state_revision,
+                to: JobState::Queued,
+                reason: None,
+                actor: None,
+                non_publication_proven: false,
+            },
+        )
+        .await
+        .unwrap();
+        let planner = service(pool.clone(), epoch).await;
+        assert!(!planner.fail(&original, "CatalogUnavailable").await.unwrap());
+        assert_eq!(jobs::job_by_id(&mut conn, id).await.unwrap(), queued);
+    }
+
+    #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+    async fn shutdown_cancels_a_blocked_planning_pass(pool: PgPool) {
+        let limited = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(pool.connect_options().as_ref().clone())
+            .await
+            .unwrap();
+        let planner = service(limited.clone(), 1).await;
+        let _held = limited.acquire().await.unwrap();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let run = planner.run(Duration::from_secs(1), async {
+            receive.await.unwrap();
+        });
+        tokio::pin!(run);
+        // Poll the loop into its first pass while its only connection is held.
+        tokio::select! {
+            biased;
+            () = &mut run => panic!("planner ended before shutdown"),
+            () = tokio::task::yield_now() => {}
+        }
+        send.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), run)
+            .await
+            .unwrap();
+    }
+
+    #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+    async fn an_old_planner_cannot_fail_jobs_after_a_handoff(pool: PgPool) {
+        let mut conn = pool.acquire().await.unwrap();
+        let tenant = support::tenant(&mut conn, "acme").await;
+        let id = support::job(&mut conn, &tenant).await;
+        let original = jobs::job_by_id(&mut conn, id).await.unwrap();
+        let first = bergsmith_persistence::leadership::acquire_leadership(
+            &mut conn,
+            "first",
+            Duration::from_secs(60),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let planner = service(pool.clone(), first.epoch).await;
+        bergsmith_persistence::leadership::release_leadership(
+            &mut conn,
+            &first.holder,
+            first.epoch,
+        )
+        .await
+        .unwrap();
+        support::leader(&mut conn).await;
+        assert!(matches!(
+            planner.fail(&original, "CatalogUnavailable").await,
+            Err(PlanningError::Persistence(
+                PersistenceError::LeadershipLost { .. }
+            ))
+        ));
+        assert_eq!(jobs::job_by_id(&mut conn, id).await.unwrap(), original);
+    }
 
     #[test]
     fn deterministic_plan_errors_are_not_retried() {

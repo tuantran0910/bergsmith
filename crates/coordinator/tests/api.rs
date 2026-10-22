@@ -2843,22 +2843,27 @@ async fn streams_end_after_session_revocation_grant_revocation_or_the_deadline(p
         .unwrap();
     assert!(reader.rest().await.is_empty());
 
-    // The deadline.
+    // Read the initial event before explicitly advancing to the deadline.
+    // A short wall-clock lifetime can expire during PostgreSQL replay under
+    // coverage instrumentation, which correctly closes the stream with no data.
+    let lifetime = Duration::from_secs(60);
     let bounded = Browser::with_events(
         &pool,
         &tenant,
         tenant.user,
         "alice",
         hub(EventStreamLimits {
-            max_duration: Duration::from_millis(50),
+            max_duration: lifetime,
             ..quiet_limits()
         }),
     )
     .await;
-    let events = EventReader::new(open_stream(&bounded, &uri, None).await)
-        .rest()
-        .await;
-    assert_eq!(ids(&events), [1]);
+    let mut reader = EventReader::new(open_stream(&bounded, &uri, None).await);
+    assert_eq!(reader.next().await.unwrap().id, 1);
+    tokio::time::pause();
+    tokio::time::advance(lifetime).await;
+    tokio::time::resume();
+    assert!(reader.rest().await.is_empty());
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]

@@ -96,6 +96,68 @@ async fn a_schedule_identity_receives_a_table_scoped_role(pool: PgPool) {
     .unwrap();
     assert_eq!(grant.0, "MaintenanceService");
     assert_eq!(grant.1, Some(*table.as_uuid()));
+    let actions: Vec<String> = sqlx::query_scalar("SELECT action FROM audit_events ORDER BY id")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(actions, ["identity.provisioned", "grant.created"]);
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_failed_service_grant_rolls_back_the_principal_and_audit(pool: PgPool) {
+    let url = url_for(&pool);
+    database::migrate(url.clone()).await.unwrap();
+    database::create_organization(url.clone(), "acme", "Acme")
+        .await
+        .unwrap();
+    assert!(
+        database::bootstrap_service(
+            url,
+            "acme",
+            "scheduler",
+            Some(bergsmith_common::permission::Role::MaintenanceService),
+            Some(TableId::generate()),
+        )
+        .await
+        .is_err()
+    );
+    let counts: (i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM principals),
+                (SELECT count(*) FROM principal_role_grants),
+                (SELECT count(*) FROM audit_events)",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(counts, (0, 0, 0));
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_failed_service_audit_rolls_back_provisioning(pool: PgPool) {
+    let url = url_for(&pool);
+    database::migrate(url.clone()).await.unwrap();
+    database::create_organization(url.clone(), "acme", "Acme")
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        "CREATE FUNCTION reject_test_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'audit unavailable'; END $$;
+        CREATE TRIGGER reject_test_audit BEFORE INSERT ON audit_events
+        FOR EACH ROW EXECUTE FUNCTION reject_test_audit();",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        database::bootstrap_service(url, "acme", "worker", None, None)
+            .await
+            .is_err()
+    );
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM principals")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
 }
 
 #[sqlx::test(migrations = false)]
@@ -139,6 +201,27 @@ fn a_token_verifier_matches_the_protocol() {
         .verifier()
         .to_hex();
     assert_eq!(verifier, expected);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn development_bootstrap_replay_repairs_the_catalog_warehouse(pool: PgPool) {
+    let bootstrap = include_str!("../../../deploy/docker/bootstrap.sql");
+    sqlx::raw_sql(bootstrap).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE catalog_connections SET warehouse = NULL")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(bootstrap).execute(&pool).await.unwrap();
+    let warehouses: Vec<String> = sqlx::query_scalar("SELECT warehouse FROM catalog_connections")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(warehouses, ["development"]);
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM principals")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 2);
 }
 
 #[tokio::test]

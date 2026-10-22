@@ -36,10 +36,11 @@ VALUES (
     'Native workers')
 ON CONFLICT DO NOTHING;
 
-INSERT INTO catalog_connections (id, organization_id, name, uri)
+INSERT INTO catalog_connections (id, organization_id, name, uri, warehouse)
 VALUES (
     '01900000-0000-7000-8000-000000000004',
     '01900000-0000-7000-8000-000000000001',
     'development',
-    'http://lakekeeper:8181/catalog')
-ON CONFLICT DO NOTHING;
+    'http://lakekeeper:8181/catalog',
+    'development')
+ON CONFLICT (id) DO UPDATE SET warehouse = EXCLUDED.warehouse;

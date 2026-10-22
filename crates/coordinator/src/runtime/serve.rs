@@ -101,8 +101,7 @@ pub async fn serve(config: CoordinatorConfig) -> Result<(), ServeError> {
     let epoch = leadership.epoch;
     info!(epoch, "coordinator leadership acquired");
 
-    let mut tasks: tokio::task::JoinSet<(&'static str, Result<(), ServeError>)> =
-        tokio::task::JoinSet::new();
+    let mut tasks: tokio::task::JoinSet<RuntimeTaskResult> = tokio::task::JoinSet::new();
     // Keep the lease alive while OIDC discovery and service construction run.
     // Discovery can take longer than the configured lease; starting renewal
     // only after it would leave the process with an expired epoch.
@@ -188,18 +187,7 @@ pub async fn serve(config: CoordinatorConfig) -> Result<(), ServeError> {
     if let Some(joined) = first
         && !shutdown.is_triggered()
     {
-        match joined {
-            Some(Ok((task, result))) => {
-                warn!(task, "runtime task ended; stopping the coordinator");
-                if let Err(error) = result {
-                    failure = Some(error);
-                }
-            }
-            Some(Err(error)) => {
-                warn!(error = %error, "runtime task failed; stopping the coordinator");
-            }
-            None => {}
-        }
+        failure = Some(unexpected_task_exit(joined));
         shutdown.trigger();
     }
 
@@ -234,6 +222,24 @@ pub async fn serve(config: CoordinatorConfig) -> Result<(), ServeError> {
     match failure {
         Some(error) => Err(error),
         None => Ok(()),
+    }
+}
+
+type RuntimeTaskResult = (&'static str, Result<(), ServeError>);
+
+fn unexpected_task_exit(
+    joined: Option<Result<RuntimeTaskResult, tokio::task::JoinError>>,
+) -> ServeError {
+    match joined {
+        Some(Ok((task, result))) => {
+            warn!(task, "runtime task ended; stopping the coordinator");
+            result.err().unwrap_or(ServeError::Task { task })
+        }
+        Some(Err(error)) => {
+            warn!(error = %error, "runtime task failed; stopping the coordinator");
+            ServeError::Task { task: "background" }
+        }
+        None => ServeError::Task { task: "runtime" },
     }
 }
 
@@ -620,7 +626,7 @@ fn spawn_signals(shutdown: Shutdown) {
 
 #[cfg(test)]
 mod tests {
-    use super::Shutdown;
+    use super::{ServeError, Shutdown, unexpected_task_exit};
     use std::time::Duration;
 
     #[tokio::test]
@@ -630,5 +636,38 @@ mod tests {
         tokio::time::timeout(Duration::from_millis(50), shutdown.wait())
             .await
             .expect("a waiter must observe an earlier signal");
+    }
+    #[tokio::test]
+    async fn a_background_panic_is_a_runtime_failure() {
+        let joined = tokio::spawn(async { panic!("background task failed") }).await;
+        let error = unexpected_task_exit(Some(joined));
+        assert!(matches!(error, ServeError::Task { .. }));
+    }
+
+    #[test]
+    fn an_unexpected_clean_exit_is_a_runtime_failure() {
+        assert!(matches!(
+            unexpected_task_exit(Some(Ok(("planner", Ok(()))))),
+            ServeError::Task { task: "planner" }
+        ));
+        assert!(matches!(
+            unexpected_task_exit(None),
+            ServeError::Task { .. }
+        ));
+    }
+
+    #[test]
+    fn listener_failures_keep_their_original_error() {
+        let error = ServeError::Listener {
+            listener: "http",
+            message: "bind failed".into(),
+        };
+        assert!(matches!(
+            unexpected_task_exit(Some(Ok(("http", Err(error))))),
+            ServeError::Listener {
+                listener: "http",
+                ..
+            }
+        ));
     }
 }

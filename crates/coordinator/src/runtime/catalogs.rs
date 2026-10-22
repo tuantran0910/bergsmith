@@ -29,6 +29,8 @@ use crate::scheduling::Eligibility;
 use crate::workers::{TaskAccess, WorkerAccess};
 use bergsmith_persistence::jobs::Job;
 
+const VALIDATION_CONCURRENCY: usize = 16;
+
 /// A resolved table with the catalog and storage that serve it.
 pub struct TableBinding {
     /// Catalog name used to load the table.
@@ -534,7 +536,7 @@ impl crate::scheduling::SchedulingAccess for RuntimeWorkerAccess {
                 let store = store.clone();
                 async move { validate_source(&store, &path, size).await }
             })
-            .buffered(16);
+            .buffer_unordered(VALIDATION_CONCURRENCY);
         while let Some(result) = checks.next().await {
             let result = result?;
             if result != Eligibility::Valid {
@@ -673,21 +675,22 @@ async fn validate_source(
 ) -> Result<Eligibility, Status> {
     let location = Location::parse(path)
         .map_err(|_| Status::failed_precondition("invalid planned input location"))?;
-    if !store
-        .exists(&location)
-        .await
-        .map_err(|_| Status::unavailable("scheduler input check unavailable"))?
-    {
-        return Ok(Eligibility::PermanentFailure("PlannedSourceMissing"));
-    }
     let input = store
         .file_io()
         .new_input(path)
         .map_err(|_| Status::unavailable("scheduler input metadata unavailable"))?;
-    let actual = input
-        .metadata()
-        .await
-        .map_err(|_| Status::unavailable("scheduler input metadata unavailable"))?;
+    let Ok(actual) = input.metadata().await else {
+        // FileIO erases the backend's typed not-found error. Check existence
+        // only on failure, so healthy files need a single metadata request.
+        if !store
+            .exists(&location)
+            .await
+            .map_err(|_| Status::unavailable("scheduler input check unavailable"))?
+        {
+            return Ok(Eligibility::PermanentFailure("PlannedSourceMissing"));
+        }
+        return Err(Status::unavailable("scheduler input metadata unavailable"));
+    };
     Ok(if actual.size == expected_size {
         Eligibility::Valid
     } else {
@@ -708,14 +711,31 @@ async fn validate_manifests(
     else {
         return Ok(Eligibility::PermanentFailure("PlanningMetadataCorrupt"));
     };
-    for entry in manifests.entries() {
-        let path = Location::parse(&entry.manifest_path)
-            .map_err(|_| Status::failed_precondition("invalid manifest location"))?;
-        if !store
-            .exists(&path)
-            .await
-            .map_err(|_| Status::unavailable("scheduler retention check unavailable"))?
-        {
+    let paths = manifests
+        .entries()
+        .iter()
+        .map(|entry| {
+            Location::parse(&entry.manifest_path)
+                .map_err(|_| Status::failed_precondition("invalid manifest location"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_retained_paths(store, paths).await
+}
+
+async fn validate_retained_paths(
+    store: &ObjectStore,
+    paths: Vec<Location>,
+) -> Result<Eligibility, Status> {
+    let mut checks = futures::stream::iter(paths)
+        .map(|path| async move {
+            store
+                .exists(&path)
+                .await
+                .map_err(|_| Status::unavailable("scheduler retention check unavailable"))
+        })
+        .buffer_unordered(VALIDATION_CONCURRENCY);
+    while let Some(exists) = checks.next().await {
+        if !exists? {
             return Ok(Eligibility::ReplanRequired("PlanningMetadataNotRetained"));
         }
     }
@@ -758,5 +778,130 @@ mod tests {
         );
         assert_eq!(initial_eligibility(&status(401)), None);
         assert_eq!(initial_eligibility(&status(500)), None);
+    }
+    fn s3_store(endpoint: String) -> ObjectStore {
+        let credential = bergsmith_storage::StorageCredential::from_vended(
+            "s3://warehouse",
+            &BTreeMap::from([
+                ("s3.access-key-id".into(), "development".into()),
+                ("s3.secret-access-key".into(), "development-only".into()),
+            ]),
+        )
+        .unwrap();
+        ObjectStore::open(
+            &StorageProfile::S3(bergsmith_storage::S3Profile {
+                endpoint: Some(endpoint),
+                region: "us-east-1".into(),
+                path_style_access: true,
+            }),
+            Some(CredentialCell::new(vec![credential])),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_healthy_source_needs_one_metadata_request() {
+        let mut server = mockito::Server::new_async().await;
+        let head = server
+            .mock("HEAD", "/warehouse/source")
+            .with_status(200)
+            .with_header("content-length", "123")
+            .expect(1)
+            .create_async()
+            .await;
+        let store = s3_store(server.url());
+        assert_eq!(
+            validate_source(&store, "s3://warehouse/source", 123)
+                .await
+                .unwrap(),
+            Eligibility::Valid
+        );
+        head.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn missing_and_changed_sources_keep_their_terminal_classification() {
+        let mut server = mockito::Server::new_async().await;
+        let missing = server
+            .mock("HEAD", "/warehouse/missing")
+            .with_status(404)
+            .expect(2)
+            .create_async()
+            .await;
+        let changed = server
+            .mock("HEAD", "/warehouse/changed")
+            .with_status(200)
+            .with_header("content-length", "9")
+            .expect(1)
+            .create_async()
+            .await;
+        let store = s3_store(server.url());
+        assert_eq!(
+            validate_source(&store, "s3://warehouse/missing", 123)
+                .await
+                .unwrap(),
+            Eligibility::PermanentFailure("PlannedSourceMissing")
+        );
+        assert_eq!(
+            validate_source(&store, "s3://warehouse/changed", 123)
+                .await
+                .unwrap(),
+            Eligibility::PermanentFailure("PlannedSourceIntegrityFailure")
+        );
+        missing.assert_async().await;
+        changed.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn manifest_retention_checks_run_in_bounded_parallel_batches() {
+        let barrier = Arc::new(tokio::sync::Barrier::new(VALIDATION_CONCURRENCY));
+        let app = axum::Router::new().route(
+            "/{*path}",
+            axum::routing::head({
+                let barrier = barrier.clone();
+                move || {
+                    let barrier = barrier.clone();
+                    async move {
+                        barrier.wait().await;
+                        axum::http::StatusCode::OK
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let store = s3_store(endpoint);
+        let paths = (0..VALIDATION_CONCURRENCY * 2)
+            .map(|index| Location::parse(&format!("s3://warehouse/manifest-{index}")).unwrap())
+            .collect();
+        // Every response waits for a whole concurrent batch; a serial checker
+        // cannot complete. The timeout only bounds a broken implementation.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            validate_retained_paths(&store, paths),
+        )
+        .await;
+        server.abort();
+        assert_eq!(result.unwrap().unwrap(), Eligibility::Valid);
+    }
+
+    #[tokio::test]
+    async fn missing_retained_metadata_requires_a_new_plan() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ObjectStore::open(&StorageProfile::LocalFs, None).unwrap();
+        let missing = Location::parse(&format!(
+            "file://{}/missing.avro",
+            directory.path().display()
+        ))
+        .unwrap();
+        assert_eq!(
+            validate_retained_paths(&store, vec![missing])
+                .await
+                .unwrap(),
+            Eligibility::ReplanRequired("PlanningMetadataNotRetained")
+        );
     }
 }

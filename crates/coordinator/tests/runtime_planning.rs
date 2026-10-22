@@ -53,6 +53,19 @@ fn database_url(pool: &PgPool) -> String {
     pool.connect_options().to_url_lossy().to_string()
 }
 
+async fn runtime_epoch(conn: &mut sqlx::PgConnection) -> i64 {
+    let acquired = bergsmith_persistence::leadership::acquire_leadership(
+        conn,
+        "runtime-test",
+        std::time::Duration::from_secs(60),
+    )
+    .await
+    .expect("leadership query succeeds");
+    acquired
+        .expect("test database has no active coordinator")
+        .epoch
+}
+
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
 async fn a_planning_pass_records_a_plan_and_registers_dispatch(pool: PgPool) {
     let fixture = fixture().await;
@@ -154,6 +167,7 @@ async fn a_planning_pass_records_a_plan_and_registers_dispatch(pool: PgPool) {
     )
     .await
     .unwrap();
+    let epoch = runtime_epoch(&mut conn).await;
     drop(conn);
 
     let mut settings =
@@ -168,7 +182,7 @@ async fn a_planning_pass_records_a_plan_and_registers_dispatch(pool: PgPool) {
     let access = Arc::new(RuntimeWorkerAccess::new(catalogs.clone()));
     let worker = WorkerService::new(
         pool.clone(),
-        1,
+        epoch,
         Vec::new(),
         WorkerConfig::default(),
         access.clone(),
@@ -362,6 +376,7 @@ async fn a_scheduled_job_is_planned_with_its_policy_budget(pool: PgPool) {
     .execute(&mut *conn)
     .await
     .unwrap();
+    let epoch = runtime_epoch(&mut conn).await;
     drop(conn);
 
     let mut settings =
@@ -376,7 +391,7 @@ async fn a_scheduled_job_is_planned_with_its_policy_budget(pool: PgPool) {
     let access = Arc::new(RuntimeWorkerAccess::new(catalogs.clone()));
     let worker = WorkerService::new(
         pool.clone(),
-        1,
+        epoch,
         Vec::new(),
         WorkerConfig::default(),
         access.clone(),

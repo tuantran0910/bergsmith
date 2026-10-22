@@ -4,11 +4,43 @@ use bergsmith_common::ids::{JobId, PlanId, TaskId};
 use bergsmith_common::job::JobState;
 use bergsmith_common::task::TaskState;
 use chrono::{DateTime, Utc};
-use sqlx::{Connection, PgConnection};
+use sqlx::{Connection, PgConnection, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::PersistenceError;
 use crate::jobs::lock_job;
+
+/// Locks a planning job and its live coordinator epoch in the caller's transaction.
+///
+/// Keep this transaction open through recording the outcome. Lock order is
+/// job, then leadership, matching admission and publication.
+///
+/// # Errors
+/// Returns lost leadership, a changed revision/state, or a database error.
+pub async fn lock_for_planning(
+    tx: &mut Transaction<'_, Postgres>,
+    job_id: JobId,
+    revision: i64,
+    epoch: i64,
+) -> Result<crate::jobs::Job, PersistenceError> {
+    let job = lock_job(tx, job_id).await?;
+    crate::leadership::ensure_leadership(tx, epoch).await?;
+    if job.state_revision != revision {
+        return Err(PersistenceError::RevisionConflict {
+            job: job_id,
+            expected: revision,
+            actual: job.state_revision,
+        });
+    }
+    if job.state != JobState::Planning {
+        return Err(PersistenceError::JobNotInState {
+            job: job_id,
+            state: job.state,
+            operation: "record a planning outcome",
+        });
+    }
+    Ok(job)
+}
 
 /// A job's immutable execution plan. Once written it never changes.
 #[derive(Clone, Debug, PartialEq, Eq)]

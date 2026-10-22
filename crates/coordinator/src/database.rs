@@ -255,11 +255,13 @@ pub enum RegisterTableError {
 ///
 /// Without `role`, the principal exists for worker authentication only. A
 /// schedule identity also needs the role granted on its table.
+/// Provisioning, the optional grant, and their system audit records commit
+/// together; any failure rolls them all back.
 ///
 /// # Errors
 ///
 /// [`PersistenceError`] for an unknown organization, a duplicate identity, or
-/// a grant conflict.
+/// a grant conflict, or an unavailable audit ledger.
 pub async fn bootstrap_service(
     url: DatabaseUrl,
     organization: &str,
@@ -271,10 +273,11 @@ pub async fn bootstrap_service(
     use bergsmith_common::permission::GrantScope;
     let database = connect(url).await?;
     let mut conn = database.pool().acquire().await?;
-    let organization = tenancy::organization_by_slug(&mut conn, organization).await?;
+    let mut tx = conn.begin().await?;
+    let organization = tenancy::organization_by_slug(&mut tx, organization).await?;
     let id = PrincipalId::generate();
     let principal = tenancy::create_principal(
-        &mut conn,
+        &mut tx,
         &NewPrincipal {
             id,
             organization_id: organization.id,
@@ -285,10 +288,18 @@ pub async fn bootstrap_service(
         },
     )
     .await?;
+    crate::identity::audit::principal_provisioned(
+        &mut tx,
+        organization.id,
+        None,
+        principal.id,
+        &principal.issuer,
+    )
+    .await?;
     if let Some(role) = role {
         let scope = table.map_or_else(GrantScope::organization, GrantScope::table);
-        grants::create_grant(
-            &mut conn,
+        let grant = grants::create_grant(
+            &mut tx,
             &NewRoleGrant {
                 id: RoleGrantId::generate(),
                 organization_id: organization.id,
@@ -299,7 +310,18 @@ pub async fn bootstrap_service(
             },
         )
         .await?;
+        crate::identity::audit::grant_changed(
+            &mut tx,
+            organization.id,
+            None,
+            AuditAction::GrantCreated,
+            principal.id,
+            grant.role.as_str(),
+            Some(&grant.id.to_string()),
+        )
+        .await?;
     }
+    tx.commit().await?;
     Ok(principal)
 }
 

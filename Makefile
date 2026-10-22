@@ -29,7 +29,7 @@ WORKER_BIN ?= $(abspath $(or $(CARGO_TARGET_DIR),target)/debug/bergsmith-worker)
 
 .PHONY: help fmt fmt-check check clippy test test-changed doc coverage coverage-html deny machete ci \
 	services-up services-down proto-lint proto-breaking bench-executor test-distributed coverage-distributed \
-	web-install web web-dev web-audit images app-up app-down profraw-clean
+	web-install web web-dev web-audit images app-up app-down app-worker app-bootstrap-check profraw-clean
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -151,6 +151,13 @@ app-up: images ## Start the development application stack; UI on 127.0.0.1:8080
 
 app-worker: ## Start the optional worker (Linux cgroup v2 delegation required)
 	$(APP_COMPOSE) --profile worker up --detach --wait worker
+
+app-bootstrap-check: ## Verify warehouse bootstrap replay and private worker-state permissions
+	$(APP_COMPOSE) run --rm lakekeeper-init
+	$(APP_COMPOSE) run --rm lakekeeper-init
+	$(APP_COMPOSE) --profile worker run --rm worker-init
+	$(APP_COMPOSE) --profile worker run --rm --no-deps worker-init /bin/sh -c \
+		'test "$$(stat -c %a /state)" = 700 && test "$$(stat -c %u:%g /state)" = 10001:10001'
 
 app-down: ## Stop the application stack and discard its volumes
 	$(APP_COMPOSE) --profile worker down --volumes

@@ -264,8 +264,14 @@ impl Scheduler {
             .await
             .map_err(SchedulingError::Access)?;
         let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
-        ledger::register_dispatch(&mut conn, job, &specs, self.config.retry).await?;
+        ledger::register_dispatch_at_epoch(&mut conn, job, &specs, self.config.retry, self.epoch)
+            .await?;
         Ok(())
+    }
+
+    #[must_use]
+    pub(crate) const fn epoch(&self) -> i64 {
+        self.epoch
     }
 
     /// Performs startup/periodic recovery before rebuilding the bounded ready cache.

@@ -778,3 +778,101 @@ async fn unauthorized_publication_intents_are_listed_for_resume(pool: PgPool) {
         "an authorized send belongs to evidence recovery"
     );
 }
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn planning_and_dispatch_writes_are_fenced_after_leadership_handoff(pool: PgPool) {
+    use bergsmith_persistence::{PersistenceError, leadership};
+    use sqlx::Connection as _;
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let job = support::job(&mut conn, &tenant).await;
+    let first = leadership::acquire_leadership(&mut conn, "first", Duration::from_secs(60))
+        .await
+        .unwrap()
+        .unwrap();
+    {
+        let mut tx = conn.begin().await.unwrap();
+        let locked = plans::lock_for_planning(&mut tx, job, 0, first.epoch)
+            .await
+            .unwrap();
+        assert_eq!(locked.state, JobState::Planning);
+        tx.rollback().await.unwrap();
+    }
+    leadership::release_leadership(&mut conn, &first.holder, first.epoch)
+        .await
+        .unwrap();
+    let second = support::leader(&mut conn).await;
+    {
+        let mut tx = conn.begin().await.unwrap();
+        assert!(matches!(
+            plans::lock_for_planning(&mut tx, job, 0, first.epoch).await,
+            Err(PersistenceError::LeadershipLost { .. })
+        ));
+        tx.rollback().await.unwrap();
+    }
+    let tasks = support::plan(&mut conn, job, 1).await;
+    let queued = jobs::transition_job(
+        &mut conn,
+        &jobs::Transition {
+            job_id: job,
+            expected_revision: 0,
+            to: JobState::Queued,
+            reason: None,
+            actor: None,
+            non_publication_proven: false,
+        },
+    )
+    .await
+    .unwrap();
+    let specs = vec![spec(tasks[0])];
+    assert!(matches!(
+        scheduler::register_dispatch_at_epoch(
+            &mut conn,
+            job,
+            &specs,
+            scheduler::RetryPolicy::default(),
+            first.epoch,
+        )
+        .await,
+        Err(PersistenceError::LeadershipLost { .. })
+    ));
+    assert!(
+        scheduler::dispatch_registration(&mut conn, job)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        !scheduler::stop(
+            &mut conn,
+            job,
+            0,
+            second,
+            JobState::Failed,
+            "StalePlanningError"
+        )
+        .await
+        .unwrap()
+    );
+    assert_eq!(jobs::job_by_id(&mut conn, job).await.unwrap(), queued);
+    scheduler::register_dispatch_at_epoch(
+        &mut conn,
+        job,
+        &specs,
+        scheduler::RetryPolicy::default(),
+        second,
+    )
+    .await
+    .unwrap();
+    let mut tx = conn.begin().await.unwrap();
+    assert!(matches!(
+        plans::lock_for_planning(&mut tx, job, 0, second).await,
+        Err(PersistenceError::RevisionConflict { .. })
+    ));
+    tx.rollback().await.unwrap();
+    let mut tx = conn.begin().await.unwrap();
+    assert!(matches!(
+        plans::lock_for_planning(&mut tx, job, queued.state_revision, second).await,
+        Err(PersistenceError::JobNotInState { .. })
+    ));
+}
