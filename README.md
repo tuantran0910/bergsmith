@@ -69,6 +69,8 @@ make ci         # run every quality gate: fmt, check, clippy, tests, docs,
                 # coverage (>= 80% lines), cargo-deny, cargo-machete, web UI
 ```
 
+The [operator guide](docs/operations/README.md) is the entry point for
+installing, connecting, retaining, upgrading, and recovering a deployment.
 The [serving guide](docs/operations/serving.md) explains the coordinator
 `serve` runtime, its JSON configuration, and the development Compose stack.
 The [web UI guide](docs/operations/web-ui.md) explains the browser journeys and

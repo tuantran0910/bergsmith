@@ -303,6 +303,7 @@ async fn harness() -> Harness {
         binary: std::env::current_exe().unwrap(),
         storage: StorageProfile::LocalFs,
         cgroup_root: Some(directory.path().to_owned()),
+        journal_retention: DEFAULT_JOURNAL_RETENTION,
     };
     Harness {
         config,
@@ -1012,5 +1013,64 @@ async fn supervisor_escalates_cancellation_for_a_real_uncooperative_subprocess()
     .unwrap();
     assert_eq!(report.failure.unwrap().reason_code, "TaskCancelled");
     assert!(!service.directory.join("result.pb").exists());
+    harness.server.abort();
+}
+
+#[tokio::test]
+async fn retention_shorter_than_an_hour_is_rejected_before_startup() {
+    let mut harness = harness().await;
+    harness.config.journal_retention = Duration::from_secs(MIN_JOURNAL_RETENTION.as_secs() - 1);
+    let (_stop, stopped) = watch::channel(false);
+
+    let error = Box::pin(run(harness.config, stopped)).await.unwrap_err();
+
+    assert!(matches!(
+        error,
+        WorkerError::Invalid("journal retention must be at least one hour")
+    ));
+    harness.server.abort();
+}
+
+#[tokio::test]
+async fn startup_removes_expired_acknowledged_records_before_recovery() {
+    let mut harness = harness().await;
+    harness.config.journal_retention = MIN_JOURNAL_RETENTION;
+    journal::private_dir(&harness.config.state_directory).unwrap();
+    let attempt = harness
+        .config
+        .state_directory
+        .join(uuid::Uuid::from_u128(30).to_string());
+    journal::private_dir(&attempt).unwrap();
+    for name in ["result.pb", "ack.pb"] {
+        let path = attempt.join(name);
+        std::fs::write(&path, b"settled").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(
+                SystemTime::now()
+                    .checked_sub(2 * MIN_JOURNAL_RETENTION)
+                    .unwrap(),
+            )
+            .unwrap();
+    }
+    let (stop, stopped) = watch::channel(false);
+    let run = tokio::spawn(run(harness.config, stopped));
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while attempt.exists() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    stop.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), run)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
     harness.server.abort();
 }

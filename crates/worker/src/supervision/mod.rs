@@ -10,7 +10,7 @@ mod task;
 #[cfg(target_os = "linux")]
 pub use process::bootstrap;
 pub use process::prepare_subprocess;
-pub use runtime::{WorkerConfig, run};
+pub use runtime::{DEFAULT_JOURNAL_RETENTION, MIN_JOURNAL_RETENTION, WorkerConfig, run};
 pub use startup::serve;
 pub use task::execute;
 
