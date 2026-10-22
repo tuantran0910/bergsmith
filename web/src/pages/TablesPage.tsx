@@ -1,7 +1,8 @@
+import { Link } from "@tanstack/react-router";
+
 import { useCatalogNames, useTables } from "../api/queries";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { aliasName, timestamp } from "../format";
-import { Link, tablePath } from "../router";
 
 /** Canonical tables the session may see, named through their aliases. */
 export function TablesPage() {
@@ -41,7 +42,10 @@ export function TablesPage() {
                             return (
                                 <tr key={table.id}>
                                     <td>
-                                        <Link to={tablePath(table.id)}>
+                                        <Link
+                                            to="/tables/$tableId"
+                                            params={{ tableId: table.id }}
+                                        >
                                             {primary
                                                 ? aliasName(primary, names)
                                                 : table.id}
