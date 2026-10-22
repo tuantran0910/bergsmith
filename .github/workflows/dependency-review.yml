@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
       # Fails a pull request that introduces a new dependency with a moderate
       # or higher advisory. Existing advisories are reported by Dependabot.
-      - uses: actions/dependency-review-action@v4
+      - uses: actions/dependency-review-action@v5
         with:
           fail-on-severity: moderate
           comment-summary-in-pr: never
