@@ -489,6 +489,123 @@
         }
       }
     },
+    "/api/v1/catalogs/{id}/check": {
+      "post": {
+        "operationId": "checkCatalog",
+        "description": "Reads GET /v1/config on the connection's catalog and records what it advertises, with the time of the check. Requires connections:manage for the connection. The check is diagnostic: it never changes the connection's configuration or its revision. A connection that names an external credential cannot be checked until the runtime resolves credential references.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The recorded capability check",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogCapabilityCheck"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The connection changed while the check was running; run the check again",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request refused or unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/tables": {
       "get": {
         "operationId": "listTables",
@@ -2729,7 +2846,10 @@
               "service_identity_not_eligible",
               "resource_already_exists",
               "catalog_connection_disabled",
-              "catalog_connection_in_use"
+              "catalog_connection_in_use",
+              "catalog_connection_changed",
+              "capability_check_capacity_exhausted",
+              "catalog_response_too_large"
             ]
           },
           "disposition": {
@@ -2805,6 +2925,15 @@
               }
             ],
             "description": "External credential reference, never a secret. Only returned to administrators."
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/CatalogCapabilities",
+            "description": "The last recorded capability check; only returned to connection managers."
+          },
+          "capabilities_checked_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the last capability check ran; only returned to connection managers."
           }
         }
       },
@@ -4342,6 +4471,99 @@
           }
         },
         "description": "Supply expected_revision and at least one editable field. Only supplied fields are validated; omitted legacy values are preserved."
+      },
+      "CatalogCapabilities": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "list_tables",
+          "load_table",
+          "commit_table",
+          "vended_credentials",
+          "credentials_endpoint",
+          "idempotency_key_lifetime_seconds"
+        ],
+        "properties": {
+          "list_tables": {
+            "type": "string",
+            "enum": [
+              "met",
+              "missing",
+              "unknown"
+            ],
+            "description": "Whether the catalog lists the tables of a namespace."
+          },
+          "load_table": {
+            "type": "string",
+            "enum": [
+              "met",
+              "missing",
+              "unknown"
+            ],
+            "description": "Whether the catalog loads a table's metadata."
+          },
+          "commit_table": {
+            "type": "string",
+            "enum": [
+              "met",
+              "missing",
+              "unknown"
+            ],
+            "description": "Whether the catalog accepts a commit."
+          },
+          "vended_credentials": {
+            "type": "string",
+            "enum": [
+              "met",
+              "missing",
+              "unknown"
+            ],
+            "description": "Whether the catalog vends table-scoped storage credentials. The catalog configuration cannot show it; loading a table proves it."
+          },
+          "credentials_endpoint": {
+            "type": "string",
+            "enum": [
+              "met",
+              "missing",
+              "unknown"
+            ],
+            "description": "Whether the catalog can refresh vended credentials on request."
+          },
+          "idempotency_key_lifetime_seconds": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How long the catalog remembers idempotency keys, in seconds, as a decimal string; null when it advertises no lifetime."
+          }
+        }
+      },
+      "CatalogCapabilityCheck": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "catalog_id",
+          "checked_at",
+          "capabilities"
+        ],
+        "properties": {
+          "catalog_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "checked_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/CatalogCapabilities"
+          }
+        }
       }
     }
   }

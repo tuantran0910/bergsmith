@@ -40,6 +40,23 @@ export interface paths {
         patch: operations["updateCatalog"];
         trace?: never;
     };
+    "/api/v1/catalogs/{id}/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Reads GET /v1/config on the connection's catalog and records what it advertises, with the time of the check. Requires connections:manage for the connection. The check is diagnostic: it never changes the connection's configuration or its revision. A connection that names an external credential cannot be checked until the runtime resolves credential references. */
+        post: operations["checkCatalog"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tables": {
         parameters: {
             query?: never;
@@ -305,7 +322,7 @@ export interface components {
     schemas: {
         ApiError: {
             /** @enum {string} */
-            reason: "authentication_required" | "csrf_rejected" | "invalid_request" | "resource_not_found" | "permission_denied" | "idempotency_key_reused" | "ledger_unavailable" | "method_not_allowed" | "request_too_large" | "internal_error" | "catalog_credential_unavailable" | "catalog_connection_invalid" | "storage_profile_unavailable" | "storage_unavailable" | "catalog_access_denied" | "catalog_unavailable" | "table_staged" | "job_not_terminal" | "job_already_succeeded" | "table_identity_changed" | "catalog_table_missing" | "inventory_too_large" | "table_metadata_inconsistent" | "preview_capacity_exhausted" | "catalog_unsupported" | "catalog_credentials_unavailable" | "catalog_request_rejected" | "event_stream_capacity_exhausted" | "invalid_policy_parameters" | "invalid_policy_operation" | "invalid_cron_expression" | "invalid_time_zone" | "invalid_maintenance_window" | "run_budget_below_target_file_size" | "revision_conflict" | "service_identity_not_eligible" | "resource_already_exists" | "catalog_connection_disabled" | "catalog_connection_in_use";
+            reason: "authentication_required" | "csrf_rejected" | "invalid_request" | "resource_not_found" | "permission_denied" | "idempotency_key_reused" | "ledger_unavailable" | "method_not_allowed" | "request_too_large" | "internal_error" | "catalog_credential_unavailable" | "catalog_connection_invalid" | "storage_profile_unavailable" | "storage_unavailable" | "catalog_access_denied" | "catalog_unavailable" | "table_staged" | "job_not_terminal" | "job_already_succeeded" | "table_identity_changed" | "catalog_table_missing" | "inventory_too_large" | "table_metadata_inconsistent" | "preview_capacity_exhausted" | "catalog_unsupported" | "catalog_credentials_unavailable" | "catalog_request_rejected" | "event_stream_capacity_exhausted" | "invalid_policy_parameters" | "invalid_policy_operation" | "invalid_cron_expression" | "invalid_time_zone" | "invalid_maintenance_window" | "run_budget_below_target_file_size" | "revision_conflict" | "service_identity_not_eligible" | "resource_already_exists" | "catalog_connection_disabled" | "catalog_connection_in_use" | "catalog_connection_changed" | "capability_check_capacity_exhausted" | "catalog_response_too_large";
             /** @enum {string} */
             disposition: "RetrySameRequest" | "RetryTask" | "ReplanRequired" | "PermanentFailure" | "ResolvePublication";
             operator_action: string;
@@ -325,6 +342,13 @@ export interface components {
             warehouse?: string | null;
             /** @description External credential reference, never a secret. Only returned to administrators. */
             credential_ref?: string | null;
+            /** @description The last recorded capability check; only returned to connection managers. */
+            capabilities?: components["schemas"]["CatalogCapabilities"];
+            /**
+             * Format: date-time
+             * @description When the last capability check ran; only returned to connection managers.
+             */
+            capabilities_checked_at?: string;
         };
         Table: {
             /** Format: uuid */
@@ -672,6 +696,42 @@ export interface components {
             /** @description Reference to an externally held credential; never supply a secret value. */
             credential_ref?: string | null;
             enabled?: boolean;
+        };
+        CatalogCapabilities: {
+            /**
+             * @description Whether the catalog lists the tables of a namespace.
+             * @enum {string}
+             */
+            list_tables: "met" | "missing" | "unknown";
+            /**
+             * @description Whether the catalog loads a table's metadata.
+             * @enum {string}
+             */
+            load_table: "met" | "missing" | "unknown";
+            /**
+             * @description Whether the catalog accepts a commit.
+             * @enum {string}
+             */
+            commit_table: "met" | "missing" | "unknown";
+            /**
+             * @description Whether the catalog vends table-scoped storage credentials. The catalog configuration cannot show it; loading a table proves it.
+             * @enum {string}
+             */
+            vended_credentials: "met" | "missing" | "unknown";
+            /**
+             * @description Whether the catalog can refresh vended credentials on request.
+             * @enum {string}
+             */
+            credentials_endpoint: "met" | "missing" | "unknown";
+            /** @description How long the catalog remembers idempotency keys, in seconds, as a decimal string; null when it advertises no lifetime. */
+            idempotency_key_lifetime_seconds: string | null;
+        };
+        CatalogCapabilityCheck: {
+            /** Format: uuid */
+            catalog_id: string;
+            /** Format: date-time */
+            checked_at: string;
+            capabilities: components["schemas"]["CatalogCapabilities"];
         };
     };
     responses: never;
@@ -1052,6 +1112,102 @@ export interface operations {
             };
             /** @description Request refused or unavailable */
             415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    checkCatalog: {
+        parameters: {
+            query?: never;
+            header: {
+                "x-csrf-token": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The recorded capability check */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogCapabilityCheck"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request refused or unavailable */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description The connection changed while the check was running; run the check again */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

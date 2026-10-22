@@ -6,6 +6,7 @@
 //! it, so it performs no I/O and contains no async code.
 
 pub mod audit;
+pub mod capabilities;
 pub mod digest;
 pub mod disposition;
 pub mod ids;

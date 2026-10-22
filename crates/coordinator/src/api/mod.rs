@@ -29,6 +29,7 @@ use serde::Serialize;
 use serde_json::json;
 use sqlx::PgConnection;
 
+use crate::checks::CapabilityChecker;
 use crate::identity::{CSRF_HEADER, audit, routes::cookie, session};
 use crate::preview::CatalogPreviewer;
 
@@ -48,6 +49,8 @@ pub struct ApiState {
     /// [`listen`](JobEventHub::listen) task for prompt delivery; without it,
     /// streams poll.
     pub events: JobEventHub,
+    /// Runs catalog capability checks within the process and requester bounds.
+    pub checks: CapabilityChecker,
 }
 
 /// Builds the `/api/v1` resource router, including its `OpenAPI` document.
@@ -73,6 +76,7 @@ pub fn router(state: ApiState) -> Router {
             "/api/v1/catalogs/{id}",
             get(resources::catalog).patch(catalogs::update),
         )
+        .route("/api/v1/catalogs/{id}/check", post(catalogs::check))
         .route("/api/v1/tables", get(resources::tables))
         .route("/api/v1/tables/{id}", get(resources::table))
         .route(

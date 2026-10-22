@@ -54,3 +54,4 @@ record's status; never rewrite an accepted decision.
 | [0045](0045-operator-commands.md) | Operator commands for roles and non-publication attestation | Accepted |
 | [0046](0046-web-ui-refresh-and-byoc-delivery.md) | Web UI refresh and BYOC delivery | Accepted |
 | [0047](0047-catalog-connection-management.md) | Revision-checked catalog connection management | Proposed |
+| [0048](0048-catalog-capability-checks.md) | Capability checks for catalog connections | Proposed |

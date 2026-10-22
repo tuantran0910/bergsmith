@@ -15,6 +15,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bergsmith_common::ids::{PolicyId, PrincipalId, RoleGrantId};
 use bergsmith_common::permission::{GrantScope, Role};
 use bergsmith_coordinator::api::{self, ApiState, EventStreamLimits, JobEventHub};
+use bergsmith_coordinator::checks::{CapabilityCheckLimits, CapabilityChecker};
 use bergsmith_coordinator::identity::{
     CSRF_HEADER,
     session::{self, SessionConfig},
@@ -27,6 +28,7 @@ use bergsmith_storage::{S3Profile, StorageProfile, StorageProfiles};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use std::collections::BTreeSet;
+use std::time::Duration;
 use tower::ServiceExt;
 
 /// A previewer over the local filesystem, which is where fixtures live.
@@ -42,6 +44,7 @@ fn event_hub() -> JobEventHub {
     JobEventHub::new(EventStreamLimits::default()).unwrap()
 }
 
+#[derive(Clone)]
 struct Browser {
     router: Router,
     cookie: String,
@@ -107,6 +110,15 @@ impl Browser {
                 sessions: config.clone(),
                 previews,
                 events,
+                // The production bound is ten seconds. A test machine under
+                // load must not fail a route test for that, so the fixture
+                // waits longer; the bound itself has its own test.
+                checks: CapabilityChecker::new(CapabilityCheckLimits {
+                    timeout: Duration::from_secs(60),
+                    connect_timeout: Duration::from_secs(30),
+                    request_timeout: Duration::from_secs(60),
+                    ..CapabilityCheckLimits::default()
+                }),
             }),
             cookie: format!("{}={}", config.cookie_name, issued.token.expose()),
             csrf: issued.csrf.expose().into(),
@@ -156,6 +168,7 @@ fn router_with(pool: &PgPool, config: SessionConfig) -> Router {
         sessions: config,
         previews: previewer(),
         events: event_hub(),
+        checks: CapabilityChecker::default(),
     })
 }
 
@@ -1047,6 +1060,7 @@ fn openapi_documents_every_route() {
         ("/api/v1/catalogs", "post"),
         ("/api/v1/catalogs/{id}", "get"),
         ("/api/v1/catalogs/{id}", "patch"),
+        ("/api/v1/catalogs/{id}/check", "post"),
         ("/api/v1/tables", "get"),
         ("/api/v1/tables/{id}", "get"),
         ("/api/v1/jobs", "get"),
@@ -2446,8 +2460,6 @@ async fn retry_and_cancel_require_the_csrf_header(pool: PgPool) {
 // ---------------------------------------------------------------------------
 // BS-018.T3: job event streams.
 // ---------------------------------------------------------------------------
-
-use std::time::Duration;
 
 use axum::body::BodyDataStream;
 use axum::response::Response;

@@ -94,6 +94,8 @@ pub enum AuditAction {
     CatalogCreated,
     /// A catalog connection was edited, enabled, or disabled.
     CatalogUpdated,
+    /// A catalog connection's capabilities were checked.
+    CatalogChecked,
 }
 
 impl AuditAction {
@@ -124,6 +126,7 @@ impl AuditAction {
             Self::ApiPermissionDenied => "api.permission_denied",
             Self::CatalogCreated => "catalog.created",
             Self::CatalogUpdated => "catalog.updated",
+            Self::CatalogChecked => "catalog.checked",
         }
     }
 
@@ -161,6 +164,7 @@ impl AuditAction {
         Self::ApiPermissionDenied,
         Self::CatalogCreated,
         Self::CatalogUpdated,
+        Self::CatalogChecked,
     ];
 }
 

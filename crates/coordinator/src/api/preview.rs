@@ -387,6 +387,11 @@ impl ApiError {
             CatalogError::Transport { .. } | CatalogError::Decode { .. } => {
                 Self::transient("catalog_unavailable", "retry_same_request")
             }
+            CatalogError::ResponseTooLarge { .. } => Self::permanent(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "catalog_response_too_large",
+                "check_catalog_configuration",
+            ),
         }
     }
 }

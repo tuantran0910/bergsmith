@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
 async fn legacy_settings_do_not_prevent_disabling_or_renaming(pool: PgPool) {
@@ -115,6 +116,575 @@ async fn creating_a_catalog_returns_its_detail_location(pool: PgPool) {
         format!("/api/v1/catalogs/{}", body["id"].as_str().unwrap())
     );
     assert_eq!(browser.request("GET", &location, None, None).await.1, body);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_capability_check_records_what_the_catalog_advertises(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let mut server = mockito::Server::new_async().await;
+    let config = server
+        .mock("GET", "/v1/config")
+        .with_body(
+            r#"{"defaults":{},"overrides":{},"endpoints":[
+                "GET /v1/{prefix}/namespaces/{namespace}/tables",
+                "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}",
+                "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}",
+                "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}/credentials"],
+                "idempotency-key-lifetime":"PT30M"}"#,
+        )
+        .expect(1)
+        .create_async()
+        .await;
+    sqlx::query(
+        "UPDATE catalog_connections SET uri=$2, warehouse=NULL, credential_ref=NULL WHERE id=$1",
+    )
+    .bind(tenant.connection.as_uuid())
+    .bind(server.url())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+    let path = format!("/api/v1/catalogs/{}/check", tenant.connection);
+
+    let (status, body) = browser.request("POST", &path, None, None).await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["catalog_id"], tenant.connection.to_string());
+    assert!(body["checked_at"].is_string());
+    assert_eq!(body["capabilities"]["list_tables"], "met");
+    assert_eq!(body["capabilities"]["load_table"], "met");
+    assert_eq!(body["capabilities"]["commit_table"], "met");
+    assert_eq!(body["capabilities"]["credentials_endpoint"], "met");
+    // The configuration cannot show vended credentials; a table load proves them.
+    assert_eq!(body["capabilities"]["vended_credentials"], "unknown");
+    assert_eq!(
+        body["capabilities"]["idempotency_key_lifetime_seconds"],
+        "1800"
+    );
+
+    // The answer is recorded and shown with the connection's settings.
+    let detail = browser
+        .request(
+            "GET",
+            &format!("/api/v1/catalogs/{}", tenant.connection),
+            None,
+            None,
+        )
+        .await
+        .1;
+    assert_eq!(detail["capabilities"], body["capabilities"]);
+    assert_eq!(detail["capabilities_checked_at"], body["checked_at"]);
+    // A check is diagnostic: it never moves the configuration revision.
+    assert_eq!(detail["revision"], 0);
+
+    let records: Vec<(String, Value)> =
+        sqlx::query_as("SELECT action, detail FROM audit_events WHERE resource_id=$1 ORDER BY id")
+            .bind(tenant.connection.to_string())
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].0, "catalog.checked");
+    assert_eq!(records[0].1["complete"], true);
+    assert!(records[0].1["missing"].as_array().unwrap().is_empty());
+    config.assert_async().await;
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_capability_check_reports_a_catalog_that_lacks_an_endpoint(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let mut server = mockito::Server::new_async().await;
+    let config = server
+        .mock("GET", "/v1/config")
+        .with_body(
+            r#"{"defaults":{},"overrides":{},"endpoints":[
+                "GET /v1/{prefix}/namespaces/{namespace}/tables"]}"#,
+        )
+        .expect(1)
+        .create_async()
+        .await;
+    sqlx::query(
+        "UPDATE catalog_connections SET uri=$2, warehouse=NULL, credential_ref=NULL WHERE id=$1",
+    )
+    .bind(tenant.connection.as_uuid())
+    .bind(server.url())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+    let path = format!("/api/v1/catalogs/{}/check", tenant.connection);
+
+    let (status, body) = browser.request("POST", &path, None, None).await;
+
+    // A catalog that lacks an endpoint is reported, not refused.
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["capabilities"]["list_tables"], "met");
+    assert_eq!(body["capabilities"]["load_table"], "missing");
+    assert_eq!(body["capabilities"]["commit_table"], "missing");
+    let records: Vec<(String, Value)> =
+        sqlx::query_as("SELECT action, detail FROM audit_events WHERE resource_id=$1 ORDER BY id")
+            .bind(tenant.connection.to_string())
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(records[0].1["complete"], false);
+    assert_eq!(
+        records[0].1["missing"],
+        json!(["load_table", "commit_table", "credentials_endpoint"])
+    );
+    config.assert_async().await;
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_capability_check_needs_permission_and_a_reachable_catalog(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let other = support::tenant(&mut conn, "other").await;
+    let mut server = mockito::Server::new_async().await;
+    let unavailable = server
+        .mock("GET", "/v1/config")
+        .with_status(500)
+        .expect(1)
+        .create_async()
+        .await;
+    sqlx::query(
+        "UPDATE catalog_connections SET uri=$2, warehouse=NULL, credential_ref=NULL WHERE id=$1",
+    )
+    .bind(tenant.connection.as_uuid())
+    .bind(server.url())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    drop(conn);
+    let path = format!("/api/v1/catalogs/{}/check", tenant.connection);
+
+    let (viewer, _) = scoped(
+        &pool,
+        &tenant,
+        Role::Viewer,
+        GrantScope::connection(tenant.connection),
+    )
+    .await;
+    assert_eq!(
+        viewer.request("POST", &path, None, None).await.0,
+        StatusCode::FORBIDDEN
+    );
+
+    let (admin, _) = scoped(
+        &pool,
+        &tenant,
+        Role::Administrator,
+        GrantScope::connection(tenant.connection),
+    )
+    .await;
+    let (status, body) = admin.request("POST", &path, None, None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["reason"], "catalog_unavailable");
+
+    // A failed check records nothing.
+    let mut conn = pool.acquire().await.unwrap();
+    assert!(
+        bergsmith_persistence::capabilities::latest_check(
+            &mut conn,
+            tenant.organization,
+            tenant.connection
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    drop(conn);
+
+    // Another organization's connection is not reachable from this one.
+    let foreign = format!("/api/v1/catalogs/{}/check", other.connection);
+    assert_eq!(
+        admin.request("POST", &foreign, None, None).await.0,
+        StatusCode::FORBIDDEN
+    );
+    unavailable.assert_async().await;
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_capability_check_of_a_credentialed_connection_is_refused(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+    let path = format!("/api/v1/catalogs/{}/check", tenant.connection);
+
+    // The connection names an external credential the coordinator cannot
+    // resolve, so there is nothing to check.
+    let (status, body) = browser.request("POST", &path, None, None).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body["reason"], "catalog_credential_unavailable");
+}
+
+/// A catalog that answers only when the test releases it.
+///
+/// The channel reports that a request arrived; the semaphore releases one
+/// waiting answer at a time. No test depends on a timer, so a slow machine
+/// cannot change the outcome.
+async fn slow_catalog() -> (
+    String,
+    tokio::sync::mpsc::UnboundedReceiver<()>,
+    Arc<tokio::sync::Semaphore>,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (arrived, arrived_rx) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let shared = release.clone();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let _ = arrived.send(());
+            let release = shared.clone();
+            tokio::spawn(async move {
+                let mut buffer = [0u8; 1024];
+                let _ = stream.read(&mut buffer).await;
+                // The test decides when the catalog answers.
+                let _ = release.acquire().await;
+                let body = CONFIG_BODY;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            });
+        }
+    });
+    (format!("http://{address}"), arrived_rx, release)
+}
+
+const CONFIG_BODY: &str = r#"{"defaults":{},"overrides":{},"endpoints":[
+    "GET /v1/{prefix}/namespaces/{namespace}/tables",
+    "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}",
+    "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}"]}"#;
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_capability_check_is_not_recorded_when_the_connection_changes(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let (url, mut arrived, release) = slow_catalog().await;
+    sqlx::query(
+        "UPDATE catalog_connections SET uri=$2, warehouse=NULL, credential_ref=NULL WHERE id=$1",
+    )
+    .bind(tenant.connection.as_uuid())
+    .bind(&url)
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+    let path = format!("/api/v1/catalogs/{}/check", tenant.connection);
+
+    // The check is waiting for the catalog when the connection is edited.
+    let checking = {
+        let browser = browser.clone();
+        let path = path.clone();
+        tokio::spawn(async move { browser.request("POST", &path, None, None).await })
+    };
+    arrived.recv().await.expect("the catalog was asked");
+    let (status, edited) = browser
+        .request(
+            "PATCH",
+            &format!("/api/v1/catalogs/{}", tenant.connection),
+            Some(json!({"expected_revision":0,"uri":"https://other.example/catalog"})),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{edited}");
+
+    // The catalog answers only now, after the connection changed.
+    release.add_permits(1);
+    let (status, body) = checking.await.unwrap();
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["reason"], "catalog_connection_changed");
+
+    // The answer describes a connection that no longer exists, so nothing was
+    // recorded.
+    let mut conn = pool.acquire().await.unwrap();
+    assert!(
+        bergsmith_persistence::capabilities::latest_check(
+            &mut conn,
+            tenant.organization,
+            tenant.connection
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_recorded_capability_answer_is_suppressed_after_a_routing_edit(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let mut server = mockito::Server::new_async().await;
+    let config = server
+        .mock("GET", "/v1/config")
+        .with_body(CONFIG_BODY)
+        .expect(1)
+        .create_async()
+        .await;
+    sqlx::query(
+        "UPDATE catalog_connections SET uri=$2, warehouse=NULL, credential_ref=NULL WHERE id=$1",
+    )
+    .bind(tenant.connection.as_uuid())
+    .bind(server.url())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+
+    let (status, _) = browser
+        .request(
+            "POST",
+            &format!("/api/v1/catalogs/{}/check", tenant.connection),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let detail = browser
+        .request(
+            "GET",
+            &format!("/api/v1/catalogs/{}", tenant.connection),
+            None,
+            None,
+        )
+        .await
+        .1;
+    assert_eq!(detail["capabilities"]["list_tables"], "met");
+
+    // A routing edit makes the recorded answer stale, so it is not shown.
+    let (status, edited) = browser
+        .request(
+            "PATCH",
+            &format!("/api/v1/catalogs/{}", tenant.connection),
+            Some(json!({"expected_revision":0,"uri":"https://other.example/catalog"})),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{edited}");
+    let detail = browser
+        .request(
+            "GET",
+            &format!("/api/v1/catalogs/{}", tenant.connection),
+            None,
+            None,
+        )
+        .await
+        .1;
+    assert!(detail.get("capabilities").is_none());
+    assert!(detail.get("capabilities_checked_at").is_none());
+    config.assert_async().await;
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn clearing_an_empty_setting_suppresses_the_recorded_answer(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let mut server = mockito::Server::new_async().await;
+    let config = server
+        // The connection has an empty warehouse, so the catalog is asked with
+        // an empty warehouse parameter.
+        .mock("GET", "/v1/config?warehouse=")
+        .with_body(CONFIG_BODY)
+        .expect(1)
+        .create_async()
+        .await;
+    // A legacy row with an empty warehouse: the catalog is asked without a
+    // warehouse parameter, which is not the same request as an empty one.
+    sqlx::query(
+        "UPDATE catalog_connections SET uri=$2, warehouse='', credential_ref=NULL WHERE id=$1",
+    )
+    .bind(tenant.connection.as_uuid())
+    .bind(server.url())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+
+    let (status, body) = browser
+        .request(
+            "POST",
+            &format!("/api/v1/catalogs/{}/check", tenant.connection),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let detail = browser
+        .request(
+            "GET",
+            &format!("/api/v1/catalogs/{}", tenant.connection),
+            None,
+            None,
+        )
+        .await
+        .1;
+    assert_eq!(detail["capabilities"]["list_tables"], "met");
+
+    // Clearing the warehouse is a different setting from an empty one, so
+    // the recorded answer no longer applies.
+    let (status, edited) = browser
+        .request(
+            "PATCH",
+            &format!("/api/v1/catalogs/{}", tenant.connection),
+            Some(json!({"expected_revision":0,"warehouse":null})),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{edited}");
+    let detail = browser
+        .request(
+            "GET",
+            &format!("/api/v1/catalogs/{}", tenant.connection),
+            None,
+            None,
+        )
+        .await
+        .1;
+    assert!(detail.get("capabilities").is_none());
+    config.assert_async().await;
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_capability_check_refuses_an_oversized_catalog_answer(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let mut server = mockito::Server::new_async().await;
+    let oversized = server
+        .mock("GET", "/v1/config")
+        .with_body("x".repeat(1024 * 1024))
+        .expect(1)
+        .create_async()
+        .await;
+    sqlx::query(
+        "UPDATE catalog_connections SET uri=$2, warehouse=NULL, credential_ref=NULL WHERE id=$1",
+    )
+    .bind(tenant.connection.as_uuid())
+    .bind(server.url())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+
+    let (status, body) = browser
+        .request(
+            "POST",
+            &format!("/api/v1/catalogs/{}/check", tenant.connection),
+            None,
+            None,
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(body["reason"], "catalog_response_too_large");
+    let mut conn = pool.acquire().await.unwrap();
+    assert!(
+        bergsmith_persistence::capabilities::latest_check(
+            &mut conn,
+            tenant.organization,
+            tenant.connection
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    oversized.assert_async().await;
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_capability_check_is_refused_when_the_requester_is_at_its_bound(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let (url, mut arrived, release) = slow_catalog().await;
+    sqlx::query(
+        "UPDATE catalog_connections SET uri=$2, warehouse=NULL, credential_ref=NULL WHERE id=$1",
+    )
+    .bind(tenant.connection.as_uuid())
+    .bind(&url)
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+    let path = format!("/api/v1/catalogs/{}/check", tenant.connection);
+
+    // Two checks for one requester run at once; the third is refused rather
+    // than queued.
+    let mut running = Vec::new();
+    for _ in 0..2 {
+        let browser = browser.clone();
+        let path = path.clone();
+        running.push(tokio::spawn(async move {
+            browser.request("POST", &path, None, None).await
+        }));
+    }
+    arrived.recv().await.expect("the catalog was asked");
+    arrived.recv().await.expect("the catalog was asked");
+
+    let (status, body) = browser.request("POST", &path, None, None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["reason"], "capability_check_capacity_exhausted");
+    release.add_permits(2);
+    for check in running {
+        let (status, body) = check.await.unwrap();
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_capability_check_keeps_the_advertised_lifetime_exact(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let mut server = mockito::Server::new_async().await;
+    let config = server
+        .mock("GET", "/v1/config")
+        .with_body(
+            r#"{"defaults":{},"overrides":{},"idempotency-key-lifetime":"PT9007199254740993S"}"#,
+        )
+        .expect(1)
+        .create_async()
+        .await;
+    sqlx::query(
+        "UPDATE catalog_connections SET uri=$2, warehouse=NULL, credential_ref=NULL WHERE id=$1",
+    )
+    .bind(tenant.connection.as_uuid())
+    .bind(server.url())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+
+    let (status, body) = browser
+        .request(
+            "POST",
+            &format!("/api/v1/catalogs/{}/check", tenant.connection),
+            None,
+            None,
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // A lifetime beyond what a browser counts exactly crosses as a decimal
+    // string, unchanged.
+    assert_eq!(
+        body["capabilities"]["idempotency_key_lifetime_seconds"],
+        "9007199254740993"
+    );
+    config.assert_async().await;
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]

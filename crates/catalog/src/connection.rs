@@ -27,6 +27,13 @@ const LOAD_CREDENTIALS: &str = "GET /v1/{prefix}/namespaces/{namespace}/tables/{
 /// Endpoints Bergsmith cannot work without.
 const REQUIRED_ENDPOINTS: [&str; 3] = [LIST_TABLES, LOAD_TABLE, COMMIT_TABLE];
 
+/// The most bytes a catalog configuration may carry.
+///
+/// The configuration is a small document. A catalog that answers with more
+/// than this is not serving the REST specification, and reading it would
+/// spend memory the coordinator does not need.
+const MAX_CONFIG_BYTES: usize = 64 * 1024;
+
 /// What a catalog supports, from `GET /v1/config`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CapabilityReport {
@@ -51,6 +58,34 @@ impl CapabilityReport {
             advertised_endpoints: advertised,
             credentials_refresh,
             idempotency_key_lifetime: idempotency.and_then(parse_iso8601_duration),
+        }
+    }
+
+    /// Whether the catalog lists the tables of a namespace.
+    #[must_use]
+    pub fn supports_list_tables(&self) -> bool {
+        self.supports(LIST_TABLES)
+    }
+
+    /// Whether the catalog loads a table's metadata.
+    #[must_use]
+    pub fn supports_load_table(&self) -> bool {
+        self.supports(LOAD_TABLE)
+    }
+
+    /// Whether the catalog accepts a commit.
+    #[must_use]
+    pub fn supports_commit_table(&self) -> bool {
+        self.supports(COMMIT_TABLE)
+    }
+
+    /// Whether the catalog serves an endpoint. A catalog that advertises no
+    /// endpoints serves the specification's default set, which covers every
+    /// required endpoint.
+    fn supports(&self, endpoint: &str) -> bool {
+        match &self.advertised_endpoints {
+            Some(set) => set.contains(endpoint),
+            None => true,
         }
     }
 
@@ -200,34 +235,33 @@ impl CatalogConnection {
     /// advertised, and transport, status, or decoding errors otherwise.
     pub async fn connect(config: &ConnectionConfig) -> Result<Self, CatalogError> {
         let client = HttpClient::new(config)?;
-        let base = config.uri.clone();
-        let mut url = endpoint_url(&base, &["v1", "config"])?;
-        if let Some(warehouse) = &config.warehouse {
-            url.query_pairs_mut().append_pair("warehouse", warehouse);
-        }
-        let response: ConfigResponse = client
-            .json("GET /v1/config", Method::GET, url, |request| request)
-            .await?;
-        let prefix = response
-            .overrides
-            .get("prefix")
-            .or_else(|| response.defaults.get("prefix"))
-            .filter(|prefix| !prefix.is_empty())
-            .cloned();
-        let capabilities = CapabilityReport::from_endpoints(
-            response.endpoints.as_deref(),
-            response.idempotency_key_lifetime.as_deref(),
-        );
+        let (prefix, capabilities) = read_config(&client, config).await?;
         let missing = capabilities.missing_required();
         if !missing.is_empty() {
             return Err(CatalogError::MissingEndpoints(missing));
         }
         Ok(Self {
             client,
-            base,
+            base: config.uri.clone(),
             prefix,
             capabilities,
         })
+    }
+
+    /// Reads `GET /v1/config` and reports what the catalog supports.
+    ///
+    /// Unlike [`Self::connect`], a catalog that lacks a required endpoint is
+    /// reported rather than refused: a capability check has to say what is
+    /// missing. The request is bounded by the configuration's timeouts, and
+    /// nothing but the configuration is read.
+    ///
+    /// # Errors
+    ///
+    /// Transport, status, or decoding errors from the catalog.
+    pub async fn probe(config: &ConnectionConfig) -> Result<CapabilityReport, CatalogError> {
+        let client = HttpClient::new(config)?;
+        let (_, capabilities) = read_config(&client, config).await?;
+        Ok(capabilities)
     }
 
     /// What the catalog supports.
@@ -389,6 +423,37 @@ fn vended(
         .collect()
 }
 
+/// Reads the catalog's configuration and reports what it supports.
+async fn read_config(
+    client: &HttpClient,
+    config: &ConnectionConfig,
+) -> Result<(Option<String>, CapabilityReport), CatalogError> {
+    let mut url = endpoint_url(&config.uri, &["v1", "config"])?;
+    if let Some(warehouse) = &config.warehouse {
+        url.query_pairs_mut().append_pair("warehouse", warehouse);
+    }
+    let response: ConfigResponse = client
+        .json_within(
+            "GET /v1/config",
+            Method::GET,
+            url,
+            |request| request,
+            MAX_CONFIG_BYTES,
+        )
+        .await?;
+    let prefix = response
+        .overrides
+        .get("prefix")
+        .or_else(|| response.defaults.get("prefix"))
+        .filter(|prefix| !prefix.is_empty())
+        .cloned();
+    let capabilities = CapabilityReport::from_endpoints(
+        response.endpoints.as_deref(),
+        response.idempotency_key_lifetime.as_deref(),
+    );
+    Ok((prefix, capabilities))
+}
+
 /// Appends percent-encoded `segments` to `base`'s path.
 fn endpoint_url(base: &Url, segments: &[&str]) -> Result<Url, CatalogError> {
     let mut url = base.clone();
@@ -459,13 +524,24 @@ mod tests {
         let unadvertised = CapabilityReport::from_endpoints(None, None);
 
         assert!(full.credentials_refresh);
+        assert!(full.supports_list_tables());
+        assert!(full.supports_load_table());
+        assert!(full.supports_commit_table());
         assert_eq!(
             full.idempotency_key_lifetime,
             Some(Duration::from_secs(1800))
         );
         assert!(full.missing_required().is_empty());
         assert_eq!(partial.missing_required(), [LOAD_TABLE, COMMIT_TABLE]);
+        assert!(partial.supports_list_tables());
+        assert!(!partial.supports_load_table());
+        assert!(!partial.supports_commit_table());
+        assert!(!partial.credentials_refresh);
+        assert!(partial.idempotency_key_lifetime.is_none());
         assert!(!unadvertised.credentials_refresh);
+        assert!(unadvertised.supports_list_tables());
+        assert!(unadvertised.supports_load_table());
+        assert!(unadvertised.supports_commit_table());
         assert!(unadvertised.missing_required().is_empty());
     }
 

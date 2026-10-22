@@ -23,6 +23,7 @@ as `x-csrf-token`. All responses use `Cache-Control: no-store`.
 | `GET /api/v1/catalogs`, `GET /api/v1/catalogs/{id}` | Authorized catalog summaries; detail also includes settings for connection managers |
 | `POST /api/v1/catalogs` | Create a connection under organization-wide `connections:manage`; 201 |
 | `PATCH /api/v1/catalogs/{id}` | Edit, enable, or disable under connection-scoped `connections:manage`, using `expected_revision`; 409 for stale revisions or routing edits while jobs depend on the connection |
+| `POST /api/v1/catalogs/{id}/check` | Read what the connection's catalog advertises and record the answer; requires connection-scoped `connections:manage` |
 | `GET /api/v1/tables`, `GET /api/v1/tables/{id}` | Authorized canonical table identities |
 | `GET /api/v1/jobs`, `GET /api/v1/jobs/{id}` | Authorized job state, revision, requester and their display name, the table's caller-visible aliases, cancellation/publication boundary, retry link |
 | `POST /api/v1/jobs` | Idempotent durable submission; returns 202 with job and operation IDs and Location |
@@ -82,8 +83,43 @@ credential-reference edits return `catalog_connection_in_use` while any
 nonterminal job belongs to a table registered through the connection. Resolve
 those jobs before changing routing; disabling remains available.
 
-## Previews
+## Capability check
 
+`POST /api/v1/catalogs/{id}/check` reads `GET /v1/config` on the connection's
+catalog, records the answer with the time of the check, and returns it. It
+requires `connections:manage` for that connection. The check is diagnostic: it
+never changes the connection's configuration, never moves its revision, and
+records a `catalog.checked` audit record naming the requirements that are not
+met.
+
+Each requirement is `met`, `missing`, or `unknown`:
+
+| Requirement | How it is decided |
+|---|---|
+| `list_tables`, `load_table`, `commit_table` | The endpoint the catalog advertises. A catalog that advertises no endpoints serves the specification's default set, so all three are `met`. |
+| `credentials_endpoint` | Whether the catalog advertises the table credentials endpoint. Optional. |
+| `idempotency_key_lifetime_seconds` | The advertised lifetime in seconds, as a decimal string, or null. Optional. A decimal string keeps the advertised value exact: a lifetime may be larger than a browser counts. |
+| `vended_credentials` | Always `unknown`: the catalog configuration cannot show it, and loading a table proves it. |
+
+The answer is bound to the settings it describes. If the connection's routing
+changes while the catalog is answering, the answer describes a configuration
+that no longer exists, so it is not recorded and the check returns 409
+`catalog_connection_changed`; run it again. For the same reason, a recorded
+answer is not shown in `GET /api/v1/catalogs/{id}` after a routing edit.
+
+A check is bounded four times. The catalog's answer may not exceed 64 KiB, the
+check is given up after 10 seconds, the connection after 5, and one catalog
+request after 30. The coordinator runs at most 8 checks at once and at most 2
+for one requester; a check that cannot start returns 503
+`capability_check_capacity_exhausted`, and one whose answer is too large
+returns `catalog_response_too_large`. A catalog that cannot be reached leaves
+no record and returns 503 `catalog_unavailable`.
+A connection that names an external credential cannot be checked until the
+runtime resolves credential references; the check returns
+`catalog_credential_unavailable` rather than authenticating as anything else,
+and a catalog that requires authentication answers `catalog_access_denied`.
+
+## Previews
 `POST /api/v1/previews` accepts `{"table_id":"<canonical table UUID>"}` and
 requires `jobs:submit` on that table. It creates no job, plan, task, output,
 idempotency key, or audit record; denials are audited. Unknown tables return 404

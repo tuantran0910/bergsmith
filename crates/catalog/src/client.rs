@@ -73,6 +73,13 @@ struct Token {
 /// Refresh tokens this long before they expire.
 const TOKEN_REFRESH_MARGIN: Duration = Duration::from_secs(60);
 
+/// The most bytes one catalog response may carry, unless a caller asks for
+/// less.
+///
+/// A response is buffered before it is decoded, so this is the bound on how
+/// much memory one catalog call can take.
+pub(crate) const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
 /// The HTTP client for one connection.
 pub(crate) struct HttpClient {
     http: reqwest::Client,
@@ -132,10 +139,29 @@ impl HttpClient {
         url: Url,
         configure: impl FnOnce(RequestBuilder) -> RequestBuilder,
     ) -> Result<T, CatalogError> {
+        self.json_within(operation, method, url, configure, MAX_RESPONSE_BYTES)
+            .await
+    }
+
+    /// Sends a request, reads at most `max_bytes`, and decodes a JSON
+    /// response.
+    ///
+    /// A response is buffered before it is decoded, so the byte limit is what
+    /// keeps a faulty or hostile catalog from exhausting memory. The limit
+    /// covers error bodies too: an error envelope is read from the same
+    /// stream.
+    pub(crate) async fn json_within<T: DeserializeOwned>(
+        &self,
+        operation: &'static str,
+        method: Method,
+        url: Url,
+        configure: impl FnOnce(RequestBuilder) -> RequestBuilder,
+        max_bytes: usize,
+    ) -> Result<T, CatalogError> {
         let request = self
             .authorize(configure(self.http.request(method, url)))
             .await?;
-        let response = request
+        let mut response = request
             .send()
             .await
             .map_err(|source| CatalogError::Transport { operation, source })?;
@@ -145,10 +171,20 @@ impl HttpClient {
             // Fetch a fresh one next time instead of repeating a rejected token.
             self.invalidate_token().await;
         }
-        let body = response
-            .bytes()
+        let mut body = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
             .await
-            .map_err(|source| CatalogError::Transport { operation, source })?;
+            .map_err(|source| CatalogError::Transport { operation, source })?
+        {
+            if body.len() + chunk.len() > max_bytes {
+                return Err(CatalogError::ResponseTooLarge {
+                    operation,
+                    max_bytes,
+                });
+            }
+            body.extend_from_slice(&chunk);
+        }
         if !status.is_success() {
             return Err(CatalogError::Status {
                 operation,

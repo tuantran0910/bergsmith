@@ -16,6 +16,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::api::{self, EventStreamLimits, JobEventHub};
+use crate::checks::CapabilityChecker;
 use crate::identity::oidc::OidcProvider;
 use crate::identity::routes::IdentityState;
 use crate::observability::{Observability, RpcMetrics};
@@ -328,6 +329,7 @@ async fn start(
         sessions: sessions.clone(),
         previews,
         events: events.clone(),
+        checks: CapabilityChecker::default(),
     };
     let identity = IdentityState::new(database.clone(), Arc::new(provider), sessions);
 

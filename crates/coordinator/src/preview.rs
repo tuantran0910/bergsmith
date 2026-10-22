@@ -208,6 +208,7 @@ impl PreviewError {
                 CatalogError::NoVendedCredentials => "catalog_no_vended_credentials",
                 CatalogError::DataLocationOutsideTable(_) => "catalog_data_location",
                 CatalogError::IdempotencyUnsupported => "catalog_idempotency_unsupported",
+                CatalogError::ResponseTooLarge { .. } => "catalog_response_too_large",
             },
         }
     }
