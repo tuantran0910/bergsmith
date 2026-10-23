@@ -121,14 +121,22 @@ operator denial. A run that starts inside the window may
 finish after it closes. The window does not change occurrence identity,
 deduplication, or coalescing, and it is not rechecked at publication.
 
+A connection whose maintenance is paused is still enabled, so a due run on such
+a connection is recorded as `Skipped` with reason `MaintenancePaused` and is
+audited like the other operator denials. The permission must hold on a
+connection that allows maintenance: a service identity that may only use a
+paused connection has no usable route, even when another connection serves the
+table.
+
 Checks are ordered `PolicyDisabled`, `ServiceIdentityIneligible`,
-`ConnectionDisabled`, `OutsideWindow`, then `TableBusy`: a run that may not
-start never folds into another job's occurrence. A window uses the zone's wall
-clock, so a spring-forward gap shortens it and a fall-back overlap lengthens it;
-the cron engine still decides which instants exist. A repeated fall-back start
-has two candidate openings. The earlier is preferred; if it is already past,
-the later reading still opens the window. That differs from cron's deduplication to
-the earlier instant, and it keeps a valid run later that morning.
+`ConnectionDisabled`, `MaintenancePaused`, `OutsideWindow`, then `TableBusy`: a
+run that may not start never folds into another job's occurrence. A window uses
+the zone's wall clock, so a spring-forward gap shortens it and a fall-back
+overlap lengthens it; the cron engine still decides which instants exist. A
+repeated fall-back start has two candidate openings. The earlier is preferred;
+if it is already past, the later reading still opens the window. That differs
+from cron's deduplication to the earlier instant, and it keeps a valid run later
+that morning.
 
 Window eligibility samples the coordinator's clock **after** the schedule and
 state row locks, so a pass that waited on a lock decides with the instant it

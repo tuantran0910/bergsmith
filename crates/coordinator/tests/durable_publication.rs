@@ -8,6 +8,9 @@
 #[path = "../../persistence/tests/support/mod.rs"]
 mod support;
 
+/// The execution budget the tests plan with.
+const EXECUTION_BUDGET: Duration = Duration::from_secs(180);
+
 use bergsmith_catalog::{Baseline, CatalogConnection, ConnectionConfig, LoadedTable, TableName};
 use bergsmith_common::ids::{AttemptId, PlanId};
 use bergsmith_common::job::JobState;
@@ -105,7 +108,7 @@ async fn setup(conn: &mut PgConnection, zero: bool) -> Run {
     };
     let plan = plan.as_ref().clone();
     let job = jobs::job(conn, tenant.organization, job_id).await.unwrap();
-    let queued = planning::record_outcome(conn, &job, &outcome)
+    let queued = planning::record_outcome(conn, &job, &outcome, EXECUTION_BUDGET)
         .await
         .unwrap();
     let job = jobs::transition_job(

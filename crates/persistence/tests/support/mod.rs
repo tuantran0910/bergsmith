@@ -211,6 +211,7 @@ pub(crate) async fn plan(conn: &mut PgConnection, job: JobId, task_count: usize)
             content: serde_json::json!({ "groups": task_count }),
             content_hash: digest('a'),
             task_ids: task_ids.clone(),
+            execution_budget: Duration::from_secs(180),
         },
     )
     .await

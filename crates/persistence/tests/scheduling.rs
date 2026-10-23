@@ -101,6 +101,241 @@ async fn disabled_connections_block_new_admission_but_preserve_admitted_jobs(poo
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_paused_connection_blocks_new_admission_but_preserves_admitted_jobs(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let epoch = support::leader(&mut conn).await;
+    let (job, _) = configured(&mut conn, &tenant, 1).await;
+    sqlx::query("UPDATE catalog_connections SET maintenance_enabled=false WHERE id=$1")
+        .bind(tenant.connection.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    assert!(
+        !scheduler::admit(&mut conn, job, epoch, scheduler::AdmissionLimits::default())
+            .await
+            .unwrap()
+    );
+    sqlx::query("UPDATE catalog_connections SET maintenance_enabled=true WHERE id=$1")
+        .bind(tenant.connection.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    assert!(
+        scheduler::admit(&mut conn, job, epoch, scheduler::AdmissionLimits::default())
+            .await
+            .unwrap()
+    );
+    // Pausing again does not disturb the admitted job: its admission and its
+    // state stay, and the pause only stops new work.
+    sqlx::query("UPDATE catalog_connections SET maintenance_enabled=false WHERE id=$1")
+        .bind(tenant.connection.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    let admitted: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM execution_admissions WHERE job_id = $1 AND NOT released",
+    )
+    .bind(job.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(admitted, 1, "the admitted job keeps its admission");
+    let state = jobs::job_by_id(&mut conn, job).await.unwrap().state;
+    assert_eq!(
+        state,
+        JobState::Queued,
+        "the pause does not change the state of an admitted job"
+    );
+    // A job submitted after the pause waits instead of running.
+    let next = support::job(&mut conn, &tenant).await;
+    let next_tasks = support::plan(&mut conn, next, 1).await;
+    support::force_job_state(&mut conn, next, JobState::Queued).await;
+    scheduler::register_dispatch(
+        &mut conn,
+        next,
+        &next_tasks.iter().copied().map(spec).collect::<Vec<_>>(),
+        scheduler::RetryPolicy::default(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !scheduler::admit(
+            &mut conn,
+            next,
+            epoch,
+            scheduler::AdmissionLimits::default()
+        )
+        .await
+        .unwrap()
+    );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn an_attempt_never_outlasts_the_jobs_execution_budget(pool: PgPool) {
+    use chrono::{DateTime, Duration as ChronoDuration, Utc};
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let (job, tasks) = configured(&mut conn, &tenant, 3).await;
+
+    // The plan gave the job a budget, so it has a deadline.
+    let deadline: Option<DateTime<Utc>> =
+        sqlx::query_scalar("SELECT deadline_at FROM jobs WHERE id = $1")
+            .bind(job.as_uuid())
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+    assert!(deadline.is_some(), "a planned job carries its budget");
+
+    // A short budget caps the lease: the worker's own lease is far longer.
+    sqlx::query(
+        "UPDATE jobs SET deadline_at = clock_timestamp() + interval '5 seconds' WHERE id = $1",
+    )
+    .bind(job.as_uuid())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    let attempt = support::grant(&mut conn, tasks[0]).await.unwrap();
+    let now: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+    assert!(
+        attempt.lease_expires_at <= now + ChronoDuration::seconds(5),
+        "the lease must not outlast the job's budget"
+    );
+
+    // The second task of the same job may only use what is left of it.
+    let second = support::grant(&mut conn, tasks[1]).await.unwrap();
+    let now: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+    assert!(
+        second.lease_expires_at <= now + ChronoDuration::seconds(5),
+        "a sequential task must fit in the remaining budget"
+    );
+
+    // Once the budget is spent, no further attempt is granted.
+    sqlx::query(
+        "UPDATE jobs SET deadline_at = clock_timestamp() - interval '1 second' WHERE id = $1",
+    )
+    .bind(job.as_uuid())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    let error = support::grant(&mut conn, tasks[2]).await.unwrap_err();
+    assert!(matches!(
+        error,
+        bergsmith_persistence::PersistenceError::ExecutionBudgetExceeded { .. }
+    ));
+    let attempts: i64 = sqlx::query_scalar("SELECT count(*) FROM attempts WHERE task_id = $1")
+        .bind(tasks[2].as_uuid())
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+    assert_eq!(
+        attempts, 0,
+        "no attempt is created after the budget is spent"
+    );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_paused_connection_cannot_borrow_another_connections_grant(pool: PgPool) {
+    use bergsmith_common::permission::{GrantScope, Role};
+    use bergsmith_persistence::grants::{self, NewRoleGrant};
+    use bergsmith_persistence::tables;
+    let mut conn = pool.acquire().await.unwrap();
+    let organization = support::organization(&mut conn, "acme").await;
+    let paused = support::connection(&mut conn, organization, "paused").await;
+    let usable = support::connection(&mut conn, organization, "usable").await;
+    let table_uuid = Uuid::now_v7();
+    let table = tables::resolve_table(
+        &mut conn,
+        organization,
+        &support::alias(paused, "events"),
+        table_uuid,
+    )
+    .await
+    .unwrap()
+    .id;
+    // The same table is served by the second connection.
+    tables::resolve_table(
+        &mut conn,
+        organization,
+        &support::alias(usable, "events"),
+        table_uuid,
+    )
+    .await
+    .unwrap();
+    // The requester may submit through the paused connection only.
+    let requester = support::user(&mut conn, organization, "operator").await;
+    grants::create_grant(
+        &mut conn,
+        &NewRoleGrant {
+            id: bergsmith_common::ids::RoleGrantId::generate(),
+            organization_id: organization,
+            principal_id: requester,
+            role: Role::Operator,
+            scope: GrantScope::connection(paused),
+            granted_by: None,
+        },
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE catalog_connections SET maintenance_enabled=false WHERE id=$1")
+        .bind(paused.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    let epoch = support::leader(&mut conn).await;
+    let job = jobs::create_job(
+        &mut conn,
+        &jobs::NewJob {
+            id: JobId::generate(),
+            organization_id: organization,
+            table_id: table,
+            retry_of: None,
+            created_by: requester,
+        },
+    )
+    .await
+    .unwrap()
+    .id;
+    let tasks = support::plan(&mut conn, job, 1).await;
+    support::force_job_state(&mut conn, job, JobState::Queued).await;
+    scheduler::register_dispatch(
+        &mut conn,
+        job,
+        &tasks.iter().copied().map(spec).collect::<Vec<_>>(),
+        scheduler::RetryPolicy::default(),
+    )
+    .await
+    .unwrap();
+
+    // The paused connection is not a usable route, and the requester's grant
+    // does not cover the connection that is.
+    assert!(
+        !scheduler::admit(&mut conn, job, epoch, scheduler::AdmissionLimits::default())
+            .await
+            .unwrap()
+    );
+
+    // With the maintenance pause lifted, the requester's own grant covers the
+    // connection again, so the pause was the blocker.
+    sqlx::query("UPDATE catalog_connections SET maintenance_enabled=true WHERE id=$1")
+        .bind(paused.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    assert!(
+        scheduler::admit(&mut conn, job, epoch, scheduler::AdmissionLimits::default())
+            .await
+            .unwrap()
+    );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
 async fn an_inaccessible_enabled_alias_cannot_bypass_a_disabled_connection(pool: PgPool) {
     use bergsmith_common::permission::{GrantScope, Role};
     use bergsmith_persistence::tables;
@@ -234,7 +469,7 @@ async fn grant(
 async fn dispatch_configuration_is_complete_atomic_and_immutable(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let tenant = support::tenant(&mut conn, "acme").await;
-    let (job, tasks) = configured(&mut conn, &tenant, 2).await;
+    let (job, tasks) = configured(&mut conn, &tenant, 3).await;
     let original: Vec<_> = tasks.iter().copied().map(spec).collect();
     scheduler::register_dispatch(&mut conn, job, &original, scheduler::RetryPolicy::default())
         .await
@@ -356,7 +591,7 @@ async fn concurrent_admissions_cannot_exceed_global_or_pool_budgets(pool: PgPool
 async fn concurrent_grants_reserve_memory_cpu_and_slots_atomically(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let tenant = support::tenant(&mut conn, "acme").await;
-    let (job, tasks) = configured(&mut conn, &tenant, 2).await;
+    let (job, tasks) = configured(&mut conn, &tenant, 3).await;
     let epoch = support::leader(&mut conn).await;
     let limits = scheduler::AdmissionLimits {
         memory_bytes: 100,
@@ -702,7 +937,7 @@ async fn memory_cpu_and_attempt_budgets_each_apply_independently(pool: PgPool) {
             ..scheduler::AdmissionLimits::default()
         },
     ] {
-        let (job, tasks) = configured(&mut conn, &tenant, 2).await;
+        let (job, tasks) = configured(&mut conn, &tenant, 3).await;
         assert!(
             scheduler::admit(&mut conn, job, epoch, limits)
                 .await

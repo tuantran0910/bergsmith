@@ -468,6 +468,21 @@ impl Scheduler {
         if !registered {
             return Ok(());
         }
+        // The execution budget covers the whole job. A job that outruns it
+        // cannot start more work; an attempt already in flight ends with its
+        // lease, and an authorized publication is never disturbed.
+        if bergsmith_persistence::jobs::execution_budget_spent(&mut conn, current.id).await? {
+            ledger::stop(
+                &mut conn,
+                current.id,
+                current.state_revision,
+                self.epoch,
+                JobState::Failed,
+                "ExecutionBudgetExceeded",
+            )
+            .await?;
+            return Ok(());
+        }
         // Fencing expired or session-lost attempts needs no external validation;
         // only releasing their retries does.
         ledger::repair_attempts(&mut conn, job.id, self.epoch).await?;

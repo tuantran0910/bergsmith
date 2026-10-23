@@ -31,6 +31,11 @@ export const catalogs = schema("CatalogPage", {
             revision: 0,
             updated_at: "2026-10-01T00:00:00Z",
             created_at: "2026-10-01T00:00:00Z",
+            settings: {
+                maintenance_enabled: true,
+                max_execution_seconds: 180,
+                max_unresolved_publication_seconds: 3600,
+            },
         },
     ],
     next_cursor: null,

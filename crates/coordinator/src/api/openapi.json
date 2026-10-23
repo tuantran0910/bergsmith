@@ -2796,6 +2796,55 @@
       }
     },
     "schemas": {
+      "AcceptedJob": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation_id",
+          "job_id",
+          "resource_url"
+        ],
+        "properties": {
+          "operation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "resource_url": {
+            "type": "string"
+          }
+        }
+      },
+      "AcceptedRetry": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation_id",
+          "job_id",
+          "resource_url",
+          "retry_of_job_id"
+        ],
+        "properties": {
+          "operation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "resource_url": {
+            "type": "string"
+          },
+          "retry_of_job_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
       "ApiError": {
         "type": "object",
         "additionalProperties": false,
@@ -2867,6 +2916,232 @@
           }
         }
       },
+      "AuditEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "actor_principal_id",
+          "actor_display_name",
+          "actor_kind",
+          "action",
+          "resource_type",
+          "resource_id",
+          "outcome",
+          "detail",
+          "occurred_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$"
+          },
+          "actor_principal_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "actor_display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "actor_kind": {
+            "type": "string",
+            "enum": [
+              "User",
+              "Service",
+              "Anonymous",
+              "System"
+            ]
+          },
+          "action": {
+            "type": "string"
+          },
+          "resource_type": {
+            "type": "string"
+          },
+          "resource_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "Allowed",
+              "Denied",
+              "Failed"
+            ]
+          },
+          "detail": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "AuditEventPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditEvent"
+            }
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "Bin": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "partition",
+          "ordinal",
+          "input",
+          "has_deletes",
+          "files_removed",
+          "disposition"
+        ],
+        "properties": {
+          "partition": {
+            "$ref": "#/components/schemas/PartitionKey"
+          },
+          "ordinal": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "input": {
+            "$ref": "#/components/schemas/Tally"
+          },
+          "has_deletes": {
+            "type": "boolean"
+          },
+          "files_removed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "disposition": {
+            "type": "string",
+            "enum": [
+              "admitted",
+              "no_benefit",
+              "deferred_job_input",
+              "deferred_job_files",
+              "deferred_duration"
+            ]
+          }
+        }
+      },
+      "CancelJobRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "CancelJobResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "job_id",
+          "state",
+          "revision",
+          "cancellation",
+          "cancellation_requested",
+          "publication_started"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "Planning",
+              "Queued",
+              "Running",
+              "ReadyToCommit",
+              "Committing",
+              "CommitOutcomeUnknown",
+              "Cancelling",
+              "Succeeded",
+              "NoOp",
+              "Cancelled",
+              "ReplanRequired",
+              "Failed"
+            ]
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cancellation": {
+            "type": "string",
+            "enum": [
+              "cancelling",
+              "too_late_publication_started",
+              "publication_unresolved",
+              "too_late_committed",
+              "cancelled",
+              "already_ended"
+            ]
+          },
+          "cancellation_requested": {
+            "type": "boolean"
+          },
+          "publication_started": {
+            "type": "boolean"
+          }
+        }
+      },
       "Catalog": {
         "type": "object",
         "additionalProperties": false,
@@ -2876,7 +3151,8 @@
           "created_at",
           "enabled",
           "revision",
-          "updated_at"
+          "updated_at",
+          "settings"
         ],
         "properties": {
           "id": {
@@ -2934,36 +3210,338 @@
             "type": "string",
             "format": "date-time",
             "description": "When the last capability check ran; only returned to connection managers."
+          },
+          "settings": {
+            "$ref": "#/components/schemas/CatalogSettings"
+          },
+          "storage_profile": {
+            "$ref": "#/components/schemas/CatalogStorageProfile"
+          },
+          "unresolved_publications": {
+            "$ref": "#/components/schemas/CatalogUnresolvedPublications"
           }
         }
       },
-      "Table": {
+      "CatalogCapabilities": {
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "id",
-          "table_uuid",
-          "created_at",
-          "aliases"
+          "list_tables",
+          "load_table",
+          "commit_table",
+          "vended_credentials",
+          "credentials_endpoint",
+          "idempotency_key_lifetime_seconds"
         ],
         "properties": {
-          "id": {
+          "list_tables": {
+            "type": "string",
+            "enum": [
+              "met",
+              "missing",
+              "unknown"
+            ],
+            "description": "Whether the catalog lists the tables of a namespace."
+          },
+          "load_table": {
+            "type": "string",
+            "enum": [
+              "met",
+              "missing",
+              "unknown"
+            ],
+            "description": "Whether the catalog loads a table's metadata."
+          },
+          "commit_table": {
+            "type": "string",
+            "enum": [
+              "met",
+              "missing",
+              "unknown"
+            ],
+            "description": "Whether the catalog accepts a commit."
+          },
+          "vended_credentials": {
+            "type": "string",
+            "enum": [
+              "met",
+              "missing",
+              "unknown"
+            ],
+            "description": "Whether the catalog vends table-scoped storage credentials. The catalog configuration cannot show it; loading a table proves it."
+          },
+          "credentials_endpoint": {
+            "type": "string",
+            "enum": [
+              "met",
+              "missing",
+              "unknown"
+            ],
+            "description": "Whether the catalog can refresh vended credentials on request."
+          },
+          "idempotency_key_lifetime_seconds": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How long the catalog remembers idempotency keys, in seconds, as a decimal string; null when it advertises no lifetime."
+          }
+        }
+      },
+      "CatalogCapabilityCheck": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "catalog_id",
+          "checked_at",
+          "capabilities"
+        ],
+        "properties": {
+          "catalog_id": {
             "type": "string",
             "format": "uuid"
           },
-          "table_uuid": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "created_at": {
+          "checked_at": {
             "type": "string",
             "format": "date-time"
           },
-          "aliases": {
+          "capabilities": {
+            "$ref": "#/components/schemas/CatalogCapabilities"
+          }
+        }
+      },
+      "CatalogPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "properties": {
+          "items": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/TableAlias"
+              "$ref": "#/components/schemas/Catalog"
             }
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "CatalogSettings": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "maintenance_enabled",
+          "max_execution_seconds",
+          "max_unresolved_publication_seconds"
+        ],
+        "description": "The operating bounds this connection declares. The summary and the detail carry the same bounds.",
+        "properties": {
+          "maintenance_enabled": {
+            "type": "boolean",
+            "description": "Whether maintenance may run on this connection's tables. A paused connection stays in service: previews and reads still work, and an unresolved publication is still recovered."
+          },
+          "max_execution_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 86400,
+            "description": "How long one job may run on this connection. The coordinator never grants a longer job than this, and the operator keeps the table's inputs readable for the same time."
+          },
+          "max_unresolved_publication_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2592000,
+            "description": "How long a publication may stay unresolved before an operator investigates. The bound never resolves a publication."
+          }
+        }
+      },
+      "CatalogStorageBackend": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "The storage backend this profile serves."
+          },
+          "endpoint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The endpoint, when the backend names one. User information, a query, and a fragment are removed; an endpoint that is not a URL is left out."
+          },
+          "region": {
+            "type": "string",
+            "description": "The signing region, for S3."
+          },
+          "path_style_access": {
+            "type": "boolean",
+            "description": "Whether buckets are addressed as a path."
+          },
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The project that owns the buckets, for GCS."
+          },
+          "account": {
+            "type": "string",
+            "description": "The storage account, for Azure."
+          },
+          "hierarchical_namespace": {
+            "type": "boolean",
+            "description": "Whether the account has a hierarchical namespace."
+          }
+        }
+      },
+      "CatalogStorageProfile": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source",
+          "backends"
+        ],
+        "description": "The storage profiles that apply to this connection. They stay in the coordinator configuration, so they are read-only.",
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "connection",
+              "default"
+            ],
+            "description": "Whether the connection has profiles of its own or uses the default set."
+          },
+          "backends": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogStorageBackend"
+            }
+          }
+        }
+      },
+      "CatalogUnresolvedPublications": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "count",
+          "oldest_seconds",
+          "overdue"
+        ],
+        "description": "The publications of this connection whose outcome is unknown.",
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "oldest_seconds": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "overdue": {
+            "type": "boolean",
+            "description": "Whether the oldest unresolved publication is older than the connection's own bound."
+          }
+        }
+      },
+      "CreateCatalog": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "uri"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "uri": {
+            "type": "string",
+            "description": "Catalog HTTP(S) base URI without user information, query parameters, fragments, or whitespace."
+          },
+          "warehouse": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "credential_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Reference to an externally held credential; never supply a secret value."
+          }
+        }
+      },
+      "Estimate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "tasks",
+          "files",
+          "bytes",
+          "files_removed",
+          "duration_millis"
+        ],
+        "properties": {
+          "tasks": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "files": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "files_removed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "duration_millis": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -3168,177 +3746,6 @@
           }
         }
       },
-      "AuditEvent": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "id",
-          "actor_principal_id",
-          "actor_display_name",
-          "actor_kind",
-          "action",
-          "resource_type",
-          "resource_id",
-          "outcome",
-          "detail",
-          "occurred_at"
-        ],
-        "properties": {
-          "id": {
-            "type": "string",
-            "pattern": "^[1-9][0-9]*$"
-          },
-          "actor_principal_id": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "uuid"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "actor_display_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "actor_kind": {
-            "type": "string",
-            "enum": [
-              "User",
-              "Service",
-              "Anonymous",
-              "System"
-            ]
-          },
-          "action": {
-            "type": "string"
-          },
-          "resource_type": {
-            "type": "string"
-          },
-          "resource_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "outcome": {
-            "type": "string",
-            "enum": [
-              "Allowed",
-              "Denied",
-              "Failed"
-            ]
-          },
-          "detail": {
-            "type": "object",
-            "additionalProperties": true
-          },
-          "occurred_at": {
-            "type": "string",
-            "format": "date-time"
-          }
-        }
-      },
-      "SubmitJob": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "table_id"
-        ],
-        "properties": {
-          "table_id": {
-            "type": "string",
-            "format": "uuid"
-          }
-        }
-      },
-      "AcceptedJob": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "operation_id",
-          "job_id",
-          "resource_url"
-        ],
-        "properties": {
-          "operation_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "job_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "resource_url": {
-            "type": "string"
-          }
-        }
-      },
-      "CatalogPage": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "items",
-          "next_cursor"
-        ],
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Catalog"
-            }
-          },
-          "next_cursor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        }
-      },
-      "TablePage": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "items",
-          "next_cursor"
-        ],
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Table"
-            }
-          },
-          "next_cursor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        }
-      },
       "JobPage": {
         "type": "object",
         "additionalProperties": false,
@@ -3362,546 +3769,6 @@
                 "type": "null"
               }
             ]
-          }
-        }
-      },
-      "AuditEventPage": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "items",
-          "next_cursor"
-        ],
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/AuditEvent"
-            }
-          },
-          "next_cursor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        }
-      },
-      "TableAlias": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "catalog_id",
-          "namespace",
-          "name"
-        ],
-        "properties": {
-          "catalog_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "namespace": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "name": {
-            "type": "string"
-          }
-        }
-      },
-      "PreviewRequest": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "table_id"
-        ],
-        "properties": {
-          "table_id": {
-            "type": "string",
-            "format": "uuid"
-          }
-        }
-      },
-      "CancelJobRequest": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 500
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        }
-      },
-      "CancelJobResult": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "job_id",
-          "state",
-          "revision",
-          "cancellation",
-          "cancellation_requested",
-          "publication_started"
-        ],
-        "properties": {
-          "job_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "state": {
-            "type": "string",
-            "enum": [
-              "Planning",
-              "Queued",
-              "Running",
-              "ReadyToCommit",
-              "Committing",
-              "CommitOutcomeUnknown",
-              "Cancelling",
-              "Succeeded",
-              "NoOp",
-              "Cancelled",
-              "ReplanRequired",
-              "Failed"
-            ]
-          },
-          "revision": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "cancellation": {
-            "type": "string",
-            "enum": [
-              "cancelling",
-              "too_late_publication_started",
-              "publication_unresolved",
-              "too_late_committed",
-              "cancelled",
-              "already_ended"
-            ]
-          },
-          "cancellation_requested": {
-            "type": "boolean"
-          },
-          "publication_started": {
-            "type": "boolean"
-          }
-        }
-      },
-      "AcceptedRetry": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "operation_id",
-          "job_id",
-          "resource_url",
-          "retry_of_job_id"
-        ],
-        "properties": {
-          "operation_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "job_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "resource_url": {
-            "type": "string"
-          },
-          "retry_of_job_id": {
-            "type": "string",
-            "format": "uuid"
-          }
-        }
-      },
-      "Tally": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "files",
-          "bytes"
-        ],
-        "properties": {
-          "files": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "bytes": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          }
-        }
-      },
-      "Estimate": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "tasks",
-          "files",
-          "bytes",
-          "files_removed",
-          "duration_millis"
-        ],
-        "properties": {
-          "tasks": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "files": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "bytes": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "files_removed": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "duration_millis": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          }
-        }
-      },
-      "PartitionValue": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "field_id",
-          "value"
-        ],
-        "properties": {
-          "field_id": {
-            "type": "integer",
-            "format": "int32"
-          },
-          "value": {
-            "anyOf": [
-              {
-                "type": "string",
-                "pattern": "^([0-9a-f]{2})*$"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        }
-      },
-      "PartitionKey": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "spec_id",
-          "values"
-        ],
-        "properties": {
-          "spec_id": {
-            "type": "integer",
-            "format": "int32"
-          },
-          "values": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/PartitionValue"
-            }
-          }
-        }
-      },
-      "Rejection": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "reason",
-          "detail",
-          "path",
-          "version",
-          "sort_order_id",
-          "format",
-          "field_id",
-          "problem"
-        ],
-        "properties": {
-          "reason": {
-            "type": "string",
-            "enum": [
-              "format_version",
-              "sorted_table",
-              "encrypted",
-              "write_format",
-              "non_parquet_file",
-              "equality_key",
-              "void_spec_equality_delete"
-            ]
-          },
-          "detail": {
-            "type": "string"
-          },
-          "path": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "version": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "format": "int32"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "sort_order_id": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "format": "int64"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "format": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "field_id": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "format": "int32"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "problem": {
-            "anyOf": [
-              {
-                "type": "string",
-                "enum": [
-                  "floating_point",
-                  "nested",
-                  "not_in_schema"
-                ]
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        }
-      },
-      "Skipped": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "reason",
-          "files",
-          "bytes"
-        ],
-        "properties": {
-          "reason": {
-            "type": "string",
-            "enum": [
-              "outside_selection",
-              "too_large",
-              "at_target_size"
-            ]
-          },
-          "files": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "bytes": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          }
-        }
-      },
-      "Bin": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "partition",
-          "ordinal",
-          "input",
-          "has_deletes",
-          "files_removed",
-          "disposition"
-        ],
-        "properties": {
-          "partition": {
-            "$ref": "#/components/schemas/PartitionKey"
-          },
-          "ordinal": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "input": {
-            "$ref": "#/components/schemas/Tally"
-          },
-          "has_deletes": {
-            "type": "boolean"
-          },
-          "files_removed": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "disposition": {
-            "type": "string",
-            "enum": [
-              "admitted",
-              "no_benefit",
-              "deferred_job_input",
-              "deferred_job_files",
-              "deferred_duration"
-            ]
-          }
-        }
-      },
-      "Preview": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "table_id",
-          "outcome",
-          "no_op_reason",
-          "baseline",
-          "rejections",
-          "candidates",
-          "skipped",
-          "bins",
-          "bins_total",
-          "bins_truncated",
-          "estimate"
-        ],
-        "properties": {
-          "table_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "outcome": {
-            "type": "string",
-            "enum": [
-              "planned",
-              "no_op",
-              "rejected"
-            ]
-          },
-          "no_op_reason": {
-            "anyOf": [
-              {
-                "type": "string",
-                "enum": [
-                  "no_snapshot",
-                  "no_beneficial_work"
-                ]
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "baseline": {
-            "anyOf": [
-              {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "snapshot_id",
-                  "sequence_number"
-                ],
-                "properties": {
-                  "snapshot_id": {
-                    "type": "string",
-                    "pattern": "^-?[0-9]+$",
-                    "description": "64-bit snapshot ID as a decimal string, so clients that parse JSON numbers as doubles do not round it."
-                  },
-                  "sequence_number": {
-                    "type": "integer",
-                    "format": "int64"
-                  }
-                }
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "rejections": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Rejection"
-            }
-          },
-          "candidates": {
-            "$ref": "#/components/schemas/Tally"
-          },
-          "skipped": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Skipped"
-            }
-          },
-          "bins": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Bin"
-            }
-          },
-          "estimate": {
-            "$ref": "#/components/schemas/Estimate"
-          },
-          "bins_total": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "bins_truncated": {
-            "type": "boolean"
           }
         }
       },
@@ -4283,6 +4150,469 @@
           }
         }
       },
+      "PartitionKey": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "spec_id",
+          "values"
+        ],
+        "properties": {
+          "spec_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PartitionValue"
+            }
+          }
+        }
+      },
+      "PartitionValue": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "field_id",
+          "value"
+        ],
+        "properties": {
+          "field_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^([0-9a-f]{2})*$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "Preview": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "table_id",
+          "outcome",
+          "no_op_reason",
+          "baseline",
+          "rejections",
+          "candidates",
+          "skipped",
+          "bins",
+          "bins_total",
+          "bins_truncated",
+          "estimate"
+        ],
+        "properties": {
+          "table_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "planned",
+              "no_op",
+              "rejected"
+            ]
+          },
+          "no_op_reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "no_snapshot",
+                  "no_beneficial_work"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "baseline": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "snapshot_id",
+                  "sequence_number"
+                ],
+                "properties": {
+                  "snapshot_id": {
+                    "type": "string",
+                    "pattern": "^-?[0-9]+$",
+                    "description": "64-bit snapshot ID as a decimal string, so clients that parse JSON numbers as doubles do not round it."
+                  },
+                  "sequence_number": {
+                    "type": "integer",
+                    "format": "int64"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rejections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Rejection"
+            }
+          },
+          "candidates": {
+            "$ref": "#/components/schemas/Tally"
+          },
+          "skipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Skipped"
+            }
+          },
+          "bins": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Bin"
+            }
+          },
+          "estimate": {
+            "$ref": "#/components/schemas/Estimate"
+          },
+          "bins_total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "bins_truncated": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PreviewRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "table_id"
+        ],
+        "properties": {
+          "table_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "Rejection": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reason",
+          "detail",
+          "path",
+          "version",
+          "sort_order_id",
+          "format",
+          "field_id",
+          "problem"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "enum": [
+              "format_version",
+              "sorted_table",
+              "encrypted",
+              "write_format",
+              "non_parquet_file",
+              "equality_key",
+              "void_spec_equality_delete"
+            ]
+          },
+          "detail": {
+            "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int32"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sort_order_id": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int64"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "field_id": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int32"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "problem": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "floating_point",
+                  "nested",
+                  "not_in_schema"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "Skipped": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reason",
+          "files",
+          "bytes"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "enum": [
+              "outside_selection",
+              "too_large",
+              "at_target_size"
+            ]
+          },
+          "files": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "SubmitJob": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "table_id"
+        ],
+        "properties": {
+          "table_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "Table": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "table_uuid",
+          "created_at",
+          "aliases"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "table_uuid": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TableAlias"
+            }
+          }
+        }
+      },
+      "TableAlias": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "catalog_id",
+          "namespace",
+          "name"
+        ],
+        "properties": {
+          "catalog_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "namespace": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "TablePage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Table"
+            }
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "Tally": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "files",
+          "bytes"
+        ],
+        "properties": {
+          "files": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "UpdateCatalog": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "uri": {
+            "type": "string",
+            "description": "Catalog HTTP(S) base URI without user information, query parameters, fragments, or whitespace."
+          },
+          "warehouse": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "credential_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Reference to an externally held credential; never supply a secret value."
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "max_execution_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 86400,
+            "description": "How long one job may run on this connection."
+          },
+          "max_unresolved_publication_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2592000,
+            "description": "How long a publication may stay unresolved before an operator investigates."
+          },
+          "maintenance_enabled": {
+            "type": "boolean",
+            "description": "Whether maintenance may run on this connection's tables."
+          }
+        },
+        "description": "Supply expected_revision and at least one editable field. Only supplied fields are validated; omitted legacy values are preserved."
+      },
       "WorkerSession": {
         "type": "object",
         "additionalProperties": false,
@@ -4386,182 +4716,6 @@
                 "type": "null"
               }
             ]
-          }
-        }
-      },
-      "CreateCatalog": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "name",
-          "uri"
-        ],
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "uri": {
-            "type": "string",
-            "description": "Catalog HTTP(S) base URI without user information, query parameters, fragments, or whitespace."
-          },
-          "warehouse": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "credential_ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Reference to an externally held credential; never supply a secret value."
-          }
-        }
-      },
-      "UpdateCatalog": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "expected_revision"
-        ],
-        "properties": {
-          "expected_revision": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "name": {
-            "type": "string"
-          },
-          "uri": {
-            "type": "string",
-            "description": "Catalog HTTP(S) base URI without user information, query parameters, fragments, or whitespace."
-          },
-          "warehouse": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "credential_ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Reference to an externally held credential; never supply a secret value."
-          },
-          "enabled": {
-            "type": "boolean"
-          }
-        },
-        "description": "Supply expected_revision and at least one editable field. Only supplied fields are validated; omitted legacy values are preserved."
-      },
-      "CatalogCapabilities": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "list_tables",
-          "load_table",
-          "commit_table",
-          "vended_credentials",
-          "credentials_endpoint",
-          "idempotency_key_lifetime_seconds"
-        ],
-        "properties": {
-          "list_tables": {
-            "type": "string",
-            "enum": [
-              "met",
-              "missing",
-              "unknown"
-            ],
-            "description": "Whether the catalog lists the tables of a namespace."
-          },
-          "load_table": {
-            "type": "string",
-            "enum": [
-              "met",
-              "missing",
-              "unknown"
-            ],
-            "description": "Whether the catalog loads a table's metadata."
-          },
-          "commit_table": {
-            "type": "string",
-            "enum": [
-              "met",
-              "missing",
-              "unknown"
-            ],
-            "description": "Whether the catalog accepts a commit."
-          },
-          "vended_credentials": {
-            "type": "string",
-            "enum": [
-              "met",
-              "missing",
-              "unknown"
-            ],
-            "description": "Whether the catalog vends table-scoped storage credentials. The catalog configuration cannot show it; loading a table proves it."
-          },
-          "credentials_endpoint": {
-            "type": "string",
-            "enum": [
-              "met",
-              "missing",
-              "unknown"
-            ],
-            "description": "Whether the catalog can refresh vended credentials on request."
-          },
-          "idempotency_key_lifetime_seconds": {
-            "anyOf": [
-              {
-                "type": "string",
-                "pattern": "^[0-9]+$"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "How long the catalog remembers idempotency keys, in seconds, as a decimal string; null when it advertises no lifetime."
-          }
-        }
-      },
-      "CatalogCapabilityCheck": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "catalog_id",
-          "checked_at",
-          "capabilities"
-        ],
-        "properties": {
-          "catalog_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "checked_at": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "capabilities": {
-            "$ref": "#/components/schemas/CatalogCapabilities"
           }
         }
       }

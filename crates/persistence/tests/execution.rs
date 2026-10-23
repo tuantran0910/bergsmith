@@ -178,6 +178,7 @@ async fn a_job_has_at_most_one_plan(pool: PgPool) {
             job_id: id,
             content: serde_json::json!({}),
             content_hash: digest('b'),
+            execution_budget: Duration::from_secs(180),
             task_ids: Vec::new(),
         },
     )
@@ -208,6 +209,7 @@ async fn only_planning_jobs_accept_a_plan(pool: PgPool) {
                 job_id: id,
                 content: serde_json::json!({}),
                 content_hash: digest('a'),
+                execution_budget: Duration::from_secs(180),
                 task_ids: Vec::new(),
             },
         )
@@ -234,6 +236,7 @@ async fn plan_hashes_must_be_sha256_hex(pool: PgPool) {
             job_id: id,
             content: serde_json::json!({}),
             content_hash: "ABC".to_owned(),
+            execution_budget: Duration::from_secs(180),
             task_ids: Vec::new(),
         },
     )

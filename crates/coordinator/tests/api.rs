@@ -24,7 +24,7 @@ use bergsmith_coordinator::preview::{CatalogPreviewer, PreviewLimits, PreviewPro
 use bergsmith_maintenance::PlannerConfig;
 use bergsmith_persistence::Database;
 use bergsmith_persistence::grants::{self, NewRoleGrant};
-use bergsmith_storage::{S3Profile, StorageProfile, StorageProfiles};
+use bergsmith_storage::{GcsProfile, S3Profile, StorageProfile, StorageProfiles};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use std::collections::BTreeSet;

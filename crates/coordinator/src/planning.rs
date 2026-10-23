@@ -40,6 +40,9 @@ pub enum PlanningError {
 ///
 /// - A plan is persisted with its tasks, all `Pending`, and the job moves
 ///   to `Queued`, in one transaction.
+/// - The job's execution deadline is written with the plan: the whole job,
+///   every attempt and every retry, must fit in `execution_budget`, counted
+///   from the moment the plan is persisted.
 /// - No work moves the job to `NoOp`, with the reason as its state reason.
 /// - A rejected table moves the job to `Failed` with
 ///   [`UNSUPPORTED_TABLE_REASON`].
@@ -58,6 +61,7 @@ pub async fn record_outcome(
     conn: &mut PgConnection,
     job: &Job,
     outcome: &PlanOutcome,
+    execution_budget: std::time::Duration,
 ) -> Result<Job, PlanningError> {
     let transition = |to: JobState, reason: Option<&str>| Transition {
         job_id: job.id,
@@ -81,6 +85,7 @@ pub async fn record_outcome(
                 content: document.to_value()?,
                 content_hash: document.sha256()?.to_hex(),
                 task_ids: document.task_ids(),
+                execution_budget,
             };
             let mut tx = conn.begin().await.map_err(PersistenceError::from)?;
             plans::create_plan(&mut tx, &new).await?;

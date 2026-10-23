@@ -193,12 +193,12 @@ impl RuntimeCatalogs {
             job.table_id,
         )
         .await?;
-        // Prefer an enabled route for planning and existing execution alike;
-        // aliases share the canonical UUID, checked after loading. Fall back to
-        // a disabled route when existing work still needs the connection.
+        // Prefer a route that may run maintenance for planning and new work
+        // alike, then an enabled route, and fall back to a disabled or paused
+        // route when existing work still needs the connection.
         let Some(target) = aliases
             .into_iter()
-            .min_by_key(|alias| !alias.connection.enabled)
+            .min_by_key(|alias| route_rank(&alias.connection))
         else {
             return Err(AccessError::NoAlias(job.table_id));
         };
@@ -355,6 +355,21 @@ impl RuntimeCatalogs {
 impl CachedCatalog {
     fn matches(&self, connection: &StoredConnection) -> bool {
         self.uri == connection.uri && self.warehouse == connection.warehouse
+    }
+}
+
+/// How usable a connection is for maintenance, best first.
+///
+/// A connection that may run maintenance and is in service ranks first, then
+/// one that is in service but paused, then one that is out of service.
+fn route_rank(connection: &StoredConnection) -> u8 {
+    match (
+        connection.enabled,
+        connection.settings.maintenance_enabled(),
+    ) {
+        (true, true) => 0,
+        (true, false) => 1,
+        (false, _) => 2,
     }
 }
 

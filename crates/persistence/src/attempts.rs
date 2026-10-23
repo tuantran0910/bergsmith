@@ -273,11 +273,28 @@ pub async fn grant_attempt(
     if !retry_allowed(started) {
         return Err(PersistenceError::RetryBudgetExhausted { task: task.id });
     }
+    // The job's execution budget bounds the whole job, so a job that outran it
+    // starts no further work. The database clock decides.
+    let expired: bool = sqlx::query_scalar(
+        "SELECT COALESCE(deadline_at <= clock_timestamp(), false) FROM jobs WHERE id = $1",
+    )
+    .bind(job.id.as_uuid())
+    .fetch_one(&mut *tx)
+    .await?;
+    if expired {
+        return Err(PersistenceError::ExecutionBudgetExceeded { job: job.id });
+    }
     let lease_ms = i64::try_from(grant.lease.as_millis()).unwrap_or(i64::MAX);
 
+    // The lease never outlasts the job's execution budget: the statement that
+    // persists the attempt also knows the deadline, so the two cannot disagree
+    // about the attempt's end.
     let attempt: Attempt = sqlx::query_as::<_, AttemptRow>(concat!(
         "INSERT INTO attempts (id, task_id, generation, state, worker_session_id, granted_at, lease_expires_at)
-         VALUES ($1, $2, $3, $4, $5, clock_timestamp(), clock_timestamp() + $6 * interval '1 millisecond')
+         VALUES ($1, $2, $3, $4, $5, clock_timestamp(),
+                 LEAST(clock_timestamp() + $6 * interval '1 millisecond',
+                       COALESCE((SELECT deadline_at FROM jobs WHERE id = $7),
+                                clock_timestamp() + $6 * interval '1 millisecond')))
          RETURNING ",
         attempt_columns!()
     ))
@@ -287,6 +304,7 @@ pub async fn grant_attempt(
     .bind(AttemptState::Granted.as_str())
     .bind(grant.worker_session_id.as_uuid())
     .bind(lease_ms)
+    .bind(job_id.as_uuid())
     .fetch_one(&mut *tx)
     .await
     .map_err(|error| PersistenceError::from_write("attempt", error))?

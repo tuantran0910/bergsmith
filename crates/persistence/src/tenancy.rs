@@ -1,6 +1,7 @@
 //! Organizations, principals, and catalog connections.
 
 use bergsmith_common::ids::{CatalogConnectionId, OrganizationId, PrincipalId, TableId};
+use bergsmith_common::settings::ConnectionSettings;
 use chrono::{DateTime, Utc};
 use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
@@ -117,6 +118,8 @@ pub struct CatalogConnection {
     pub credential_ref: Option<String>,
     /// Whether new previews and admissions may use this connection.
     pub enabled: bool,
+    /// The operating bounds declared for this connection.
+    pub settings: ConnectionSettings,
     /// Optimistic configuration revision.
     pub revision: i64,
     /// When configuration was last changed.
@@ -197,14 +200,37 @@ struct CatalogConnectionRow {
     warehouse: Option<String>,
     credential_ref: Option<String>,
     enabled: bool,
+    max_execution_seconds: i64,
+    max_unresolved_publication_seconds: i64,
+    maintenance_enabled: bool,
     revision: i64,
     updated_at: DateTime<Utc>,
     created_at: DateTime<Utc>,
 }
 
-impl From<CatalogConnectionRow> for CatalogConnection {
-    fn from(row: CatalogConnectionRow) -> Self {
-        Self {
+impl TryFrom<CatalogConnectionRow> for CatalogConnection {
+    type Error = PersistenceError;
+
+    fn try_from(row: CatalogConnectionRow) -> Result<Self, Self::Error> {
+        let execution = u64::try_from(row.max_execution_seconds).map_err(|_| {
+            PersistenceError::InvalidValue {
+                entity: "catalog connection",
+                constraint: "the execution budget must be a positive number of seconds".into(),
+            }
+        })?;
+        let unresolved = u64::try_from(row.max_unresolved_publication_seconds).map_err(|_| {
+            PersistenceError::InvalidValue {
+                entity: "catalog connection",
+                constraint: "the unresolved-publication age must be a positive number of seconds"
+                    .into(),
+            }
+        })?;
+        let settings = ConnectionSettings::new(execution, unresolved, row.maintenance_enabled)
+            .map_err(|error| PersistenceError::InvalidValue {
+                entity: "catalog connection",
+                constraint: error.to_string(),
+            })?;
+        Ok(Self {
             id: CatalogConnectionId::from_uuid(row.id),
             organization_id: OrganizationId::from_uuid(row.organization_id),
             name: row.name,
@@ -212,10 +238,11 @@ impl From<CatalogConnectionRow> for CatalogConnection {
             warehouse: row.warehouse,
             credential_ref: row.credential_ref,
             enabled: row.enabled,
+            settings,
             revision: row.revision,
             updated_at: row.updated_at,
             created_at: row.created_at,
-        }
+        })
     }
 }
 
@@ -395,11 +422,13 @@ pub async fn create_catalog_connection(
     conn: &mut PgConnection,
     new: &NewCatalogConnection,
 ) -> Result<CatalogConnection, PersistenceError> {
-    sqlx::query_as::<_, CatalogConnectionRow>(
+    let row = sqlx::query_as::<_, CatalogConnectionRow>(
         "INSERT INTO catalog_connections
              (id, organization_id, name, uri, warehouse, credential_ref)
          VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id, organization_id, name, uri, warehouse, credential_ref, enabled, revision, updated_at, created_at",
+         RETURNING id, organization_id, name, uri, warehouse, credential_ref, enabled,
+                   max_execution_seconds, max_unresolved_publication_seconds, maintenance_enabled,
+                   revision, updated_at, created_at",
     )
     .bind(new.id.as_uuid())
     .bind(new.organization_id.as_uuid())
@@ -409,8 +438,8 @@ pub async fn create_catalog_connection(
     .bind(&new.credential_ref)
     .fetch_one(conn)
     .await
-    .map(CatalogConnection::from)
-    .map_err(|error| PersistenceError::from_write("catalog connection", error))
+    .map_err(|error| PersistenceError::from_write("catalog connection", error))?;
+    row.try_into()
 }
 
 /// Looks up a catalog connection in an organization.
@@ -423,19 +452,21 @@ pub async fn catalog_connection(
     organization_id: OrganizationId,
     id: CatalogConnectionId,
 ) -> Result<CatalogConnection, PersistenceError> {
-    sqlx::query_as::<_, CatalogConnectionRow>(
-        "SELECT id, organization_id, name, uri, warehouse, credential_ref, enabled, revision, updated_at, created_at
+    let row = sqlx::query_as::<_, CatalogConnectionRow>(
+        "SELECT id, organization_id, name, uri, warehouse, credential_ref, enabled,
+                max_execution_seconds, max_unresolved_publication_seconds, maintenance_enabled,
+                revision, updated_at, created_at
          FROM catalog_connections WHERE organization_id = $1 AND id = $2",
     )
     .bind(organization_id.as_uuid())
     .bind(id.as_uuid())
     .fetch_optional(conn)
     .await?
-    .map(CatalogConnection::from)
     .ok_or_else(|| PersistenceError::NotFound {
         entity: "catalog connection",
         id: id.to_string(),
-    })
+    })?;
+    row.try_into()
 }
 
 /// Looks up a catalog connection under a shared row lock.
@@ -452,19 +483,21 @@ pub async fn catalog_connection_for_share(
     organization_id: OrganizationId,
     id: CatalogConnectionId,
 ) -> Result<CatalogConnection, PersistenceError> {
-    sqlx::query_as::<_, CatalogConnectionRow>(
-        "SELECT id, organization_id, name, uri, warehouse, credential_ref, enabled, revision, updated_at, created_at
+    let row = sqlx::query_as::<_, CatalogConnectionRow>(
+        "SELECT id, organization_id, name, uri, warehouse, credential_ref, enabled,
+                max_execution_seconds, max_unresolved_publication_seconds, maintenance_enabled,
+                revision, updated_at, created_at
          FROM catalog_connections WHERE organization_id = $1 AND id = $2 FOR SHARE",
     )
     .bind(organization_id.as_uuid())
     .bind(id.as_uuid())
     .fetch_optional(conn)
     .await?
-    .map(CatalogConnection::from)
     .ok_or_else(|| PersistenceError::NotFound {
         entity: "catalog connection",
         id: id.to_string(),
-    })
+    })?;
+    row.try_into()
 }
 
 /// Updates connection settings under a row lock and an expected revision.
@@ -482,6 +515,7 @@ pub async fn update_catalog_connection(
     new: &NewCatalogConnection,
     expected_revision: i64,
     enabled: bool,
+    settings: ConnectionSettings,
 ) -> Result<CatalogConnection, PersistenceError> {
     let mut tx = conn.begin().await?;
     sqlx::query("SELECT id FROM catalog_connections WHERE organization_id=$1 AND id=$2 FOR UPDATE")
@@ -516,9 +550,23 @@ pub async fn update_catalog_connection(
             return Err(PersistenceError::CatalogConnectionInUse { connection: new.id });
         }
     }
+    let execution = i64::try_from(settings.max_execution_seconds()).map_err(|_| {
+        PersistenceError::InvalidValue {
+            entity: "catalog connection",
+            constraint: "the execution budget is too large".into(),
+        }
+    })?;
+    let unresolved =
+        i64::try_from(settings.max_unresolved_publication_seconds()).map_err(|_| {
+            PersistenceError::InvalidValue {
+                entity: "catalog connection",
+                constraint: "the unresolved-publication age is too large".into(),
+            }
+        })?;
     sqlx::query(
         "UPDATE catalog_connections SET name=$3, uri=$4, warehouse=$5, credential_ref=$6,
-         enabled=$7, revision=revision+1, updated_at=clock_timestamp()
+         enabled=$7, max_execution_seconds=$8, max_unresolved_publication_seconds=$9,
+         maintenance_enabled=$10, revision=revision+1, updated_at=clock_timestamp()
          WHERE organization_id=$1 AND id=$2",
     )
     .bind(new.organization_id.as_uuid())
@@ -528,6 +576,9 @@ pub async fn update_catalog_connection(
     .bind(&new.warehouse)
     .bind(&new.credential_ref)
     .bind(enabled)
+    .bind(execution)
+    .bind(unresolved)
+    .bind(settings.maintenance_enabled())
     .execute(&mut *tx)
     .await
     .map_err(|error| PersistenceError::from_write("catalog connection", error))?;
@@ -543,9 +594,9 @@ pub(crate) async fn lock_table_connections(
     conn: &mut PgConnection,
     organization: OrganizationId,
     table: TableId,
-) -> Result<Vec<(Uuid, bool)>, PersistenceError> {
+) -> Result<Vec<(Uuid, bool, bool)>, PersistenceError> {
     Ok(sqlx::query_as(
-        "SELECT c.id, c.enabled FROM catalog_connections c
+        "SELECT c.id, c.enabled, c.maintenance_enabled FROM catalog_connections c
          WHERE c.organization_id=$1 AND EXISTS(SELECT 1 FROM table_aliases a
              WHERE a.organization_id=$1 AND a.table_identity_id=$2
                AND a.catalog_connection_id=c.id)
@@ -557,34 +608,128 @@ pub(crate) async fn lock_table_connections(
     .await?)
 }
 
+/// The unresolved publications of one connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnresolvedPublications {
+    /// How many publications of this connection are unresolved.
+    pub count: i64,
+    /// The age of the oldest unresolved publication, in seconds.
+    pub oldest_seconds: u64,
+}
+
+impl UnresolvedPublications {
+    /// Whether the oldest unresolved publication is older than `limit_seconds`.
+    ///
+    /// This is the operator's cue to investigate: the bound never resolves a
+    /// publication and never stops a job.
+    #[must_use]
+    pub const fn is_overdue(self, limit_seconds: u64) -> bool {
+        self.count > 0 && self.oldest_seconds > limit_seconds
+    }
+}
+
+/// Counts the unresolved publications sent through one connection.
+///
+/// A publication is unresolved while its outcome is unknown: the job is
+/// `Committing` with an authorized request, or its outcome is unknown. The
+/// publication intent names the connection, so a publication is counted once,
+/// for the connection that sent it.
+///
+/// # Errors
+///
+/// Returns a database error when the publications cannot be read.
+pub async fn unresolved_publications(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    id: CatalogConnectionId,
+) -> Result<UnresolvedPublications, PersistenceError> {
+    let (count, oldest): (i64, i64) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE j.state = 'CommitOutcomeUnknown'
+                    OR (j.state = 'Committing' AND j.publication_started_at IS NOT NULL))::bigint,
+                COALESCE(floor(EXTRACT(EPOCH FROM (now() -
+                    (min(j.publication_started_at) FILTER (WHERE j.state IN ('Committing', 'CommitOutcomeUnknown'))))))::bigint, 0)
+         FROM jobs j
+         JOIN publication_intents i ON i.job_id = j.id
+         WHERE j.organization_id = $1 AND j.state IN ('Committing', 'CommitOutcomeUnknown')
+           AND (i.content->>'catalog_connection_id')::uuid = $2",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(id.as_uuid())
+    .fetch_one(conn)
+    .await?;
+    Ok(UnresolvedPublications {
+        count,
+        // A negative age cannot be stored, but the ledger must not fail on one.
+        oldest_seconds: u64::try_from(oldest.max(0)).unwrap_or_default(),
+    })
+}
+
+/// Whether a principal may run maintenance on a table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExecutionRoute {
+    /// A usable route exists.
+    Allowed,
+    /// No enabled connection serves the table.
+    ConnectionDisabled,
+    /// Every enabled connection has maintenance paused.
+    MaintenancePaused,
+}
+
+impl ExecutionRoute {
+    /// Whether maintenance may run on the table.
+    #[must_use]
+    pub const fn is_allowed(self) -> bool {
+        matches!(self, Self::Allowed)
+    }
+}
+
 /// Whether a principal can submit through an enabled alias, locking connection
 /// configuration through the caller's transaction. Without an enclosing
 /// transaction the locks end after the connection query, so the separate grant
 /// query is only a hint; admission must recheck inside its transaction.
 ///
+/// A connection whose maintenance is paused is still enabled: previews and
+/// reads work, but no new maintenance runs on its tables. Existing work and
+/// the recovery of an unresolved publication are never stopped by the pause.
+///
+/// The permission and the maintenance eligibility must hold on the same
+/// connection: a requester who may only use a paused connection has no usable
+/// route, even when another connection serves the table.
+///
 /// # Errors
 ///
 /// Returns a database error when configuration or grants cannot be read.
-pub(crate) async fn lock_enabled_execution_connection(
+pub(crate) async fn lock_execution_route(
     conn: &mut PgConnection,
     organization: OrganizationId,
     principal: PrincipalId,
     table: TableId,
-) -> Result<bool, PersistenceError> {
-    let enabled: Vec<Uuid> = lock_table_connections(conn, organization, table)
-        .await?
-        .into_iter()
-        .filter_map(|(id, enabled)| enabled.then_some(id))
+) -> Result<ExecutionRoute, PersistenceError> {
+    let connections = lock_table_connections(conn, organization, table).await?;
+    let enabled: Vec<Uuid> = connections
+        .iter()
+        .filter(|(_, enabled, _)| *enabled)
+        .map(|(id, _, _)| *id)
         .collect();
     if enabled.is_empty() {
-        return Ok(false);
+        return Ok(ExecutionRoute::ConnectionDisabled);
+    }
+    // Only the connections that allow maintenance are usable routes, so the
+    // grant is checked against exactly those.
+    let usable: Vec<Uuid> = connections
+        .iter()
+        .filter(|(_, enabled, maintenance)| *enabled && *maintenance)
+        .map(|(id, _, _)| *id)
+        .collect();
+    if usable.is_empty() {
+        return Ok(ExecutionRoute::MaintenancePaused);
     }
     let roles: Vec<&str> = bergsmith_common::permission::Permission::SubmitJobs
         .roles()
         .iter()
         .map(|role| role.as_str())
         .collect();
-    Ok(sqlx::query_scalar(
+    let granted: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM principal_role_grants g
          WHERE g.organization_id=$1 AND g.principal_id=$2 AND g.revoked_at IS NULL
            AND g.role = ANY($4::text[]) AND (
@@ -595,9 +740,16 @@ pub(crate) async fn lock_enabled_execution_connection(
     .bind(principal.as_uuid())
     .bind(table.as_uuid())
     .bind(roles)
-    .bind(enabled)
+    .bind(usable)
     .fetch_one(conn)
-    .await?)
+    .await?;
+    // A requester without a grant has no route either. The caller keeps its
+    // existing handling for that case.
+    Ok(if granted {
+        ExecutionRoute::Allowed
+    } else {
+        ExecutionRoute::ConnectionDisabled
+    })
 }
 
 #[cfg(test)]

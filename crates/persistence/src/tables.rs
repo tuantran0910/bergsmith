@@ -1,6 +1,7 @@
 //! Canonical table identities and their catalog aliases.
 
 use bergsmith_common::ids::{CatalogConnectionId, OrganizationId, PrincipalId, TableId};
+use bergsmith_common::settings::ConnectionSettings;
 use chrono::{DateTime, Utc};
 use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
@@ -196,14 +197,37 @@ struct TableAliasConnectionRow {
     warehouse: Option<String>,
     credential_ref: Option<String>,
     enabled: bool,
+    max_execution_seconds: i64,
+    max_unresolved_publication_seconds: i64,
+    maintenance_enabled: bool,
     revision: i64,
     updated_at: DateTime<Utc>,
     created_at: DateTime<Utc>,
 }
 
-impl From<TableAliasConnectionRow> for TableAliasConnection {
-    fn from(row: TableAliasConnectionRow) -> Self {
-        Self {
+impl TryFrom<TableAliasConnectionRow> for TableAliasConnection {
+    type Error = PersistenceError;
+
+    fn try_from(row: TableAliasConnectionRow) -> Result<Self, Self::Error> {
+        let execution = u64::try_from(row.max_execution_seconds).map_err(|_| {
+            PersistenceError::InvalidValue {
+                entity: "catalog connection",
+                constraint: "the execution budget must be a positive number of seconds".into(),
+            }
+        })?;
+        let unresolved = u64::try_from(row.max_unresolved_publication_seconds).map_err(|_| {
+            PersistenceError::InvalidValue {
+                entity: "catalog connection",
+                constraint: "the unresolved-publication age must be a positive number of seconds"
+                    .into(),
+            }
+        })?;
+        let settings = ConnectionSettings::new(execution, unresolved, row.maintenance_enabled)
+            .map_err(|error| PersistenceError::InvalidValue {
+                entity: "catalog connection",
+                constraint: error.to_string(),
+            })?;
+        Ok(Self {
             alias: TableAlias {
                 connection_id: CatalogConnectionId::from_uuid(row.catalog_connection_id),
                 namespace: row.namespace,
@@ -217,11 +241,12 @@ impl From<TableAliasConnectionRow> for TableAliasConnection {
                 warehouse: row.warehouse,
                 credential_ref: row.credential_ref,
                 enabled: row.enabled,
+                settings,
                 revision: row.revision,
                 updated_at: row.updated_at,
                 created_at: row.created_at,
             },
-        }
+        })
     }
 }
 
@@ -276,7 +301,9 @@ pub async fn accessible_aliases_with_connections(
     let rows: Vec<TableAliasConnectionRow> = sqlx::query_as(
         "SELECT a.catalog_connection_id, a.namespace, a.table_name,
                 c.id AS connection_id, c.organization_id, c.name AS connection_name,
-                c.uri, c.warehouse, c.credential_ref, c.enabled, c.revision, c.updated_at, c.created_at
+                c.uri, c.warehouse, c.credential_ref, c.enabled,
+                c.max_execution_seconds, c.max_unresolved_publication_seconds,
+                c.maintenance_enabled, c.revision, c.updated_at, c.created_at
          FROM table_aliases a
          JOIN catalog_connections c
            ON c.organization_id = a.organization_id AND c.id = a.catalog_connection_id
@@ -296,5 +323,7 @@ pub async fn accessible_aliases_with_connections(
     .bind(&roles)
     .fetch_all(conn)
     .await?;
-    Ok(rows.into_iter().map(TableAliasConnection::from).collect())
+    rows.into_iter()
+        .map(TableAliasConnection::try_from)
+        .collect::<Result<Vec<_>, _>>()
 }

@@ -903,12 +903,32 @@ impl WorkerService {
             .await
             .map_err(|_| invalid_stored_plan())?
             .ok_or_else(missing_stored_plan)?;
-        let (attempt_id, grant) = draft_grant(offer, &task, &plan, session)?;
+        // The attempt may only use what is left of the job's execution budget.
+        // A spent budget grants nothing: the scheduler stops the job instead.
+        let remaining = jobs::remaining_execution_budget(&mut conn, task.job_id)
+            .await
+            .map_err(database)?;
+        let (limits, lease) = match remaining {
+            Some(remaining) if remaining.is_zero() => {
+                reservation.consumed = true;
+                return Ok(None);
+            }
+            Some(remaining) => (
+                capped_limits(offer.limits, remaining),
+                // The lease never outlasts the budget; the persisted attempt
+                // caps it again against the deadline, so the two cannot
+                // disagree.
+                self.config.lease.min(remaining),
+            ),
+            // A job without a deadline is not bounded.
+            None => (offer.limits, self.config.lease),
+        };
+        let (attempt_id, grant) = draft_grant(offer, &task, &plan, session, limits)?;
         let new = attempts::NewGrant {
             attempt_id,
             task_id: task.id,
             worker_session_id: session,
-            lease: self.config.lease,
+            lease,
         };
         let payload = ledger::GrantPayload {
             grant_bytes: &grant.encode_to_vec(),
@@ -935,6 +955,12 @@ impl WorkerService {
             // The task changed after the unlocked read; nothing was persisted.
             // Keep the offer so the caller redrafts it from a fresh read.
             Err(PersistenceError::StaleAttempt { attempt }) if attempt == attempt_id => Ok(None),
+            // The job's execution budget ran out between the check and the
+            // write. The scheduler stops the job; no attempt is started.
+            Err(PersistenceError::ExecutionBudgetExceeded { .. }) => {
+                reservation.consumed = true;
+                Ok(None)
+            }
             Err(error) if offer_unusable(&error) => {
                 tracing::warn!(
                     task_id = %offer.task,
@@ -1025,11 +1051,31 @@ fn no_task() -> wire::RequestTaskResponse {
     }
 }
 
+/// Caps a task envelope with the time left in the job's execution budget.
+///
+/// The envelope's own limit stays authoritative: the budget may only shorten
+/// an attempt, never lengthen it.
+fn capped_limits(
+    mut limits: bergsmith_protocol::cluster::ResourceLimits,
+    remaining: Duration,
+) -> bergsmith_protocol::cluster::ResourceLimits {
+    let remaining = i64::try_from(remaining.as_secs()).unwrap_or(i64::MAX);
+    limits.max_duration = Some(match limits.max_duration {
+        Some(current) if current.seconds < remaining => current,
+        _ => prost_types::Duration {
+            seconds: remaining,
+            nanos: 0,
+        },
+    });
+    limits
+}
+
 fn draft_grant(
     offer: &TaskOffer,
     task: &plans::Task,
     plan: &bergsmith_maintenance::PlanDocument,
     session: WorkerSessionId,
+    limits: bergsmith_protocol::cluster::ResourceLimits,
 ) -> Result<(AttemptId, wire::TaskGrant), Status> {
     let attempt_id = AttemptId::generate();
     let prefix = Location::parse(plan.baseline().data_location())
@@ -1054,7 +1100,7 @@ fn draft_grant(
             input_state_id: plan.sha256().map_err(|_| invalid_stored_plan())?.to_hex(),
             capability_profile: offer.capability.clone(),
             output_prefix: prefix.to_string(),
-            limits: Some(offer.limits),
+            limits: Some(limits),
             credentials: None,
             metadata_location: plan.baseline().metadata_location().to_owned(),
             max_manifest_entries: plan.config().max_manifest_entries,

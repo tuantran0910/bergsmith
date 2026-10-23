@@ -30,6 +30,7 @@ use uuid::Uuid;
 
 use crate::audit::NewAuditEvent;
 use crate::jobs::{self, NewJob};
+use crate::tenancy::ExecutionRoute;
 use crate::{PersistenceError, audit, schedules};
 
 /// Upper bound for a due scan and an occurrence listing.
@@ -43,6 +44,8 @@ pub const OUTSIDE_WINDOW_REASON: &str = "OutsideWindow";
 enum SkipReason {
     /// No enabled connection is usable by the service identity.
     ConnectionDisabled,
+    /// Every enabled connection has maintenance paused.
+    MaintenancePaused,
     /// The policy is disabled.
     PolicyDisabled,
     /// The service principal no longer satisfies the execution grant.
@@ -56,6 +59,7 @@ impl SkipReason {
     const fn as_str(self) -> &'static str {
         match self {
             Self::ConnectionDisabled => "ConnectionDisabled",
+            Self::MaintenancePaused => "MaintenancePaused",
             Self::PolicyDisabled => "PolicyDisabled",
             Self::ServiceIdentityIneligible => "ServiceIdentityIneligible",
             Self::OutsideWindow => OUTSIDE_WINDOW_REASON,
@@ -542,7 +546,7 @@ async fn decide(
             error => Err(error),
         };
     }
-    if !crate::tenancy::lock_enabled_execution_connection(
+    match crate::tenancy::lock_execution_route(
         conn,
         OrganizationId::from_uuid(schedule.organization_id),
         PrincipalId::from_uuid(schedule.service_principal_id),
@@ -550,15 +554,29 @@ async fn decide(
     )
     .await?
     {
-        return skip(
-            conn,
-            schedule,
-            first,
-            until,
-            next,
-            SkipReason::ConnectionDisabled,
-        )
-        .await;
+        ExecutionRoute::Allowed => {}
+        ExecutionRoute::MaintenancePaused => {
+            return skip(
+                conn,
+                schedule,
+                first,
+                until,
+                next,
+                SkipReason::MaintenancePaused,
+            )
+            .await;
+        }
+        ExecutionRoute::ConnectionDisabled => {
+            return skip(
+                conn,
+                schedule,
+                first,
+                until,
+                next,
+                SkipReason::ConnectionDisabled,
+            )
+            .await;
+        }
     }
     let window =
         schedules::window_from_row(schedule.window_start_minute, schedule.window_end_minute)?;

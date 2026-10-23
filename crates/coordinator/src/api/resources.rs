@@ -156,7 +156,7 @@ impl Resource {
         match self {
             Self::Catalog => variants!(
                 "catalog_connections r",
-                "jsonb_build_object('id', r.id, 'name', r.name, 'enabled', r.enabled, 'revision', r.revision, 'updated_at', r.updated_at, 'created_at', r.created_at)",
+                "jsonb_build_object('id', r.id, 'name', r.name, 'enabled', r.enabled, 'settings', jsonb_build_object('maintenance_enabled', r.maintenance_enabled, 'max_execution_seconds', r.max_execution_seconds, 'max_unresolved_publication_seconds', r.max_unresolved_publication_seconds), 'revision', r.revision, 'updated_at', r.updated_at, 'created_at', r.created_at)",
                 catalog_access!()
             ),
             Self::Table => variants!(
@@ -324,12 +324,17 @@ pub(super) async fn catalog(
             connection_id,
         )
         .await?;
-        tx.commit().await?;
         // An answer recorded under different routing describes a connection
         // that no longer exists, so it is not shown.
         let check = check
             .filter(|check| check.config_fingerprint == super::catalogs::fingerprint(&connection));
-        return Ok(Json(super::catalogs::document(&connection, check.as_ref())));
+        // The effective profile and the unresolved publications are read-only
+        // reports, so they are added to the configuration, never stored with it.
+        let document =
+            super::catalogs::document_with_reports(&state, &mut tx, &connection, check.as_ref())
+                .await?;
+        tx.commit().await?;
+        return Ok(Json(document));
     }
     tx.commit().await?;
     Ok(summary)

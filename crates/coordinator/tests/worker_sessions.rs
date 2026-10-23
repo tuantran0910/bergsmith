@@ -8,6 +8,9 @@
 #[path = "../../persistence/tests/support/mod.rs"]
 mod support;
 
+/// The execution budget the tests plan with.
+const EXECUTION_BUDGET: Duration = Duration::from_secs(180);
+
 #[path = "support/worker_regressions.rs"]
 mod regressions;
 
@@ -213,7 +216,7 @@ async fn setup_with_manifest_limit(
     let saved = jobs::job(&mut conn, tenant.organization, job)
         .await
         .unwrap();
-    planning::record_outcome(&mut conn, &saved, &outcome)
+    planning::record_outcome(&mut conn, &saved, &outcome, EXECUTION_BUDGET)
         .await
         .unwrap();
     let task = &plan.tasks()[0];
@@ -451,6 +454,74 @@ impl Run {
             .unwrap()
             .into_inner()
     }
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_grant_never_outlasts_the_jobs_execution_budget(pool: PgPool) {
+    let mut run = setup(&pool).await;
+    {
+        let mut conn = pool.acquire().await.unwrap();
+        // The plan gave the job a budget; shorten it so the cap is visible.
+        sqlx::query(
+            "UPDATE jobs SET deadline_at = clock_timestamp() + interval '5 seconds' WHERE id = $1",
+        )
+        .bind(run.job.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    }
+    run.service.offer(run.offer.clone()).await.unwrap();
+    let response = run.pull(Uuid::now_v7()).await;
+    let Some(wire::request_task_response::Result::Grant(grant)) = response.result else {
+        panic!("expected grant");
+    };
+    // The envelope's own limit is longer than the remaining budget, so the
+    // grant carries what is left of it.
+    let duration = grant.limits.as_ref().unwrap().max_duration.unwrap();
+    assert!(
+        duration.seconds <= 5 && duration.seconds >= 1,
+        "the grant must carry the remaining budget, not the envelope's limit"
+    );
+    let mut conn = pool.acquire().await.unwrap();
+    let deadline: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT deadline_at FROM jobs WHERE id = $1")
+            .bind(run.job.as_uuid())
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+    let lease: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT lease_expires_at FROM attempts LIMIT 1")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+    assert!(lease <= deadline, "the lease must not outlast the budget");
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_spent_execution_budget_grants_nothing(pool: PgPool) {
+    let mut run = setup(&pool).await;
+    {
+        let mut conn = pool.acquire().await.unwrap();
+        sqlx::query(
+            "UPDATE jobs SET deadline_at = clock_timestamp() - interval '1 second' WHERE id = $1",
+        )
+        .bind(run.job.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    }
+    run.service.offer(run.offer.clone()).await.unwrap();
+    let response = run.pull(Uuid::now_v7()).await;
+    assert!(matches!(
+        response.result,
+        Some(wire::request_task_response::Result::NoTask(_))
+    ));
+    let mut conn = pool.acquire().await.unwrap();
+    let attempts: i64 = sqlx::query_scalar("SELECT count(*) FROM attempts")
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+    assert_eq!(attempts, 0, "no attempt starts after the budget is spent");
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]

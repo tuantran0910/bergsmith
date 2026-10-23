@@ -33,6 +33,43 @@ use crate::runtime::catalogs::{AccessError, RuntimeCatalogs, TableBinding};
 use crate::runtime::config::TaskSettings;
 use crate::scheduling::{Scheduler, SchedulingError};
 
+/// The execution budget of the connection a job is planned through.
+///
+/// The connection's own bound is the job's budget: it covers the whole job,
+/// not one attempt, so every attempt and every retry must fit before the
+/// deadline the plan carries.
+fn execution_budget(binding: &TableBinding) -> Duration {
+    Duration::from_secs(binding.connection.settings.max_execution_seconds())
+}
+
+/// Caps a task's duration with the time left in the job's execution budget.
+///
+/// The coordinator's own limit stays authoritative: a connection may ask for a
+/// shorter job, never a longer one. The remaining budget may only shorten it
+/// further, so an attempt never outruns the deadline the plan carries.
+fn execution_limits(
+    mut limits: bergsmith_protocol::cluster::ResourceLimits,
+    remaining: Option<Duration>,
+) -> bergsmith_protocol::cluster::ResourceLimits {
+    let Some(remaining) = remaining else {
+        return limits;
+    };
+    let remaining = duration_seconds(remaining);
+    limits.max_duration = Some(match limits.max_duration {
+        Some(current) if current.seconds < remaining => current,
+        _ => prost_types::Duration {
+            seconds: remaining,
+            nanos: 0,
+        },
+    });
+    limits
+}
+
+/// A duration in whole seconds, never negative.
+fn duration_seconds(duration: Duration) -> i64 {
+    i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
+}
+
 /// How many jobs one pass examines.
 pub const DEFAULT_PLANNING_PAGE: i64 = 32;
 
@@ -328,9 +365,14 @@ impl PlannerService {
             }
             error => PlanningError::Persistence(error),
         })?;
-        let recorded = crate::planning::record_outcome(&mut tx, &current, &outcome)
-            .await
-            .map_err(PlanningError::Record)?;
+        let recorded = crate::planning::record_outcome(
+            &mut tx,
+            &current,
+            &outcome,
+            execution_budget(&binding),
+        )
+        .await
+        .map_err(PlanningError::Record)?;
         bergsmith_persistence::scheduling::check_leadership(&mut tx, self.scheduler.epoch())
             .await?;
         tx.commit().await.map_err(PersistenceError::from)?;
@@ -357,6 +399,12 @@ impl PlannerService {
         {
             return Ok(());
         }
+        // The remaining budget is read from the database clock, so the envelope
+        // and the persisted deadline cannot disagree. The grant path reads it
+        // again when an attempt starts, which is where the bound is enforced.
+        let remaining = jobs::remaining_execution_budget(&mut conn, job.id)
+            .await
+            .map_err(|_| RegistrationError::Transient)?;
         drop(conn);
         let binding = self
             .catalogs
@@ -368,6 +416,10 @@ impl PlannerService {
             .task
             .limits()
             .map_err(|_| RegistrationError::Permanent("TaskEnvelopeInvalid"))?;
+        // The job's budget may only tighten the coordinator's: an operator keeps
+        // the table's inputs readable for that long, so no attempt may outrun
+        // it.
+        let limits = execution_limits(limits, remaining);
         let mut offers = Vec::with_capacity(plan.tasks().len());
         for task in plan.tasks() {
             let artifact = plan
@@ -573,6 +625,51 @@ mod support;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_remaining_budget_only_tightens_the_task_limit() {
+        let limits = bergsmith_protocol::cluster::ResourceLimits {
+            max_duration: Some(prost_types::Duration {
+                seconds: 180,
+                nanos: 0,
+            }),
+            ..Default::default()
+        };
+
+        // Less time left than the envelope allows.
+        let capped = execution_limits(limits, Some(Duration::from_secs(60)));
+        assert_eq!(
+            capped.max_duration,
+            Some(prost_types::Duration {
+                seconds: 60,
+                nanos: 0
+            })
+        );
+        // More time left than the envelope allows never extends it.
+        let capped = execution_limits(limits, Some(Duration::from_secs(3600)));
+        assert_eq!(
+            capped.max_duration,
+            Some(prost_types::Duration {
+                seconds: 180,
+                nanos: 0
+            })
+        );
+        // A job without a deadline is not bounded.
+        let capped = execution_limits(limits, None);
+        assert_eq!(capped.max_duration, limits.max_duration);
+        // A limit the coordinator did not set is replaced by the budget.
+        let unbounded = bergsmith_protocol::cluster::ResourceLimits {
+            max_duration: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            execution_limits(unbounded, Some(Duration::from_secs(90))).max_duration,
+            Some(prost_types::Duration {
+                seconds: 90,
+                nanos: 0
+            })
+        );
+    }
 
     async fn service(pool: PgPool, epoch: i64) -> PlannerService {
         use sqlx::ConnectOptions as _;

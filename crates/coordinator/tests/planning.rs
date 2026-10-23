@@ -10,6 +10,9 @@
 
 use std::sync::Arc;
 
+/// The execution budget the tests plan with.
+const EXECUTION_BUDGET: std::time::Duration = std::time::Duration::from_secs(180);
+
 use bergsmith_catalog::{ObservedTable, TableName};
 use bergsmith_common::ids::{
     CatalogConnectionId, JobId, OrganizationId, PlanId, PrincipalId, RoleGrantId,
@@ -170,7 +173,9 @@ async fn a_plan_and_the_queued_job_commit_together(pool: PgPool) {
     let job = job(&mut conn, &fixture).await;
     let outcome = plan(&fixture, job.id).await;
 
-    let queued = record_outcome(&mut conn, &job, &outcome).await.unwrap();
+    let queued = record_outcome(&mut conn, &job, &outcome, EXECUTION_BUDGET)
+        .await
+        .unwrap();
 
     assert_eq!(queued.state, JobState::Queued);
     assert_eq!(queued.state_revision, job.state_revision + 1);
@@ -200,7 +205,7 @@ async fn a_stale_revision_records_nothing(pool: PgPool) {
         ..job.clone()
     };
 
-    let error = record_outcome(&mut conn, &stale, &outcome)
+    let error = record_outcome(&mut conn, &stale, &outcome, EXECUTION_BUDGET)
         .await
         .unwrap_err();
 
@@ -227,11 +232,18 @@ async fn a_job_is_planned_once(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let job = job(&mut conn, &fixture).await;
     let first = plan(&fixture, job.id).await;
-    let queued = record_outcome(&mut conn, &job, &first).await.unwrap();
-
-    let error = record_outcome(&mut conn, &queued, &plan(&fixture, job.id).await)
+    let queued = record_outcome(&mut conn, &job, &first, EXECUTION_BUDGET)
         .await
-        .unwrap_err();
+        .unwrap();
+
+    let error = record_outcome(
+        &mut conn,
+        &queued,
+        &plan(&fixture, job.id).await,
+        EXECUTION_BUDGET,
+    )
+    .await
+    .unwrap_err();
 
     assert!(
         matches!(
@@ -253,9 +265,14 @@ async fn a_plan_for_another_job_is_refused(pool: PgPool) {
     let job = job(&mut conn, &fixture).await;
     let other = JobId::generate();
 
-    let error = record_outcome(&mut conn, &job, &plan(&fixture, other).await)
-        .await
-        .unwrap_err();
+    let error = record_outcome(
+        &mut conn,
+        &job,
+        &plan(&fixture, other).await,
+        EXECUTION_BUDGET,
+    )
+    .await
+    .unwrap_err();
 
     assert!(
         matches!(error, PlanningError::JobMismatch { job: j, plan_job } if j == job.id && plan_job == other),
@@ -275,6 +292,7 @@ async fn no_work_and_rejections_end_the_job(pool: PgPool) {
         &mut conn,
         &noop_job,
         &PlanOutcome::NoOp(NoOpReason::NoBeneficialWork),
+        EXECUTION_BUDGET,
     )
     .await
     .unwrap();
@@ -282,6 +300,7 @@ async fn no_work_and_rejections_end_the_job(pool: PgPool) {
         &mut conn,
         &failed_job,
         &PlanOutcome::Rejected(vec![Rejection::Encrypted]),
+        EXECUTION_BUDGET,
     )
     .await
     .unwrap();
