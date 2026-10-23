@@ -80,6 +80,14 @@ pub enum CatalogError {
         #[source]
         source: serde_json::Error,
     },
+    /// The response body was larger than the call allows.
+    #[error("catalog {operation} returned more than {max_bytes} bytes")]
+    ResponseTooLarge {
+        /// The operation.
+        operation: &'static str,
+        /// The byte limit the call applies.
+        max_bytes: usize,
+    },
     /// The OAuth2 token endpoint refused the client credentials.
     #[error("OAuth2 token request failed with HTTP {status}")]
     Authentication {

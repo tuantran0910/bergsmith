@@ -438,6 +438,35 @@ pub async fn catalog_connection(
     })
 }
 
+/// Looks up a catalog connection under a shared row lock.
+///
+/// The lock keeps a configuration edit from landing while the caller reads
+/// the settings it is about to use, so a comparison against those settings
+/// is not decided by a race.
+///
+/// # Errors
+///
+/// [`PersistenceError::NotFound`] when the organization has no such connection.
+pub async fn catalog_connection_for_share(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    id: CatalogConnectionId,
+) -> Result<CatalogConnection, PersistenceError> {
+    sqlx::query_as::<_, CatalogConnectionRow>(
+        "SELECT id, organization_id, name, uri, warehouse, credential_ref, enabled, revision, updated_at, created_at
+         FROM catalog_connections WHERE organization_id = $1 AND id = $2 FOR SHARE",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(id.as_uuid())
+    .fetch_optional(conn)
+    .await?
+    .map(CatalogConnection::from)
+    .ok_or_else(|| PersistenceError::NotFound {
+        entity: "catalog connection",
+        id: id.to_string(),
+    })
+}
+
 /// Updates connection settings under a row lock and an expected revision.
 ///
 /// Routing and credential references remain unchanged while a nonterminal job

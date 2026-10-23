@@ -299,10 +299,10 @@ pub(super) async fn catalog(
         Some(id),
     )
     .await?;
-    let mut conn = state.database.pool().acquire().await?;
+    let mut tx = state.database.pool().begin().await?;
     let connection_id = bergsmith_common::ids::CatalogConnectionId::from_uuid(id);
     if grants::has_permission(
-        &mut conn,
+        &mut tx,
         caller.organization_id,
         caller.principal_id,
         Permission::ManageConnections,
@@ -310,14 +310,28 @@ pub(super) async fn catalog(
     )
     .await?
     {
-        let connection = bergsmith_persistence::tenancy::catalog_connection(
-            &mut conn,
+        // The shared lock keeps an edit from landing between reading the
+        // connection and the answer recorded for it.
+        let connection = bergsmith_persistence::tenancy::catalog_connection_for_share(
+            &mut tx,
             caller.organization_id,
             connection_id,
         )
         .await?;
-        return Ok(Json(super::catalogs::document(&connection)));
+        let check = bergsmith_persistence::capabilities::latest_check(
+            &mut tx,
+            caller.organization_id,
+            connection_id,
+        )
+        .await?;
+        tx.commit().await?;
+        // An answer recorded under different routing describes a connection
+        // that no longer exists, so it is not shown.
+        let check = check
+            .filter(|check| check.config_fingerprint == super::catalogs::fingerprint(&connection));
+        return Ok(Json(super::catalogs::document(&connection, check.as_ref())));
     }
+    tx.commit().await?;
     Ok(summary)
 }
 pub(super) async fn table(

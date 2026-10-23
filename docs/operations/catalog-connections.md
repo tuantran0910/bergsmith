@@ -22,6 +22,32 @@ Lakekeeper v0.14.0 provides all of these. It advertises a 30-minute
 idempotency window and honors replays: the same request with the same key
 returns success without publishing twice.
 
+## Checking a connection
+
+`POST /api/v1/catalogs/{id}/check` asks the catalog what it advertises and
+records the answer with the time of the check. It reads `GET /v1/config` and
+nothing else, so it is safe to run against a catalog that is not ready yet.
+
+The answer reports each requirement above as `met`, `missing`, or `unknown`:
+
+| Requirement | Answer |
+|---|---|
+| List, load, and commit tables | `met` when the catalog advertises those endpoints. A catalog that advertises no endpoints serves the specification's default set, so all three are `met`. |
+| Vended, table-scoped storage credentials | `unknown`. The catalog configuration cannot show this; loading a table proves it. |
+| `GET .../credentials` (optional) | `met` when the catalog advertises it, `missing` otherwise. Credentials are refreshed by reloading the table when it is missing. |
+| `idempotency-key-lifetime` (optional) | The advertised lifetime in seconds, as a decimal string, or `null`. |
+
+The answer belongs to the settings it describes. Change the connection's
+endpoint, warehouse, or credential reference and the recorded answer no
+longer applies: it is hidden until the connection is checked again, and a
+check that was running while the connection changed is refused rather than
+recorded.
+
+A check never certifies write support, credential vending, or the retention
+bounds below, and it never resolves a publication. It also never changes the
+connection: the check is diagnostic, so a catalog that cannot be reached
+leaves the previous answer and the configuration untouched.
+
 ## What Bergsmith protects against, and what it does not
 
 Every commit asserts the planning baseline's table UUID, `main` snapshot,

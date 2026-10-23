@@ -7,6 +7,7 @@
 //! and `bergsmith-catalog`.
 
 pub mod api;
+pub mod checks;
 pub mod database;
 pub mod durable_publication;
 pub mod identity;

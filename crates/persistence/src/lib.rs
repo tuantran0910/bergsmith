@@ -10,6 +10,7 @@ pub mod attempts;
 pub mod audit;
 pub mod auth;
 pub mod cancellation;
+pub mod capabilities;
 mod database;
 mod error;
 pub mod grants;

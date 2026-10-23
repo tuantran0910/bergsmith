@@ -9,6 +9,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use bergsmith_coordinator::api::{ApiState, EventStreamLimits, JobEventHub};
+use bergsmith_coordinator::checks::CapabilityChecker;
 use bergsmith_coordinator::identity::oidc::{OidcConfig, OidcProvider, TokenEndpointAuth};
 use bergsmith_coordinator::identity::routes::IdentityState;
 use bergsmith_coordinator::identity::session::SessionConfig;
@@ -76,6 +77,7 @@ async fn the_ui_api_and_auth_share_one_origin(pool: PgPool) {
         sessions: sessions.clone(),
         previews,
         events,
+        checks: CapabilityChecker::default(),
     };
     let identity = IdentityState::new(database, Arc::new(provider), sessions);
 
