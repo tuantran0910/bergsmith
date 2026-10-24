@@ -260,9 +260,13 @@ test("retries a failed job with a fresh plan and opens the new job", async ({
     const retry = coordinator.sent("POST", `/api/v1/jobs/${JOB_ID}/retry`);
     expect(retry).toHaveLength(1);
     expect(retry[0]?.headers["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/);
-    expect(
-        coordinator.sent("GET", `/api/v1/jobs/${RETRY_JOB_ID}/events`),
-    ).toHaveLength(1);
+    await expect
+        .poll(
+            () =>
+                coordinator.sent("GET", `/api/v1/jobs/${RETRY_JOB_ID}/events`)
+                    .length,
+        )
+        .toBe(1);
 });
 
 test("shows audit history and workers to an administrator", async ({

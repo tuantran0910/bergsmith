@@ -37,6 +37,14 @@ describe("routes", () => {
         [`/jobs/${id}`, "/jobs/$jobId", { jobId: id }],
         ["/audit", "/audit", {}],
         ["/workers", "/workers", {}],
+        ["/users", "/users", {}],
+        [`/users/${id}`, "/users/$principalId", { principalId: id }],
+        ["/service-identities", "/service-identities", {}],
+        [
+            `/service-identities/${id}`,
+            "/service-identities/$principalId",
+            { principalId: id },
+        ],
     ])("matches %s", async (path, route, params) => {
         const resolved = await resolve(path);
         expect(resolved).toMatchObject({
@@ -61,6 +69,8 @@ describe("routes", () => {
         "/catalogs/not-a-uuid",
         "/schedules",
         "/tables/x",
+        "/users/not-a-uuid",
+        "/service-identities/not-a-uuid",
     ])("does not serve %s", async (path) => {
         expect((await resolve(path)).notFound).toBe(true);
     });
