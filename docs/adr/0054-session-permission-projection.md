@@ -55,11 +55,15 @@ the API would allow.
 - A changed role-to-permission mapping reaches authorization and the session
   from one table. Browser fixtures mirror that table so a journey cannot pass
   with an impossible session.
+- Pages consume the session through a subscribed `useSession` hook, not a
+  `getQueryData` snapshot, so a refreshed permission set rerenders gated
+  controls in place when access is removed or granted without navigating.
 - The response grows by at most one entry per permission and active scope
   (bounded by 11 permissions), computed from grants the handler already reads.
 - `/auth/session` remains outside the `/api/v1` OpenAPI contract and is typed
   by hand in `web/src/api/auth.ts`; a route test asserts the expanded,
   deduplicated, and sorted pairs and their refresh after revocation.
 - Journey tests cover a Viewer with no maintenance actions and grants that
-  cover another table or another connection, plus the positive case of a
-  connection grant for an alias.
+  cover another table or another connection, the positive case of a
+  connection grant for an alias, and permission removal and addition while
+  the page stays mounted.

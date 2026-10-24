@@ -1,8 +1,7 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { PlayIcon, ScanSearchIcon } from "lucide-react";
 
-import { hasTablePermission, type SessionInfo } from "../api/auth";
+import { hasTablePermission } from "../api/auth";
 import { api, call, csrfHeader } from "../api/client";
 import { useKeyedMutation } from "../api/keyed";
 import { useCatalogNames, useTable } from "../api/queries";
@@ -10,7 +9,7 @@ import { ErrorNotice } from "../components/ErrorNotice";
 import { LoadingDetail, PageHeader } from "../components/Page";
 import { ResourceId } from "../components/ResourceId";
 import { aliasName, timestamp } from "../format";
-import { SESSION_KEY, useSessionMutation } from "../queryClient";
+import { useSession, useSessionMutation } from "../queryClient";
 import { Button } from "../ui/Button";
 import { Card, CardContent } from "../ui/Card";
 import { PreviewView } from "./PreviewView";
@@ -21,7 +20,7 @@ export function TablePage({ id }: { id: string }) {
     const table = useTable(id);
     const catalogs = useCatalogNames();
     const names = catalogs.data ?? new Map<string, string>();
-    const session = useQueryClient().getQueryData<SessionInfo>(SESSION_KEY);
+    const session = useSession();
 
     const preview = useSessionMutation({
         mutationFn: () =>
@@ -66,7 +65,7 @@ export function TablePage({ id }: { id: string }) {
     }
     const [primary] = table.data.aliases;
     const canSubmit =
-        session !== undefined &&
+        session !== null &&
         hasTablePermission(
             session,
             "jobs:submit",

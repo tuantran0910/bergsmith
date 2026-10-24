@@ -9,7 +9,7 @@ import {
 import { type ReactNode, useId, useState } from "react";
 
 import { type Job, api, call, csrfHeader } from "../api/client";
-import { hasTablePermission, type SessionInfo } from "../api/auth";
+import { hasTablePermission } from "../api/auth";
 import { useKeyedMutation } from "../api/keyed";
 import { useCatalogNames, useJob } from "../api/queries";
 import { ErrorNotice } from "../components/ErrorNotice";
@@ -28,7 +28,7 @@ import {
     notice,
     publicationStatus,
 } from "../jobs/status";
-import { SESSION_KEY, useSessionMutation } from "../queryClient";
+import { useSession, useSessionMutation } from "../queryClient";
 import { Alert, AlertDescription, AlertTitle } from "../ui/Alert";
 import { Button } from "../ui/Button";
 import {
@@ -77,13 +77,13 @@ function JobDetail({ job }: { job: Job }) {
     const terminal = isTerminal(job.state);
     const live = useJobEvents(job.id, terminal);
     const attention = notice(job.state);
-    const session = queryClient.getQueryData<SessionInfo>(SESSION_KEY);
+    const session = useSession();
     const connections = job.table_aliases.map((alias) => alias.catalog_id);
     const cancelAllowed =
-        session !== undefined &&
+        session !== null &&
         hasTablePermission(session, "jobs:cancel", job.table_id, connections);
     const retryAllowed =
-        session !== undefined &&
+        session !== null &&
         hasTablePermission(session, "jobs:retry", job.table_id, connections);
 
     const retry = useKeyedMutation(

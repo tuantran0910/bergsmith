@@ -473,6 +473,41 @@ describe("preview and run", () => {
         ).toBeInTheDocument();
     });
 
+    it("refreshes maintenance actions when the session's permissions change", async () => {
+        let current = session("Operator");
+        fake.on("GET", "/auth/session", () => json(200, current));
+        start(`/tables/${TABLE_ID}`);
+        expect(
+            await screen.findByRole("button", { name: "Run maintenance" }),
+        ).toBeInTheDocument();
+
+        // A revoked permission removes the actions without leaving the page.
+        current = session("Viewer");
+        act(() => {
+            focusManager.setFocused(false);
+            focusManager.setFocused(true);
+        });
+        await waitFor(() => {
+            expect(
+                screen.queryByRole("button", { name: "Run maintenance" }),
+            ).not.toBeInTheDocument();
+        });
+        expect(
+            screen.queryByRole("button", { name: "Preview maintenance" }),
+        ).not.toBeInTheDocument();
+
+        // A new grant brings them back in place.
+        current = session("Operator");
+        act(() => {
+            focusManager.setFocused(false);
+            focusManager.setFocused(true);
+        });
+        expect(
+            await screen.findByRole("button", { name: "Run maintenance" }),
+        ).toBeInTheDocument();
+        focusManager.setFocused(undefined);
+    });
+
     it("replaces every bin when a preview is repeated", async () => {
         const partition = (value: string) => ({
             partition: { spec_id: 0, values: [{ field_id: 1000, value }] },
@@ -983,6 +1018,46 @@ describe("job commands", () => {
         expect(
             await screen.findByRole("button", { name: "Cancel job" }),
         ).toBeInTheDocument();
+    });
+
+    it("refreshes gated commands when the session's permissions change", async () => {
+        let current = session("Operator");
+        fake.on("GET", "/auth/session", () => json(200, current)).on(
+            "GET",
+            "/api/v1/jobs/{id}",
+            () => json(200, job("Failed")),
+        );
+        start(`/jobs/${JOB_ID}`);
+        expect(
+            await screen.findByRole("button", {
+                name: "Retry with a fresh plan",
+            }),
+        ).toBeInTheDocument();
+
+        current = session("Viewer");
+        act(() => {
+            focusManager.setFocused(false);
+            focusManager.setFocused(true);
+        });
+        await waitFor(() => {
+            expect(
+                screen.queryByRole("button", {
+                    name: "Retry with a fresh plan",
+                }),
+            ).not.toBeInTheDocument();
+        });
+
+        current = session("Operator");
+        act(() => {
+            focusManager.setFocused(false);
+            focusManager.setFocused(true);
+        });
+        expect(
+            await screen.findByRole("button", {
+                name: "Retry with a fresh plan",
+            }),
+        ).toBeInTheDocument();
+        focusManager.setFocused(undefined);
     });
 
     it("sends no reason when none is given", async () => {
