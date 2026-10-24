@@ -11,7 +11,7 @@ import { ResourceId } from "../../components/ResourceId";
 import { SESSION_KEY, useSession, useSessionMutation } from "../../queryClient";
 import { Badge } from "../../ui/Badge";
 import { Button } from "../../ui/Button";
-import { Card, CardContent } from "../../ui/Card";
+import { Card, CardContent, CardHeader, CardTitle } from "../../ui/Card";
 import {
     Dialog,
     DialogContent,
@@ -326,18 +326,40 @@ function PrincipalDetail({ id, services }: { id: string; services: boolean }) {
                 }
             />
             <Card>
-                <CardContent className="grid gap-3">
-                    <ResourceId id={id} label="principal ID" />
-                    {!services && (
-                        <>
-                            <p className="m-0 break-all">
-                                Issuer: {principal.issuer}
-                            </p>
-                            <p className="m-0 break-all">
-                                Subject: {principal.subject}
-                            </p>
-                        </>
-                    )}
+                <CardHeader>
+                    <CardTitle>Identity details</CardTitle>
+                </CardHeader>
+                <CardContent className="grid gap-4">
+                    <dl className="m-0 grid gap-4 sm:grid-cols-2">
+                        <div className="sm:col-span-2">
+                            <dt className="text-xs text-muted-foreground">
+                                Principal ID
+                            </dt>
+                            <dd className="m-0 mt-1">
+                                <ResourceId id={id} label="principal ID" />
+                            </dd>
+                        </div>
+                        {!services && (
+                            <>
+                                <div className="min-w-0">
+                                    <dt className="text-xs text-muted-foreground">
+                                        Issuer
+                                    </dt>
+                                    <dd className="m-0 mt-1 break-all">
+                                        {principal.issuer}
+                                    </dd>
+                                </div>
+                                <div className="min-w-0">
+                                    <dt className="text-xs text-muted-foreground">
+                                        Subject
+                                    </dt>
+                                    <dd className="m-0 mt-1 break-all">
+                                        {principal.subject}
+                                    </dd>
+                                </div>
+                            </>
+                        )}
+                    </dl>
                     {manage && (
                         <div>
                             <Confirm
