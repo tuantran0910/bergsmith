@@ -237,6 +237,7 @@ function Directory({ services }: { services: boolean }) {
                                         <ResourceId
                                             id={principal.id}
                                             label="principal ID"
+                                            short
                                         />
                                     </TableCell>
                                 </TableRow>
@@ -369,7 +370,9 @@ function PrincipalDetail({ id, services }: { id: string; services: boolean }) {
                     )}
                 </CardContent>
             </Card>
-            {manage && <Grants principal={id} />}
+            {manage && (
+                <Grants principal={id} principalName={principal.display_name} />
+            )}
             {services && <Tokens id={id} active={principal.active} />}
         </section>
     );

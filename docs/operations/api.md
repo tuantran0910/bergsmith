@@ -68,6 +68,10 @@ grant is refused with 409, because a scoped administrator cannot restore
 organization administration; the check shares the organization lifecycle lock
 with deactivation.
 
+Grant documents include current `principal_name` and `scope_name` display
+labels alongside the stable IDs. Table labels use an alias visible to the
+caller; labels do not expose an inaccessible connection or replace IDs as keys.
+
 Submit `{"table_id":"<canonical table UUID>"}` with a nonempty, printable ASCII
 `Idempotency-Key` of at most 255 bytes. Unknown body fields are rejected, so a
 request cannot override the actor or attach a retry target. Identical replay
@@ -306,6 +310,26 @@ undecodable bodies, and upstream 5xx responses are 503 `RetrySameRequest`.
 Server-side preview failures are logged with the table, the reason, a sanitized
 error kind, and an upstream HTTP status when there was one — never the
 catalog's message, URLs, table locations, or Iceberg error text.
+
+## Job statistics
+
+`GET /api/v1/jobs/{id}` includes `statistics` under the same `jobs:read`
+authorization as the job. Job lists omit this detail projection. Counters and
+byte sizes are decimal strings to preserve integers above the browser's exact
+number range. Planned input comes from the immutable plan; rewritten input and
+delete-file counts include only tasks with accepted receipts, and output files
+and bytes come from their verified inventory. Shared delete files count once.
+Failed or unaccepted attempts do not inflate accepted work. Sizes describe
+logical files, not network traffic; averages divide these sizes by file counts.
+Elapsed job time includes planning, queueing, execution, and publication, and
+stops at the terminal update. Accepted output is not evidence of publication:
+`publication_confirmed` is true only for a succeeded job.
+
+The job page shows these statistics separately from execution and publication
+status. Before a plan exists, estimates and averages are unavailable. A preview
+is a new read of catalog metadata, so it can still recommend work after a real
+job if the current files still meet the planner's criteria. Browser demo fixtures
+simulate responses; a demo success does not execute workers or change a table.
 
 ## Job commands
 

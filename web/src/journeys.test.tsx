@@ -68,6 +68,39 @@ function events() {
     return within(screen.getByRole("list", { name: "Job events" }));
 }
 
+it("shows ledger statistics on the job detail page", async () => {
+    fake.on("GET", "/api/v1/jobs/{id}", () =>
+        json(
+            200,
+            job("Succeeded", {
+                statistics: {
+                    plan_recorded: true,
+                    planned_input_files: "8",
+                    planned_input_bytes: "8192",
+                    tasks_total: "2",
+                    tasks_accepted: "2",
+                    attempts: "2",
+                    input_files: "8",
+                    input_bytes: "8192",
+                    output_files: "1",
+                    output_bytes: "4096",
+                    delete_files_applied: "1",
+                    elapsed_millis: "65000",
+                    publication_confirmed: true,
+                },
+            }),
+        ),
+    );
+    start(`/jobs/${JOB_ID}`);
+    expect(
+        await screen.findByRole("heading", { name: "Maintenance statistics" }),
+    ).toBeInTheDocument();
+    expect(
+        screen.getByText("Input files rewritten").nextElementSibling,
+    ).toHaveTextContent("8");
+    expect(screen.getByText(/Publication confirmed:/)).toBeInTheDocument();
+});
+
 describe("sign-in", () => {
     it("offers sign-in without a session and returns to the requested page", async () => {
         fake.on("GET", "/auth/session", () =>

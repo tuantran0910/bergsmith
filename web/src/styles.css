@@ -83,6 +83,26 @@
         @apply text-primary underline-offset-4 hover:underline;
     }
 
+    button:not(:disabled):not([aria-disabled="true"]),
+    input[type="checkbox"]:not(:disabled),
+    input[type="radio"]:not(:disabled),
+    label:has(input[type="checkbox"]:not(:disabled)),
+    label:has(input[type="radio"]:not(:disabled)),
+    [role="button"]:not([aria-disabled="true"]),
+    [role="tab"]:not([aria-disabled="true"]) {
+        @apply cursor-pointer;
+    }
+
+    input[type="checkbox"],
+    input[type="radio"] {
+        @apply accent-primary;
+    }
+
+    button:disabled,
+    [aria-disabled="true"] {
+        @apply cursor-not-allowed;
+    }
+
     code {
         @apply font-mono text-[0.85em];
         overflow-wrap: anywhere;

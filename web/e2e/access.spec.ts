@@ -121,8 +121,10 @@ test("provisions a user and grants scoped access", async ({
         page.getByRole("heading", { name: "Bob", exact: true }),
     ).toBeVisible();
     await page.getByRole("button", { name: "Grant role", exact: true }).click();
-    await page.getByLabel("Role", { exact: true }).selectOption("Operator");
-    await page.getByLabel("Scope", { exact: true }).selectOption("table");
+    await page.getByRole("combobox", { name: "Role", exact: true }).click();
+    await page.getByRole("option", { name: "Operator", exact: true }).click();
+    await page.getByRole("combobox", { name: "Scope", exact: true }).click();
+    await page.getByRole("option", { name: "Table", exact: true }).click();
     await page.getByLabel("Table ID", { exact: true }).fill(TABLE_ID);
     await expectAccessible(page);
     await page.getByRole("button", { name: "Save grant" }).click();
@@ -251,9 +253,7 @@ test("connection and table Access keep grants scoped on narrow screens", async (
     ).toHaveCount(0);
     await page.getByRole("button", { name: "Grant role", exact: true }).click();
     await page.getByLabel("Principal ID", { exact: true }).fill(USER_ID);
-    await expect(page.getByRole("dialog")).toContainText(
-        `Connection ${CATALOG_ID}`,
-    );
+    await expect(page.getByRole("dialog")).toContainText("Connection lake");
     await expect(page.getByLabel("Scope", { exact: true })).toHaveCount(0);
     await expectAccessible(page);
     await page.getByRole("button", { name: "Close", exact: true }).click();
@@ -293,7 +293,8 @@ test("scrolls the scope picker and saves a grant on a short screen", async ({
     await page.setViewportSize({ width: 390, height: 320 });
     await page.goto(`/users/${USER_ID}`);
     await page.getByRole("button", { name: "Grant role", exact: true }).click();
-    await page.getByLabel("Scope", { exact: true }).selectOption("table");
+    await page.getByRole("combobox", { name: "Scope", exact: true }).click();
+    await page.getByRole("option", { name: "Table", exact: true }).click();
     await page.getByLabel("Table ID", { exact: true }).fill(TABLE_ID);
     await expectDialogFits(page);
     await page.getByRole("button", { name: "Save grant" }).click();
@@ -386,4 +387,89 @@ test("wraps a long token label on narrow screens and revokes the token", async (
     await expectDialogFits(page);
     await page.getByRole("button", { name: "Confirm revoke token" }).click();
     await expect(page.getByText("Revoked", { exact: true })).toBeVisible();
+});
+
+test("uses named grants, compact selectors, uppercase navigation, and pointer cursors", async ({
+    page,
+    coordinator,
+}) => {
+    coordinator
+        .on("GET", "/auth/session", () => json(200, session("Administrator")))
+        .on("GET", "/api/v1/catalogs", () => json(200, catalogs))
+        .on("GET", "/api/v1/tables", () =>
+            json(
+                200,
+                schema("TablePage", { items: [table], next_cursor: null }),
+            ),
+        )
+        .on("GET", "/api/v1/principals/{id}", () => json(200, userPrincipal))
+        .on("GET", "/api/v1/grants", () =>
+            json(
+                200,
+                schema("RoleGrantPage", {
+                    items: [
+                        {
+                            ...roleGrant,
+                            principal_name: "Bob Chen",
+                            scope: { table: TABLE_ID },
+                            scope_name: "lake.sales.orders",
+                        },
+                    ],
+                    next_cursor: null,
+                }),
+            ),
+        );
+    await page.goto("/catalogs");
+    const add = page.getByRole("link", { name: "Add Connection", exact: true });
+    await expect(add).toBeVisible();
+    await expect(add).toHaveCSS("cursor", "pointer");
+    expect((await add.boundingBox())?.height).toBeGreaterThanOrEqual(36);
+    await expect(
+        page
+            .getByRole("navigation", { name: "Main" })
+            .getByRole("link", { name: "Users", exact: true }),
+    ).toHaveCSS("text-transform", "uppercase");
+    await page.goto("/tables");
+    await expect(page.getByRole("columnheader").first()).toHaveText(
+        "Table UUID",
+    );
+    const copy = page.getByRole("button", {
+        name: "Copy table UUID",
+        exact: true,
+    });
+    await copy.hover();
+    await expect(copy).toHaveCSS("cursor", "pointer");
+    await page.goto(`/users/${USER_ID}`);
+    await expect(page.getByRole("cell", { name: /Bob Chen/ })).toBeVisible();
+    await expect(
+        page.getByText("Table lake.sales.orders", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByRole("row", { name: /Bob Chen/ })).not.toContainText(
+        USER_ID,
+    );
+    const grant = page.getByRole("button", { name: "Grant role", exact: true });
+    await expect(grant).toHaveCSS("cursor", "pointer");
+    await grant.click();
+    const backdrop = page.locator('[data-slot="dialog-overlay"]');
+    const coverage = await backdrop.evaluate((element) => ({
+        right: element.getBoundingClientRect().right,
+        width: innerWidth,
+    }));
+    expect(coverage.right).toBe(coverage.width);
+    const role = page.getByRole("combobox", { name: "Role", exact: true });
+    await role.click();
+    await expect(role).toHaveCSS("cursor", "pointer");
+    const menu = page.getByRole("listbox");
+    await expect(menu).toBeVisible();
+    await expect(
+        page.getByRole("option", { name: "Maintenance Service", exact: true }),
+    ).toHaveCSS("cursor", "pointer");
+    expect((await menu.boundingBox())?.height).toBeLessThanOrEqual(150);
+    expect((await menu.boundingBox())?.width).toBeLessThanOrEqual(
+        ((await role.boundingBox())?.width ?? 0) + 1,
+    );
+    await expectAccessible(page);
+    await role.press("Escape");
+    await expect(menu).toHaveCount(0);
+    await expect(page.getByRole("dialog")).toBeVisible();
 });

@@ -102,7 +102,7 @@ test("checks an unsaved connection, saves it, and registers a discovered table",
         page.getByText("No catalogs are visible to you."),
     ).toBeVisible();
     await expectAccessible(page);
-    await page.getByRole("link", { name: "Add connection" }).click();
+    await page.getByRole("link", { name: "Add Connection" }).click();
     await page.getByLabel("Connection name").fill("new-lake");
     await page.getByLabel("Catalog URI").fill("https://catalog.example");
     await expectAccessible(page);
@@ -117,6 +117,14 @@ test("checks an unsaved connection, saves it, and registers a discovered table",
     await expect(
         page.getByRole("heading", { name: "Effective storage profile" }),
     ).toBeVisible();
+    await expect(page.getByLabel("Connection enabled")).toHaveCSS(
+        "cursor",
+        "pointer",
+    );
+    await expect(page.getByLabel("Maintenance enabled")).toHaveCSS(
+        "cursor",
+        "pointer",
+    );
     await expectAccessible(page);
     await page.getByRole("button", { name: "Discover tables" }).click();
     await page.getByRole("button", { name: "sales.eu", exact: true }).click();

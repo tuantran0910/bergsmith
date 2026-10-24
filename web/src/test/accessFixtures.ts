@@ -25,6 +25,8 @@ export const servicePrincipal = schema("Principal", {
 export const roleGrant = schema("RoleGrant", {
     id: GRANT_ID,
     principal_id: USER_ID,
+    principal_name: "Bob",
+    scope_name: "Organization",
     role: "Viewer",
     scope: {},
     granted_by: PRINCIPAL_ID,

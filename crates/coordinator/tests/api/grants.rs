@@ -1,6 +1,112 @@
 use super::*;
 use bergsmith_persistence::MIGRATOR;
 
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn grant_labels_are_current_and_hide_inaccessible_aliases(pool: PgPool) {
+    use bergsmith_common::ids::CatalogConnectionId;
+    use bergsmith_persistence::{tables, tenancy::NewCatalogConnection};
+
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let bob = support::user(&mut conn, tenant.organization, "bob").await;
+    let carol = support::user(&mut conn, tenant.organization, "carol").await;
+    // Sort this alias first, so removing the visibility predicate exposes it.
+    let hidden = CatalogConnectionId::from_uuid(Uuid::from_u128(1));
+    tenancy::create_catalog_connection(
+        &mut conn,
+        &NewCatalogConnection {
+            id: hidden,
+            organization_id: tenant.organization,
+            name: "secret-lake".to_owned(),
+            uri: "https://secret.example".to_owned(),
+            warehouse: None,
+            credential_ref: None,
+        },
+    )
+    .await
+    .unwrap();
+    let table_uuid: Uuid =
+        sqlx::query_scalar("SELECT table_uuid FROM table_identities WHERE id = $1")
+            .bind(tenant.table.as_uuid())
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+    tables::resolve_table(
+        &mut conn,
+        tenant.organization,
+        &support::alias(hidden, "secret_events"),
+        table_uuid,
+    )
+    .await
+    .unwrap();
+    for (principal, role, scope) in [
+        (
+            bob,
+            Role::Administrator,
+            GrantScope::connection(tenant.connection),
+        ),
+        (carol, Role::Viewer, GrantScope::table(tenant.table)),
+    ] {
+        grants::create_grant(
+            &mut conn,
+            &NewRoleGrant {
+                id: RoleGrantId::generate(),
+                organization_id: tenant.organization,
+                principal_id: principal,
+                role,
+                scope,
+                granted_by: Some(tenant.user),
+            },
+        )
+        .await
+        .unwrap();
+    }
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, bob, "bob").await;
+    let path = format!("/api/v1/grants?catalog_connection={}", tenant.connection);
+    let (status, listed) = browser.request("GET", &path, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let table_grant = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["principal_id"] == carol.to_string())
+        .unwrap();
+    assert_eq!(table_grant["principal_name"], "carol");
+    assert_eq!(table_grant["scope_name"], "main.db.events");
+    assert!(!listed.to_string().contains("secret"));
+
+    let mut conn = pool.acquire().await.unwrap();
+    tenancy::update_principal_display_name(&mut conn, tenant.organization, carol, "Carol Data")
+        .await
+        .unwrap();
+    drop(conn);
+    let (status, created) = browser
+        .request(
+            "POST",
+            "/api/v1/grants",
+            Some(json!({
+                "principal_id": carol, "role": "Operator", "scope": { "table": tenant.table }
+            })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(created["principal_name"], "Carol Data");
+    assert_eq!(created["scope_name"], "main.db.events");
+    let (status, revoked) = browser
+        .request(
+            "DELETE",
+            &format!("/api/v1/grants/{}", created["id"].as_str().unwrap()),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{revoked}");
+    assert_eq!(revoked["principal_name"], "Carol Data");
+    assert_eq!(revoked["scope_name"], "main.db.events");
+}
+
 /// Waits until a request in this test's database is blocked on this
 /// organization's lifecycle lock.
 async fn wait_for_administration_lock(

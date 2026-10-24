@@ -12,6 +12,8 @@
 //! table administrator manages that table. Grants are immutable except for
 //! revocation, which sets `revoked_at` and keeps the row for audit.
 
+use std::collections::BTreeMap;
+
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
@@ -21,6 +23,7 @@ use bergsmith_common::permission::{GrantScope, Permission, Role};
 use bergsmith_persistence::grants::{self, GrantFilter, NewRoleGrant, RoleGrant};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::identity::administration;
@@ -48,15 +51,72 @@ pub(super) struct CreateGrant {
 }
 
 /// The caller-visible shape of a grant. It never carries a credential.
-fn document(grant: &RoleGrant) -> Value {
+fn document(grant: &RoleGrant, names: Option<&GrantNames>) -> Value {
     json!({
         "id": grant.id,
         "principal_id": grant.principal_id,
+        "principal_name": names.map(|names| &names.principal_name),
+        "scope_name": names.and_then(|names| names.scope_name.as_ref()),
         "role": grant.role.as_str(),
         "scope": grant.scope,
         "granted_by": grant.granted_by,
         "granted_at": grant.granted_at,
     })
+}
+
+#[derive(sqlx::FromRow)]
+struct GrantNames {
+    id: Uuid,
+    principal_name: String,
+    scope_name: Option<String>,
+}
+
+/// Resolves one bounded page in one query, without exposing an alias on a
+/// connection the caller cannot see. Labels never participate in authorization.
+async fn display_names(
+    conn: &mut PgConnection,
+    caller: &Caller,
+    rows: &[RoleGrant],
+) -> Result<BTreeMap<RoleGrantId, GrantNames>, ApiError> {
+    let ids: Vec<_> = rows.iter().map(|grant| grant.id.as_uuid()).collect();
+    let roles: Vec<_> = Permission::ViewInventory
+        .roles()
+        .iter()
+        .map(|role| role.as_str())
+        .collect();
+    let names: Vec<GrantNames> = sqlx::query_as(
+        "SELECT g.id, p.display_name AS principal_name,
+           CASE WHEN g.table_identity_id IS NOT NULL THEN (
+             SELECT concat_ws('.', c.name, array_to_string(a.namespace, '.'), a.table_name)
+             FROM table_aliases a JOIN catalog_connections c
+               ON c.organization_id = a.organization_id AND c.id = a.catalog_connection_id
+             WHERE a.organization_id = g.organization_id
+               AND a.table_identity_id = g.table_identity_id
+               AND EXISTS (SELECT 1 FROM principal_role_grants held
+                 WHERE held.organization_id = $1 AND held.principal_id = $2
+                   AND held.revoked_at IS NULL AND held.role = ANY($4::text[])
+                   AND ((held.catalog_connection_id IS NULL AND held.table_identity_id IS NULL)
+                     OR held.table_identity_id = a.table_identity_id
+                     OR held.catalog_connection_id = a.catalog_connection_id))
+             ORDER BY a.catalog_connection_id, a.namespace, a.table_name LIMIT 1)
+           WHEN g.catalog_connection_id IS NOT NULL THEN c.name
+           ELSE 'Organization' END AS scope_name
+         FROM principal_role_grants g
+         JOIN principals p ON p.organization_id = g.organization_id AND p.id = g.principal_id
+         LEFT JOIN catalog_connections c ON c.organization_id = g.organization_id
+           AND c.id = g.catalog_connection_id
+         WHERE g.organization_id = $1 AND g.id = ANY($3::uuid[])",
+    )
+    .bind(caller.organization_id.as_uuid())
+    .bind(caller.principal_id.as_uuid())
+    .bind(ids)
+    .bind(roles)
+    .fetch_all(conn)
+    .await?;
+    Ok(names
+        .into_iter()
+        .map(|names| (RoleGrantId::from_uuid(names.id), names))
+        .collect())
 }
 
 /// The one scope a grant page is filtered by.
@@ -132,10 +192,11 @@ pub(super) async fn list(
         i64::try_from(page.limit + 1).map_err(|_| ApiError::invalid())?,
     )
     .await?;
+    let names = display_names(&mut conn, &caller, &rows).await?;
     Ok(Json(
         page.finish(
             rows.iter()
-                .map(|grant| (grant.id.to_string(), document(grant)))
+                .map(|grant| (grant.id.to_string(), document(grant, names.get(&grant.id))))
                 .collect(),
         )?,
     ))
@@ -171,10 +232,11 @@ pub(super) async fn create(
     let created =
         resources::administered(&mut conn, &caller, Permission::ManageGrants, scope, granted)
             .await?;
+    let names = display_names(&mut conn, &caller, std::slice::from_ref(&created)).await?;
     Ok((
         StatusCode::CREATED,
         [(header::LOCATION, format!("/api/v1/grants/{}", created.id))],
-        Json(document(&created)),
+        Json(document(&created, names.get(&created.id))),
     )
         .into_response())
 }
@@ -198,5 +260,6 @@ pub(super) async fn revoke(
     let revoked =
         resources::administered(&mut conn, &caller, Permission::ManageGrants, scope, revoked)
             .await?;
-    Ok(Json(document(&revoked)))
+    let names = display_names(&mut conn, &caller, std::slice::from_ref(&revoked)).await?;
+    Ok(Json(document(&revoked, names.get(&revoked.id))))
 }

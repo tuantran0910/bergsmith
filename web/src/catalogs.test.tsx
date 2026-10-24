@@ -583,7 +583,7 @@ it("shows read-only inventory to viewers and denies the create route", async () 
     ).not.toBeInTheDocument();
     await user.click(screen.getByRole("link", { name: "All catalogs" }));
     expect(
-        screen.queryByRole("link", { name: "Add connection" }),
+        screen.queryByRole("link", { name: "Add Connection" }),
     ).not.toBeInTheDocument();
 });
 

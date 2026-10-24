@@ -11,6 +11,7 @@ import { api, call, csrfHeader, type Schemas } from "../../api/client";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { LoadMore, LoadingRows } from "../../components/Page";
 import { ResourceId } from "../../components/ResourceId";
+import { shortId } from "../../format";
 import { SESSION_KEY, useSession, useSessionMutation } from "../../queryClient";
 import { isResourceId } from "../../routes";
 import { Button } from "../../ui/Button";
@@ -31,7 +32,8 @@ import {
     TableHeader,
     TableRow,
 } from "../../ui/Table";
-import { Confirm, Select, uncertain, WriteError } from "./Controls";
+import { Confirm, uncertain, WriteError } from "./Controls";
+import { Select } from "../../ui/Select";
 import { ScopeResource } from "./ScopeResource";
 
 /** Scope coverage uses the same permission projection as the rest of the UI. */
@@ -56,12 +58,16 @@ export function canManageScope(
     return hasOrganizationPermission(session, "grants:manage");
 }
 
-export function scopeName(scope: AccessScope) {
+export function scopeName(scope: AccessScope, name?: string | null) {
     return scope.table
-        ? `Table ${scope.table}`
+        ? `Table ${name || shortId(scope.table)}`
         : scope.catalog_connection
-          ? `Connection ${scope.catalog_connection}`
+          ? `Connection ${name || shortId(scope.catalog_connection)}`
           : "Organization";
+}
+
+function roleName(role: Schemas["RoleGrant"]["role"]) {
+    return role === "MaintenanceService" ? "Maintenance Service" : role;
 }
 
 /** Grant a role to a known principal, or enter an ID when directory access is unavailable. */
@@ -69,10 +75,12 @@ function GrantDialog({
     principal,
     scope,
     connections,
+    scopeLabel,
 }: {
     principal?: string;
     scope: AccessScope;
     connections: string[];
+    scopeLabel?: string;
 }) {
     const client = useQueryClient();
     const session = useSession();
@@ -161,18 +169,20 @@ function GrantDialog({
                         <Select
                             id={roleId}
                             value={role}
-                            onChange={(event) => {
-                                setRole(
-                                    event.target
-                                        .value as Schemas["CreateGrant"]["role"],
-                                );
-                            }}
-                        >
-                            <option>Viewer</option>
-                            <option>Operator</option>
-                            <option>Administrator</option>
-                            <option>MaintenanceService</option>
-                        </Select>
+                            onValueChange={setRole}
+                            options={[
+                                { value: "Viewer", label: "Viewer" },
+                                { value: "Operator", label: "Operator" },
+                                {
+                                    value: "Administrator",
+                                    label: "Administrator",
+                                },
+                                {
+                                    value: "MaintenanceService",
+                                    label: "Maintenance Service",
+                                },
+                            ]}
+                        />
                     </div>
                     {principal ? (
                         <>
@@ -181,19 +191,22 @@ function GrantDialog({
                                 <Select
                                     id={scopeId}
                                     value={kind}
-                                    onChange={(event) => {
-                                        setKind(event.target.value);
+                                    onValueChange={(value) => {
+                                        setKind(value);
                                         setResource("");
                                     }}
-                                >
-                                    <option value="organization">
-                                        Organization
-                                    </option>
-                                    <option value="connection">
-                                        Connection
-                                    </option>
-                                    <option value="table">Table</option>
-                                </Select>
+                                    options={[
+                                        {
+                                            value: "organization",
+                                            label: "Organization",
+                                        },
+                                        {
+                                            value: "connection",
+                                            label: "Connection",
+                                        },
+                                        { value: "table", label: "Table" },
+                                    ]}
+                                />
                             </div>
                             {kind !== "organization" && (
                                 <ScopeResource
@@ -204,7 +217,9 @@ function GrantDialog({
                             )}
                         </>
                     ) : (
-                        <p className="break-all">Scope: {scopeName(scope)}</p>
+                        <p className="break-all">
+                            Scope: {scopeName(scope, scopeLabel)}
+                        </p>
                     )}
                     <WriteError error={create.error} />
                     <Button
@@ -226,12 +241,16 @@ function GrantDialog({
 function GrantRow({
     grant,
     connections,
+    principalName,
 }: {
     grant: Schemas["RoleGrant"];
     connections: string[];
+    principalName?: string;
 }) {
     const client = useQueryClient();
     const session = useSession();
+    const name = grant.principal_name || principalName || "Principal";
+    const scopeId = grant.scope.table || grant.scope.catalog_connection;
     const revoke = useSessionMutation({
         mutationFn: () =>
             call(
@@ -247,18 +266,42 @@ function GrantRow({
     return (
         <TableRow>
             <TableCell>
-                <ResourceId id={grant.principal_id} label="principal ID" />
+                <div className="grid gap-1">
+                    <span className="font-medium wrap-anywhere">{name}</span>
+                    <span className="text-xs text-muted-foreground">
+                        <ResourceId
+                            id={grant.principal_id}
+                            label="principal ID"
+                            short
+                        />
+                    </span>
+                </div>
             </TableCell>
-            <TableCell>{grant.role}</TableCell>
+            <TableCell>{roleName(grant.role)}</TableCell>
             <TableCell className="break-all">
-                {scopeName(grant.scope)}
+                <div className="grid gap-1">
+                    <span>{scopeName(grant.scope, grant.scope_name)}</span>
+                    {scopeId && (
+                        <span className="text-xs text-muted-foreground">
+                            <ResourceId
+                                id={scopeId}
+                                label={
+                                    grant.scope.table
+                                        ? "table ID"
+                                        : "connection ID"
+                                }
+                                short
+                            />
+                        </span>
+                    )}
+                </div>
             </TableCell>
             <TableCell>
                 {session &&
                     canManageScope(session, grant.scope, connections) && (
                         <Confirm
                             label="Revoke grant"
-                            description={`Revoke ${grant.role} for principal ${grant.principal_id} over ${scopeName(grant.scope)}? Future authorization stops using this grant; history is kept.`}
+                            description={`Revoke ${roleName(grant.role)} for ${name} (${grant.principal_id}) over ${scopeName(grant.scope, grant.scope_name)}? Future authorization stops using this grant; history is kept.`}
                             pending={revoke.isPending}
                             error={revoke.error}
                             onConfirm={() => {
@@ -276,10 +319,14 @@ export function Grants({
     principal,
     scope = {},
     connections = [],
+    principalName,
+    scopeLabel,
 }: {
     principal?: string;
     scope?: AccessScope;
     connections?: string[];
+    principalName?: string;
+    scopeLabel?: string;
 }) {
     const query = useAccessPage(
         ["grants", principal ?? null, scope],
@@ -322,6 +369,7 @@ export function Grants({
                         {...(principal ? { principal } : {})}
                         scope={scope}
                         connections={connections}
+                        {...(scopeLabel ? { scopeLabel } : {})}
                     />
                 </div>
                 {query.isPending && <LoadingRows label="Loading grants…" />}
@@ -350,6 +398,9 @@ export function Grants({
                                         key={grant.id}
                                         grant={grant}
                                         connections={connections}
+                                        {...(principalName
+                                            ? { principalName }
+                                            : {})}
                                     />
                                 ))}
                             </TableBody>

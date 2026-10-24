@@ -8,9 +8,11 @@ import { canManageScope, Grants } from "./Grants";
 export function Access({
     scope,
     connections = [],
+    scopeLabel,
 }: {
     scope: AccessScope;
     connections?: string[];
+    scopeLabel: string;
 }) {
     const session = useSession();
     const [open, setOpen] = useState(false);
@@ -28,7 +30,13 @@ export function Access({
                     {open ? "Hide access" : "Access"}
                 </Button>
             </div>
-            {open && <Grants scope={scope} connections={connections} />}
+            {open && (
+                <Grants
+                    scope={scope}
+                    connections={connections}
+                    scopeLabel={scopeLabel}
+                />
+            )}
         </section>
     );
 }

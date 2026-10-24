@@ -93,6 +93,46 @@ macro_rules! job_summary {
     };
 }
 
+// Logical input sizes come from the immutable plan, and only tasks with an
+// accepted receipt count as rewritten. Output objects are verified at receipt
+// acceptance. Failed/retried attempts never inflate the result. This projection
+// is detail-only: inventory lists and SSE permission checks remain inexpensive.
+macro_rules! job_statistics {
+    () => {
+        "(WITH accepted AS (
+            SELECT rc.task_id, rc.attempt_id FROM receipts rc
+            JOIN tasks task ON task.id = rc.task_id WHERE task.job_id = r.id
+          ), rewritten AS (
+            SELECT task FROM plans p
+            CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.content->'tasks', '[]'::jsonb)) task
+            JOIN accepted a ON a.task_id::text = task->>'task_id'
+            WHERE p.job_id = r.id
+          ), sources AS (
+            SELECT jsonb_array_elements(COALESCE(task->'sources', '[]'::jsonb)) source FROM rewritten
+          ), deletes AS (
+            SELECT jsonb_array_elements(COALESCE(task->'deletes', '[]'::jsonb)) entry FROM rewritten
+          ), outputs AS (
+            SELECT o.size_bytes FROM attempt_output_objects o
+            JOIN accepted a ON a.attempt_id = o.attempt_id
+          ) SELECT jsonb_build_object(
+            'plan_recorded', EXISTS(SELECT 1 FROM plans WHERE job_id = r.id),
+            'planned_input_files', (SELECT content #>> '{estimate,files}' FROM plans WHERE job_id = r.id),
+            'planned_input_bytes', (SELECT content #>> '{estimate,bytes}' FROM plans WHERE job_id = r.id),
+            'tasks_total', (SELECT count(*)::text FROM tasks WHERE job_id = r.id),
+            'tasks_accepted', (SELECT count(*)::text FROM accepted),
+            'attempts', (SELECT count(*)::text FROM attempts a JOIN tasks t ON t.id = a.task_id WHERE t.job_id = r.id),
+            'input_files', (SELECT count(*)::text FROM sources),
+            'input_bytes', (SELECT COALESCE(sum((source->>'file_size_bytes')::numeric), 0)::text FROM sources),
+            'output_files', (SELECT count(*)::text FROM outputs),
+            'output_bytes', (SELECT COALESCE(sum(size_bytes::numeric), 0)::text FROM outputs),
+            'delete_files_applied', (SELECT count(DISTINCT entry->>'path')::text FROM deletes),
+            'elapsed_millis', FLOOR(GREATEST(0, EXTRACT(EPOCH FROM (
+              CASE WHEN r.state IN ('Succeeded','NoOp','Cancelled','ReplanRequired','Failed')
+                THEN r.updated_at ELSE statement_timestamp() END - r.created_at)) * 1000))::text,
+            'publication_confirmed', r.state = 'Succeeded'))"
+    };
+}
+
 #[derive(Clone, Copy)]
 enum Selection {
     Item,
@@ -105,6 +145,7 @@ enum Resource {
     Catalog,
     Table,
     Job,
+    JobDetail,
 }
 
 impl Resource {
@@ -112,13 +153,13 @@ impl Resource {
         match self {
             Self::Catalog => "catalogs",
             Self::Table => "tables",
-            Self::Job => "jobs",
+            Self::Job | Self::JobDetail => "jobs",
         }
     }
     const fn permission(self) -> Permission {
         match self {
             Self::Catalog | Self::Table => Permission::ViewInventory,
-            Self::Job => Permission::ViewJobs,
+            Self::Job | Self::JobDetail => Permission::ViewJobs,
         }
     }
     const fn query(self, selection: Selection) -> &'static str {
@@ -170,6 +211,16 @@ impl Resource {
             Self::Job => variants!(
                 "jobs r JOIN table_identities t ON t.id = r.table_identity_id AND t.organization_id = r.organization_id",
                 job_summary!(),
+                table_access!()
+            ),
+            Self::JobDetail => variants!(
+                "jobs r JOIN table_identities t ON t.id = r.table_identity_id AND t.organization_id = r.organization_id",
+                concat!(
+                    job_summary!(),
+                    " || jsonb_build_object('statistics', ",
+                    job_statistics!(),
+                    ")"
+                ),
                 table_access!()
             ),
         }
@@ -364,7 +415,7 @@ pub(super) async fn job(
     read(
         &state,
         &caller.0,
-        Resource::Job,
+        Resource::JobDetail,
         PageQuery::default(),
         Some(id.map_err(|_| ApiError::invalid())?.0),
     )

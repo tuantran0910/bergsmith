@@ -1,4 +1,4 @@
-import { useState, type ReactNode, type ComponentProps } from "react";
+import { useState, type ReactNode } from "react";
 import { ApiFailure } from "../../api/client";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { Button } from "../../ui/Button";
@@ -9,16 +9,6 @@ import {
     DialogTitle,
     DialogTrigger,
 } from "../../ui/Dialog";
-
-/** Native selection keeps scope and role controls keyboard operable. */
-export function Select(props: ComponentProps<"select">) {
-    return (
-        <select
-            className="h-8 w-full rounded-lg border border-input bg-background px-2 text-sm text-foreground focus-visible:outline-2 focus-visible:outline-ring"
-            {...props}
-        />
-    );
-}
 
 /** Non-idempotent writes stop after an uncertain answer; reconcile via the list. */
 export function WriteError({ error }: { error: unknown }) {

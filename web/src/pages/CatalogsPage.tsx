@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { DatabaseIcon } from "lucide-react";
+import { DatabaseIcon, PlusIcon } from "lucide-react";
 import { canManageCatalog } from "../api/auth";
 import { useCatalogs } from "../api/catalogs";
 import { ErrorNotice } from "../components/ErrorNotice";
@@ -12,6 +12,7 @@ import {
 import { useSession } from "../queryClient";
 import { Badge } from "../ui/Badge";
 import { Card, CardContent } from "../ui/Card";
+import { buttonVariants } from "../ui/Button";
 
 /** Authorized connections, including paused and disabled connections. */
 export function CatalogsPage() {
@@ -26,7 +27,16 @@ export function CatalogsPage() {
                 actions={
                     session !== null &&
                     canManageCatalog(session) && (
-                        <Link to="/catalogs/new">Add connection</Link>
+                        <Link
+                            to="/catalogs/new"
+                            className={buttonVariants({
+                                size: "lg",
+                                className: "hover:no-underline",
+                            })}
+                        >
+                            <PlusIcon aria-hidden="true" />
+                            Add Connection
+                        </Link>
                     )
                 }
             />

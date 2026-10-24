@@ -59,10 +59,10 @@ export function TablesPage() {
                             <TableHeader>
                                 <TableRow>
                                     <TableHead className="pl-4">
-                                        Table
+                                        Table UUID
                                     </TableHead>
+                                    <TableHead>Table</TableHead>
                                     <TableHead>Other names</TableHead>
-                                    <TableHead>Table UUID</TableHead>
                                     <TableHead className="pr-4">
                                         Registered
                                     </TableHead>
@@ -73,7 +73,14 @@ export function TablesPage() {
                                     const [primary, ...others] = table.aliases;
                                     return (
                                         <TableRow key={table.id}>
-                                            <TableCell className="pl-4 font-medium">
+                                            <TableCell className="pl-4">
+                                                <ResourceId
+                                                    id={table.table_uuid}
+                                                    label="table UUID"
+                                                    short
+                                                />
+                                            </TableCell>
+                                            <TableCell className="font-medium">
                                                 <Link
                                                     to="/tables/$tableId"
                                                     params={{
@@ -94,13 +101,6 @@ export function TablesPage() {
                                                         aliasName(alias, names),
                                                     )
                                                     .join(", ")}
-                                            </TableCell>
-                                            <TableCell>
-                                                <ResourceId
-                                                    id={table.table_uuid}
-                                                    label="table UUID"
-                                                    short
-                                                />
                                             </TableCell>
                                             <TableCell className="pr-4 whitespace-nowrap text-muted-foreground">
                                                 {timestamp(table.created_at)}
