@@ -897,3 +897,202 @@ async fn revoked_grants_stop_covering_table_aliases(pool: PgPool) {
         .is_empty()
     );
 }
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn deactivation_keeps_grants_stops_permission_and_leaves_work_alone(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let job = support::job(&mut conn, &tenant).await;
+    // Someone else must remain an administrator for the last-administrator
+    // guard to allow the change under test.
+    let carol = user(&mut conn, tenant.organization, "carol").await;
+    grants::create_grant(
+        &mut conn,
+        &NewRoleGrant {
+            id: bergsmith_common::ids::RoleGrantId::generate(),
+            organization_id: tenant.organization,
+            principal_id: carol,
+            role: Role::Administrator,
+            scope: GrantScope::organization(),
+            granted_by: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let (principal, changed) =
+        tenancy::deactivate_principal(&mut conn, tenant.organization, tenant.user)
+            .await
+            .unwrap();
+    assert!(changed);
+    assert!(!principal.is_active());
+    assert!(principal.deactivated_at.is_some());
+
+    // The administrator grant is kept for audit but exercises nothing.
+    let kept = grants::active_grants(&mut conn, tenant.organization, tenant.user)
+        .await
+        .unwrap();
+    assert_eq!(kept.len(), 1);
+    assert!(
+        !grants::has_permission(
+            &mut conn,
+            tenant.organization,
+            tenant.user,
+            bergsmith_common::permission::Permission::ViewInventory,
+            bergsmith_common::permission::ResourceScope::Organization,
+        )
+        .await
+        .unwrap()
+    );
+    let job = bergsmith_persistence::jobs::job(&mut conn, tenant.organization, job)
+        .await
+        .unwrap();
+    assert!(
+        grants::require_job_permission(
+            &mut conn,
+            &job,
+            bergsmith_common::permission::Permission::SubmitJobs,
+        )
+        .await
+        .is_err()
+    );
+    // Running work is untouched: the job keeps its state and requester.
+    assert_eq!(job.state, bergsmith_common::job::JobState::Planning);
+    assert_eq!(job.created_by, tenant.user);
+
+    // A repeated command changes nothing and reports no change.
+    let (_, changed) = tenancy::deactivate_principal(&mut conn, tenant.organization, tenant.user)
+        .await
+        .unwrap();
+    assert!(!changed);
+
+    let (reactivated, changed) =
+        tenancy::reactivate_principal(&mut conn, tenant.organization, tenant.user)
+            .await
+            .unwrap();
+    assert!(changed);
+    assert!(reactivated.is_active());
+    assert!(
+        grants::has_permission(
+            &mut conn,
+            tenant.organization,
+            tenant.user,
+            bergsmith_common::permission::Permission::ViewInventory,
+            bergsmith_common::permission::ResourceScope::Organization,
+        )
+        .await
+        .unwrap()
+    );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn only_a_non_administrator_or_a_second_administrator_may_be_deactivated(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let refused = tenancy::deactivate_principal(&mut conn, tenant.organization, tenant.user).await;
+    assert!(matches!(
+        refused,
+        Err(PersistenceError::LastAdministrator { .. })
+    ));
+    let stored = tenancy::principal(&mut conn, tenant.organization, tenant.user)
+        .await
+        .unwrap();
+    assert!(stored.is_active());
+
+    // A person without an administrator grant never blocks the change.
+    let bob = user(&mut conn, tenant.organization, "bob").await;
+    let (_, changed) = tenancy::deactivate_principal(&mut conn, tenant.organization, bob)
+        .await
+        .unwrap();
+    assert!(changed);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn concurrent_deactivations_leave_one_active_administrator(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let carol = user(&mut conn, tenant.organization, "carol").await;
+    grants::create_grant(
+        &mut conn,
+        &NewRoleGrant {
+            id: bergsmith_common::ids::RoleGrantId::generate(),
+            organization_id: tenant.organization,
+            principal_id: carol,
+            role: Role::Administrator,
+            scope: GrantScope::organization(),
+            granted_by: None,
+        },
+    )
+    .await
+    .unwrap();
+    drop(conn);
+
+    // The first change holds the organization's lifecycle lock until it
+    // commits, so a second change cannot count administrators behind its back.
+    let mut tx = pool.begin().await.unwrap();
+    tenancy::deactivate_principal(&mut tx, tenant.organization, tenant.user)
+        .await
+        .unwrap();
+    let mut second = pool.acquire().await.unwrap();
+    sqlx::query("SET statement_timeout = '250ms'")
+        .execute(&mut *second)
+        .await
+        .unwrap();
+    let blocked = tenancy::deactivate_principal(&mut second, tenant.organization, carol).await;
+    assert!(
+        matches!(blocked, Err(PersistenceError::Database(_))),
+        "the second change must wait for the first: {blocked:?}"
+    );
+    sqlx::query("SET statement_timeout = 0")
+        .execute(&mut *second)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let refused = tenancy::deactivate_principal(&mut second, tenant.organization, carol).await;
+    assert!(matches!(
+        refused,
+        Err(PersistenceError::LastAdministrator { .. })
+    ));
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn scoped_administrator_grants_do_not_replace_organization_administration(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let on_connection = user(&mut conn, tenant.organization, "bob").await;
+    let on_table = user(&mut conn, tenant.organization, "carol").await;
+    for (principal, scope) in [
+        (on_connection, GrantScope::connection(tenant.connection)),
+        (on_table, GrantScope::table(tenant.table)),
+    ] {
+        grants::create_grant(
+            &mut conn,
+            &NewRoleGrant {
+                id: bergsmith_common::ids::RoleGrantId::generate(),
+                organization_id: tenant.organization,
+                principal_id: principal,
+                role: Role::Administrator,
+                scope,
+                granted_by: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    // Both replacements can administer their resource, but neither can manage
+    // principals or restore organization administration.
+    let refused = tenancy::deactivate_principal(&mut conn, tenant.organization, tenant.user).await;
+    assert!(
+        matches!(refused, Err(PersistenceError::LastAdministrator { .. })),
+        "a scoped administrator must not replace the organization's last one: {refused:?}"
+    );
+
+    // A scoped-only administrator is not an organization administrator, so
+    // deactivating them removes no organization administration.
+    let (_, changed) = tenancy::deactivate_principal(&mut conn, tenant.organization, on_connection)
+        .await
+        .unwrap();
+    assert!(changed);
+}

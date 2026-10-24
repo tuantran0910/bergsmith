@@ -184,6 +184,15 @@ pub enum PersistenceError {
         /// The task.
         task: TaskId,
     },
+    /// Deactivating the principal would leave the organization without an
+    /// active administrator.
+    #[error("principal {principal} is the organization's last active administrator")]
+    LastAdministrator {
+        /// The organization that would lose its last administrator.
+        organization: bergsmith_common::ids::OrganizationId,
+        /// The principal whose deactivation was refused.
+        principal: PrincipalId,
+    },
     /// The principal does not hold an active grant for the operation.
     #[error("principal {principal} lacks permission {permission} for this resource")]
     PermissionDenied {
@@ -192,10 +201,12 @@ pub enum PersistenceError {
         /// The stable permission name.
         permission: &'static str,
     },
-    /// The session is unknown, expired, idle, or revoked.
+    /// The session is unknown, expired, idle, revoked, or belongs to a
+    /// deactivated principal.
     #[error("session rejected: {reason}")]
     SessionRejected {
-        /// Stable reason: `unknown`, `expired`, `idle`, or `revoked`.
+        /// Stable reason: `unknown`, `deactivated`, `expired`, `idle`, or
+        /// `revoked`.
         reason: &'static str,
     },
     /// The caller has too many outstanding operations of this kind.

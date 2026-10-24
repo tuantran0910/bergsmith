@@ -173,6 +173,103 @@ pub async fn revoke_role(
     Ok(revoked)
 }
 
+/// Deactivate a principal.
+///
+/// The row, its grants, and its history stay. Its sessions end in the same
+/// transaction, sign-in refuses it, and the authorization check every
+/// admission, publication, and command runs no longer applies its grants.
+/// Running jobs are untouched.
+///
+/// # Errors
+///
+/// [`AdministrationError`] when the actor is not an administrator, the
+/// principal is missing, or the change would leave the organization without
+/// an active administrator.
+pub async fn deactivate_principal(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    actor: PrincipalId,
+    principal_id: PrincipalId,
+) -> Result<(Principal, u64), AdministrationError> {
+    let mut tx = conn.begin().await?;
+    // The lifecycle lock comes before authorization: deactivation and
+    // reactivation both take it, so two changes to the same organization (for
+    // example an administrator deactivating another while that one tries to
+    // reactivate themselves) are authorized against the state the first change
+    // leaves behind, not the state it is about to replace. The persistence
+    // call acquires the same advisory lock again; PostgreSQL counts it and
+    // releases it at commit.
+    tenancy::lock_principal_administration(&mut tx, organization_id).await?;
+    Authorizer::require(
+        &mut tx,
+        organization_id,
+        actor,
+        Permission::ManageGrants,
+        ResourceScope::Organization,
+    )
+    .await?;
+    let (principal, changed) =
+        tenancy::deactivate_principal(&mut tx, organization_id, principal_id).await?;
+    let mut revoked = 0;
+    if changed {
+        // The audit row commits with the state change, so a deactivation is
+        // never applied without a record.
+        revoked =
+            auth::revoke_principal_sessions(&mut tx, organization_id, principal_id, "deactivated")
+                .await?;
+        audit::principal_state_changed(
+            &mut tx,
+            organization_id,
+            Some(actor),
+            bergsmith_common::audit::AuditAction::PrincipalDeactivated,
+            &principal,
+            revoked,
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok((principal, revoked))
+}
+
+/// Reactivate a principal. Its grants were never removed, so they apply again.
+///
+/// # Errors
+///
+/// [`AdministrationError`] when the actor is not an administrator, or the
+/// principal is missing.
+pub async fn reactivate_principal(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    actor: PrincipalId,
+    principal_id: PrincipalId,
+) -> Result<Principal, AdministrationError> {
+    let mut tx = conn.begin().await?;
+    tenancy::lock_principal_administration(&mut tx, organization_id).await?;
+    Authorizer::require(
+        &mut tx,
+        organization_id,
+        actor,
+        Permission::ManageGrants,
+        ResourceScope::Organization,
+    )
+    .await?;
+    let (principal, changed) =
+        tenancy::reactivate_principal(&mut tx, organization_id, principal_id).await?;
+    if changed {
+        audit::principal_state_changed(
+            &mut tx,
+            organization_id,
+            Some(actor),
+            bergsmith_common::audit::AuditAction::PrincipalReactivated,
+            &principal,
+            0,
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(principal)
+}
+
 /// Revoke every active session of a principal, for example after an incident.
 ///
 /// The actor must be able to manage grants over the organization, because

@@ -58,3 +58,4 @@ record's status; never rewrite an accepted decision.
 | [0049](0049-per-connection-operating-settings.md) | Per-connection operating settings | Proposed |
 | [0050](0050-catalog-discovery-and-registration.md) | Catalog discovery and table registration | Proposed |
 | [0051](0051-catalog-connection-pages-and-draft-checks.md) | Catalog connection pages and draft checks | Proposed |
+| [0052](0052-principal-lifecycle-and-deactivation.md) | Principal lifecycle and deactivation | Proposed |

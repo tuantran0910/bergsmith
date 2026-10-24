@@ -9,10 +9,10 @@
 mod support;
 
 use bergsmith_common::audit::{ActorKind, AuditAction, AuditOutcome};
-use bergsmith_common::ids::{JobId, PrincipalId, RoleGrantId};
+use bergsmith_common::ids::{JobId, OrganizationId, PrincipalId, RoleGrantId};
 use bergsmith_common::permission::{GrantScope, Permission, ResourceScope, Role};
 use bergsmith_coordinator::identity::{
-    audit,
+    administration, audit,
     authorization::{Authorizer, MaintenanceService},
     session::{self, SessionConfig},
 };
@@ -25,7 +25,7 @@ use sqlx::PgPool;
 use support::{Tenant, tenant};
 
 fn grant(
-    organization: bergsmith_common::ids::OrganizationId,
+    organization: OrganizationId,
     principal: PrincipalId,
     role: Role,
     scope: GrantScope,
@@ -42,7 +42,7 @@ fn grant(
 
 async fn service_principal(
     conn: &mut sqlx::PgConnection,
-    organization: bergsmith_common::ids::OrganizationId,
+    organization: OrganizationId,
     subject: &str,
 ) -> PrincipalId {
     let id = PrincipalId::generate();
@@ -375,7 +375,7 @@ async fn identity_and_maintenance_decisions_are_auditable(pool: PgPool) {
 
 async fn record_denied_publication(
     conn: &mut sqlx::PgConnection,
-    organization: bergsmith_common::ids::OrganizationId,
+    organization: OrganizationId,
     actor: PrincipalId,
 ) {
     bergsmith_coordinator::identity::routes::audit_denied_command(
@@ -719,22 +719,27 @@ mod oidc_flow {
 
     /// Builds an RS256 ID token bound to `nonce` and signed by the test key.
     fn id_token(issuer: &str, audience: &str, nonce: &str) -> String {
+        id_token_named(issuer, audience, nonce, None)
+    }
+
+    /// Builds an ID token with an optional `name` claim.
+    fn id_token_named(issuer: &str, audience: &str, nonce: &str, name: Option<&str>) -> String {
         let der = BASE64_STANDARD.decode(PKCS8_B64).unwrap();
         let key = RsaKeyPair::from_pkcs8(&der).unwrap();
         let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256","kid":"test","typ":"JWT"}"#);
         let now = Utc::now().timestamp();
-        let claims = URL_SAFE_NO_PAD.encode(
-            json!({
-                "iss": issuer,
-                "sub": "alice",
-                "aud": audience,
-                "exp": now + 600,
-                "iat": now,
-                "nonce": nonce,
-            })
-            .to_string()
-            .as_bytes(),
-        );
+        let mut claims = json!({
+            "iss": issuer,
+            "sub": "alice",
+            "aud": audience,
+            "exp": now + 600,
+            "iat": now,
+            "nonce": nonce,
+        });
+        if let Some(name) = name {
+            claims["name"] = json!(name);
+        }
+        let claims = URL_SAFE_NO_PAD.encode(claims.to_string().as_bytes());
         let signing_input = format!("{header}.{claims}");
         let mut signature = vec![0; key.public().modulus_len()];
         key.sign(
@@ -827,6 +832,15 @@ mod oidc_flow {
         organization_id: OrganizationId,
         issuer: &str,
     ) -> PrincipalId {
+        provision_named(conn, organization_id, issuer, "Alice").await
+    }
+
+    async fn provision_named(
+        conn: &mut sqlx::PgConnection,
+        organization_id: OrganizationId,
+        issuer: &str,
+        display_name: &str,
+    ) -> PrincipalId {
         let id = PrincipalId::generate();
         tenancy::create_principal(
             conn,
@@ -836,12 +850,235 @@ mod oidc_flow {
                 kind: PrincipalKind::User,
                 issuer: issuer.to_owned(),
                 subject: "alice".to_owned(),
-                display_name: "Alice".to_owned(),
+                display_name: display_name.to_owned(),
             },
         )
         .await
         .unwrap();
         id
+    }
+
+    /// Runs the authorization-code flow against the mock provider and returns
+    /// the callback response. The token and JWKS mocks are removed afterwards
+    /// so a later sign-in in the same test can present different claims.
+    async fn sign_in(
+        app: &Router,
+        server: &mut mockito::ServerGuard,
+        issuer: &str,
+        name: Option<&str>,
+    ) -> axum::response::Response {
+        let response = get(app, "/auth/login?organization=acme").await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let login = set_cookie(response.headers(), LOGIN_COOKIE).unwrap();
+        let state_value = query_param(&location, "state");
+        let nonce = query_param(&location, "nonce");
+        let token = server
+            .mock("POST", "/token")
+            .with_body(
+                json!({ "id_token": id_token_named(issuer, "bergsmith", &nonce, name) })
+                    .to_string(),
+            )
+            .create_async()
+            .await;
+        let jwks = server
+            .mock("GET", "/jwks")
+            .with_body(jwks())
+            .create_async()
+            .await;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/auth/callback?code=abc&state={state_value}"))
+                    .header(header::COOKIE, format!("{LOGIN_COOKIE}={login}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        token.remove_async().await;
+        jwks.remove_async().await;
+        response
+    }
+
+    /// Waits until a backend in this test's database is blocked on a lock.
+    async fn wait_for_row_lock(pool: &PgPool) -> bool {
+        for _ in 0..500 {
+            let waiting: bool = sqlx::query_scalar(
+                "SELECT EXISTS(
+                     SELECT 1 FROM pg_stat_activity
+                     WHERE datname = current_database()
+                       AND wait_event_type = 'Lock'
+                       AND state = 'active'
+                       AND query LIKE '%FROM principals%')",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            if waiting {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        false
+    }
+
+    /// A sign-in that reads the principal while a deactivation holds the row
+    /// waits for it, then observes the deactivated row and is refused. The
+    /// session share lock is what prevents a session from being inserted after
+    /// deactivation revoked the earlier ones.
+    #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+    async fn a_sign_in_that_races_a_deactivation_is_refused(pool: PgPool) {
+        let mut server = mockito::Server::new_async().await;
+        let provider = provider(&mut server).await;
+        let issuer = server.url();
+
+        let mut conn = pool.acquire().await.unwrap();
+        let organization = support::organization(&mut conn, "acme").await;
+        let principal = provision(&mut conn, organization, &issuer).await;
+        drop(conn);
+
+        let state = IdentityState::new(
+            Database::from_pool(pool.clone()),
+            provider,
+            SessionConfig {
+                secure: false,
+                ..SessionConfig::default()
+            },
+        );
+        let app = router(state);
+
+        // A deactivation in progress holds the principal row.
+        let mut blocking = pool.begin().await.unwrap();
+        sqlx::query("SELECT 1 FROM principals WHERE id = $1 FOR UPDATE")
+            .bind(principal.as_uuid())
+            .execute(&mut *blocking)
+            .await
+            .unwrap();
+
+        let response = get(&app, "/auth/login?organization=acme").await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let login = set_cookie(response.headers(), LOGIN_COOKIE).unwrap();
+        let state_value = query_param(&location, "state");
+        let nonce = query_param(&location, "nonce");
+        let token = server
+            .mock("POST", "/token")
+            .with_body(json!({ "id_token": id_token(&issuer, "bergsmith", &nonce) }).to_string())
+            .create_async()
+            .await;
+        let jwks = server
+            .mock("GET", "/jwks")
+            .with_body(jwks())
+            .create_async()
+            .await;
+
+        let callback = tokio::spawn({
+            let app = app.clone();
+            let uri = format!("/auth/callback?code=abc&state={state_value}");
+            let cookie = format!("{LOGIN_COOKIE}={login}");
+            async move {
+                app.oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .header(header::COOKIE, cookie)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        });
+        assert!(
+            wait_for_row_lock(&pool).await,
+            "the sign-in must wait for the principal row"
+        );
+
+        // The deactivation commits while the sign-in waits.
+        sqlx::query("UPDATE principals SET deactivated_at = now() WHERE id = $1")
+            .bind(principal.as_uuid())
+            .execute(&mut *blocking)
+            .await
+            .unwrap();
+        blocking.commit().await.unwrap();
+
+        let response = callback.await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        token.remove_async().await;
+        jwks.remove_async().await;
+        let sessions: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM auth_sessions WHERE principal_id = $1")
+                .bind(principal.as_uuid())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(sessions, 0, "a refused sign-in leaves no session behind");
+    }
+
+    #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+    async fn a_sign_in_refreshes_the_display_name_and_refuses_a_deactivated_principal(
+        pool: PgPool,
+    ) {
+        let mut server = mockito::Server::new_async().await;
+        let provider = provider(&mut server).await;
+        let issuer = server.url();
+
+        let mut conn = pool.acquire().await.unwrap();
+        let organization = support::organization(&mut conn, "acme").await;
+        let principal = provision_named(&mut conn, organization, &issuer, "Stale").await;
+        drop(conn);
+
+        let state = IdentityState::new(
+            Database::from_pool(pool.clone()),
+            provider,
+            SessionConfig {
+                secure: false,
+                ..SessionConfig::default()
+            },
+        );
+        let app = router(state);
+
+        let response = sign_in(&app, &mut server, &issuer, Some("Alice Cooper")).await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let mut conn = pool.acquire().await.unwrap();
+        let stored: String =
+            sqlx::query_scalar("SELECT display_name FROM principals WHERE id = $1")
+                .bind(principal.as_uuid())
+                .fetch_one(&mut *conn)
+                .await
+                .unwrap();
+        assert_eq!(stored, "Alice Cooper");
+
+        let mut tx = pool.begin().await.unwrap();
+        tenancy::deactivate_principal(&mut tx, organization, principal)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let response = sign_in(&app, &mut server, &issuer, Some("Alice Cooper")).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let reason: String = sqlx::query_scalar(
+            "SELECT detail->>'reason' FROM audit_events
+             WHERE action = 'auth.login_failed'
+             ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+        assert_eq!(reason, "identity_deactivated");
     }
 
     #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
@@ -875,7 +1112,7 @@ mod oidc_flow {
             .to_str()
             .unwrap()
             .to_owned();
-        let login = set_cookie(response.headers(), LOGIN_COOKIE).expect("login binding cookie");
+        let login = set_cookie(response.headers(), LOGIN_COOKIE).unwrap();
         let state_value = query_param(&location, "state");
         let nonce = query_param(&location, "nonce");
 
@@ -1162,4 +1399,160 @@ mod oidc_flow {
             .unwrap();
         token.assert_async().await;
     }
+}
+
+/// Waits until a request in this test's database is blocked on this
+/// organization's lifecycle lock.
+///
+/// Advisory locks are keyed by database, the class name, and the
+/// organization, so another test's waiter — or another organization's — never
+/// satisfies this check.
+async fn wait_for_advisory_waiter(pool: &PgPool, organization: OrganizationId) -> bool {
+    for _ in 0..500 {
+        let waiting: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+                 SELECT 1
+                 FROM pg_locks l
+                 JOIN pg_database d ON d.oid = l.database
+                 WHERE d.datname = current_database()
+                   AND l.locktype = 'advisory'
+                   AND l.objsubid = 2
+                   AND l.classid = hashtext('bergsmith.principals')::oid
+                   AND l.objid = hashtext($1::text)::oid
+                   AND NOT l.granted)",
+        )
+        .bind(organization.to_string())
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if waiting {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    false
+}
+
+/// An administrator cannot reactivate themselves against the state a
+/// concurrent deactivation has already committed.
+///
+/// The lifecycle lock is acquired before authorization, so the reactivation
+/// waits, then sees the actor deactivated and is refused. Without that
+/// ordering the reactivation would have authorized while the actor was still
+/// active and undone the deactivation.
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_deactivation_holding_the_lifecycle_lock_refuses_a_self_reactivation(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = tenant(&mut conn, "acme").await;
+    let other = support::user(&mut conn, tenant.organization, "bob").await;
+    grants::create_grant(
+        &mut conn,
+        &grant(
+            tenant.organization,
+            other,
+            Role::Administrator,
+            GrantScope::organization(),
+        ),
+    )
+    .await
+    .unwrap();
+    drop(conn);
+
+    let mut deactivating = pool.begin().await.unwrap();
+    tenancy::deactivate_principal(&mut deactivating, tenant.organization, tenant.user)
+        .await
+        .unwrap();
+
+    let reactivating_pool = pool.clone();
+    let organization = tenant.organization;
+    let alice = tenant.user;
+    let reactivating = tokio::spawn(async move {
+        let mut conn = reactivating_pool.acquire().await.unwrap();
+        administration::reactivate_principal(&mut conn, organization, alice, alice).await
+    });
+    assert!(
+        wait_for_advisory_waiter(&pool, tenant.organization).await,
+        "the reactivation must wait for the lifecycle lock"
+    );
+    deactivating.commit().await.unwrap();
+
+    let result = reactivating.await.unwrap();
+    assert!(
+        matches!(
+            result,
+            Err(administration::AdministrationError::Authorization(_))
+        ),
+        "the deactivated actor must not authorize its own reactivation: {result:?}"
+    );
+    let active: bool =
+        sqlx::query_scalar("SELECT deactivated_at IS NULL FROM principals WHERE id = $1")
+            .bind(alice.as_uuid())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(!active);
+}
+
+/// Mutual deactivations serialize under the lifecycle lock: whichever runs
+/// second sees the first change and is refused, so the organization never
+/// loses every administrator.
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_deactivation_cannot_consume_the_administrator_that_just_changed(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = tenant(&mut conn, "acme").await;
+    let bob = support::user(&mut conn, tenant.organization, "bob").await;
+    grants::create_grant(
+        &mut conn,
+        &grant(
+            tenant.organization,
+            bob,
+            Role::Administrator,
+            GrantScope::organization(),
+        ),
+    )
+    .await
+    .unwrap();
+    drop(conn);
+
+    // Alice deactivates Bob and holds the lock.
+    let mut deactivating = pool.begin().await.unwrap();
+    tenancy::deactivate_principal(&mut deactivating, tenant.organization, bob)
+        .await
+        .unwrap();
+    // Bob's concurrent request deactivates Alice.
+    let deactivating_pool = pool.clone();
+    let organization = tenant.organization;
+    let actor = bob;
+    let target = tenant.user;
+    let pending = tokio::spawn(async move {
+        let mut conn = deactivating_pool.acquire().await.unwrap();
+        administration::deactivate_principal(&mut conn, organization, actor, target).await
+    });
+    assert!(
+        wait_for_advisory_waiter(&pool, tenant.organization).await,
+        "the second deactivation must wait for the lifecycle lock"
+    );
+    deactivating.commit().await.unwrap();
+
+    let result = pending.await.unwrap();
+    assert!(
+        matches!(
+            result,
+            Err(administration::AdministrationError::Authorization(_))
+        ),
+        "the deactivated actor must not deactivate another administrator: {result:?}"
+    );
+    let active_administrators: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM principals p
+         JOIN principal_role_grants g
+           ON g.organization_id = p.organization_id AND g.principal_id = p.id
+         WHERE p.organization_id = $1 AND p.deactivated_at IS NULL
+           AND g.revoked_at IS NULL AND g.role = 'Administrator'
+           AND g.catalog_connection_id IS NULL AND g.table_identity_id IS NULL",
+    )
+    .bind(tenant.organization.as_uuid())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(active_administrators, 1);
 }

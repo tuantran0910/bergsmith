@@ -129,6 +129,11 @@ impl Authorizer {
         principal_id: PrincipalId,
         permission: Permission,
     ) -> Result<Vec<CatalogConnectionId>, AuthorizationError> {
+        // A deactivated principal keeps its grants for audit but exercises
+        // none of them, including read filters.
+        if !tenancy::principal_is_active(&mut *conn, organization_id, principal_id).await? {
+            return Ok(Vec::new());
+        }
         let roles = role_names(permission);
         let rows: Vec<uuid::Uuid> = sqlx::query_scalar(
             "SELECT c.id FROM catalog_connections c
@@ -174,6 +179,9 @@ impl Authorizer {
         principal_id: PrincipalId,
         permission: Permission,
     ) -> Result<Vec<TableId>, AuthorizationError> {
+        if !tenancy::principal_is_active(&mut *conn, organization_id, principal_id).await? {
+            return Ok(Vec::new());
+        }
         let roles = role_names(permission);
         let rows: Vec<uuid::Uuid> = sqlx::query_scalar(
             "SELECT t.id FROM table_identities t
