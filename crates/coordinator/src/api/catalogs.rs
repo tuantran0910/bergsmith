@@ -501,10 +501,54 @@ pub(super) async fn check(
         &probed,
     )
     .await?;
-    record_check(&mut tx, &caller, id, &capabilities, checked_at).await?;
+    record_check(&mut tx, &caller, Some(id), &capabilities, checked_at).await?;
     tx.commit().await?;
     Ok(Json(json!({
         "catalog_id": id,
+        "checked_at": checked_at,
+        "capabilities": capabilities_json(&capabilities),
+    })))
+}
+
+/// Checks unsaved settings for organization connection administrators.
+///
+/// Uses the same bounded probe as a saved connection. No connection or
+/// capability row is created; only a successful diagnostic is audited, without
+/// its URI, warehouse, or credential reference. No ledger connection is held
+/// during network I/O. Errors match the saved check, with 400 for invalid fields.
+pub(super) async fn check_draft(
+    State(state): State<ApiState>,
+    caller: Caller,
+    body: Result<Json<CreateCatalog>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let body = json_body(body)?;
+    let tx = authorized_transaction(&state, &caller, ResourceScope::Organization).await?;
+    validate_fields(
+        Some(&body.name),
+        Some(&body.uri),
+        body.warehouse.as_deref(),
+        body.credential_ref.as_deref(),
+    )?;
+    tx.commit().await?;
+    let config = config_for_fields(
+        &body.uri,
+        body.warehouse.as_deref(),
+        body.credential_ref.as_deref(),
+        state.checks.limits(),
+    )?;
+    let report = state
+        .checks
+        .check(caller.principal_id, &config)
+        .await
+        .map_err(|error| classify_check(&error))?;
+    let capabilities = capabilities(&report);
+    let mut tx = authorized_transaction(&state, &caller, ResourceScope::Organization).await?;
+    let checked_at = sqlx::query_scalar::<_, DateTime<Utc>>("SELECT clock_timestamp()")
+        .fetch_one(&mut *tx)
+        .await?;
+    record_check(&mut tx, &caller, None, &capabilities, checked_at).await?;
+    tx.commit().await?;
+    Ok(Json(json!({
         "checked_at": checked_at,
         "capabilities": capabilities_json(&capabilities),
     })))
@@ -528,14 +572,28 @@ fn catalog_config(
     connection: &CatalogConnection,
     limits: CapabilityCheckLimits,
 ) -> Result<ConnectionConfig, ApiError> {
-    if connection.credential_ref.is_some() {
+    config_for_fields(
+        &connection.uri,
+        connection.warehouse.as_deref(),
+        connection.credential_ref.as_deref(),
+        limits,
+    )
+}
+
+fn config_for_fields(
+    uri: &str,
+    warehouse: Option<&str>,
+    credential_ref: Option<&str>,
+    limits: CapabilityCheckLimits,
+) -> Result<ConnectionConfig, ApiError> {
+    if credential_ref.is_some() {
         return Err(ApiError::permanent(
             StatusCode::INTERNAL_SERVER_ERROR,
             "catalog_credential_unavailable",
             "configure_catalog_credential",
         ));
     }
-    let uri = Url::parse(&connection.uri).map_err(|_| {
+    let uri = Url::parse(uri).map_err(|_| {
         ApiError::permanent(
             StatusCode::INTERNAL_SERVER_ERROR,
             "catalog_connection_invalid",
@@ -543,7 +601,7 @@ fn catalog_config(
         )
     })?;
     let mut config = ConnectionConfig::new(uri);
-    config.warehouse.clone_from(&connection.warehouse);
+    config.warehouse = warehouse.map(str::to_owned);
     config.connect_timeout = limits.connect_timeout;
     config.request_timeout = limits.request_timeout;
     Ok(config)
@@ -594,7 +652,7 @@ fn capabilities(report: &CapabilityReport) -> ConnectionCapabilities {
 async fn record_check(
     conn: &mut sqlx::PgConnection,
     caller: &Caller,
-    id: CatalogConnectionId,
+    id: Option<CatalogConnectionId>,
     capabilities: &ConnectionCapabilities,
     checked_at: DateTime<Utc>,
 ) -> Result<(), ApiError> {
@@ -616,7 +674,7 @@ async fn record_check(
             actor_kind: ActorKind::User,
             action: AuditAction::CatalogChecked.as_str(),
             resource_type: "catalog",
-            resource_id: Some(&id.to_string()),
+            resource_id: id.as_ref().map(ToString::to_string).as_deref(),
             outcome: AuditOutcome::Allowed,
             // The answer names requirements, never catalog content.
             detail: json!({

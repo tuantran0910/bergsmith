@@ -1081,6 +1081,7 @@ fn openapi_documents_every_route() {
     const ROUTES: &[(&str, &str)] = &[
         ("/api/v1/catalogs", "get"),
         ("/api/v1/catalogs", "post"),
+        ("/api/v1/catalogs/check", "post"),
         ("/api/v1/catalogs/{id}", "get"),
         ("/api/v1/catalogs/{id}", "patch"),
         ("/api/v1/catalogs/{id}/check", "post"),

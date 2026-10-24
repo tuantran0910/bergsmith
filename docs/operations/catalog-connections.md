@@ -25,6 +25,23 @@ returns success without publishing twice.
 
 ## Checking a connection
 
+In the browser, open **Catalogs → Add connection**, enter its name, HTTP(S)
+catalog URI, and optional warehouse, then **Check capabilities**. This checks
+the unsaved settings and creates no connection. Review missing requirements
+before choosing **Save connection**. Changing any field requires a new check.
+The diagnostic does not prove credential vending or certify write support.
+The guided flow currently requires a catalog that accepts unauthenticated
+requests: credential reference resolution is still deferred. A failed check
+does not offer Save. If a save's outcome is uncertain, inspect the catalog list
+before creating another connection.
+
+The connection detail shows its settings, read-only effective storage profile,
+unresolved publications, and registered tables. **Save settings** uses the
+revision read; a conflict requires **Reload saved settings** before editing
+again. **Edit routing** changes the URI, warehouse, or credential reference
+without resending unchanged legacy fields. Only a connection administrator sees
+these controls; adding a connection requires an organization administrator.
+
 `POST /api/v1/catalogs/{id}/check` asks the catalog what it advertises and
 records the answer with the time of the check. It reads `GET /v1/config` and
 nothing else, so it is safe to run against a catalog that is not ready yet.
@@ -50,6 +67,14 @@ connection: the check is diagnostic, so a catalog that cannot be reached
 leaves the previous answer and the configuration untouched.
 
 ## Browsing and registering tables
+
+On the connection detail, choose **Discover tables**, select a namespace, and
+register a table or its whole namespace. Use **Load more** to follow each
+listing. **Register by name** accepts separate namespace levels when browsing
+is unavailable; a dot inside a level is kept literal. Registered tables come
+from the ledger, so a name dropped from the catalog can still be removed with
+**Remove registration**. Confirming removal sends the alias revision observed;
+an active job or a replaced alias refuses the removal. No table data is deleted.
 
 A connection only works on tables Bergsmith has registered: a registered name
 is what a canonical table identity, its grants, and its publication history

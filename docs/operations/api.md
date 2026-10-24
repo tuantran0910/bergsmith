@@ -56,6 +56,18 @@ certify M4.
 
 ## Catalog configuration
 
+`POST /api/v1/catalogs/check` accepts the same fields as create and checks an
+unsaved draft before the browser saves it. It requires organization-wide
+`connections:manage` and CSRF. The response has `checked_at` (database time)
+and `capabilities`, without a catalog ID. It shares the saved check's byte,
+timeout, and concurrency limits, holds no ledger connection during catalog
+I/O, and creates no connection or saved report. A successful diagnostic is
+audited as `catalog.checked` with a null resource ID and no routing or credential
+reference values. Permission is checked again before that audit. Invalid
+fields return 400; credential resolution and catalog failures use the same
+typed errors as the saved check. A failed diagnostic creates no successful
+check audit. The browser requires a fresh diagnostic after any draft edit.
+
 Create accepts `name`, `uri`, optional `warehouse`, and optional
 `credential_ref`. The name uses lowercase letters, digits, underscores, and
 hyphens, starts with a letter or digit, and is at most 63 characters. The URI
@@ -71,7 +83,8 @@ or disabling a connection. A PATCH with no editable fields returns 400.
 Each change increments the revision and commits an audit record atomically.
 An administrator reading the connection detail receives its settings. Other
 inventory readers, and all list responses, receive the summary with enabled
-state, revision, and timestamps, without the settings. Detail responses strip
+state, revision, timestamps, and operating bounds, without administrator-only
+routing settings or diagnostic reports. Detail responses strip
 URI user information, query, and fragment from legacy connections; an
 unparseable legacy URI is omitted.
 

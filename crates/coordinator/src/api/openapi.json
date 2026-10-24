@@ -489,6 +489,94 @@
         }
       }
     },
+    "/api/v1/catalogs/check": {
+      "post": {
+        "operationId": "checkDraftCatalog",
+        "description": "Checks unsaved connection settings using the bounded GET /v1/config probe. Requires organization-wide connections:manage. Creates no connection or saved capability report; a successful diagnostic is audited without routing or credential values. Credential reference resolution is not yet supported.",
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCatalog"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The diagnostic for these unsaved settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftCatalogCapabilityCheck"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Organization connection administration required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Catalog settings or answer are unusable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Catalog or check capacity unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/catalogs/{id}/check": {
       "post": {
         "operationId": "checkCatalog",
@@ -3873,6 +3961,23 @@
               }
             ],
             "description": "How long the catalog remembers idempotency keys, in seconds, as a decimal string; null when it advertises no lifetime."
+          }
+        }
+      },
+      "DraftCatalogCapabilityCheck": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "checked_at",
+          "capabilities"
+        ],
+        "properties": {
+          "checked_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/CatalogCapabilities"
           }
         }
       },

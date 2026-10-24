@@ -22,6 +22,9 @@ import { JobsPage } from "./pages/JobsPage";
 import { TablePage } from "./pages/TablePage";
 import { TablesPage } from "./pages/TablesPage";
 import { WorkersPage } from "./pages/WorkersPage";
+import { CatalogsPage } from "./pages/CatalogsPage";
+import { CatalogPage } from "./pages/CatalogPage";
+import { NewCatalogPage } from "./pages/NewCatalogPage";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -60,6 +63,30 @@ const tablesRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/tables",
     component: TablesPage,
+});
+
+const catalogsRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/catalogs",
+    component: CatalogsPage,
+});
+
+const newCatalogRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/catalogs/new",
+    component: NewCatalogPage,
+});
+
+const catalogRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/catalogs/$catalogId",
+    beforeLoad: ({ params }) => {
+        if (!isResourceId(params.catalogId)) throw notFound();
+    },
+    component: function CatalogRoute() {
+        const { catalogId } = catalogRoute.useParams();
+        return <CatalogPage key={catalogId} id={catalogId} />;
+    },
 });
 
 const tableRoute = createRoute({
@@ -110,6 +137,9 @@ const workersRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
     indexRoute,
+    catalogsRoute,
+    newCatalogRoute,
+    catalogRoute,
     tablesRoute,
     tableRoute,
     jobsRoute,

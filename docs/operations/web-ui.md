@@ -9,6 +9,8 @@ The browser application in `web/` covers manual maintenance over the
 | Page | What it does |
 |---|---|
 | Sign-in | Asks for the organization slug and starts `/auth/login`; returns to the page that asked |
+| Catalogs | Lists authorized connections and opens guided setup, with a capability check before saving |
+| Catalog connection | Shows settings, capabilities, read-only storage profiles, unresolved publications, and registered names; connection administrators can edit, discover, register, and remove names |
 | Tables | Lists the tables the session may see, named `catalog.namespace.table` through their aliases |
 | Table | Shows the table's names, previews maintenance (outcome, unsupported features, bins, estimate), and runs it |
 | Jobs | Lists jobs with execution and publication status side by side |
@@ -16,8 +18,11 @@ The browser application in `web/` covers manual maintenance over the
 | Workers | Current worker sessions with status, running attempt, and capacity; shown only to organization-wide administrators |
 | Audit | Organization audit history; shown only to organization-wide administrators |
 
-Connection setup is not in the UI yet, because no API serves it. Maintenance policies and schedules do have a configuration API
-(BS-019.T1, ADR 0038), but the UI for them is not built yet.
+Connection setup and registration are described in
+[Connecting a catalog](catalog-connections.md) and
+[ADR 0051](../adr/0051-catalog-connection-pages-and-draft-checks.md).
+Maintenance policies and schedules have a configuration API (BS-019.T1,
+ADR 0038), but their UI is not built yet.
 
 ## Reading job status
 
@@ -50,6 +55,11 @@ failure as safe to repeat, the coordinator could not be reached, or a gateway
 answered 502, 503, or 504, the page offers "Retry the same request". A
 submission whose outcome is unknown keeps its idempotency key, whether it is
 retried or run again, so it can never create a second job.
+
+Catalog creation has no idempotency key: an uncertain save asks you to inspect
+the catalog list before adding again. A settings conflict or uncertain update
+requires explicitly reloading the saved revision. Catalog mutations are never
+retried automatically.
 
 Signing out, an expired session, or a sign-in as someone else in another tab
 (checked when the tab regains focus) discards everything the page had read.

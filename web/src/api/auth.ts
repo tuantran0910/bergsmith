@@ -91,3 +91,14 @@ function isOrganizationAdministrator(session: SessionInfo): boolean {
             grant.scope.table === null,
     );
 }
+
+/** Whether an Administrator grant covers a connection, or organization creation. */
+export function canManageCatalog(session: SessionInfo, id?: string): boolean {
+    return session.grants.some(
+        (grant) =>
+            grant.role === "Administrator" &&
+            grant.scope.table === null &&
+            (grant.scope.catalog_connection === null ||
+                (id !== undefined && grant.scope.catalog_connection === id)),
+    );
+}

@@ -41,6 +41,46 @@ export const catalogs = schema("CatalogPage", {
     next_cursor: null,
 });
 
+export const catalogCapabilities = schema("CatalogCapabilities", {
+    list_tables: "met",
+    load_table: "met",
+    commit_table: "met",
+    vended_credentials: "unknown",
+    credentials_endpoint: "missing",
+    idempotency_key_lifetime_seconds: "9007199254740993",
+});
+
+export const managedCatalog = schema("Catalog", {
+    id: CATALOG_ID,
+    name: "lake",
+    enabled: true,
+    revision: 0,
+    created_at: "2026-10-01T00:00:00Z",
+    updated_at: "2026-10-01T00:00:00Z",
+    uri: "https://catalog.example",
+    warehouse: "warehouse",
+    credential_ref: null,
+    settings: {
+        maintenance_enabled: true,
+        max_execution_seconds: 180,
+        max_unresolved_publication_seconds: 3600,
+    },
+    capabilities: catalogCapabilities,
+    capabilities_checked_at: "2026-10-24T00:00:00Z",
+    storage_profile: {
+        source: "default",
+        backends: [
+            {
+                kind: "s3",
+                region: "test",
+                endpoint: "https://storage.example",
+                path_style_access: true,
+            },
+        ],
+    },
+    unresolved_publications: { count: 1, oldest_seconds: 3601, overdue: true },
+});
+
 export const table = schema("Table", {
     id: TABLE_ID,
     table_uuid: "6f1c0d0e-1111-4222-8333-444455556666",
