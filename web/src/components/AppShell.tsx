@@ -9,6 +9,8 @@ import {
     ScrollTextIcon,
     ServerIcon,
     Table2Icon,
+    UsersIcon,
+    KeyRoundIcon,
 } from "lucide-react";
 import type { ReactNode } from "react";
 
@@ -17,6 +19,7 @@ import {
     canManageWorkers,
     canReadAudit,
     signOut,
+    hasOrganizationPermission,
 } from "../api/auth";
 import { setSession, useSessionMutation } from "../queryClient";
 import { Button } from "../ui/Button";
@@ -25,13 +28,33 @@ import { SessionExpiry } from "./SessionExpiry";
 import { ThemeToggle } from "./ThemeToggle";
 
 interface Destination {
-    to: "/catalogs" | "/tables" | "/jobs" | "/workers" | "/audit";
+    to:
+        | "/catalogs"
+        | "/tables"
+        | "/jobs"
+        | "/workers"
+        | "/audit"
+        | "/users"
+        | "/service-identities";
     label: string;
     icon: LucideIcon;
     allowed: (session: SessionInfo) => boolean;
 }
 
 const DESTINATIONS: readonly Destination[] = [
+    {
+        to: "/users",
+        label: "Users",
+        icon: UsersIcon,
+        allowed: (session) =>
+            hasOrganizationPermission(session, "grants:manage"),
+    },
+    {
+        to: "/service-identities",
+        label: "Service identities",
+        icon: KeyRoundIcon,
+        allowed: canManageWorkers,
+    },
     {
         to: "/catalogs",
         label: "Catalogs",

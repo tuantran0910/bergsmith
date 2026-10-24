@@ -25,6 +25,7 @@ import { WorkersPage } from "./pages/WorkersPage";
 import { CatalogsPage } from "./pages/CatalogsPage";
 import { CatalogPage } from "./pages/CatalogPage";
 import { NewCatalogPage } from "./pages/NewCatalogPage";
+import { PrincipalPage, PrincipalsPage } from "./pages/access/Principals";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -135,7 +136,44 @@ const workersRoute = createRoute({
     component: WorkersPage,
 });
 
+const usersRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/users",
+    component: PrincipalsPage,
+});
+const servicesRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/service-identities",
+    component: () => <PrincipalsPage services />,
+});
+const userRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/users/$principalId",
+    beforeLoad: ({ params }) => {
+        if (!isResourceId(params.principalId)) throw notFound();
+    },
+    component: function UserRoute() {
+        const { principalId } = userRoute.useParams();
+        return <PrincipalPage key={principalId} id={principalId} />;
+    },
+});
+const serviceRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/service-identities/$principalId",
+    beforeLoad: ({ params }) => {
+        if (!isResourceId(params.principalId)) throw notFound();
+    },
+    component: function ServiceRoute() {
+        const { principalId } = serviceRoute.useParams();
+        return <PrincipalPage key={principalId} id={principalId} services />;
+    },
+});
+
 const routeTree = rootRoute.addChildren([
+    usersRoute,
+    servicesRoute,
+    userRoute,
+    serviceRoute,
     indexRoute,
     catalogsRoute,
     newCatalogRoute,

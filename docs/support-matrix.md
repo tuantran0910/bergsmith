@@ -80,6 +80,17 @@ Connection restrictions and the retention each connection needs are in
 
 ## Authorization and identity
 
+BS-023.T5 adds Users and Service identities pages, principal detail with scoped
+grant creation and revocation, and Access on connection and table pages. The
+pages follow the effective permission projection and use the existing API;
+they add no authorization authority. Pool tokens are shown once in component
+memory, and never stored in browser storage or query/mutation results. Browser
+journeys cover provisioning, scoped grants, deactivation, one-time token display,
+revocation, and narrow layouts under the coordinator CSP with axe in both themes.
+Dialogs stay within short viewports and scroll internally; long principal names
+wrap without widening confirmations. Browser regressions cover grant submission
+at 390×320 and confirmation with a 200-character unbroken name.
+
 | Capability | Status |
 |---|---|
 | OIDC Authorization Code with PKCE, server-side sessions, CSRF | Certified (BS-017, ADR 0032) |

@@ -13,6 +13,7 @@ import { useSession, useSessionMutation } from "../queryClient";
 import { Button } from "../ui/Button";
 import { Card, CardContent } from "../ui/Card";
 import { PreviewView } from "./PreviewView";
+import { Access } from "./access/Access";
 
 /** One table: preview what maintenance would do, then run it. */
 export function TablePage({ id }: { id: string }) {
@@ -157,6 +158,12 @@ export function TablePage({ id }: { id: string }) {
                 />
             )}
             {preview.data && <PreviewView preview={preview.data} />}
+            <Access
+                scope={{ table: id }}
+                connections={table.data.aliases.map(
+                    (alias) => alias.catalog_id,
+                )}
+            />
         </section>
     );
 }

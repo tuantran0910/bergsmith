@@ -15,6 +15,7 @@ import { Capabilities } from "./catalogs/Capabilities";
 import { Discovery } from "./catalogs/Discovery";
 import { RegisteredTables } from "./catalogs/RegisteredTables";
 import { Settings } from "./catalogs/Settings";
+import { Access } from "./access/Access";
 
 /** Connection configuration, diagnostics, and its registered names. */
 export function CatalogPage({ id }: { id: string }) {
@@ -66,6 +67,7 @@ export function CatalogPage({ id }: { id: string }) {
                 }
                 actions={<Link to="/catalogs">All catalogs</Link>}
             />
+            <Access scope={{ catalog_connection: id }} connections={[id]} />
             <Card>
                 <CardContent className="grid gap-3 text-sm">
                     <ResourceId id={catalog.id} label="connection ID" />

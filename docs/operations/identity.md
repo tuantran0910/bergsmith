@@ -86,7 +86,41 @@ the automated tests.
 
 ## Granting roles
 
-People other than the first administrator get roles from the command line.
+After bootstrapping the first administrator, open **Users** to provision a user
+with its identity provider's exact issuer and subject. Provisioning grants no
+access. Open the user's detail and choose **Grant role** to select a role and
+an organization, connection, or table scope. Resource suggestions show names
+while retaining the canonical IDs; additional suggestions can be loaded using
+the cursor. The directory and principal lifecycle controls require
+organization-wide `grants:manage`.
+
+Connection and table pages offer **Access** to administrators of that scope.
+A scoped administrator enters an existing principal's ID; it cannot browse
+the organization-wide user directory or provision a principal. Table Access
+lists direct table grants. Connection Access also lists grants on its tables.
+Organization and connection grants can supply inherited access, and are
+managed at their own scope rather than revoked from a narrower view.
+
+Grant revocation and principal deactivation require confirmation. Deactivation
+ends sessions and prevents future access, preserves grants and history, and
+does not cancel running jobs. Reactivation restores existing grants and any
+unrevoked pool tokens. The API refuses to remove the last active organization
+administrator. A lost write response blocks resubmission: reload the page and
+reconcile the saved state before starting another action.
+
+**Service identities** requires organization-wide `workers:manage`. Create an
+identity for workers or schedules, then issue a token for a named worker pool.
+The bearer appears in a one-time dialog and is discarded when it closes; it
+is never put in browser storage, URLs, or query/mutation caches. Store it
+securely before closing. Rotation immediately revokes its predecessor; for a
+gradual rollout, issue a second token, move workers, then revoke the old token.
+If an issuance response is lost, reload the token list and revoke the
+undelivered token before issuing another. Deactivated identities cannot issue
+or rotate tokens, but their tokens can still be revoked. Grant management and
+principal deactivation still require `grants:manage` independently of worker
+administration.
+
+The same operations remain available from the command line.
 Each command takes `--database-url` (or `BERGSMITH_DATABASE_URL`) and an
 `--actor`, the principal ID of an administrator. Database access authenticates
 the command; the actor attributes it and must hold `grants:manage` over the

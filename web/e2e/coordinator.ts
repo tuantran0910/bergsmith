@@ -350,6 +350,21 @@ const WCAG_TAGS = [
 
 /** Fails on any WCAG 2.2 AA violation axe finds on the page as shown. */
 export async function expectAccessible(page: Page): Promise<void> {
+    // Opening dialogs and hover transitions temporarily blend text with the
+    // backdrop. Measure the controls after finite animations have settled;
+    // perpetual loading indicators must never hold up the accessibility gate.
+    await page.evaluate(async () => {
+        await Promise.all(
+            document
+                .getAnimations()
+                .filter(
+                    (animation) =>
+                        animation.effect?.getComputedTiming().iterations !==
+                        Infinity,
+                )
+                .map((animation) => animation.finished.catch(() => undefined)),
+        );
+    });
     const results = await new AxeBuilder({ page })
         .withTags(WCAG_TAGS)
         .analyze();
