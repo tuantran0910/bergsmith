@@ -316,6 +316,58 @@ export interface paths {
         patch: operations["updateSchedule"];
         trace?: never;
     };
+    "/api/v1/catalogs/{id}/namespaces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Reads one page of the namespaces a connection's catalog lists under a parent, or at the top level without one. Requires connections:manage for the connection. Levels are repeated parent parameters, never a dotted path, so a level may contain any character. The catalog is asked for the page size the request names; a catalog that ignores page sizes may answer with more, up to 1000 items. next_cursor continues from the catalog's own page token and is bound to this caller, connection, and parent. */
+        get: operations["listCatalogNamespaces"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/catalogs/{id}/tables": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Reads one page of the tables of one namespace from the connection's catalog and marks the ones Bergsmith already tracks, with the alias revision a removal must name. Requires connections:manage for the connection. Levels are repeated namespace parameters. A table the catalog places outside the requested namespace is refused rather than reported under it. next_cursor continues the listing; skipped counts identifiers Bergsmith cannot address. */
+        get: operations["listCatalogTables"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/catalogs/{id}/registrations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Registers one table, or every table of a namespace, by loading each one from the catalog and recording its alias. Requires connections:manage for the connection. The catalog is read before anything is written, and the aliases and their audit commit together: a request records every table it names or none. A namespace with more tables than one request may record is refused. Registering a name that is registered already is idempotent: the answer carries the identity the first request recorded and created is false. The names belong to the routing they were read with: an edit that lands while the catalog is being read records nothing and returns 409 catalog_connection_changed. */
+        post: operations["registerCatalogTables"];
+        /** @description Removes the catalog name the caller observed, identified by its alias revision. Requires connections:manage for the connection. The canonical table and its other names stay: jobs and publication evidence still reference the table. Every alias of a table with nonterminal jobs is kept, so a commit is never left without a name to verify it through. */
+        delete: operations["unregisterCatalogTable"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -338,7 +390,7 @@ export interface components {
         };
         ApiError: {
             /** @enum {string} */
-            reason: "authentication_required" | "csrf_rejected" | "invalid_request" | "resource_not_found" | "permission_denied" | "idempotency_key_reused" | "ledger_unavailable" | "method_not_allowed" | "request_too_large" | "internal_error" | "catalog_credential_unavailable" | "catalog_connection_invalid" | "storage_profile_unavailable" | "storage_unavailable" | "catalog_access_denied" | "catalog_unavailable" | "table_staged" | "job_not_terminal" | "job_already_succeeded" | "table_identity_changed" | "catalog_table_missing" | "inventory_too_large" | "table_metadata_inconsistent" | "preview_capacity_exhausted" | "catalog_unsupported" | "catalog_credentials_unavailable" | "catalog_request_rejected" | "event_stream_capacity_exhausted" | "invalid_policy_parameters" | "invalid_policy_operation" | "invalid_cron_expression" | "invalid_time_zone" | "invalid_maintenance_window" | "run_budget_below_target_file_size" | "revision_conflict" | "service_identity_not_eligible" | "resource_already_exists" | "catalog_connection_disabled" | "catalog_connection_in_use" | "catalog_connection_changed" | "capability_check_capacity_exhausted" | "catalog_response_too_large";
+            reason: "authentication_required" | "csrf_rejected" | "invalid_request" | "resource_not_found" | "permission_denied" | "idempotency_key_reused" | "ledger_unavailable" | "method_not_allowed" | "request_too_large" | "internal_error" | "catalog_credential_unavailable" | "catalog_connection_invalid" | "storage_profile_unavailable" | "storage_unavailable" | "catalog_access_denied" | "catalog_unavailable" | "table_staged" | "job_not_terminal" | "job_already_succeeded" | "table_identity_changed" | "catalog_table_missing" | "inventory_too_large" | "table_metadata_inconsistent" | "preview_capacity_exhausted" | "catalog_unsupported" | "catalog_credentials_unavailable" | "catalog_request_rejected" | "event_stream_capacity_exhausted" | "invalid_policy_parameters" | "invalid_policy_operation" | "invalid_cron_expression" | "invalid_time_zone" | "invalid_maintenance_window" | "run_budget_below_target_file_size" | "revision_conflict" | "service_identity_not_eligible" | "resource_already_exists" | "catalog_connection_disabled" | "catalog_connection_in_use" | "catalog_connection_changed" | "capability_check_capacity_exhausted" | "catalog_response_too_large" | "table_in_use" | "catalog_namespace_not_found" | "catalog_table_not_found" | "catalog_discovery_capacity_exhausted" | "registration_too_large" | "table_identity_conflict" | "catalog_namespace_mismatch" | "catalog_page_too_large" | "registration_incomplete" | "catalog_token_too_large";
             /** @enum {string} */
             disposition: "RetrySameRequest" | "RetryTask" | "ReplanRequired" | "PermanentFailure" | "ResolvePublication";
             operator_action: string;
@@ -723,11 +775,14 @@ export interface components {
             created_at: string;
             aliases: components["schemas"]["TableAlias"][];
         };
+        /** @description One catalog name of a table, with the revision a removal names. */
         TableAlias: {
             /** Format: uuid */
             catalog_id: string;
             namespace: string[];
             name: string;
+            /** @description The alias revision. A removal names it, so a delayed removal cannot delete a name that was registered again. */
+            revision: number;
         };
         TablePage: {
             items: components["schemas"]["Table"][];
@@ -782,6 +837,60 @@ export interface components {
         WorkerSessionPage: {
             items: components["schemas"]["WorkerSession"][];
             next_cursor: string | null;
+        };
+        CatalogNamespace: {
+            /** @description The levels joined with dots, for display. */
+            name: string;
+            /** @description The namespace identifier: levels outermost first. */
+            levels: string[];
+        };
+        CatalogNamespacePage: {
+            items: components["schemas"]["CatalogNamespace"][];
+            /** @description The continuation for the next page, or null when the catalog has no more. It is bound to this caller, connection, and parent. */
+            next_cursor: string | null;
+            /** @description Identifiers the catalog returned that Bergsmith cannot address, such as an empty level or a name over 255 bytes. */
+            skipped: number;
+        };
+        CatalogTableSummary: {
+            namespace: string[];
+            name: string;
+            /** @description Whether this connection already has an alias for the table. */
+            registered: boolean;
+            /** @description The canonical table, or null while the name is unregistered. */
+            table_id: string | null;
+            /** @description The alias row this answer observed. A removal must name it, so a delayed removal cannot delete a replacement. */
+            revision: number | null;
+        };
+        CatalogTablePage: {
+            items: components["schemas"]["CatalogTableSummary"][];
+            /** @description The continuation for the next page, or null when the catalog has no more. It is bound to this caller, connection, and namespace. */
+            next_cursor: string | null;
+            /** @description Identifiers the catalog returned that Bergsmith cannot address; they are never shown as registrable names. */
+            skipped: number;
+        };
+        RegisterCatalogTables: {
+            /** @description Namespace levels, outermost first. At least one level. */
+            namespace: string[];
+            /** @description The one table to register. Absent registers every table in the namespace. */
+            table?: string | null;
+        };
+        CatalogRegisteredTable: {
+            /** Format: uuid */
+            table_id: string;
+            namespace: string[];
+            name: string;
+            /** @description Whether this request recorded the alias. */
+            created: boolean;
+        };
+        CatalogRegistration: {
+            registered: components["schemas"]["CatalogRegisteredTable"][];
+        };
+        CatalogUnregistration: {
+            /**
+             * Format: uuid
+             * @description The canonical table the removed name used to reach.
+             */
+            table_id: string;
         };
     };
     responses: never;
@@ -3027,6 +3136,419 @@ export interface operations {
             };
             /** @description Request body too large */
             413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    listCatalogNamespaces: {
+        parameters: {
+            query?: {
+                /** @description Namespace levels of the parent, outermost first. Omit for the top level. */
+                parent?: string[];
+                /** @description The page size asked of the catalog. A catalog that ignores page sizes may answer with more items, up to 1000. */
+                limit?: number;
+                /** @description The next_cursor of the previous page. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The namespaces the catalog lists */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogNamespacePage"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unknown connection or namespace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description The catalog does not support this operation */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Catalog or discovery capacity unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    listCatalogTables: {
+        parameters: {
+            query?: {
+                /** @description Namespace levels, outermost first. At least one level. */
+                namespace?: string[];
+                /** @description The page size asked of the catalog. A catalog that ignores page sizes may answer with more items, up to 1000. */
+                limit?: number;
+                /** @description The next_cursor of the previous page. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The namespace's tables and their registration */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogTablePage"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unknown connection or namespace */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description The catalog does not support this operation */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Catalog or discovery capacity unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    registerCatalogTables: {
+        parameters: {
+            query?: never;
+            header: {
+                "x-csrf-token": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterCatalogTables"];
+            };
+        };
+        responses: {
+            /** @description Every named alias was recorded already */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogRegistration"];
+                };
+            };
+            /** @description At least one alias was recorded */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogRegistration"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unknown connection or catalog table */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description The namespace is too large or holds a name Bergsmith cannot address, a name now holds a different table, or the connection changed while it was read */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Catalog or discovery capacity unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    unregisterCatalogTable: {
+        parameters: {
+            query: {
+                /** @description Namespace levels, outermost first. At least one level. */
+                namespace?: string[];
+                table: string;
+                /** @description The revision the browse reported for this alias. */
+                revision: number;
+            };
+            header: {
+                "x-csrf-token": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The alias was removed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogUnregistration"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unknown connection or alias */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description The alias is not the revision the caller observed, or the table still has nonterminal jobs */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

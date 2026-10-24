@@ -57,7 +57,10 @@ async fn oauth2_tokens_are_fetched_once_and_sent_as_bearer_tokens() {
         .create_async()
         .await;
     let tables = server
-        .mock("GET", "/catalog/v1/p1/namespaces/db/tables")
+        .mock(
+            "GET",
+            Matcher::Regex(r"^/catalog/v1/p1/namespaces/db/tables(\?.*)?$".to_owned()),
+        )
         .match_header("authorization", "Bearer t1")
         .with_body(r#"{"identifiers":[{"namespace":["db"],"name":"events"}]}"#)
         .create_async()
@@ -66,9 +69,12 @@ async fn oauth2_tokens_are_fetched_once_and_sent_as_bearer_tokens() {
     let connection = CatalogConnection::connect(&config(&server, oauth2(&server, "s3cret")))
         .await
         .unwrap();
-    let listed = connection.list_tables(&["db".to_owned()]).await.unwrap();
+    let listed = connection
+        .list_tables(&["db".to_owned()], None, 50)
+        .await
+        .unwrap();
 
-    assert_eq!(listed.len(), 1);
+    assert_eq!(listed.items.len(), 1);
     token.assert_async().await;
     catalog_config.assert_async().await;
     tables.assert_async().await;
@@ -89,14 +95,15 @@ async fn a_rejected_oauth2_token_is_discarded_and_fetched_again() {
         .with_body(CONFIG_BODY)
         .create_async()
         .await;
+    let tables = Matcher::Regex(r"^/catalog/v1/p1/namespaces/db/tables(\?.*)?$".to_owned());
     let rejected = server
-        .mock("GET", "/catalog/v1/p1/namespaces/db/tables")
+        .mock("GET", tables.clone())
         .with_status(401)
         .expect(1)
         .create_async()
         .await;
     let accepted = server
-        .mock("GET", "/catalog/v1/p1/namespaces/db/tables")
+        .mock("GET", tables)
         .with_body(r#"{"identifiers":[]}"#)
         .expect(1)
         .create_async()
@@ -106,7 +113,7 @@ async fn a_rejected_oauth2_token_is_discarded_and_fetched_again() {
         .unwrap();
 
     let error = connection
-        .list_tables(&["db".to_owned()])
+        .list_tables(&["db".to_owned()], None, 50)
         .await
         .err()
         .unwrap();
@@ -118,9 +125,10 @@ async fn a_rejected_oauth2_token_is_discarded_and_fetched_again() {
     // rejected it; the next request must not repeat it.
     assert!(
         connection
-            .list_tables(&["db".to_owned()])
+            .list_tables(&["db".to_owned()], None, 50)
             .await
             .unwrap()
+            .items
             .is_empty()
     );
     token.assert_async().await;

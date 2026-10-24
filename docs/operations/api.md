@@ -148,6 +148,63 @@ runtime resolves credential references; the check returns
 `catalog_credential_unavailable` rather than authenticating as anything else,
 and a catalog that requires authentication answers `catalog_access_denied`.
 
+## Catalog discovery
+
+`GET /api/v1/catalogs/{id}/namespaces` lists the namespaces a connection's
+catalog holds under a parent (`?parent=a&parent=b`), or the top level without
+one. `GET /api/v1/catalogs/{id}/tables?namespace=db` lists one namespace's
+tables and marks the ones the connection already has an alias for, with the
+alias revision a removal names. Both require `connections:manage` for the
+connection, and a namespace is repeated parameters, never a dotted path.
+
+Both read one page. `limit` (1–200, default 50) is the page size asked of the
+catalog; a catalog that ignores page sizes may answer with more items, up to
+1000. `next_cursor` carries the catalog's own continuation token and is bound
+to the caller, the connection, and the listing, so it only continues the
+listing it was issued for; `null` means the catalog has no more. `skipped`
+counts identifiers the catalog returned that Bergsmith cannot address (an
+empty level, a level or name over 255 bytes, a control character, more than 16
+levels); they are never shown as registrable. A page holding more than 1000
+items or 1 MiB of identifiers returns 500 `catalog_page_too_large`, and a
+catalog token too long to carry in a cursor returns 500
+`catalog_token_too_large` instead of a continuation the next request would
+refuse.
+
+The catalog's connect and request timeouts bound each call, and the
+coordinator runs at most 4 discovery operations at once; one that cannot start
+returns 503 `catalog_discovery_capacity_exhausted`. A catalog that does not
+advertise namespace listing returns 409 `catalog_unsupported`, a missing
+namespace 404 `catalog_namespace_not_found`, a table the catalog places
+outside the requested namespace 409 `catalog_namespace_mismatch`, and an
+unreachable catalog 503 `catalog_unavailable`.
+
+`POST /api/v1/catalogs/{id}/registrations` accepts
+`{"namespace":["db"],"table":"events"}` to register one table or
+`{"namespace":["db"]}` to register the whole namespace, and answers 201 with
+the registered names, or 200 when every name was registered already. The
+catalog is read before anything is written, and the aliases and their
+`catalog.tables_registered` audit record commit together, so a request records
+every name it was given or none. A namespace registration reads the namespace
+page by page before it writes, so a namespace that spans pages is one request.
+One request records at most 100 tables; a larger namespace returns 409
+`registration_too_large`, and one holding a name Bergsmith cannot address
+returns 409 `registration_incomplete`. A name the catalog does not serve
+returns 404 `catalog_table_not_found`, and one that now reaches a different
+table returns 409 `table_identity_conflict`. The aliases are bound to the
+routing they were read with: an edit that lands while the catalog is being
+read leaves nothing recorded and returns 409 `catalog_connection_changed`, so
+the request is run again.
+
+`DELETE /api/v1/catalogs/{id}/registrations?namespace=db&table=events&revision=7`
+removes the alias row the caller observed and returns the canonical table it
+used to reach. The revision is what the table browse reported, or the alias
+revision on `GET /api/v1/tables/{id}` when the catalog no longer lists the
+name: a name that was removed and registered again carries a new one, so a
+delayed removal answers 409 `revision_conflict` instead of deleting the
+replacement. The table and its other names stay, and an unknown name returns
+404. Every name of a table with nonterminal jobs is kept, so the removal
+returns 409 `table_in_use` until the work ends.
+
 ## Previews
 `POST /api/v1/previews` accepts `{"table_id":"<canonical table UUID>"}` and
 requires `jobs:submit` on that table. It creates no job, plan, task, output,

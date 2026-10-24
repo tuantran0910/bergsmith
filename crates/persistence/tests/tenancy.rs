@@ -1,5 +1,6 @@
 //! Organizations, principals, catalog connections, and table identities
 //! against real PostgreSQL (BS-003.T2).
+#![expect(clippy::unwrap_used, reason = "fixtures fail on setup errors")]
 
 mod support;
 
@@ -452,6 +453,216 @@ async fn an_alias_reused_by_a_recreated_table_is_a_conflict(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(identities, 1);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn registering_an_alias_reports_whether_it_is_new(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let acme = organization(&mut conn, "acme").await;
+    let main = connection(&mut conn, acme, "main").await;
+    let table_uuid = Uuid::now_v7();
+
+    let first = tables::register_alias(&mut conn, acme, &alias(main, "events"), table_uuid)
+        .await
+        .unwrap();
+    let second = tables::register_alias(&mut conn, acme, &alias(main, "events"), table_uuid)
+        .await
+        .unwrap();
+
+    assert!(first.created);
+    assert_eq!(first.identity, second.identity);
+    assert!(!second.created, "the name was registered by the first call");
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_namespace_registration_records_every_alias_or_none(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let acme = organization(&mut conn, "acme").await;
+    let main = connection(&mut conn, acme, "main").await;
+    // The second name already reaches another table, so the request fails.
+    tables::resolve_table(&mut conn, acme, &alias(main, "conflict"), Uuid::now_v7())
+        .await
+        .unwrap();
+
+    let error = tables::register_aliases(
+        &mut conn,
+        acme,
+        &[
+            (alias(main, "orders"), Uuid::now_v7()),
+            (alias(main, "conflict"), Uuid::now_v7()),
+        ],
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        matches!(error, PersistenceError::TableIdentityConflict { .. }),
+        "{error:?}"
+    );
+    assert!(
+        tables::table_by_alias(&mut conn, &alias(main, "orders"))
+            .await
+            .unwrap()
+            .is_none(),
+        "the first alias is rolled back with the request"
+    );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn unregistering_keeps_the_table_and_its_other_names(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let acme = organization(&mut conn, "acme").await;
+    let main = connection(&mut conn, acme, "main").await;
+    let replica = connection(&mut conn, acme, "replica").await;
+    let table_uuid = Uuid::now_v7();
+    let original = tables::resolve_table(&mut conn, acme, &alias(main, "events"), table_uuid)
+        .await
+        .unwrap();
+    tables::resolve_table(&mut conn, acme, &alias(replica, "renamed"), table_uuid)
+        .await
+        .unwrap();
+
+    let revision = alias_revision(&mut conn, replica, "renamed").await;
+    let removed = tables::unregister_alias(&mut conn, acme, &alias(replica, "renamed"), revision)
+        .await
+        .unwrap();
+    assert_eq!(removed, original.id);
+
+    assert!(
+        tables::table_by_alias(&mut conn, &alias(replica, "renamed"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let kept = tables::table_by_alias(&mut conn, &alias(main, "events"))
+        .await
+        .unwrap();
+    assert_eq!(kept.map(|table| table.id), Some(original.id));
+
+    let missing = tables::unregister_alias(&mut conn, acme, &alias(replica, "renamed"), revision)
+        .await
+        .unwrap_err();
+    assert!(matches!(missing, PersistenceError::NotFound { .. }));
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn unregistering_a_table_with_work_in_flight_is_refused(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let _job = support::job(&mut conn, &tenant).await;
+
+    let revision = alias_revision(&mut conn, tenant.connection, "events").await;
+    let error = tables::unregister_alias(
+        &mut conn,
+        tenant.organization,
+        &alias(tenant.connection, "events"),
+        revision,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        matches!(error, PersistenceError::TableInUse { .. }),
+        "{error:?}"
+    );
+    assert!(
+        tables::table_by_alias(&mut conn, &alias(tenant.connection, "events"))
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+/// The revision of one alias row.
+async fn alias_revision(
+    conn: &mut sqlx::PgConnection,
+    connection: CatalogConnectionId,
+    name: &str,
+) -> i64 {
+    sqlx::query_scalar(
+        "SELECT revision FROM table_aliases
+         WHERE catalog_connection_id = $1 AND table_name = $2",
+    )
+    .bind(connection.as_uuid())
+    .bind(name)
+    .fetch_one(conn)
+    .await
+    .unwrap()
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_stale_removal_does_not_remove_a_replacement(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let acme = organization(&mut conn, "acme").await;
+    let main = connection(&mut conn, acme, "main").await;
+    let name = alias(main, "events");
+
+    // The operator reads the name, and the row it read is removed.
+    let observed = tables::register_alias(&mut conn, acme, &name, Uuid::now_v7())
+        .await
+        .unwrap();
+    let revision = alias_revision(&mut conn, main, "events").await;
+    tables::unregister_alias(&mut conn, acme, &name, revision)
+        .await
+        .unwrap();
+
+    // A replacement takes the name before the delayed removal arrives.
+    let replacement = tables::register_alias(&mut conn, acme, &name, Uuid::now_v7())
+        .await
+        .unwrap();
+    assert!(replacement.created);
+    assert_ne!(replacement.identity.id, observed.identity.id);
+
+    let error = tables::unregister_alias(&mut conn, acme, &name, revision)
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, PersistenceError::ConfigRevisionConflict { .. }),
+        "{error:?}"
+    );
+    let kept = tables::table_by_alias(&mut conn, &name).await.unwrap();
+    assert_eq!(
+        kept.map(|table| table.id),
+        Some(replacement.identity.id),
+        "the replacement survives the stale removal"
+    );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn registered_aliases_lists_only_the_named_names(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let acme = organization(&mut conn, "acme").await;
+    let main = connection(&mut conn, acme, "main").await;
+    let orders = tables::resolve_table(&mut conn, acme, &alias(main, "orders"), Uuid::now_v7())
+        .await
+        .unwrap();
+    tables::resolve_table(&mut conn, acme, &alias(main, "refunds"), Uuid::now_v7())
+        .await
+        .unwrap();
+
+    let found = tables::registered_aliases(
+        &mut conn,
+        acme,
+        main,
+        &["db".to_owned()],
+        &["orders".to_owned(), "missing".to_owned()],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        found.get("orders").map(|name| name.table_id),
+        Some(orders.id)
+    );
+    assert!(found["orders"].revision > 0);
+    assert!(
+        tables::registered_aliases(&mut conn, acme, main, &["db".to_owned()], &[])
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]

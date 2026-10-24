@@ -19,6 +19,7 @@ const WRITE_DATA_PATH: &str = "write.data.path";
 /// Header that asks the catalog to vend storage credentials.
 const ACCESS_DELEGATION: &str = "X-Iceberg-Access-Delegation";
 
+const LIST_NAMESPACES: &str = "GET /v1/{prefix}/namespaces";
 const LIST_TABLES: &str = "GET /v1/{prefix}/namespaces/{namespace}/tables";
 const LOAD_TABLE: &str = "GET /v1/{prefix}/namespaces/{namespace}/tables/{table}";
 const COMMIT_TABLE: &str = "POST /v1/{prefix}/namespaces/{namespace}/tables/{table}";
@@ -26,6 +27,27 @@ const LOAD_CREDENTIALS: &str = "GET /v1/{prefix}/namespaces/{namespace}/tables/{
 
 /// Endpoints Bergsmith cannot work without.
 const REQUIRED_ENDPOINTS: [&str; 3] = [LIST_TABLES, LOAD_TABLE, COMMIT_TABLE];
+
+/// The most items one listing page returns.
+///
+/// A catalog is asked for a page the size the caller wants. One that ignores
+/// the request and answers with more is still answered within this bound; a
+/// page beyond it is refused, because silently dropping the rest would leave
+/// the items unreachable.
+pub const MAX_LISTING_ITEMS: usize = 1_000;
+
+/// The most identifier bytes one listing page retains.
+///
+/// The decoded page is already bounded by the response limit, but the caller
+/// keeps only the identifiers it can address, so a page cannot make one
+/// browse retain megabytes of names.
+pub const MAX_LISTING_BYTES: usize = 1024 * 1024;
+
+/// The most namespace levels one identifier may have.
+const MAX_NAMESPACE_LEVELS: usize = 16;
+
+/// The longest namespace level or table name, in bytes.
+const MAX_NAME_LENGTH: usize = 255;
 
 /// The most bytes a catalog configuration may carry.
 ///
@@ -65,6 +87,12 @@ impl CapabilityReport {
     #[must_use]
     pub fn supports_list_tables(&self) -> bool {
         self.supports(LIST_TABLES)
+    }
+
+    /// Whether the catalog lists namespaces.
+    #[must_use]
+    pub fn supports_list_namespaces(&self) -> bool {
+        self.supports(LIST_NAMESPACES)
     }
 
     /// Whether the catalog loads a table's metadata.
@@ -111,6 +139,23 @@ pub struct TableName {
     pub namespace: Vec<String>,
     /// The table name.
     pub name: String,
+}
+
+/// One page of a catalog listing.
+///
+/// The items are sorted and deduplicated, so a caller sees a stable order on
+/// every read of the same page. `next_page_token` is the catalog's own
+/// continuation token: passing it back reads the next page without
+/// enumerating what came before.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Listing<T> {
+    /// The addressable items of this page, sorted and deduplicated.
+    pub items: Vec<T>,
+    /// The catalog's token for the next page, if it has one.
+    pub next_page_token: Option<String>,
+    /// Identifiers the catalog returned that Bergsmith cannot address, such
+    /// as an empty level or a name over 255 bytes.
+    pub skipped: usize,
 }
 
 /// A table as loaded from the catalog.
@@ -197,6 +242,14 @@ struct ListTablesResponse {
 }
 
 #[derive(serde::Deserialize)]
+struct ListNamespacesResponse {
+    #[serde(default)]
+    namespaces: Vec<Vec<String>>,
+    #[serde(rename = "next-page-token")]
+    next_page_token: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
 struct IdentifierJson {
     namespace: Vec<String>,
     name: String,
@@ -270,35 +323,136 @@ impl CatalogConnection {
         &self.capabilities
     }
 
-    /// Lists the tables in a namespace, following pagination, sorted by name.
+    /// Lists one page of the namespaces under `parent`.
+    ///
+    /// `page_size` is what the catalog is asked for; `page_token` continues
+    /// from a previous [`Listing`]. Identifiers Bergsmith cannot address are
+    /// counted and skipped, so a malformed entry never reaches a caller as a
+    /// name it could not use. The page is refused with
+    /// [`CatalogError::ListingOverflow`] when it holds more than
+    /// [`MAX_LISTING_ITEMS`] items or [`MAX_LISTING_BYTES`] of identifiers.
     ///
     /// # Errors
     ///
-    /// [`CatalogError::Status`] (404 for a missing namespace) and transport
-    /// or decoding errors.
-    pub async fn list_tables(&self, namespace: &[String]) -> Result<Vec<TableName>, CatalogError> {
-        let mut tables = Vec::new();
-        let mut page_token: Option<String> = None;
-        loop {
-            let mut url = self.namespace_url(namespace, &["tables"])?;
-            if let Some(token) = &page_token {
-                url.query_pairs_mut().append_pair("pageToken", token);
+    /// [`CatalogError::Status`] (404 for a missing parent), transport or
+    /// decoding errors, and [`CatalogError::ListingOverflow`].
+    pub async fn list_namespaces(
+        &self,
+        parent: Option<&[String]>,
+        page_token: Option<&str>,
+        page_size: usize,
+    ) -> Result<Listing<Vec<String>>, CatalogError> {
+        let page = self
+            .list_namespaces_page(parent, page_token, page_size)
+            .await?;
+        let mut listing = Listing {
+            items: Vec::new(),
+            next_page_token: page.next_page_token.filter(|token| !token.is_empty()),
+            skipped: 0,
+        };
+        let mut bytes = 0usize;
+        for levels in page.namespaces {
+            if !addressable_namespace(&levels) {
+                listing.skipped += 1;
+                continue;
             }
-            let page: ListTablesResponse = self
-                .client
-                .json("GET list tables", Method::GET, url, |request| request)
-                .await?;
-            tables.extend(page.identifiers.into_iter().map(|id| TableName {
+            bytes += namespace_bytes(&levels);
+            if bytes > MAX_LISTING_BYTES {
+                return Err(CatalogError::ListingOverflow {
+                    operation: "GET list namespaces",
+                });
+            }
+            listing.items.push(levels);
+        }
+        finish(listing, "GET list namespaces")
+    }
+
+    /// Lists one page of the tables in a namespace.
+    ///
+    /// Bounded like [`Self::list_namespaces`]. A table whose name or namespace
+    /// Bergsmith could not address is counted in
+    /// [`Listing::skipped`], so a caller never registers a name the API would
+    /// refuse.
+    ///
+    /// # Errors
+    ///
+    /// [`Self::list_namespaces`]'s errors, with a 404 for a missing namespace.
+    pub async fn list_tables(
+        &self,
+        namespace: &[String],
+        page_token: Option<&str>,
+        page_size: usize,
+    ) -> Result<Listing<TableName>, CatalogError> {
+        let page = self
+            .list_tables_page(namespace, page_token, page_size)
+            .await?;
+        let mut listing = Listing {
+            items: Vec::new(),
+            next_page_token: page.next_page_token.filter(|token| !token.is_empty()),
+            skipped: 0,
+        };
+        let mut bytes = 0usize;
+        for id in page.identifiers {
+            let table = TableName {
                 namespace: id.namespace,
                 name: id.name,
-            }));
-            match page.next_page_token.filter(|token| !token.is_empty()) {
-                Some(token) => page_token = Some(token),
-                None => break,
+            };
+            if !addressable_namespace(&table.namespace) || !addressable_name(&table.name) {
+                listing.skipped += 1;
+                continue;
             }
+            bytes += namespace_bytes(&table.namespace) + table.name.len();
+            if bytes > MAX_LISTING_BYTES {
+                return Err(CatalogError::ListingOverflow {
+                    operation: "GET list tables",
+                });
+            }
+            listing.items.push(table);
         }
-        tables.sort();
-        Ok(tables)
+        finish(listing, "GET list tables")
+    }
+
+    /// Reads one page of namespaces under `parent`.
+    async fn list_namespaces_page(
+        &self,
+        parent: Option<&[String]>,
+        page_token: Option<&str>,
+        page_size: usize,
+    ) -> Result<ListNamespacesResponse, CatalogError> {
+        let mut url = self.namespaces_url()?;
+        {
+            let mut query = url.query_pairs_mut();
+            if let Some(parent) = parent {
+                query.append_pair("parent", &parent.join("\u{1f}"));
+            }
+            if let Some(token) = page_token {
+                query.append_pair("pageToken", token);
+            }
+            query.append_pair("pageSize", &page_size.max(1).to_string());
+        }
+        self.client
+            .json("GET list namespaces", Method::GET, url, |request| request)
+            .await
+    }
+
+    /// Reads one page of tables in `namespace`.
+    async fn list_tables_page(
+        &self,
+        namespace: &[String],
+        page_token: Option<&str>,
+        page_size: usize,
+    ) -> Result<ListTablesResponse, CatalogError> {
+        let mut url = self.namespace_url(namespace, &["tables"])?;
+        {
+            let mut query = url.query_pairs_mut();
+            if let Some(token) = page_token {
+                query.append_pair("pageToken", token);
+            }
+            query.append_pair("pageSize", &page_size.max(1).to_string());
+        }
+        self.client
+            .json("GET list tables", Method::GET, url, |request| request)
+            .await
     }
 
     /// Loads a table. With `vend_credentials`, asks the catalog for
@@ -381,6 +535,16 @@ impl CatalogConnection {
         &self.client
     }
 
+    /// `<base>/v1[/<prefix>]/namespaces`.
+    pub(crate) fn namespaces_url(&self) -> Result<Url, CatalogError> {
+        let mut segments: Vec<&str> = vec!["v1"];
+        if let Some(prefix) = &self.prefix {
+            segments.push(prefix);
+        }
+        segments.push("namespaces");
+        endpoint_url(&self.base, &segments)
+    }
+
     /// `<base>/v1[/<prefix>]/namespaces/<namespace>/<rest...>`.
     pub(crate) fn namespace_url(
         &self,
@@ -397,6 +561,36 @@ impl CatalogConnection {
         segments.extend_from_slice(rest);
         endpoint_url(&self.base, &segments)
     }
+}
+
+/// Whether one namespace level or table name is addressable.
+fn addressable_name(value: &str) -> bool {
+    !value.is_empty() && value.len() <= MAX_NAME_LENGTH && !value.chars().any(char::is_control)
+}
+
+/// Whether a namespace is a list of addressable levels.
+fn addressable_namespace(levels: &[String]) -> bool {
+    !levels.is_empty()
+        && levels.len() <= MAX_NAMESPACE_LEVELS
+        && levels.iter().all(|level| addressable_name(level))
+}
+
+/// The bytes one identifier's namespace levels take, with their separators.
+fn namespace_bytes(levels: &[String]) -> usize {
+    levels.iter().map(|level| level.len() + 1).sum()
+}
+
+/// Sorts, deduplicates, and bounds one page.
+fn finish<T: Ord>(
+    mut listing: Listing<T>,
+    operation: &'static str,
+) -> Result<Listing<T>, CatalogError> {
+    listing.items.sort();
+    listing.items.dedup();
+    if listing.items.len() > MAX_LISTING_ITEMS {
+        return Err(CatalogError::ListingOverflow { operation });
+    }
+    Ok(listing)
 }
 
 /// Converts vended entries into credentials. When the catalog sent none,

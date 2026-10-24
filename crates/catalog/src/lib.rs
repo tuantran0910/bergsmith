@@ -13,5 +13,8 @@ mod error;
 
 pub use client::{Auth, ConnectionConfig};
 pub use commit::*;
-pub use connection::{CapabilityReport, CatalogConnection, LoadedTable, ObservedTable, TableName};
+pub use connection::{
+    CapabilityReport, CatalogConnection, Listing, LoadedTable, MAX_LISTING_BYTES,
+    MAX_LISTING_ITEMS, ObservedTable, TableName,
+};
 pub use error::{CatalogError, CatalogErrorModel};

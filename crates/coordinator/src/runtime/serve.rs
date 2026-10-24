@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use crate::api::{self, EventStreamLimits, JobEventHub};
 use crate::checks::CapabilityChecker;
+use crate::discovery::{CatalogDiscovery, DiscoveryLimits};
 use crate::identity::oidc::OidcProvider;
 use crate::identity::routes::IdentityState;
 use crate::observability::{Observability, RpcMetrics};
@@ -324,16 +325,17 @@ async fn start(
             constraint: error.to_string(),
         })
     })?;
+    let catalogs = Arc::new(RuntimeCatalogs::new(database.clone(), preview_profiles));
     let api = api::ApiState {
         database: database.clone(),
         sessions: sessions.clone(),
         previews,
         events: events.clone(),
         checks: CapabilityChecker::default(),
+        discovery: CatalogDiscovery::new(catalogs.clone(), DiscoveryLimits::default()),
     };
     let identity = IdentityState::new(database.clone(), Arc::new(provider), sessions);
 
-    let catalogs = Arc::new(RuntimeCatalogs::new(database.clone(), preview_profiles));
     let access = Arc::new(RuntimeWorkerAccess::new(catalogs.clone()));
     let verifiers = config.verifiers().map_err(|error| {
         ServeError::Database(PersistenceError::InvalidValue {

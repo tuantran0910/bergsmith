@@ -10,13 +10,17 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use bergsmith_coordinator::api::{ApiState, EventStreamLimits, JobEventHub};
 use bergsmith_coordinator::checks::CapabilityChecker;
+use bergsmith_coordinator::discovery::{CatalogDiscovery, DiscoveryLimits};
 use bergsmith_coordinator::identity::oidc::{OidcConfig, OidcProvider, TokenEndpointAuth};
 use bergsmith_coordinator::identity::routes::IdentityState;
 use bergsmith_coordinator::identity::session::SessionConfig;
 use bergsmith_coordinator::preview::{CatalogPreviewer, PreviewProfiles};
+use bergsmith_coordinator::runtime::catalogs::RuntimeCatalogs;
+use bergsmith_coordinator::runtime::config::RuntimeProfiles;
 use bergsmith_coordinator::runtime::http;
 use bergsmith_maintenance::PlannerConfig;
 use bergsmith_persistence::{Database, DatabaseConfig, DatabaseUrl};
+use bergsmith_storage::StorageProfiles;
 use sqlx::{ConnectOptions, PgPool};
 use tower::ServiceExt as _;
 
@@ -72,12 +76,20 @@ async fn the_ui_api_and_auth_share_one_origin(pool: PgPool) {
     let previews =
         CatalogPreviewer::new(PreviewProfiles::default(), PlannerConfig::default()).unwrap();
     let events = JobEventHub::new(EventStreamLimits::default()).unwrap();
+    let catalogs = Arc::new(RuntimeCatalogs::new(
+        database.clone(),
+        RuntimeProfiles {
+            default: StorageProfiles::default(),
+            connections: std::collections::BTreeMap::new(),
+        },
+    ));
     let api = ApiState {
         database: database.clone(),
         sessions: sessions.clone(),
         previews,
         events,
         checks: CapabilityChecker::default(),
+        discovery: CatalogDiscovery::new(catalogs, DiscoveryLimits::default()),
     };
     let identity = IdentityState::new(database, Arc::new(provider), sessions);
 
