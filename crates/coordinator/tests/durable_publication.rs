@@ -915,7 +915,6 @@ async fn scheduler_startup_recovers_native_publication_evidence_without_resendin
     let worker = WorkerService::new(
         pool.clone(),
         run.epoch,
-        vec![],
         WorkerConfig::default(),
         provider.clone(),
     )
@@ -983,7 +982,6 @@ fn recovery_scheduler(
     let worker = WorkerService::new(
         pool.clone(),
         run.epoch,
-        vec![],
         WorkerConfig::default(),
         provider.clone(),
     )

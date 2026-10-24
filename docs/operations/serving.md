@@ -82,13 +82,7 @@ The JSON document is validated before any listener starts. A minimal document:
     "cpu_millis": 1000,
     "max_duration_seconds": 180,
     "max_output_bytes": 4294967296
-  },
-  "worker_verifiers": [{
-    "organization": "…",
-    "principal": "…",
-    "pool": "native",
-    "verifier": "…"
-  }]
+  }
 }
 ```
 
@@ -104,7 +98,6 @@ The JSON document is validated before any listener starts. A minimal document:
 | `scheduler` | Admission budgets, retry bounds, page size, recovery grace |
 | `publication` | Deadline for one bounded proposal step |
 | `task` | The single pool, capability, and resource envelope for this release |
-| `worker_verifiers` | Organization, service principal, pool, and token verifier |
 | `leadership` | Lease and renewal durations; renewal must be shorter than the lease |
 | `loops` | Planning and publication scan intervals |
 | `observability` | Optional metrics listener and ledger snapshot bounds ([observability](observability.md)) |
@@ -219,11 +212,23 @@ catalogs whose supported table sizes and storage latency require a longer check.
 | `register-table` | Load a table and record its canonical alias |
 | `bootstrap-admin` | Provision the first administrator for an organization |
 | `bootstrap-service` | Create a worker or schedule service principal; optionally grant `MaintenanceService` on a table |
-| `service-token-verifier` | Print the verifier to put in `worker_verifiers` |
+| `issue-worker-token` | Issue a pool token for a service identity into a new mode-0600 file |
+
+Upgrading from a configuration with `worker_verifiers`: automatic import is
+unsupported. The verifier derivation and the organization/principal/pool
+metadata are unchanged, so a migration tool could import the rows, but none is
+provided. The supported procedure is to remove the block, create a service
+identity per worker pool, and issue replacement tokens through the API or
+`issue-worker-token` before upgrading the coordinators. Workers whose old
+tokens are not replaced fail closed with `WorkerTokenInvalid`; no
+unauthenticated work is accepted.
 
 Identifiers are logged as structured `tracing` fields. The commands are
 idempotent where the underlying ledger is: re-running `migrate` or
 `bootstrap-admin` is safe, while duplicate organization slugs, connection
 names, and principals are rejected.
 Service provisioning, its optional grant, and their audit records commit in one
-transaction; failure leaves none of those changes behind.
+transaction; failure leaves none of those changes behind. `issue-worker-token`
+requires an administrator holding `workers:manage`, stores only the verifier,
+and writes the bearer token once to a new mode-0600 file. An existing file is
+never overwritten; do not pass the token through shell history or a log.

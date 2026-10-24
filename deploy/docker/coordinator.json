@@ -81,14 +81,6 @@
     "max_duration_seconds": 180,
     "max_output_bytes": 4294967296
   },
-  "worker_verifiers": [
-    {
-      "organization": "01900000-0000-7000-8000-000000000001",
-      "principal": "01900000-0000-7000-8000-000000000003",
-      "pool": "native",
-      "verifier": "15f607e06466620da32baf750d8be9a88ccdf774ef2aa532a7f68c8d9e6c8728"
-    }
-  ],
   "leadership": {
     "lease_seconds": 30,
     "renew_seconds": 10

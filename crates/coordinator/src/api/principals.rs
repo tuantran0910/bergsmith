@@ -56,7 +56,7 @@ pub(super) struct UpdatePrincipal {
 
 /// The caller-visible shape of a principal. It never carries a credential:
 /// a service account's token is shown once when it is created (BS-023.T4).
-fn document(principal: &Principal) -> Value {
+pub(super) fn document(principal: &Principal) -> Value {
     json!({
         "id": principal.id,
         "kind": principal.kind.as_str(),

@@ -70,28 +70,31 @@ but are not enabled in this release. Add the bucket lifecycle rule
 
 ## 4. Worker pool
 
-Create a service principal and a pool token, give the coordinator only the
-token's verifier, and give the worker the token itself.
+Create a service principal and issue a pool token. Only the token's verifier
+is stored, so give the worker the token itself and nothing else.
 
 ```sh
 bergsmith-coordinator bootstrap-service --organization acme \
   --display-name "native workers"            # logs principal_id
 umask 077
-printf 'bsw1_native_%s\n' \
-  "$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')" > worker-token
-bergsmith-coordinator service-token-verifier --token-file worker-token  # logs verifier
+bergsmith-coordinator issue-worker-token --organization acme \
+  --actor <administrator-principal-uuid> --principal <service-principal-uuid> \
+  --pool native --label worker-1 --token-file worker-token
 ```
 
-The token is `bsw1_<pool>_<secret>` with a 43-character base64url secret.
-Add the verifier to `worker_verifiers` in the coordinator configuration with
-the organization UUID, the service principal UUID, and the pool name. The
-pool must match `task.pool`, and the worker's `capabilities` must include
-`task.capability`. Mount the token file into the worker only, readable by the
-worker account. Start the worker as described in [workers.md](workers.md); its
-`endpoint` must match a name on the coordinator's worker certificate.
+The token is `bsw1_<pool>_<secret>` with a 43-character base64url secret. The
+command writes it once to a new mode-0600 file, stores only its verifier in
+PostgreSQL, and audits the issuance. The pool must match `task.pool`, and the worker's `capabilities`
+must include `task.capability`. Mount the token file into the worker only,
+readable by the worker account. Start the worker as described in
+[workers.md](workers.md); its `endpoint` must match a name on the coordinator's
+worker certificate.
 
-To rotate a token, add the new verifier next to the old one, restart the
-coordinator, move workers to the new token, then remove the old verifier.
+Rotate through `POST /api/v1/service-identities/{id}/tokens/{token}/rotate`.
+The replacement is returned once and the old token is revoked in the same
+transaction. To overlap a rollout without downtime, issue a second token,
+move workers to it, then revoke the first. Revocation takes effect on the next
+worker RPC; no coordinator restart is needed.
 
 ## 5. Tables
 

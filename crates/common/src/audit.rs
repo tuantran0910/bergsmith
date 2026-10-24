@@ -66,6 +66,12 @@ pub enum AuditAction {
     PrincipalDeactivated,
     /// A previously deactivated principal was reactivated.
     PrincipalReactivated,
+    /// A worker pool token was issued; the token itself is never recorded.
+    WorkerTokenIssued,
+    /// A worker pool token was revoked.
+    WorkerTokenRevoked,
+    /// A worker pool token was rotated; the predecessor was revoked.
+    WorkerTokenRotated,
     /// Admission authorized a job.
     JobAdmitted,
     /// Admission refused a job because the requester's grant was revoked or
@@ -121,6 +127,9 @@ impl AuditAction {
             Self::IdentityProvisioned => "identity.provisioned",
             Self::PrincipalDeactivated => "principal.deactivated",
             Self::PrincipalReactivated => "principal.reactivated",
+            Self::WorkerTokenIssued => "worker_token.issued",
+            Self::WorkerTokenRevoked => "worker_token.revoked",
+            Self::WorkerTokenRotated => "worker_token.rotated",
             Self::JobAdmitted => "job.admitted",
             Self::JobAdmissionDenied => "job.admission_denied",
             Self::JobPublished => "job.published",
@@ -161,6 +170,11 @@ impl AuditAction {
         Self::GrantRevoked,
         Self::SessionRevoked,
         Self::IdentityProvisioned,
+        Self::PrincipalDeactivated,
+        Self::PrincipalReactivated,
+        Self::WorkerTokenIssued,
+        Self::WorkerTokenRevoked,
+        Self::WorkerTokenRotated,
         Self::JobAdmitted,
         Self::JobAdmissionDenied,
         Self::JobPublished,

@@ -7,9 +7,10 @@ the scheduler offers it.
 The coordinator library exposes `workers::WorkerService`, implementing
 `bergsmith.cluster.v1.ClusterService`. Serve it with tonic's
 `ClusterServiceServer` over `worker_tls_config(identity)`. Every RPC rejects a
-connection without TLS transport information and a valid pool token. Configure
-only token verifiers and their organization, service principal, and pool; never
-persist the bearer token. Token provisioning and audit commands arrive in BS-017.
+connection without TLS transport information and a valid pool token. The
+coordinator stores only each token's verifier and checks it on every RPC, so
+issuance, rotation, and revocation apply without a restart. Never persist or
+log the bearer token.
 
 Workers must support cluster protocol revision 2 and advertise exactly one
 executing task. Default timings are a 15-second heartbeat, a 90-second session

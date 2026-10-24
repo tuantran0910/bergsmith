@@ -329,6 +329,41 @@ pub async fn principal_state_changed(
     .await
 }
 
+/// Records a worker pool token issuance, rotation, or revocation.
+///
+/// The bearer token is never passed here, so it cannot reach the audit log.
+///
+/// # Errors
+///
+/// [`AuditError`] when the ledger is unavailable.
+pub async fn worker_token_changed(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    actor: Option<PrincipalId>,
+    action: AuditAction,
+    token: &bergsmith_persistence::worker_tokens::WorkerPoolToken,
+    rotated_from: Option<bergsmith_common::ids::WorkerPoolTokenId>,
+) -> Result<(), AuditError> {
+    let kind = actor_kind(conn, organization_id, actor).await;
+    record(
+        conn,
+        Some(organization_id),
+        actor,
+        kind,
+        action,
+        "worker_pool_token",
+        Some(&token.id.to_string()),
+        AuditOutcome::Allowed,
+        json!({
+            "principal_id": token.principal_id.to_string(),
+            "pool": token.pool,
+            "label": token.label,
+            "rotated_from": rotated_from.map(|id| id.to_string()),
+        }),
+    )
+    .await
+}
+
 /// Records an administrative session revocation.
 ///
 /// # Errors

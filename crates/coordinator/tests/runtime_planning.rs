@@ -204,14 +204,8 @@ async fn a_planning_pass_prefers_enabled_connections_and_registers_dispatch(pool
     };
     let catalogs = Arc::new(RuntimeCatalogs::new(database, profiles));
     let access = Arc::new(RuntimeWorkerAccess::new(catalogs.clone()));
-    let worker = WorkerService::new(
-        pool.clone(),
-        epoch,
-        Vec::new(),
-        WorkerConfig::default(),
-        access.clone(),
-    )
-    .unwrap();
+    let worker =
+        WorkerService::new(pool.clone(), epoch, WorkerConfig::default(), access.clone()).unwrap();
     let scheduler = Arc::new(Scheduler::new(worker, access, SchedulerConfig::default()).unwrap());
     let planner = PlannerService::new(
         pool.clone(),
@@ -430,14 +424,8 @@ async fn a_scheduled_job_is_planned_with_its_policy_budget(pool: PgPool) {
     };
     let catalogs = Arc::new(RuntimeCatalogs::new(database, profiles));
     let access = Arc::new(RuntimeWorkerAccess::new(catalogs.clone()));
-    let worker = WorkerService::new(
-        pool.clone(),
-        epoch,
-        Vec::new(),
-        WorkerConfig::default(),
-        access.clone(),
-    )
-    .unwrap();
+    let worker =
+        WorkerService::new(pool.clone(), epoch, WorkerConfig::default(), access.clone()).unwrap();
     let scheduler = Arc::new(Scheduler::new(worker, access, SchedulerConfig::default()).unwrap());
     let planner = PlannerService::new(
         pool.clone(),

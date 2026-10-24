@@ -16,6 +16,9 @@ mod grants_api;
 #[path = "api/principals.rs"]
 mod principals;
 
+#[path = "api/service_identities.rs"]
+mod service_identities;
+
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, Request, StatusCode};
@@ -227,11 +230,19 @@ fn check_contract(method: &str, uri: &str, status: StatusCode, body: &Value) {
     let document: Value = serde_json::from_str(include_str!("../src/api/openapi.json")).unwrap();
     let path = uri.split('?').next().unwrap();
     // Normalize every UUID segment, including one before a sub-resource verb.
-    let template = path
-        .split('/')
-        .map(|segment| {
+    let segments = path.split('/').collect::<Vec<_>>();
+    let template = segments
+        .iter()
+        .enumerate()
+        .map(|(index, segment)| {
             if Uuid::parse_str(segment).is_ok() {
-                "{id}"
+                // A token id hangs below its `tokens` collection; every other
+                // UUID is the resource named `{id}`.
+                if segments.get(index.wrapping_sub(1)) == Some(&"tokens") {
+                    "{token}"
+                } else {
+                    "{id}"
+                }
             } else {
                 segment
             }
@@ -1121,6 +1132,17 @@ fn openapi_documents_every_route() {
         ("/api/v1/grants", "get"),
         ("/api/v1/grants", "post"),
         ("/api/v1/grants/{id}", "delete"),
+        ("/api/v1/service-identities", "get"),
+        ("/api/v1/service-identities", "post"),
+        ("/api/v1/service-identities/{id}", "get"),
+        ("/api/v1/service-identities/{id}/tokens", "get"),
+        ("/api/v1/service-identities/{id}/tokens", "post"),
+        ("/api/v1/service-identities/{id}/tokens/{token}", "get"),
+        ("/api/v1/service-identities/{id}/tokens/{token}", "delete"),
+        (
+            "/api/v1/service-identities/{id}/tokens/{token}/rotate",
+            "post",
+        ),
         ("/api/v1/openapi.json", "get"),
     ];
     let document: Value = serde_json::from_str(include_str!("../src/api/openapi.json")).unwrap();

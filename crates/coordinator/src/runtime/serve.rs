@@ -337,16 +337,9 @@ async fn start(
     let identity = IdentityState::new(database.clone(), Arc::new(provider), sessions);
 
     let access = Arc::new(RuntimeWorkerAccess::new(catalogs.clone()));
-    let verifiers = config.verifiers().map_err(|error| {
-        ServeError::Database(PersistenceError::InvalidValue {
-            entity: "worker verifiers",
-            constraint: error.to_string(),
-        })
-    })?;
     let worker = WorkerService::new(
         database.pool().clone(),
         epoch,
-        verifiers,
         WorkerConfig::default(),
         access.clone(),
     )

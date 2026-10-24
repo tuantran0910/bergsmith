@@ -29,8 +29,7 @@ use bergsmith_common::job::JobState;
 use bergsmith_coordinator::{
     planning,
     workers::{
-        TaskAccess, TaskOffer, WorkerAccess, WorkerConfig, WorkerService, WorkerVerifier,
-        worker_tls_config,
+        TaskAccess, TaskOffer, WorkerAccess, WorkerConfig, WorkerService, worker_tls_config,
     },
 };
 use bergsmith_fixtures::{Fixture, spike};
@@ -260,7 +259,8 @@ async fn setup_with_manifest_limit(
         tenant.organization,
         &token,
         access.clone(),
-    );
+    )
+    .await;
     let (mut client, server) = tls_client(service.clone()).await;
     let registration = client
         .register_worker(request(&token, registration("worker-a")))
@@ -315,7 +315,7 @@ async fn fixture_tenant(conn: &mut sqlx::PgConnection, fixture: &Fixture) -> sup
     tenant
 }
 
-fn configured_service(
+async fn configured_service(
     pool: &PgPool,
     epoch: i64,
     principal: PrincipalId,
@@ -323,17 +323,18 @@ fn configured_service(
     token: &ServiceToken,
     access: Arc<Access>,
 ) -> WorkerService {
+    let mut conn = pool.acquire().await.unwrap();
+    support::worker_token(
+        &mut conn,
+        organization,
+        principal,
+        "native",
+        token.verifier(),
+    )
+    .await;
     WorkerService::new(
         pool.clone(),
         epoch,
-        vec![WorkerVerifier {
-            identity: ledger::Identity {
-                organization,
-                principal,
-                pool: "native".into(),
-            },
-            verifier: token.verifier(),
-        }],
         WorkerConfig {
             long_poll_timeout: Duration::from_millis(20),
             ..WorkerConfig::default()
@@ -580,7 +581,8 @@ async fn lost_poll_response_recovers_one_durable_grant_without_persisting_creden
         run.tenant.organization,
         &run.token,
         run.access.clone(),
-    );
+    )
+    .await;
     let (mut recovered, server) = tls_client(restarted).await;
     let result = recovered
         .request_task(request(
@@ -1099,7 +1101,8 @@ async fn another_service_principal_in_the_same_pool_cannot_use_an_existing_sessi
         run.tenant.organization,
         &other,
         run.access.clone(),
-    );
+    )
+    .await;
     let (mut client, server) = tls_client(service).await;
     assert!(
         client
@@ -1114,4 +1117,44 @@ async fn another_service_principal_in_the_same_pool_cannot_use_an_existing_sessi
             .is_err()
     );
     server.abort();
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn revoking_a_pool_token_stops_an_existing_worker_service(pool: PgPool) {
+    let mut run = setup(&pool).await;
+    let grant = run.grant().await;
+    let mut conn = pool.acquire().await.unwrap();
+    let (principal, token_id): (Uuid, Uuid) =
+        sqlx::query_as("SELECT principal_id, id FROM worker_pool_tokens WHERE verifier = $1")
+            .bind(run.token.verifier().as_bytes().as_slice())
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+    bergsmith_persistence::worker_tokens::revoke(
+        &mut conn,
+        run.tenant.organization,
+        PrincipalId::from_uuid(principal),
+        bergsmith_common::ids::WorkerPoolTokenId::from_uuid(token_id),
+        None,
+    )
+    .await
+    .unwrap();
+    drop(conn);
+
+    // The service was constructed before revocation and never reloads a
+    // configuration verifier: the next call reads the ledger.
+    let status = run
+        .client
+        .get_attempt_status(request(
+            &run.token,
+            wire::GetAttemptStatusRequest {
+                worker_session_id: run.session.clone(),
+                attempt_id: grant.attempt_id,
+            },
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), tonic::Code::Unauthenticated);
+    let failure = common::Failure::decode(status.details()).unwrap();
+    assert_eq!(failure.reason_code, "WorkerTokenInvalid");
 }

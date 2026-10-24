@@ -67,17 +67,17 @@ async fn scripted_client(
     .fetch_one(pool)
     .await
     .unwrap();
+    support::worker_token(
+        &mut pool.acquire().await.unwrap(),
+        run.tenant.organization,
+        PrincipalId::from_uuid(principal),
+        "native",
+        run.token.verifier(),
+    )
+    .await;
     let service = WorkerService::new(
         pool.clone(),
         epoch,
-        vec![WorkerVerifier {
-            identity: ledger::Identity {
-                organization: run.tenant.organization,
-                principal: PrincipalId::from_uuid(principal),
-                pool: "native".into(),
-            },
-            verifier: run.token.verifier(),
-        }],
         WorkerConfig {
             long_poll_timeout: Duration::from_millis(20),
             ..WorkerConfig::default()

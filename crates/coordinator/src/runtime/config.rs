@@ -5,7 +5,8 @@
 //!
 //! - the PostgreSQL URL is `database.url` or `database.url_file`;
 //! - the OIDC client secret is `identity.client_secret_file`;
-//! - worker pool tokens are never stored here, only their verifiers.
+//! - worker pool tokens are issued through the API and stored only as
+//!   verifiers in PostgreSQL, never in this document.
 //!
 //! Environment variables override the two connection strings the container
 //! entrypoint already uses (`BERGSMITH_DATABASE_URL`,
@@ -16,8 +17,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use bergsmith_common::digest::Sha256Digest;
-use bergsmith_common::ids::{CatalogConnectionId, OrganizationId, PrincipalId};
+use bergsmith_common::ids::CatalogConnectionId;
 use bergsmith_maintenance::PlannerConfig;
 use bergsmith_persistence::scheduling::{AdmissionLimits, RetryPolicy};
 use bergsmith_storage::{AzureProfile, GcsProfile, S3Profile, StorageProfile, StorageProfiles};
@@ -58,8 +58,6 @@ pub struct CoordinatorConfig {
     pub publication: PublicationSettings,
     /// The single task envelope and worker pool used for admitted work.
     pub task: TaskSettings,
-    /// Worker pool token verifiers, one per organization/principal/pool.
-    pub worker_verifiers: Vec<WorkerVerifierSettings>,
     /// Coordinator leadership lease.
     #[serde(default)]
     pub leadership: LeadershipSettings,
@@ -597,49 +595,6 @@ impl TaskSettings {
     }
 }
 
-/// One worker token verifier.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WorkerVerifierSettings {
-    /// Organization the worker acts in.
-    pub organization: OrganizationId,
-    /// Service principal the worker session is bound to.
-    pub principal: PrincipalId,
-    /// Worker pool.
-    pub pool: String,
-    /// Hex SHA-256 verifier of the pool token.
-    pub verifier: String,
-}
-
-impl WorkerVerifierSettings {
-    /// Parses the verifier and builds the service's verifier list.
-    ///
-    /// # Errors
-    ///
-    /// [`ConfigError`] for a malformed digest or empty pool.
-    pub fn verifier(&self) -> Result<crate::workers::WorkerVerifier, ConfigError> {
-        if self.pool.is_empty() {
-            return Err(ConfigError::Invalid(
-                "worker_verifiers[].pool must not be empty".into(),
-            ));
-        }
-        let verifier = Sha256Digest::from_hex(&self.verifier).map_err(|_| {
-            ConfigError::Invalid(format!(
-                "worker_verifiers[] for {} has a malformed verifier",
-                self.pool
-            ))
-        })?;
-        Ok(crate::workers::WorkerVerifier {
-            identity: bergsmith_persistence::workers::Identity {
-                organization: self.organization,
-                principal: self.principal,
-                pool: self.pool.clone(),
-            },
-            verifier,
-        })
-    }
-}
-
 /// Leadership lease settings.
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -809,10 +764,6 @@ impl CoordinatorConfig {
     /// # Errors
     ///
     /// [`ConfigError`] naming the first problem.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one validation pass reports every cross-field invariant in order"
-    )]
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.database.url()?;
         if self.http.bind.is_empty() {
@@ -875,34 +826,6 @@ impl CoordinatorConfig {
         if self.task.max_output_bytes < self.planner.max_group_input_bytes {
             return Err(ConfigError::Invalid(
                 "task.max_output_bytes must cover planner.max_group_input_bytes".into(),
-            ));
-        }
-        if self.worker_verifiers.is_empty() {
-            return Err(ConfigError::Invalid(
-                "worker_verifiers must name at least one pool".into(),
-            ));
-        }
-        let mut seen = std::collections::BTreeSet::new();
-        for verifier in &self.worker_verifiers {
-            verifier.verifier()?;
-            let key = (
-                verifier.organization,
-                verifier.principal,
-                verifier.pool.clone(),
-            );
-            if !seen.insert(key) {
-                return Err(ConfigError::Invalid(
-                    "worker_verifiers contains a duplicate organization/principal/pool".into(),
-                ));
-            }
-        }
-        if !self
-            .worker_verifiers
-            .iter()
-            .any(|verifier| verifier.pool == self.task.pool)
-        {
-            return Err(ConfigError::Invalid(
-                "task.pool must have a matching worker verifier".into(),
             ));
         }
         if self.leadership.lease_seconds == 0
@@ -985,18 +908,6 @@ impl CoordinatorConfig {
                     ConfigError::Invalid(format!("OIDC HTTP client could not be built: {error}"))
                 })?,
         })
-    }
-
-    /// The worker token verifiers.
-    ///
-    /// # Errors
-    ///
-    /// [`ConfigError`] for a malformed verifier.
-    pub fn verifiers(&self) -> Result<Vec<crate::workers::WorkerVerifier>, ConfigError> {
-        self.worker_verifiers
-            .iter()
-            .map(WorkerVerifierSettings::verifier)
-            .collect()
     }
 }
 
@@ -1162,13 +1073,7 @@ mod tests {
                 "cpu_millis": 1000,
                 "max_duration_seconds": 180,
                 "max_output_bytes": 4_294_967_296_u64
-            },
-            "worker_verifiers": [{
-                "organization": "018f0000-0000-7000-8000-000000000001",
-                "principal": "018f0000-0000-7000-8000-000000000002",
-                "pool": "default",
-                "verifier": "0000000000000000000000000000000000000000000000000000000000000000"
-            }]
+            }
         })
     }
 
@@ -1233,28 +1138,6 @@ mod tests {
         config.database.url = Some("postgres://bergsmith@localhost/bergsmith".into());
         config.database.url_file = None;
         assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn a_missing_worker_verifier_is_rejected() {
-        let mut value = minimal();
-        value["worker_verifiers"] = serde_json::json!([]);
-        assert!(parse(value).is_err());
-    }
-
-    #[test]
-    fn a_task_pool_without_a_verifier_is_rejected() {
-        let mut value = minimal();
-        value["task"]["pool"] = serde_json::json!("other");
-        assert!(parse(value).is_err());
-    }
-
-    #[test]
-    fn a_duplicate_verifier_is_rejected() {
-        let mut value = minimal();
-        let first = value["worker_verifiers"][0].clone();
-        value["worker_verifiers"] = serde_json::json!([first.clone(), first]);
-        assert!(parse(value).is_err());
     }
 
     #[test]

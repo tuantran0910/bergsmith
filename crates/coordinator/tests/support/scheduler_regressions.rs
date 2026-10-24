@@ -82,17 +82,17 @@ async fn service_with_access(
             .unwrap();
         epoch = support::leader(&mut conn).await;
     }
+    support::worker_token(
+        &mut conn,
+        run.tenant.organization,
+        PrincipalId::from_uuid(principal),
+        "native",
+        run.token.verifier(),
+    )
+    .await;
     WorkerService::new(
         pool.clone(),
         epoch,
-        vec![WorkerVerifier {
-            identity: ledger::Identity {
-                organization: run.tenant.organization,
-                principal: PrincipalId::from_uuid(principal),
-                pool: "native".into(),
-            },
-            verifier: run.token.verifier(),
-        }],
         WorkerConfig {
             queue_capacity: capacity,
             long_poll_timeout: Duration::from_millis(20),
