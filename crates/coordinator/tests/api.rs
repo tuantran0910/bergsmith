@@ -10,6 +10,9 @@ mod catalog_management;
 #[path = "api/discovery.rs"]
 mod catalog_discovery;
 
+#[path = "api/grants.rs"]
+mod grants_api;
+
 #[path = "api/principals.rs"]
 mod principals;
 
@@ -1115,6 +1118,9 @@ fn openapi_documents_every_route() {
         ("/api/v1/principals", "post"),
         ("/api/v1/principals/{id}", "get"),
         ("/api/v1/principals/{id}", "patch"),
+        ("/api/v1/grants", "get"),
+        ("/api/v1/grants", "post"),
+        ("/api/v1/grants/{id}", "delete"),
         ("/api/v1/openapi.json", "get"),
     ];
     let document: Value = serde_json::from_str(include_str!("../src/api/openapi.json")).unwrap();

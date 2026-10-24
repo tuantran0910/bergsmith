@@ -27,6 +27,9 @@ as `x-csrf-token`. All responses use `Cache-Control: no-store`.
 | `GET /api/v1/principals`, `GET /api/v1/principals/{id}` | The organization's users and service accounts, active and deactivated alike; requires organization-wide `grants:manage` |
 | `POST /api/v1/principals` | Provision a user for an issuer and subject with a display name; 201; requires organization-wide `grants:manage` |
 | `PATCH /api/v1/principals/{id}` | Deactivate (`{"active":false}`) or reactivate (`{"active":true}`) a principal; 409 `last_administrator` for the last active administrator |
+| `GET /api/v1/grants` | Active grants in ascending identifier order, optionally filtered by `principal_id`, `catalog_connection`, or `table`; the filter's scope requires `grants:manage`. A connection page includes the grants on its tables |
+| `POST /api/v1/grants` | Grant a role over the organization (`"scope": {}`), one connection, or one table; 201; requires `grants:manage` over that scope; 409 `grant_already_exists` for an identical active grant |
+| `DELETE /api/v1/grants/{id}` | Revoke an active grant, keeping the row for audit; requires `grants:manage` over its scope; 409 `last_administrator` when it is the last active organization-wide administrator grant |
 | `GET /api/v1/tables`, `GET /api/v1/tables/{id}` | Authorized canonical table identities |
 | `GET /api/v1/jobs`, `GET /api/v1/jobs/{id}` | Authorized job state, revision, requester and their display name, the table's caller-visible aliases, cancellation/publication boundary, retry link |
 | `POST /api/v1/jobs` | Idempotent durable submission; returns 202 with job and operation IDs and Location |
@@ -50,6 +53,20 @@ filters no longer reveal resources to it, and every admission and publication
 check stops applying its grants. Running jobs are not cancelled. Reactivation
 restores the same access because the grants were never removed. A repeated
 deactivation or reactivation changes nothing and writes no audit record.
+
+Grant administration follows the same rule: a caller may read and change only
+grants within a scope where they hold `grants:manage`. An organization
+administrator sees and manages every grant; a connection administrator manages
+that connection and its tables but cannot create or revoke organization-wide
+access or reach another connection; a table administrator manages that table.
+A connection's page also carries the grants on its tables because those grants
+apply to it. A grant names one scope, and the list cursor is bound to the
+filters it was issued with. Revocation is logical: the row stays with the ID of
+the principal that revoked it, and the next admission, publication, or command
+stops applying it. Revoking the last active organization-wide Administrator
+grant is refused with 409, because a scoped administrator cannot restore
+organization administration; the check shares the organization lifecycle lock
+with deactivation.
 
 Submit `{"table_id":"<canonical table UUID>"}` with a nonempty, printable ASCII
 `Idempotency-Key` of at most 255 bytes. Unknown body fields are rejected, so a

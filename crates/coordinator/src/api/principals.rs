@@ -22,11 +22,9 @@ use bergsmith_common::permission::{Permission, ResourceScope};
 use bergsmith_persistence::tenancy::{self, NewPrincipal, Principal, PrincipalKind};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sqlx::PgConnection;
 use uuid::Uuid;
 
-use crate::identity::administration::{self, AdministrationError};
-use crate::identity::authorization::AuthorizationError;
+use crate::identity::administration;
 
 use super::pagination::{Page, PageQuery};
 use super::{ApiError, ApiState, Caller, json_body, resources};
@@ -54,36 +52,6 @@ pub(super) struct CreatePrincipal {
 #[serde(deny_unknown_fields)]
 pub(super) struct UpdatePrincipal {
     active: bool,
-}
-
-/// Maps an administration failure, recording a denial that the transactional
-/// check found after the request had already passed the route pre-check.
-///
-/// The transaction has rolled back by the time this runs, so the denial is
-/// written on its own connection, like the catalog commands do.
-async fn administered<T>(
-    conn: &mut PgConnection,
-    caller: &Caller,
-    result: Result<T, AdministrationError>,
-) -> Result<T, ApiError> {
-    match result {
-        Ok(value) => Ok(value),
-        Err(error @ AdministrationError::Authorization(AuthorizationError::Denied { .. })) => {
-            // The administration transaction has rolled back, so the handler's
-            // connection is free again. Reusing it keeps the denial audited on
-            // a one-connection pool and under concurrent denials, instead of
-            // waiting for a second connection and dropping the record.
-            resources::record_denial(
-                conn,
-                &caller.0,
-                Permission::ManageGrants,
-                ResourceScope::Organization,
-            )
-            .await;
-            Err(error.into())
-        }
-        Err(error) => Err(error.into()),
-    }
 }
 
 /// The caller-visible shape of a principal. It never carries a credential:
@@ -197,7 +165,14 @@ pub(super) async fn create(
         &new,
     )
     .await;
-    let created = administered(&mut conn, &caller, provisioned).await?;
+    let created = resources::administered(
+        &mut conn,
+        &caller,
+        Permission::ManageGrants,
+        ResourceScope::Organization,
+        provisioned,
+    )
+    .await?;
     Ok((
         StatusCode::CREATED,
         [(
@@ -251,7 +226,14 @@ pub(super) async fn update(
             id,
         )
         .await;
-        administered(&mut conn, &caller, reactivated).await?
+        resources::administered(
+            &mut conn,
+            &caller,
+            Permission::ManageGrants,
+            ResourceScope::Organization,
+            reactivated,
+        )
+        .await?
     } else {
         let deactivated = administration::deactivate_principal(
             &mut conn,
@@ -260,7 +242,15 @@ pub(super) async fn update(
             id,
         )
         .await;
-        administered(&mut conn, &caller, deactivated).await?.0
+        resources::administered(
+            &mut conn,
+            &caller,
+            Permission::ManageGrants,
+            ResourceScope::Organization,
+            deactivated,
+        )
+        .await?
+        .0
     };
     Ok(Json(document(&principal)))
 }
