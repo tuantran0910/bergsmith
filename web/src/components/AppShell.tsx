@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Link, useRouterState } from "@tanstack/react-router";
 import {
     AnvilIcon,
+    DatabaseIcon,
     ListChecksIcon,
     LogOutIcon,
     type LucideIcon,
@@ -24,13 +25,19 @@ import { SessionExpiry } from "./SessionExpiry";
 import { ThemeToggle } from "./ThemeToggle";
 
 interface Destination {
-    to: "/tables" | "/jobs" | "/workers" | "/audit";
+    to: "/catalogs" | "/tables" | "/jobs" | "/workers" | "/audit";
     label: string;
     icon: LucideIcon;
     allowed: (session: SessionInfo) => boolean;
 }
 
 const DESTINATIONS: readonly Destination[] = [
+    {
+        to: "/catalogs",
+        label: "Catalogs",
+        icon: DatabaseIcon,
+        allowed: () => true,
+    },
     { to: "/tables", label: "Tables", icon: Table2Icon, allowed: () => true },
     { to: "/jobs", label: "Jobs", icon: ListChecksIcon, allowed: () => true },
     {

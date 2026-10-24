@@ -81,6 +81,7 @@ pub fn router(state: ApiState) -> Router {
             get(resources::catalog).patch(catalogs::update),
         )
         .route("/api/v1/catalogs/{id}/check", post(catalogs::check))
+        .route("/api/v1/catalogs/check", post(catalogs::check_draft))
         .route(
             "/api/v1/catalogs/{id}/namespaces",
             get(discovery::namespaces),

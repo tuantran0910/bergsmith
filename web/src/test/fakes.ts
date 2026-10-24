@@ -40,7 +40,7 @@ export function apiError(
     );
 }
 
-type Method = "GET" | "POST";
+type Method = "GET" | "POST" | "PATCH" | "DELETE";
 type RoutePath = keyof paths | "/auth/session" | "/auth/logout";
 type Handler = (
     request: Request,

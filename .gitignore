@@ -22,6 +22,7 @@
 # Web UI (added in M4)
 /web/node_modules/
 /web/dist/
+/.playwright-mcp/
 
 # Private, maintainer-local files (project plan)
 /.private/

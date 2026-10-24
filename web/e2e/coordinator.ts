@@ -103,7 +103,7 @@ export interface Sent {
     body: unknown;
 }
 
-type Method = "GET" | "POST";
+type Method = "GET" | "POST" | "PATCH" | "DELETE";
 type RoutePath =
     | keyof paths
     | "/api/v1/jobs/{id}/events"
@@ -359,7 +359,10 @@ export async function expectAccessible(page: Page): Promise<void> {
         results.violations.map(
             (violation) =>
                 `${violation.id}: ${violation.nodes
-                    .map((node) => node.target.join(" "))
+                    .map(
+                        (node) =>
+                            `${node.target.join(" ")}: ${node.failureSummary ?? ""}`,
+                    )
                     .join(", ")}`,
         ),
         "accessibility violations",

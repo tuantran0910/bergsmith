@@ -40,6 +40,23 @@ export interface paths {
         patch: operations["updateCatalog"];
         trace?: never;
     };
+    "/api/v1/catalogs/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Checks unsaved connection settings using the bounded GET /v1/config probe. Requires organization-wide connections:manage. Creates no connection or saved capability report; a successful diagnostic is audited without routing or credential values. Credential reference resolution is not yet supported. */
+        post: operations["checkDraftCatalog"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/catalogs/{id}/check": {
         parameters: {
             query?: never;
@@ -495,6 +512,11 @@ export interface components {
             credentials_endpoint: "met" | "missing" | "unknown";
             /** @description How long the catalog remembers idempotency keys, in seconds, as a decimal string; null when it advertises no lifetime. */
             idempotency_key_lifetime_seconds: string | null;
+        };
+        DraftCatalogCapabilityCheck: {
+            /** Format: date-time */
+            checked_at: string;
+            capabilities: components["schemas"]["CatalogCapabilities"];
         };
         CatalogCapabilityCheck: {
             /** Format: uuid */
@@ -1288,6 +1310,77 @@ export interface operations {
                 };
             };
             /** @description Request refused or unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    checkDraftCatalog: {
+        parameters: {
+            query?: never;
+            header: {
+                "x-csrf-token": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateCatalog"];
+            };
+        };
+        responses: {
+            /** @description The diagnostic for these unsaved settings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftCatalogCapabilityCheck"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Organization connection administration required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Catalog settings or answer are unusable */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Catalog or check capacity unavailable */
             503: {
                 headers: {
                     [name: string]: unknown;

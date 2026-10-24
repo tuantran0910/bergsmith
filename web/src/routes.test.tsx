@@ -28,6 +28,9 @@ async function resolve(path: string) {
 
 describe("routes", () => {
     it.each([
+        ["/catalogs", "/catalogs", {}],
+        ["/catalogs/new", "/catalogs/new", {}],
+        [`/catalogs/${id}`, "/catalogs/$catalogId", { catalogId: id }],
         ["/tables", "/tables", {}],
         [`/tables/${id}`, "/tables/$tableId", { tableId: id }],
         ["/jobs", "/jobs", {}],
@@ -53,12 +56,14 @@ describe("routes", () => {
     });
 
     // Extra segments are reported while rendering; the journeys cover them.
-    it.each(["/jobs/not-a-uuid", "/schedules", "/tables/x"])(
-        "does not serve %s",
-        async (path) => {
-            expect((await resolve(path)).notFound).toBe(true);
-        },
-    );
+    it.each([
+        "/jobs/not-a-uuid",
+        "/catalogs/not-a-uuid",
+        "/schedules",
+        "/tables/x",
+    ])("does not serve %s", async (path) => {
+        expect((await resolve(path)).notFound).toBe(true);
+    });
 
     it("recognizes a resource ID in either case, and only in full", () => {
         expect(isResourceId(id)).toBe(true);

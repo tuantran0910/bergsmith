@@ -2,6 +2,214 @@ use super::*;
 use std::sync::Arc;
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_draft_check_rechecks_permission_after_the_catalog_answers(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    let (browser, grant) = scoped(
+        &pool,
+        &tenant,
+        Role::Administrator,
+        GrantScope::organization(),
+    )
+    .await;
+    let (url, mut arrived, release) = slow_catalog().await;
+    let checking = tokio::spawn(async move {
+        browser
+            .request(
+                "POST",
+                "/api/v1/catalogs/check",
+                Some(json!({"name":"draft","uri":url})),
+                None,
+            )
+            .await
+    });
+    arrived.recv().await.expect("the draft reached the catalog");
+    let mut conn = pool.acquire().await.unwrap();
+    grants::revoke_grant(&mut conn, tenant.organization, grant, None)
+        .await
+        .unwrap();
+    drop(conn);
+    release.add_permits(1);
+    let (status, body) = checking.await.unwrap();
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let successful: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE action='catalog.checked'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(successful, 0);
+    let denials: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE outcome='Denied'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(denials, 1);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_draft_check_is_audited_without_creating_a_connection(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+    let mut server = mockito::Server::new_async().await;
+    let config = server.mock("GET", "/v1/config")
+        .with_body(r#"{"defaults":{},"overrides":{},"endpoints":["GET /v1/{prefix}/namespaces/{namespace}/tables"]}"#)
+        .expect(1).create_async().await;
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM catalog_connections")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let (status, body) = browser
+        .request(
+            "POST",
+            "/api/v1/catalogs/check",
+            Some(json!({"name":"draft","uri":server.url()})),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["checked_at"].is_string());
+    assert_eq!(body["capabilities"]["list_tables"], "met");
+    assert_eq!(body["capabilities"]["load_table"], "missing");
+    assert!(body.get("catalog_id").is_none());
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM catalog_connections")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(before, after);
+    let checks: i64 = sqlx::query_scalar("SELECT count(*) FROM catalog_connection_checks")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(checks, 0);
+    let audit: (Option<String>, Value) = sqlx::query_as(
+        "SELECT resource_id, detail FROM audit_events WHERE action='catalog.checked'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(audit.0.is_none());
+    assert_eq!(audit.1["checked_at"], body["checked_at"]);
+    assert_eq!(audit.1["complete"], false);
+    let detail = audit.1.to_string();
+    assert!(!detail.contains(&server.url()));
+    assert!(!detail.contains("draft"));
+    config.assert_async().await;
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_draft_check_requires_organization_permission_and_csrf(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    for role in [Role::Viewer, Role::Administrator] {
+        let (browser, _) = scoped(
+            &pool,
+            &tenant,
+            role,
+            GrantScope::connection(tenant.connection),
+        )
+        .await;
+        let (status, _) = browser
+            .request(
+                "POST",
+                "/api/v1/catalogs/check",
+                Some(json!({"name":"draft","uri":"https://catalog.example"})),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+    let response = browser
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/catalogs/check")
+                .header("cookie", &browser.cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"draft","uri":"https://catalog.example"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let response = browser
+        .router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/catalogs/check")
+                .header("content-type", "application/json")
+                .body(Body::from("not json"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn invalid_or_failed_draft_checks_leave_no_saved_report(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+    for uri in [
+        "https://secret:password@catalog.example",
+        "https://catalog.example?token=secret",
+        "file:///tmp",
+    ] {
+        assert_eq!(
+            browser
+                .request(
+                    "POST",
+                    "/api/v1/catalogs/check",
+                    Some(json!({"name":"draft","uri":uri})),
+                    None
+                )
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let (status, body) = browser.request("POST", "/api/v1/catalogs/check",
+        Some(json!({"name":"draft","uri":"https://catalog.example","credential_ref":"vault/catalog"})), None).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body["reason"], "catalog_credential_unavailable");
+    let mut server = mockito::Server::new_async().await;
+    let failed = server
+        .mock("GET", "/v1/config")
+        .with_status(503)
+        .expect(1)
+        .create_async()
+        .await;
+    let (status, body) = browser
+        .request(
+            "POST",
+            "/api/v1/catalogs/check",
+            Some(json!({"name":"draft","uri":server.url()})),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["reason"], "catalog_unavailable");
+    let checks: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE action='catalog.checked'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(checks, 0);
+    failed.assert_async().await;
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
 async fn legacy_settings_do_not_prevent_disabling_or_renaming(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let tenant = support::tenant(&mut conn, "acme").await;

@@ -114,15 +114,29 @@ memory, CPU, and PID controllers enabled for child cgroups; see
 ### Local development loop
 
 Run the narrowest check that answers the question, and widen only when it
-passes. The full `make ci` run is reserved for the end of a change, where the
-definition of done (§4) requires it, not for every edit.
+passes. GitHub Actions runs full CI when a pull request is opened or updated.
+Do not run `make ci`, or reproduce its full sequence of gates locally, unless
+the user explicitly requests a local full CI run. Opening a PR or asking to
+wait for CI and merge does not imply that request; run focused local checks
+and delegate the full gates to Actions.
 
 | When | Run |
 |---|---|
 | While editing | `cargo check -p <crate> --all-targets` |
 | After a logical change | `cargo nextest run -p <crate>` (add `--lib` for unit tests only) |
-| Before each commit | `make clippy` and `make test-changed` |
-| Before opening or updating a pull request | `make ci` (§4) |
+| Before each commit | Clippy and tests for affected Rust packages, or the relevant web checks |
+| Before opening or updating a pull request | Focused local checks for the change; GitHub Actions runs full CI |
+| Before merging a pull request | All GitHub Actions checks pass on the latest PR head (§4) |
+
+For UI work, use `npm --prefix web run typecheck` and
+`npm --prefix web run test -- src/<affected>.test.tsx` during editing. Once
+dependencies are installed, a focused browser rerun is
+`npm --prefix web run build` followed by
+`npm --prefix web run e2e -- <affected>.spec.ts`. Rebuild after every UI source
+change: the browser gate serves `web/dist/`, not the Vite development server.
+Use `make web` and `make web-e2e` when the complete web gates are useful locally;
+Actions also runs them as part of full CI. Do not repeat unchanged checks
+without a new failure or unresolved concern.
 
 - Use cargo-nextest, never `cargo test --workspace`. Nextest reports every
   failure in one run (`fail-fast = false`), so fix them all before re-running.
@@ -158,7 +172,9 @@ definition of done (§4) requires it, not for every edit.
 
 A change is done only when all of these hold:
 
-1. `make ci` passes locally. CI runs the same gates on every pull request.
+1. Focused local checks appropriate to the change pass, and all GitHub Actions
+   checks pass on the latest pull-request head before merge. Actions owns the
+   full CI gates; a local `make ci` run requires an explicit user request.
 2. New or changed behavior has tests, and every bug fix has a regression test.
 3. Public items have doc comments explaining behavior and errors.
 4. The plan, an ADR, or the support matrix is updated when behavior, a
@@ -254,6 +270,33 @@ tracking task.
 - Test pages through the fake coordinator in `web/src/test/fakes.ts`, with
   fixtures typed by the generated schema, so a contract change breaks the
   tests at compile time.
+- Follow ADR 0046: reuse `web/src/ui/` primitives, shared page components, and
+  the theme tokens in `web/src/styles.css`. Keep components focused; extract
+  reusable behavior instead of copying forms, transport, or permission logic.
+- Use the typed routes in `web/src/routes.tsx`. Validate resource identifiers
+  and supported search parameters before querying; preserve namespace levels
+  and other structured identifiers rather than splitting their display names.
+- Use the generated client and shared transport in `web/src/api/client.ts`.
+  Protect reads with `forSession`, pass the query's abort signal, and use
+  `useSessionMutation` for writes so a late response cannot update another
+  session. Invalidate affected queries after a successful write.
+- Echo CSRF through the shared helper. Send the observed revision for edits;
+  do not silently rebase a conflicted form. Never retry mutations automatically.
+  Use `useKeyedMutation` when the API supports idempotency; otherwise reconcile
+  an uncertain outcome before offering another potentially duplicate write.
+- Match controls to the session's grant scope, while keeping the server as the
+  authorization authority. No credential value belongs in a form, query
+  parameter, browser storage, error, or diagnostic artifact; use references.
+- Handle loading, empty, error, pending, and success states. Follow API cursors
+  for lists and make partial results clear. Preserve edits on a rejected save,
+  explain conflicts, and confirm destructive actions with their actual scope.
+- Use semantic HTML, associated labels, keyboard-operable controls, and visible
+  focus. Accessible names must include visible control text. Communicate status
+  with text, never color alone, and honor reduced motion. Check light and dark
+  themes, hover/focus states, narrow layouts, and long names or identifiers.
+- Keep runtime requests on the deployment's origin: no CDN assets, external
+  fonts, or analytics. Follow the coordinator's CSP; avoid inline styles and
+  HTML injection. Keep the JavaScript build within the existing bundle budget.
 
 ## 6. Testing
 
@@ -277,6 +320,30 @@ tracking task.
 - A test may include another crate's test support by `#[path]` only when its
   crate already depends on that crate, so change selection by dependency still
   re-runs it.
+
+### Browser testing and Playwright MCP
+
+- Add or extend browser journeys in `web/e2e/` for changed user workflows.
+  Reuse `web/e2e/coordinator.ts` and contract-typed fixtures. The acceptance gate
+  runs the production build in the repository-pinned Chromium, under the
+  coordinator's CSP, with axe checks in both themes. It must keep detecting
+  console errors, unexpected external requests, and policy violations.
+- Use role and label locators and Playwright's assertions for synchronization.
+  Wait for the expected UI state, not an arbitrary timeout. When checking
+  contrast after opening a dialog, wait for its finite opening animations to
+  finish so axe measures the visible controls rather than transparent text.
+- Playwright MCP is optional developer tooling for exploratory interaction,
+  screenshots, console/network inspection, and responsive checks. Use it when
+  available, with a dedicated test browser and fake or development data. MCP
+  inspection supplements the committed acceptance tests; it does not replace
+  `make web-e2e`, and its Chrome version need not match the pinned test browser.
+- Do not require a machine-specific MCP configuration or extension in order to
+  develop or test the repository. Keep local MCP setup outside tracked project
+  configuration. `/.playwright-mcp/` is ignored; logs, screenshots, traces, and
+  authenticated browser profiles are local artifacts, never source files.
+- Report which checks actually ran and any remaining gates. A screenshot or
+  successful Vite session alone does not establish accessibility, CSP
+  compliance, generated-client freshness, or browser acceptance.
 
 ## 7. Architecture invariants
 
