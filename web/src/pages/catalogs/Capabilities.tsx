@@ -92,11 +92,16 @@ export function Capabilities({
                         routing settings.
                     </p>
                 )}
-                <p className="mb-0 text-muted-foreground">
-                    The catalog advertises these endpoints. Vended credentials
-                    are only proven by loading a table; unknown does not mean
-                    supported.
-                </p>
+                <aside className="mt-3 grid gap-1 rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+                    <p className="m-0 font-medium text-foreground">
+                        Reading this report
+                    </p>
+                    <p className="m-0">
+                        Endpoints are advertised by the catalog. Credential
+                        vending is verified only when a table loads; unknown
+                        means unverified.
+                    </p>
+                </aside>
             </CardContent>
         </Card>
     );
