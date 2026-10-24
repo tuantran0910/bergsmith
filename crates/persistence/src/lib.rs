@@ -25,6 +25,7 @@ pub mod schedules;
 pub mod scheduling;
 pub mod tables;
 pub mod tenancy;
+pub mod worker_tokens;
 pub mod workers;
 
 pub use database::{Database, DatabaseConfig, DatabaseTlsMode, DatabaseUrl, MIGRATOR};

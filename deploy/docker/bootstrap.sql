@@ -36,6 +36,20 @@ VALUES (
     'Native workers')
 ON CONFLICT DO NOTHING;
 
+-- The verifier matches deploy/docker/worker-token. This is a development-only
+-- credential; production tokens are issued through the API and stored the same
+-- way (verifier only).
+INSERT INTO worker_pool_tokens
+    (id, organization_id, principal_id, pool, verifier, label)
+VALUES (
+    '01900000-0000-7000-8000-000000000011',
+    '01900000-0000-7000-8000-000000000001',
+    '01900000-0000-7000-8000-000000000003',
+    'native',
+    decode('15f607e06466620da32baf750d8be9a88ccdf774ef2aa532a7f68c8d9e6c8728', 'hex'),
+    'development workers')
+ON CONFLICT (verifier) DO NOTHING;
+
 INSERT INTO catalog_connections (id, organization_id, name, uri, warehouse)
 VALUES (
     '01900000-0000-7000-8000-000000000004',

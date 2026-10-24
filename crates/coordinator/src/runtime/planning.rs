@@ -721,7 +721,6 @@ mod tests {
         let worker = crate::workers::WorkerService::new(
             pool.clone(),
             epoch,
-            Vec::new(),
             crate::workers::WorkerConfig::default(),
             access.clone(),
         )

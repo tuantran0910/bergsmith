@@ -121,6 +121,10 @@ define_id!(
     RoleGrantId
 );
 define_id!(
+    /// Identifies one worker pool bearer-token verifier.
+    WorkerPoolTokenId
+);
+define_id!(
     /// Identifies a named maintenance policy.
     PolicyId
 );
@@ -179,5 +183,6 @@ mod tests {
         assert!(text.parse::<TableId>().is_ok());
         assert!(text.parse::<PolicyId>().is_ok());
         assert!(text.parse::<ScheduleId>().is_ok());
+        assert!(text.parse::<WorkerPoolTokenId>().is_ok());
     }
 }

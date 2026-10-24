@@ -252,7 +252,7 @@ impl Harness {
         // Persist dispatch with the same public scheduler API used at startup.
         // No offer queue is copied into the child or across restarts.
         let epoch = support::leader(&mut self.pool.acquire().await.unwrap()).await;
-        let service = peer::service(&self.pool, epoch, config, access.clone());
+        let service = peer::service(&self.pool, epoch, config, access.clone()).await;
         let scheduler = Scheduler::new(service, access, peer::scheduler_config()).unwrap();
         let mut offers = Vec::new();
         for task in self.plan.tasks() {

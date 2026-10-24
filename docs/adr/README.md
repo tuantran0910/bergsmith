@@ -18,7 +18,7 @@ record's status; never rewrite an accepted decision.
 | [0009](0009-toolchain-and-quality-gates.md) | Stable toolchain and enforced quality gates | Accepted |
 | [0010](0010-commit-aligned-scheduling.md) | Commit-aligned job start and per-job duration budget | Accepted |
 | [0011](0011-execution-ledger-in-postgresql.md) | Execution ledger schema and access in PostgreSQL | Accepted |
-| [0012](0012-worker-service-identity.md) | Worker identity: TLS with pool-scoped bearer tokens | Accepted |
+| [0012](0012-worker-service-identity.md) | Worker identity: TLS with pool-scoped bearer tokens | Accepted; token storage superseded by 0055 |
 | [0013](0013-bergsmith-owned-catalog-client.md) | Bergsmith owns its catalog HTTP calls | Accepted |
 | [0014](0014-object-store-and-development-storage.md) | Object store over FileIO, and RustFS for development | Accepted |
 | [0015](0015-commit-adapter-capture.md) | Build commits with a capture-only catalog | Accepted |
@@ -61,3 +61,4 @@ record's status; never rewrite an accepted decision.
 | [0052](0052-principal-lifecycle-and-deactivation.md) | Principal lifecycle and deactivation | Proposed |
 | [0053](0053-scoped-grant-administration.md) | Scoped grant administration | Proposed |
 | [0054](0054-session-permission-projection.md) | Session permission projection | Proposed |
+| [0055](0055-worker-pool-tokens-in-postgresql.md) | Worker pool tokens stored in PostgreSQL | Proposed |

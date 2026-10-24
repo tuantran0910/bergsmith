@@ -1,6 +1,6 @@
 # 0012. Worker service identity: TLS with pool-scoped bearer tokens
 
-- Status: Accepted
+- Status: Accepted; token storage superseded by 0055
 - Date: 2026-10-16
 - Plan reference: `.private/BERGSMITH_PROJECT_PLAN.md` §5 Security and deployment
 

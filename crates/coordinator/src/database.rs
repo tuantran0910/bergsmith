@@ -1,5 +1,6 @@
 //! Database administration commands run by the coordinator binary.
 
+use std::path::Path;
 use std::time::Duration;
 
 use bergsmith_common::audit::AuditAction;
@@ -326,20 +327,93 @@ pub async fn bootstrap_service(
     Ok(principal)
 }
 
-/// The stored verifier for a worker pool token.
+/// Issues a worker pool token for a service identity from an operator command.
+///
+/// The actor must hold `workers:manage` over the organization. The bearer
+/// token is returned once; only its verifier is stored.
 ///
 /// # Errors
 ///
-/// [`TokenError`](bergsmith_protocol::identity::TokenError) when the file
-/// does not contain a well-formed `bsw1` token.
-pub fn service_token_verifier(
-    token: &str,
-) -> Result<String, bergsmith_protocol::identity::TokenError> {
-    Ok(
-        bergsmith_protocol::identity::ServiceToken::parse(token.trim())?
-            .verifier()
-            .to_hex(),
+/// [`IssueWorkerTokenError::Persistence`] for an unknown organization or a
+/// ledger failure, and [`IssueWorkerTokenError::Administration`] when the
+/// actor is not authorized, the principal is not an active service identity,
+/// or the token cannot be recorded.
+pub async fn issue_worker_token(
+    url: DatabaseUrl,
+    organization: &str,
+    actor: PrincipalId,
+    principal: PrincipalId,
+    pool: &str,
+    label: Option<&str>,
+) -> Result<crate::identity::administration::IssuedWorkerToken, IssueWorkerTokenError> {
+    let database = connect(url).await?;
+    let mut conn = database.pool().acquire().await?;
+    let organization = tenancy::organization_by_slug(&mut conn, organization).await?;
+    crate::identity::administration::issue_worker_token(
+        &mut conn,
+        organization.id,
+        actor,
+        principal,
+        pool,
+        label,
     )
+    .await
+    .map_err(IssueWorkerTokenError::Administration)
+}
+
+/// Issues a worker pool token into a new mode-0600 file.
+///
+/// The destination is reserved before issuance, so an existing file or an
+/// unwritable directory fails without creating a token. A write failure after
+/// issuance revokes the undelivered token.
+///
+/// # Errors
+///
+/// [`IssueWorkerTokenError`] for an unknown organization, authorization, token
+/// generation, or delivery failure.
+pub async fn issue_worker_token_to_file(
+    url: DatabaseUrl,
+    organization: &str,
+    actor: PrincipalId,
+    principal: PrincipalId,
+    pool: &str,
+    label: Option<&str>,
+    token_file: &Path,
+) -> Result<crate::identity::administration::IssuedWorkerToken, IssueWorkerTokenError> {
+    let database = connect(url).await?;
+    let mut conn = database.pool().acquire().await?;
+    let organization = tenancy::organization_by_slug(&mut conn, organization).await?;
+    crate::identity::administration::issue_worker_token_to_file(
+        &mut conn,
+        organization.id,
+        actor,
+        principal,
+        pool,
+        label,
+        token_file,
+    )
+    .await
+    .map_err(IssueWorkerTokenError::Delivery)
+}
+
+/// Why an operator-issued worker token failed.
+#[derive(Debug, thiserror::Error)]
+pub enum IssueWorkerTokenError {
+    /// The organization or ledger could not be read.
+    #[error(transparent)]
+    Persistence(#[from] PersistenceError),
+    /// Authorization or token recording failed.
+    #[error(transparent)]
+    Administration(#[from] crate::identity::administration::AdministrationError),
+    /// The token could not be delivered to its file.
+    #[error(transparent)]
+    Delivery(#[from] crate::identity::administration::TokenDeliveryError),
+}
+
+impl From<sqlx::Error> for IssueWorkerTokenError {
+    fn from(error: sqlx::Error) -> Self {
+        Self::Persistence(error.into())
+    }
 }
 
 /// Logs a warning when `url` does not select `sslmode=verify-full`.

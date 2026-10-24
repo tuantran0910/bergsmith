@@ -4,11 +4,9 @@ use bergsmith_catalog::{CatalogConnection, ConnectionConfig};
 use bergsmith_coordinator::{
     durable_publication,
     scheduling::{Eligibility, RetryPolicy, SchedulerConfig, SchedulingAccess},
-    workers::{
-        TaskAccess, WorkerAccess, WorkerConfig, WorkerService, WorkerVerifier, worker_tls_config,
-    },
+    workers::{TaskAccess, WorkerAccess, WorkerConfig, WorkerService, worker_tls_config},
 };
-use bergsmith_persistence::{leadership, workers as ledger};
+use bergsmith_persistence::leadership;
 use bergsmith_protocol::cluster::cluster_service_server::{ClusterService, ClusterServiceServer};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tonic::transport::{Identity, Server};
@@ -86,23 +84,24 @@ pub(super) fn scheduler_config() -> SchedulerConfig {
     }
 }
 
-pub(super) fn service(
+pub(super) async fn service(
     pool: &PgPool,
     epoch: i64,
     config: &Config,
     access: Arc<Access>,
 ) -> WorkerService {
+    let mut conn = pool.acquire().await.unwrap();
+    support::worker_token(
+        &mut conn,
+        config.organization,
+        config.principal,
+        "native",
+        ServiceToken::parse(TOKEN).unwrap().verifier(),
+    )
+    .await;
     WorkerService::new(
         pool.clone(),
         epoch,
-        vec![WorkerVerifier {
-            identity: ledger::Identity {
-                organization: config.organization,
-                principal: config.principal,
-                pool: "native".into(),
-            },
-            verifier: ServiceToken::parse(TOKEN).unwrap().verifier(),
-        }],
         WorkerConfig {
             heartbeat_interval: Duration::from_secs(1),
             lease: Duration::from_secs(90),
@@ -159,7 +158,7 @@ pub(crate) async fn coordinator(path: &Path) {
     .epoch;
     let access = Arc::new(Access::new(&config).await);
     let scheduler = Scheduler::new(
-        service(&pool, epoch, &config, access.clone()),
+        service(&pool, epoch, &config, access.clone()).await,
         access.clone(),
         scheduler_config(),
     )

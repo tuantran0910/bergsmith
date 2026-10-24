@@ -11,9 +11,10 @@
 
 use std::time::Duration;
 
+use bergsmith_common::digest::Sha256Digest;
 use bergsmith_common::ids::{
     AttemptId, CatalogConnectionId, JobId, OrganizationId, PlanId, PrincipalId, TableId, TaskId,
-    WorkerSessionId,
+    WorkerPoolTokenId, WorkerSessionId,
 };
 use bergsmith_common::job::JobState;
 use bergsmith_common::permission::{GrantScope, Role};
@@ -97,6 +98,42 @@ pub(crate) async fn service_principal(
     .await
     .expect("service principal is created");
     id
+}
+
+/// Registers a worker pool token verifier for `principal`, idempotently.
+///
+/// Tests call this before constructing a worker service; the service reads
+/// the verifier from PostgreSQL on every RPC.
+pub(crate) async fn worker_token(
+    conn: &mut PgConnection,
+    organization: OrganizationId,
+    principal: PrincipalId,
+    pool: &str,
+    verifier: Sha256Digest,
+) -> WorkerPoolTokenId {
+    let id = WorkerPoolTokenId::generate();
+    sqlx::query(
+        "INSERT INTO worker_pool_tokens
+             (id, organization_id, principal_id, pool, verifier, label)
+         VALUES ($1, $2, $3, $4, $5, 'test')
+         ON CONFLICT (verifier) DO NOTHING",
+    )
+    .bind(id.as_uuid())
+    .bind(organization.as_uuid())
+    .bind(principal.as_uuid())
+    .bind(pool)
+    .bind(verifier.as_bytes().as_slice())
+    .execute(&mut *conn)
+    .await
+    .expect("worker token is registered");
+    // Return the stored row's id, which may belong to an earlier registration
+    // of the same verifier.
+    let stored: Uuid = sqlx::query_scalar("SELECT id FROM worker_pool_tokens WHERE verifier = $1")
+        .bind(verifier.as_bytes().as_slice())
+        .fetch_one(&mut *conn)
+        .await
+        .expect("worker token is readable");
+    WorkerPoolTokenId::from_uuid(stored)
 }
 
 /// Creates a catalog connection named `name` in `organization`.

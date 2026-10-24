@@ -1,7 +1,7 @@
 //! `bergsmith-coordinator` entry point. Startup wiring only; behavior lives in the
 //! `bergsmith-coordinator` library crate.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use bergsmith_common::ids::{CatalogConnectionId, JobId, PrincipalId, RoleGrantId, TableId};
@@ -114,11 +114,33 @@ enum Command {
         #[arg(long, env = "BERGSMITH_DATABASE_URL", hide_env_values = true)]
         database_url: String,
     },
-    /// Print the stored verifier for a worker pool token file.
-    ServiceTokenVerifier {
-        /// File containing one `bsw1` token.
+    /// Issue a worker pool token for a service identity.
+    ///
+    /// The bearer token is written once to a new mode-0600 file; only its
+    /// verifier is stored. The actor must hold workers:manage over the
+    /// organization.
+    IssueWorkerToken {
+        /// Organization slug.
+        #[arg(long)]
+        organization: String,
+        /// Principal ID of the administrator issuing the token.
+        #[arg(long)]
+        actor: PrincipalId,
+        /// Service principal the worker session is bound to.
+        #[arg(long)]
+        principal: PrincipalId,
+        /// Worker pool named inside the token.
+        #[arg(long)]
+        pool: String,
+        /// Optional description shown beside the token.
+        #[arg(long)]
+        label: Option<String>,
+        /// New file to receive the bearer token once, with mode 0600.
         #[arg(long)]
         token_file: PathBuf,
+        /// PostgreSQL connection URL.
+        #[arg(long, env = "BERGSMITH_DATABASE_URL", hide_env_values = true)]
+        database_url: String,
     },
     /// Provision the first administrator of an organization.
     ///
@@ -384,24 +406,39 @@ async fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Command::ServiceTokenVerifier { token_file } => {
-            match std::fs::read_to_string(&token_file) {
-                Ok(token) => match database::service_token_verifier(&token) {
-                    Ok(verifier) => {
-                        tracing::info!(verifier = %verifier, "service token verifier");
-                        ExitCode::SUCCESS
-                    }
-                    Err(error) => {
-                        tracing::error!(error = %error, "service token is invalid");
-                        ExitCode::FAILURE
-                    }
-                },
-                Err(error) => {
-                    tracing::error!(error = %error, "service token file could not be read");
-                    ExitCode::FAILURE
-                }
+        Command::IssueWorkerToken {
+            organization,
+            actor,
+            principal,
+            pool,
+            label,
+            token_file,
+            database_url,
+        } => match database::issue_worker_token_to_file(
+            DatabaseUrl::new(database_url),
+            &organization,
+            actor,
+            principal,
+            &pool,
+            label.as_deref(),
+            &token_file,
+        )
+        .await
+        {
+            Ok(issued) => {
+                tracing::info!(
+                    token_id = %issued.token.id,
+                    principal_id = %issued.token.principal_id,
+                    pool = %issued.token.pool,
+                    "worker pool token issued"
+                );
+                ExitCode::SUCCESS
             }
-        }
+            Err(error) => {
+                tracing::error!(error = %error, "worker pool token issuance failed");
+                ExitCode::FAILURE
+            }
+        },
         Command::BootstrapAdmin {
             organization,
             issuer,
@@ -538,7 +575,7 @@ async fn main() -> ExitCode {
 }
 
 fn load_config(
-    path: &std::path::Path,
+    path: &Path,
     database_url: Option<String>,
     http_bind: Option<String>,
     worker_bind: Option<String>,

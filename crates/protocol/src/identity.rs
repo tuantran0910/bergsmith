@@ -107,6 +107,15 @@ impl ServiceToken {
         format!("Bearer {}", self.token)
     }
 
+    /// The bearer token without the `Bearer ` prefix.
+    ///
+    /// This exposes the secret. Use it only to return a newly issued token to
+    /// its operator once; never log it, persist it, or put it in an artifact.
+    #[must_use]
+    pub fn expose_secret(&self) -> &str {
+        &self.token
+    }
+
     /// The value the coordinator stores instead of the token.
     #[must_use]
     pub fn verifier(&self) -> Sha256Digest {
@@ -126,7 +135,10 @@ impl ServiceToken {
     }
 }
 
-fn valid_pool(pool: &str) -> bool {
+/// Whether `pool` is a valid token pool name: 1 to 63 lowercase letters,
+/// digits, and hyphens, not starting with a hyphen.
+#[must_use]
+pub fn valid_pool(pool: &str) -> bool {
     let bytes = pool.as_bytes();
     !bytes.is_empty()
         && bytes.len() <= 63

@@ -15,6 +15,7 @@ mod preview;
 mod principals;
 mod resources;
 mod scheduling;
+mod service_identities;
 mod submission;
 
 use axum::body::{Body, Bytes};
@@ -70,6 +71,10 @@ pub struct ApiState {
 /// The protected routes are assembled before the authentication layer so a new
 /// resource route cannot become public by being registered later. Only the
 /// contract document is added afterwards, deliberately unauthenticated.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one route table keeps every protected path visible in one place"
+)]
 pub fn router(state: ApiState) -> Router {
     let document = openapi_document(&state.sessions.cookie_name);
     if document.is_none() {
@@ -115,6 +120,26 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/api/v1/grants", get(grants::list).post(grants::create))
         .route("/api/v1/grants/{id}", delete(grants::revoke))
+        .route(
+            "/api/v1/service-identities",
+            get(service_identities::list).post(service_identities::create),
+        )
+        .route(
+            "/api/v1/service-identities/{id}",
+            get(service_identities::get),
+        )
+        .route(
+            "/api/v1/service-identities/{id}/tokens",
+            get(service_identities::list_tokens).post(service_identities::issue),
+        )
+        .route(
+            "/api/v1/service-identities/{id}/tokens/{token}",
+            get(service_identities::get_token).delete(service_identities::revoke),
+        )
+        .route(
+            "/api/v1/service-identities/{id}/tokens/{token}/rotate",
+            post(service_identities::rotate),
+        )
         .route("/api/v1/audit", get(resources::audit))
         .route("/api/v1/workers", get(resources::workers))
         .route("/api/v1/previews", post(preview::preview))
@@ -479,6 +504,10 @@ impl From<AdministrationError> for ApiError {
                 // the same request is safe once the ledger is reachable.
                 tracing::warn!("api administration audit record failed");
                 Self::unavailable()
+            }
+            AdministrationError::TokenGeneration => {
+                tracing::error!("worker pool token generation failed");
+                Self::transient("token_generation_unavailable", "retry_same_request")
             }
         }
     }

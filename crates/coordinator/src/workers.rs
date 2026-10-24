@@ -12,13 +12,15 @@ use async_trait::async_trait;
 use bergsmith_common::ids::{AttemptId, JobId, OrganizationId, TaskId, WorkerSessionId};
 use bergsmith_common::job::JobState;
 use bergsmith_common::task::AttemptState;
-use bergsmith_persistence::{PersistenceError, attempts, jobs, plans, workers as ledger};
+use bergsmith_persistence::{
+    PersistenceError, attempts, jobs, plans, worker_tokens, workers as ledger,
+};
 use bergsmith_protocol::cluster::{self as wire, cluster_service_server::ClusterService};
 use bergsmith_protocol::common::FailureDisposition as Disposition;
 use bergsmith_protocol::convert::{
     attempt_state_to_wire, failure_disposition_to_wire, job_state_to_wire,
 };
-use bergsmith_protocol::hashing::{Sha256Digest, artifact_digest, receipt_digest};
+use bergsmith_protocol::hashing::{artifact_digest, receipt_digest};
 use bergsmith_protocol::identity::ServiceToken;
 use bergsmith_storage::{Location, ObjectStore};
 use chrono::{DateTime, Utc};
@@ -42,15 +44,6 @@ pub fn worker_tls_config(
 ) -> tonic::transport::ServerTlsConfig {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     tonic::transport::ServerTlsConfig::new().identity(identity)
-}
-
-/// Token verifier configured by the operator; never contains a raw token.
-#[derive(Clone, Debug)]
-pub struct WorkerVerifier {
-    /// Pool-scoped service identity.
-    pub identity: ledger::Identity,
-    /// Domain-separated verifier from `ServiceToken::verifier`.
-    pub verifier: Sha256Digest,
 }
 
 /// Worker RPC timing and queue bounds.
@@ -120,7 +113,6 @@ pub struct TaskOffer {
 pub struct WorkerService {
     pool: PgPool,
     epoch: i64,
-    verifiers: Arc<Vec<WorkerVerifier>>,
     config: WorkerConfig,
     access: Arc<dyn WorkerAccess>,
     queue: Arc<Mutex<VecDeque<ReadyOffer>>>,
@@ -381,11 +373,10 @@ impl WorkerService {
     /// Constructs the RPC service with an explicit leader epoch and access provider.
     ///
     /// # Errors
-    /// Rejects zero or inconsistent timing/queue limits and duplicate verifiers.
+    /// Rejects zero or inconsistent timing/queue limits.
     pub fn new(
         pool: PgPool,
         epoch: i64,
-        verifiers: Vec<WorkerVerifier>,
         config: WorkerConfig,
         access: Arc<dyn WorkerAccess>,
     ) -> Result<Self, Status> {
@@ -395,10 +386,6 @@ impl WorkerService {
             || config.long_poll_timeout.is_zero()
             || config.long_poll_timeout >= config.lease
             || config.queue_capacity == 0
-            || verifiers
-                .iter()
-                .enumerate()
-                .any(|(i, v)| verifiers[..i].iter().any(|p| p.verifier == v.verifier))
         {
             return Err(invalid_request(
                 "WorkerServiceConfigurationInvalid",
@@ -408,7 +395,6 @@ impl WorkerService {
         Ok(Self {
             pool,
             epoch,
-            verifiers: Arc::new(verifiers),
             config,
             access,
             queue: Arc::new(Mutex::new(VecDeque::new())),
@@ -483,7 +469,7 @@ impl WorkerService {
         }
     }
 
-    fn authenticate<T>(&self, request: &Request<T>) -> Result<ledger::Identity, Status> {
+    async fn authenticate<T>(&self, request: &Request<T>) -> Result<ledger::Identity, Status> {
         if request
             .extensions()
             .get::<TlsConnectInfo<TcpConnectInfo>>()
@@ -496,10 +482,26 @@ impl WorkerService {
         }
         let token = ServiceToken::from_metadata(request.metadata())
             .map_err(|_| unauthenticated("WorkerTokenInvalid", "invalid worker service token"))?;
-        self.verifiers
-            .iter()
-            .find(|v| token.matches(&v.verifier) && token.pool() == v.identity.pool)
-            .map(|v| v.identity.clone())
+        // The verifier ledger is read on every call, so revocation and
+        // principal deactivation apply without restarting the coordinator.
+        let authenticated = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut conn = self.pool.acquire().await?;
+            worker_tokens::authenticate(&mut conn, token.pool(), &token.verifier()).await
+        })
+        .await
+        .map_err(|_| {
+            unavailable(
+                "WorkerAuthenticationUnavailable",
+                "worker token authentication timed out",
+            )
+        })?
+        .map_err(|_| {
+            unavailable(
+                "WorkerAuthenticationUnavailable",
+                "worker token authentication is unavailable",
+            )
+        })?;
+        authenticated
             .ok_or_else(|| unauthenticated("WorkerTokenInvalid", "invalid worker service token"))
     }
 
@@ -1133,7 +1135,7 @@ impl ClusterService for WorkerService {
         &self,
         request: Request<wire::RegisterWorkerRequest>,
     ) -> Result<Response<wire::RegisterWorkerResponse>, Status> {
-        let identity = self.authenticate(&request)?;
+        let identity = self.authenticate(&request).await?;
         let registration = request.into_inner();
         if registration.pool != identity.pool {
             return Err(rejection(
@@ -1190,7 +1192,7 @@ impl ClusterService for WorkerService {
         &self,
         request: Request<wire::RequestTaskRequest>,
     ) -> Result<Response<wire::RequestTaskResponse>, Status> {
-        let identity = self.authenticate(&request)?;
+        let identity = self.authenticate(&request).await?;
         let poll = request.into_inner();
         let session = id(&poll.worker_session_id)?;
         let request_id = id(&poll.request_id)?;
@@ -1207,7 +1209,7 @@ impl ClusterService for WorkerService {
         &self,
         request: Request<wire::HeartbeatRequest>,
     ) -> Result<Response<wire::HeartbeatResponse>, Status> {
-        let identity = self.authenticate(&request)?;
+        let identity = self.authenticate(&request).await?;
         let heartbeat = request.into_inner();
         let session_id = id(&heartbeat.worker_session_id)?;
         if heartbeat.attempts.len() > 1 {
@@ -1282,7 +1284,7 @@ impl ClusterService for WorkerService {
         &self,
         request: Request<wire::ReportTaskResultRequest>,
     ) -> Result<Response<wire::ReportTaskResultResponse>, Status> {
-        let identity = self.authenticate(&request)?;
+        let identity = self.authenticate(&request).await?;
         let report = request.into_inner();
         let receipt = report
             .receipt
@@ -1365,7 +1367,7 @@ impl ClusterService for WorkerService {
         &self,
         request: Request<wire::GetAttemptStatusRequest>,
     ) -> Result<Response<wire::GetAttemptStatusResponse>, Status> {
-        let identity = self.authenticate(&request)?;
+        let identity = self.authenticate(&request).await?;
         let query = request.into_inner();
         Ok(Response::new(
             self.status(
@@ -1381,7 +1383,7 @@ impl ClusterService for WorkerService {
         &self,
         request: Request<wire::DrainWorkerRequest>,
     ) -> Result<Response<wire::DrainWorkerResponse>, Status> {
-        let identity = self.authenticate(&request)?;
+        let identity = self.authenticate(&request).await?;
         let session = id(&request.into_inner().worker_session_id)?;
         let mut conn = self.pool.acquire().await.map_err(database)?;
         ledger::drain(&mut conn, &identity, session)
@@ -1395,7 +1397,7 @@ impl ClusterService for WorkerService {
         &self,
         request: Request<wire::ReportTaskFailureRequest>,
     ) -> Result<Response<wire::ReportTaskFailureResponse>, Status> {
-        let identity = self.authenticate(&request)?;
+        let identity = self.authenticate(&request).await?;
         let report = request.into_inner();
         let session = id(&report.worker_session_id)?;
         let attempt_id = id(&report.attempt_id)?;
@@ -1614,8 +1616,7 @@ mod tests {
             .connect_lazy("postgres://localhost/refresh_test")
             .unwrap();
         let service =
-            WorkerService::new(pool, 1, vec![], WorkerConfig::default(), Arc::new(NoAccess))
-                .unwrap();
+            WorkerService::new(pool, 1, WorkerConfig::default(), Arc::new(NoAccess)).unwrap();
         let credentials = |seconds: i64| wire::StorageCredentials {
             prefix: "s3://bucket/table".into(),
             properties: BTreeMap::new(),
@@ -1650,8 +1651,7 @@ mod tests {
             .connect_lazy("postgres://localhost/refresh_test")
             .unwrap();
         let service =
-            WorkerService::new(pool, 1, vec![], WorkerConfig::default(), Arc::new(NoAccess))
-                .unwrap();
+            WorkerService::new(pool, 1, WorkerConfig::default(), Arc::new(NoAccess)).unwrap();
         let abandoned = AttemptId::generate();
         service.remember_delivery(abandoned, None);
         assert!(!service.needs_refresh(abandoned));
@@ -1691,7 +1691,6 @@ mod tests {
         let service = WorkerService::new(
             pool,
             1,
-            vec![],
             WorkerConfig {
                 queue_capacity: 1,
                 ..WorkerConfig::default()

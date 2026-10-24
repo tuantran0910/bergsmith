@@ -128,17 +128,17 @@ async fn blocked_client(
         started: tokio::sync::Notify::new(),
         proceed: tokio::sync::Notify::new(),
     });
+    support::worker_token(
+        &mut pool.acquire().await.unwrap(),
+        run.tenant.organization,
+        PrincipalId::from_uuid(principal),
+        "native",
+        run.token.verifier(),
+    )
+    .await;
     let service = WorkerService::new(
         limited.clone(),
         epoch,
-        vec![WorkerVerifier {
-            identity: ledger::Identity {
-                organization: run.tenant.organization,
-                principal: PrincipalId::from_uuid(principal),
-                pool: "native".into(),
-            },
-            verifier: run.token.verifier(),
-        }],
         WorkerConfig::default(),
         access.clone(),
     )

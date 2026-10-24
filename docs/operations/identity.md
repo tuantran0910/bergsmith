@@ -111,6 +111,23 @@ service principal is refused, and `MaintenanceService` is granted by
 `bootstrap-service`. Every change writes `identity.provisioned`, `grant.created`, or
 `grant.revoked` audit records.
 
+## Service identities and worker tokens
+
+A service identity is a `Service` principal with no external issuer. Create one
+with `POST /api/v1/service-identities` (or `bergsmith-coordinator
+bootstrap-service`), grant it `MaintenanceService` through the grant API when a
+schedule runs as it, and issue its worker pool token with
+`POST /api/v1/service-identities/{id}/tokens`. These routes require
+organization-wide `workers:manage`.
+
+The issue response carries the bearer token exactly once; listings and audit
+records never do. Only the verifier is stored. Rotation
+(`POST .../tokens/{token}/rotate`) stores the replacement and revokes the old
+token in one transaction; `DELETE .../tokens/{token}` revokes one token.
+Revocation and principal deactivation apply on the next worker RPC without a
+restart. To roll a live pool without a gap, issue a second token, move the
+workers, then revoke the first.
+
 ## Operator duties
 
 - Provision principals and grants before onboarding a user; login does not
@@ -126,7 +143,9 @@ service principal is refused, and `MaintenanceService` is granted by
   legacy work at its next admission or publication check.
 - Read the audit log to attribute denied actions, sign-ins, and grant changes.
 - Rotate the OIDC client secret and worker pool tokens independently; the two
-  credential systems do not share storage.
+  credential systems do not share storage. Worker pool tokens are issued,
+  rotated, and revoked through the service identity API; only verifiers are
+  stored, and a change applies on the next worker RPC without a restart.
 
 ## Limits
 
