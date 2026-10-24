@@ -638,7 +638,7 @@ it("suggests connection names in the grant scope picker", async () => {
     expect(screen.getByRole("button", { name: "Save grant" })).toBeEnabled();
 });
 
-it("shows principal and resource names with copyable secondary IDs", async () => {
+it("shows principal and resource names without redundant identifiers", async () => {
     fake.on("GET", "/api/v1/grants", () =>
         json(
             200,
@@ -662,5 +662,6 @@ it("shows principal and resource names with copyable secondary IDs", async () =>
     expect(grants.getByText("Bob Chen")).toBeVisible();
     expect(grants.getByText("Maintenance Service")).toBeVisible();
     expect(grants.queryByText(USER_ID)).not.toBeInTheDocument();
-    expect(grants.getByTitle(USER_ID)).toHaveTextContent(USER_ID.slice(-8));
+    expect(grants.queryByTitle(USER_ID)).not.toBeInTheDocument();
+    expect(grants.queryByText(USER_ID.slice(-8))).not.toBeInTheDocument();
 });

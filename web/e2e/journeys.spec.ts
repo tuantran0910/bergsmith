@@ -177,7 +177,9 @@ test("follows a job's events to success, then closes the stream", async ({
     await expect(
         page.getByText("Input files rewritten").locator(".."),
     ).toContainText("8");
-    await expect(page.getByText(/Publication confirmed:/)).toBeVisible();
+    await expect(
+        page.getByText(/Accepted outputs were committed to the table/),
+    ).toBeVisible();
     await expect(page.getByText("The job has ended.")).toBeVisible();
     await expect(
         page.getByRole("list", { name: "Job events" }).getByRole("listitem"),

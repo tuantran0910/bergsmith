@@ -94,27 +94,15 @@ export function JobStatistics({
                         {!s.plan_recorded && (
                             <p>No execution plan has been recorded.</p>
                         )}
-                        <div className="mt-2 grid gap-2 border-t pt-3 sm:grid-cols-[auto_1fr] sm:items-start">
-                            <span
-                                className={
-                                    s.publication_confirmed
-                                        ? "w-fit rounded-full bg-success/10 px-2.5 py-1 text-xs font-medium text-success-foreground"
-                                        : "w-fit rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground"
-                                }
-                            >
-                                {s.publication_confirmed
-                                    ? "Published"
-                                    : "Publication unconfirmed"}
-                            </span>
-                            <p className="m-0 text-xs leading-relaxed text-muted-foreground">
-                                {s.publication_confirmed
-                                    ? "Accepted outputs were committed to the table."
-                                    : "Accepted outputs are not yet confirmed in the table."}{" "}
-                                File sizes are not network traffic; elapsed time
-                                includes planning, queueing, execution, and
-                                publication.
-                            </p>
-                        </div>
+                        <p className="m-0 border-t pt-3 text-xs leading-relaxed text-muted-foreground">
+                            {s.publication_confirmed
+                                ? "Accepted outputs were committed to the table."
+                                : "Accepted outputs are not yet confirmed in the table."}{" "}
+                            Accepted work is not publication; see the
+                            Publication status above. File sizes are not network
+                            traffic; elapsed time includes planning, queueing,
+                            execution, and publication.
+                        </p>
                     </>
                 ) : (
                     <p className="m-0 text-sm text-muted-foreground">

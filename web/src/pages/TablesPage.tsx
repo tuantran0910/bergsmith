@@ -10,7 +10,6 @@ import {
     LoadingRows,
     PageHeader,
 } from "../components/Page";
-import { ResourceId } from "../components/ResourceId";
 import { aliasName, timestamp } from "../format";
 import {
     Table,
@@ -59,9 +58,8 @@ export function TablesPage() {
                             <TableHeader>
                                 <TableRow>
                                     <TableHead className="pl-4">
-                                        Table UUID
+                                        Table
                                     </TableHead>
-                                    <TableHead>Table</TableHead>
                                     <TableHead>Other names</TableHead>
                                     <TableHead className="pr-4">
                                         Registered
@@ -73,19 +71,13 @@ export function TablesPage() {
                                     const [primary, ...others] = table.aliases;
                                     return (
                                         <TableRow key={table.id}>
-                                            <TableCell className="pl-4">
-                                                <ResourceId
-                                                    id={table.table_uuid}
-                                                    label="table UUID"
-                                                    short
-                                                />
-                                            </TableCell>
-                                            <TableCell className="font-medium">
+                                            <TableCell className="pl-4 font-medium">
                                                 <Link
                                                     to="/tables/$tableId"
                                                     params={{
                                                         tableId: table.id,
                                                     }}
+                                                    title={table.table_uuid}
                                                 >
                                                     {primary
                                                         ? aliasName(

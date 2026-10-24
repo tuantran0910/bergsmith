@@ -430,15 +430,10 @@ test("uses named grants, compact selectors, uppercase navigation, and pointer cu
             .getByRole("link", { name: "Users", exact: true }),
     ).toHaveCSS("text-transform", "uppercase");
     await page.goto("/tables");
-    await expect(page.getByRole("columnheader").first()).toHaveText(
-        "Table UUID",
-    );
-    const copy = page.getByRole("button", {
-        name: "Copy table UUID",
-        exact: true,
-    });
-    await copy.hover();
-    await expect(copy).toHaveCSS("cursor", "pointer");
+    await expect(page.getByRole("columnheader").first()).toHaveText("Table");
+    await expect(
+        page.getByRole("columnheader", { name: "Table UUID" }),
+    ).toHaveCount(0);
     await page.goto(`/users/${USER_ID}`);
     await expect(page.getByRole("cell", { name: /Bob Chen/ })).toBeVisible();
     await expect(

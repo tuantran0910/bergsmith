@@ -31,11 +31,11 @@ it("distinguishes planned input, accepted work, and unconfirmed publication", ()
     expect(value("Average output file size")).toBe("2.0 KiB");
     expect(value("Elapsed job time")).toBe("2 min 3 s");
     expect(
-        screen.getByText(/have not been confirmed as published/),
+        screen.getByText(/Accepted outputs are not yet confirmed/),
     ).toBeInTheDocument();
 });
 
-it("preserves counts above the browser integer limit and marks confirmed publication", () => {
+it("preserves counts above the browser integer limit and marks committed outputs", () => {
     render(
         <JobStatistics
             statistics={{
@@ -48,7 +48,9 @@ it("preserves counts above the browser integer limit and marks confirmed publica
     expect(value("Input files rewritten")).toBe(
         BigInt("9007199254740993").toLocaleString(),
     );
-    expect(screen.getByText(/Publication confirmed:/)).toBeInTheDocument();
+    expect(
+        screen.getByText(/Accepted outputs were committed to the table/),
+    ).toBeInTheDocument();
 });
 
 it("does not invent averages or estimates before a plan exists", () => {

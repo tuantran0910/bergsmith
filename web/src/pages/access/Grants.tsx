@@ -10,7 +10,6 @@ import {
 import { api, call, csrfHeader, type Schemas } from "../../api/client";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { LoadMore, LoadingRows } from "../../components/Page";
-import { ResourceId } from "../../components/ResourceId";
 import { shortId } from "../../format";
 import { SESSION_KEY, useSession, useSessionMutation } from "../../queryClient";
 import { isResourceId } from "../../routes";
@@ -250,7 +249,6 @@ function GrantRow({
     const client = useQueryClient();
     const session = useSession();
     const name = grant.principal_name || principalName || "Principal";
-    const scopeId = grant.scope.table || grant.scope.catalog_connection;
     const revoke = useSessionMutation({
         mutationFn: () =>
             call(
@@ -266,35 +264,11 @@ function GrantRow({
     return (
         <TableRow>
             <TableCell>
-                <div className="grid gap-1">
-                    <span className="font-medium wrap-anywhere">{name}</span>
-                    <span className="text-xs text-muted-foreground">
-                        <ResourceId
-                            id={grant.principal_id}
-                            label="principal ID"
-                            short
-                        />
-                    </span>
-                </div>
+                <span className="font-medium wrap-anywhere">{name}</span>
             </TableCell>
             <TableCell>{roleName(grant.role)}</TableCell>
-            <TableCell className="break-all">
-                <div className="grid gap-1">
-                    <span>{scopeName(grant.scope, grant.scope_name)}</span>
-                    {scopeId && (
-                        <span className="text-xs text-muted-foreground">
-                            <ResourceId
-                                id={scopeId}
-                                label={
-                                    grant.scope.table
-                                        ? "table ID"
-                                        : "connection ID"
-                                }
-                                short
-                            />
-                        </span>
-                    )}
-                </div>
+            <TableCell className="wrap-anywhere">
+                {scopeName(grant.scope, grant.scope_name)}
             </TableCell>
             <TableCell>
                 {session &&

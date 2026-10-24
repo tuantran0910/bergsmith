@@ -98,7 +98,9 @@ it("shows ledger statistics on the job detail page", async () => {
     expect(
         screen.getByText("Input files rewritten").nextElementSibling,
     ).toHaveTextContent("8");
-    expect(screen.getByText(/Publication confirmed:/)).toBeInTheDocument();
+    expect(
+        screen.getByText(/Accepted outputs were committed to the table/),
+    ).toBeInTheDocument();
 });
 
 describe("sign-in", () => {
@@ -346,16 +348,16 @@ describe("browsing", () => {
         ).not.toBeInTheDocument();
     });
 
-    it("copies a table's full UUID from its short form", async () => {
+    it("copies a table's full UUID from its details page", async () => {
         fake.on("GET", "/api/v1/tables", () =>
             json(200, { items: [table], next_cursor: null }),
-        );
+        ).on("GET", "/api/v1/tables/{id}", () => json(200, table));
         const user = start("/tables");
 
-        expect(await screen.findByText("55556666")).toHaveAttribute(
-            "title",
-            table.table_uuid,
+        await user.click(
+            await screen.findByRole("link", { name: "lake.sales.orders" }),
         );
+        expect(await screen.findByText(table.table_uuid)).toBeInTheDocument();
         await user.click(
             screen.getByRole("button", { name: "Copy table UUID" }),
         );
