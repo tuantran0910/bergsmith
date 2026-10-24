@@ -96,6 +96,10 @@ pub enum AuditAction {
     CatalogUpdated,
     /// A catalog connection's capabilities were checked.
     CatalogChecked,
+    /// Catalog names were registered as tables.
+    CatalogTablesRegistered,
+    /// A table's catalog name was unregistered.
+    CatalogTableUnregistered,
 }
 
 impl AuditAction {
@@ -127,6 +131,8 @@ impl AuditAction {
             Self::CatalogCreated => "catalog.created",
             Self::CatalogUpdated => "catalog.updated",
             Self::CatalogChecked => "catalog.checked",
+            Self::CatalogTablesRegistered => "catalog.tables_registered",
+            Self::CatalogTableUnregistered => "catalog.table_unregistered",
         }
     }
 
@@ -165,6 +171,8 @@ impl AuditAction {
         Self::CatalogCreated,
         Self::CatalogUpdated,
         Self::CatalogChecked,
+        Self::CatalogTablesRegistered,
+        Self::CatalogTableUnregistered,
     ];
 }
 

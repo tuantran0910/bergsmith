@@ -16,6 +16,7 @@ an operating requirement, not a tuning hint.
 | `GET /v1/config`, list tables, load table, and `POST` commit table | Connecting fails if the catalog does not advertise them |
 | Vended, table-scoped storage credentials (`X-Iceberg-Access-Delegation: vended-credentials`) | Workers get storage access only through the grant; they never hold catalog credentials |
 | `GET .../credentials` (optional) | Refreshes credentials without reloading the table |
+| `GET /v1/namespaces` (optional) | Browsing a connection's namespaces in the browser; without it, a table is registered by its full name |
 | `idempotency-key-lifetime` (optional) | Lets Bergsmith replay an identical commit with the same key after a lost response, inside that window |
 
 Lakekeeper v0.14.0 provides all of these. It advertises a 30-minute
@@ -47,6 +48,53 @@ A check never certifies write support, credential vending, or the retention
 bounds below, and it never resolves a publication. It also never changes the
 connection: the check is diagnostic, so a catalog that cannot be reached
 leaves the previous answer and the configuration untouched.
+
+## Browsing and registering tables
+
+A connection only works on tables Bergsmith has registered: a registered name
+is what a canonical table identity, its grants, and its publication history
+attach to. The browser reads the catalog through the connection and records a
+name when you choose it:
+
+| Request | What it does |
+|---|---|
+| `GET /api/v1/catalogs/{id}/namespaces` | Lists the namespaces the catalog holds under a parent (`?parent=a&parent=b`), or the top level without one. |
+| `GET /api/v1/catalogs/{id}/tables` | Lists one namespace's tables and marks the ones this connection already has, with the revision a removal names. |
+| `POST /api/v1/catalogs/{id}/registrations` | Registers one table (`{"namespace": ["db"], "table": "events"}`) or every table of a namespace (`{"namespace": ["db"]}`). |
+| `DELETE /api/v1/catalogs/{id}/registrations?namespace=db&table=events&revision=7` | Removes the name the caller observed. |
+
+A namespace is a list of levels, sent as repeated parameters and never as a
+dotted path: a level may contain any character. A browse reads one page and
+carries the catalog's own `next_cursor`, so a namespace of any size stays
+reachable without Bergsmith assuming an order the catalog never promised.
+
+Registering loads each table from the catalog first and records the names in
+one transaction; a namespace is read page by page, so a table on a later page
+of a paged catalog is registered with the others. The names belong to the routing they were read with: if the
+connection's endpoint, warehouse, or credential reference changes while the
+catalog is being read, nothing is recorded and the request is refused, so it
+is run again. A table the catalog cannot read, or a name that now reaches a
+different table (a table was dropped and recreated under the same name),
+leaves the whole request unrecorded. One request records at most 100 tables; a
+namespace with more is refused, and its tables are registered individually.
+Registering a name that is already registered changes nothing and answers with
+the identity the first request recorded.
+
+The lists a browse returns only contain names Bergsmith can address; anything
+else is counted in `skipped`, and a whole-namespace registration that would
+leave one out is refused.
+
+Removing a name keeps the table and its other names. The removal names the
+revision the browse reported — or the alias revision on the table's page, for
+a name the catalog no longer lists — so a request that was delayed while the
+name was removed and registered again changes nothing and is told to read the
+name again. A table with unfinished work keeps all of its names until the work ends,
+because publication recovery verifies a commit through the connection the job
+planned against. The table itself is never deleted: its jobs and publication
+evidence still reference it.
+
+A disabled connection can still be browsed and registered; disabling stops new
+work, and registration starts none.
 
 ## What Bergsmith protects against, and what it does not
 

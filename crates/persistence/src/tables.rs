@@ -1,5 +1,7 @@
 //! Canonical table identities and their catalog aliases.
 
+use std::collections::BTreeMap;
+
 use bergsmith_common::ids::{CatalogConnectionId, OrganizationId, PrincipalId, TableId};
 use bergsmith_common::settings::ConnectionSettings;
 use chrono::{DateTime, Utc};
@@ -71,8 +73,87 @@ pub async fn resolve_table(
     alias: &TableAlias,
     table_uuid: Uuid,
 ) -> Result<TableIdentity, PersistenceError> {
-    let mut tx = conn.begin().await?;
+    Ok(register_alias(conn, organization_id, alias, table_uuid)
+        .await?
+        .identity)
+}
 
+/// A registered alias and whether this call recorded it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegisteredAlias {
+    /// The canonical table the alias names.
+    pub identity: TableIdentity,
+    /// Whether this call inserted the alias, rather than finding it registered
+    /// already.
+    pub created: bool,
+}
+
+/// Registers one alias, reporting whether it is new.
+///
+/// Registering the same name twice is idempotent: the second call answers with
+/// `created: false` and the same identity.
+///
+/// # Errors
+///
+/// [`resolve_table`]'s errors.
+pub async fn register_alias(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    alias: &TableAlias,
+    table_uuid: Uuid,
+) -> Result<RegisteredAlias, PersistenceError> {
+    let mut tx = conn.begin().await?;
+    let registered = register_alias_in(&mut tx, organization_id, alias, table_uuid).await?;
+    tx.commit().await?;
+    Ok(registered)
+}
+
+/// Registers aliases in one transaction: either every alias is recorded or
+/// none is.
+///
+/// A namespace registration loads each table from the catalog before this
+/// call, so one table an operator may not register leaves the others
+/// untouched instead of half-registering the namespace.
+///
+/// # Errors
+///
+/// [`resolve_table`]'s errors, for any alias.
+pub async fn register_aliases(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    aliases: &[(TableAlias, Uuid)],
+) -> Result<Vec<RegisteredAlias>, PersistenceError> {
+    let mut tx = conn.begin().await?;
+    let registered = register_aliases_in(&mut tx, organization_id, aliases).await?;
+    tx.commit().await?;
+    Ok(registered)
+}
+
+/// Registers aliases on a connection the caller already holds a transaction
+/// on, so the caller can record the aliases and their audit together.
+///
+/// # Errors
+///
+/// [`resolve_table`]'s errors, for any alias.
+pub async fn register_aliases_in(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    aliases: &[(TableAlias, Uuid)],
+) -> Result<Vec<RegisteredAlias>, PersistenceError> {
+    let mut registered = Vec::with_capacity(aliases.len());
+    for (alias, table_uuid) in aliases {
+        registered.push(register_alias_in(conn, organization_id, alias, *table_uuid).await?);
+    }
+    Ok(registered)
+}
+
+/// Registers one alias on a connection that is already inside a transaction.
+async fn register_alias_in(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    alias: &TableAlias,
+    table_uuid: Uuid,
+) -> Result<RegisteredAlias, PersistenceError> {
     // The no-op update makes RETURNING yield the existing row on conflict.
     let identity: TableIdentity = sqlx::query_as::<_, TableIdentityRow>(
         "INSERT INTO table_identities (id, organization_id, table_uuid) VALUES ($1, $2, $3)
@@ -83,12 +164,12 @@ pub async fn resolve_table(
     .bind(TableId::generate().as_uuid())
     .bind(organization_id.as_uuid())
     .bind(table_uuid)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *conn)
     .await
     .map_err(|error| PersistenceError::from_write("table identity", error))?
     .into();
 
-    sqlx::query(
+    let created = sqlx::query(
         "INSERT INTO table_aliases
              (catalog_connection_id, namespace, table_name, organization_id, table_identity_id)
          VALUES ($1, $2, $3, $4, $5)
@@ -99,9 +180,11 @@ pub async fn resolve_table(
     .bind(&alias.name)
     .bind(organization_id.as_uuid())
     .bind(identity.id.as_uuid())
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await
-    .map_err(|error| PersistenceError::from_write("table alias", error))?;
+    .map_err(|error| PersistenceError::from_write("table alias", error))?
+    .rows_affected()
+        == 1;
 
     let existing: Uuid = sqlx::query_scalar(
         "SELECT table_identity_id FROM table_aliases
@@ -110,7 +193,7 @@ pub async fn resolve_table(
     .bind(alias.connection_id.as_uuid())
     .bind(&alias.namespace)
     .bind(&alias.name)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *conn)
     .await?;
 
     if existing != *identity.id.as_uuid() {
@@ -120,8 +203,154 @@ pub async fn resolve_table(
             observed: identity.id,
         });
     }
+    Ok(RegisteredAlias { identity, created })
+}
+
+/// Removes the alias `expected_revision` observed, leaving the table and its
+/// other names.
+///
+/// The revision is compared under the row lock, so a request that read a name
+/// which was since removed and registered again removes nothing: the caller is
+/// told the name changed and reads it before deciding again.
+///
+/// Every alias of a table with unfinished work is kept: publication recovery
+/// and planning verify what a job may publish through the connection the
+/// immutable intent names, so removing the last name that reaches a table
+/// could leave a commit unverifiable. The identity itself is never deleted:
+/// jobs and publication evidence still reference it.
+///
+/// # Errors
+///
+/// [`PersistenceError::NotFound`] when the connection has no such alias,
+/// [`PersistenceError::ConfigRevisionConflict`] when the alias is not the row
+/// the caller observed, [`PersistenceError::TableInUse`] when a nonterminal
+/// job still needs the table, and database errors.
+pub async fn unregister_alias(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    alias: &TableAlias,
+    expected_revision: i64,
+) -> Result<TableId, PersistenceError> {
+    let mut tx = conn.begin().await?;
+    // Hold the connection the way job creation does, so a job cannot be
+    // admitted against this name between the in-use check and the removal.
+    sqlx::query("SELECT id FROM catalog_connections WHERE organization_id=$1 AND id=$2 FOR UPDATE")
+        .bind(organization_id.as_uuid())
+        .bind(alias.connection_id.as_uuid())
+        .execute(&mut *tx)
+        .await?;
+    // Lock the alias row, so the revision cannot change between the
+    // comparison and the removal.
+    let row: Option<(Uuid, i64)> = sqlx::query_as(
+        "SELECT table_identity_id, revision FROM table_aliases
+         WHERE organization_id = $1 AND catalog_connection_id = $2
+           AND namespace = $3 AND table_name = $4
+         FOR UPDATE",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(alias.connection_id.as_uuid())
+    .bind(&alias.namespace)
+    .bind(&alias.name)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let name = format!("{}.{}", alias.namespace.join("."), alias.name);
+    let Some((identity, revision)) = row else {
+        return Err(PersistenceError::NotFound {
+            entity: "table alias",
+            id: name,
+        });
+    };
+    if revision != expected_revision {
+        return Err(PersistenceError::ConfigRevisionConflict {
+            entity: "table alias",
+            id: name,
+            expected: expected_revision,
+            actual: revision,
+        });
+    }
+    let busy: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM jobs
+         WHERE organization_id = $1 AND table_identity_id = $2
+           AND state NOT IN ('Succeeded','NoOp','Cancelled','ReplanRequired','Failed'))",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(identity)
+    .fetch_one(&mut *tx)
+    .await?;
+    if busy {
+        return Err(PersistenceError::TableInUse {
+            table: TableId::from_uuid(identity),
+        });
+    }
+    sqlx::query(
+        "DELETE FROM table_aliases
+         WHERE organization_id = $1 AND catalog_connection_id = $2
+           AND namespace = $3 AND table_name = $4",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(alias.connection_id.as_uuid())
+    .bind(&alias.namespace)
+    .bind(&alias.name)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
-    Ok(identity)
+    Ok(TableId::from_uuid(identity))
+}
+
+/// A registered name as the ledger holds it.
+///
+/// The revision names this row exactly: a name that was removed and registered
+/// again carries a new one, so a delayed removal can tell the two apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RegisteredName {
+    /// The canonical table the name reaches.
+    pub table_id: TableId,
+    /// The row's revision.
+    pub revision: i64,
+}
+
+/// The named aliases registered on one connection, with their revisions.
+///
+/// A name the connection has not registered is absent from the map, so a
+/// browse request reports what the catalog holds and what Bergsmith tracks in
+/// one answer.
+///
+/// # Errors
+///
+/// [`PersistenceError::Database`] when the query fails.
+pub async fn registered_aliases(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    connection_id: CatalogConnectionId,
+    namespace: &[String],
+    names: &[String],
+) -> Result<BTreeMap<String, RegisteredName>, PersistenceError> {
+    if names.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let rows: Vec<(String, Uuid, i64)> = sqlx::query_as(
+        "SELECT table_name, table_identity_id, revision FROM table_aliases
+         WHERE organization_id = $1 AND catalog_connection_id = $2
+           AND namespace = $3 AND table_name = ANY($4)",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(connection_id.as_uuid())
+    .bind(namespace)
+    .bind(names)
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(name, identity, revision)| {
+            (
+                name,
+                RegisteredName {
+                    table_id: TableId::from_uuid(identity),
+                    revision,
+                },
+            )
+        })
+        .collect())
 }
 
 /// Looks up the identity an alias currently names, if any.

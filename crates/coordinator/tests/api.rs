@@ -7,6 +7,9 @@ mod support;
 #[path = "api/catalogs.rs"]
 mod catalog_management;
 
+#[path = "api/discovery.rs"]
+mod catalog_discovery;
+
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, Request, StatusCode};
@@ -16,18 +19,21 @@ use bergsmith_common::ids::{PolicyId, PrincipalId, RoleGrantId};
 use bergsmith_common::permission::{GrantScope, Role};
 use bergsmith_coordinator::api::{self, ApiState, EventStreamLimits, JobEventHub};
 use bergsmith_coordinator::checks::{CapabilityCheckLimits, CapabilityChecker};
+use bergsmith_coordinator::discovery::{CatalogDiscovery, DiscoveryLimits};
 use bergsmith_coordinator::identity::{
     CSRF_HEADER,
     session::{self, SessionConfig},
 };
 use bergsmith_coordinator::preview::{CatalogPreviewer, PreviewLimits, PreviewProfiles};
+use bergsmith_coordinator::runtime::catalogs::RuntimeCatalogs;
+use bergsmith_coordinator::runtime::config::RuntimeProfiles;
 use bergsmith_maintenance::PlannerConfig;
 use bergsmith_persistence::Database;
 use bergsmith_persistence::grants::{self, NewRoleGrant};
 use bergsmith_storage::{GcsProfile, S3Profile, StorageProfile, StorageProfiles};
 use serde_json::{Value, json};
 use sqlx::PgPool;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 use tower::ServiceExt;
 
@@ -42,6 +48,21 @@ fn previewer() -> CatalogPreviewer {
 
 fn event_hub() -> JobEventHub {
     JobEventHub::new(EventStreamLimits::default()).unwrap()
+}
+
+/// Discovery over the runtime profile set, which route tests replace with a
+/// mock catalog.
+fn discovery(pool: &PgPool) -> CatalogDiscovery {
+    CatalogDiscovery::new(
+        Arc::new(RuntimeCatalogs::new(
+            Database::from_pool(pool.clone()),
+            RuntimeProfiles {
+                default: StorageProfiles::new([StorageProfile::LocalFs]),
+                connections: BTreeMap::new(),
+            },
+        )),
+        DiscoveryLimits::default(),
+    )
 }
 
 #[derive(Clone)]
@@ -119,6 +140,7 @@ impl Browser {
                     request_timeout: Duration::from_secs(60),
                     ..CapabilityCheckLimits::default()
                 }),
+                discovery: discovery(pool),
             }),
             cookie: format!("{}={}", config.cookie_name, issued.token.expose()),
             csrf: issued.csrf.expose().into(),
@@ -169,6 +191,7 @@ fn router_with(pool: &PgPool, config: SessionConfig) -> Router {
         previews: previewer(),
         events: event_hub(),
         checks: CapabilityChecker::default(),
+        discovery: discovery(pool),
     })
 }
 
@@ -1080,6 +1103,10 @@ fn openapi_documents_every_route() {
         ("/api/v1/policies", "post"),
         ("/api/v1/policies/{id}", "get"),
         ("/api/v1/policies/{id}", "patch"),
+        ("/api/v1/catalogs/{id}/namespaces", "get"),
+        ("/api/v1/catalogs/{id}/tables", "get"),
+        ("/api/v1/catalogs/{id}/registrations", "post"),
+        ("/api/v1/catalogs/{id}/registrations", "delete"),
         ("/api/v1/openapi.json", "get"),
     ];
     let document: Value = serde_json::from_str(include_str!("../src/api/openapi.json")).unwrap();
@@ -1088,7 +1115,7 @@ fn openapi_documents_every_route() {
         .unwrap()
         .iter()
         .flat_map(|(path, operations)| {
-            ["get", "post", "patch"]
+            ["get", "post", "patch", "delete"]
                 .into_iter()
                 .filter_map(move |method| {
                     operations

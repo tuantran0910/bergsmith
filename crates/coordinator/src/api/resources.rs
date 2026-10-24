@@ -43,7 +43,8 @@ macro_rules! visible_aliases {
     ($table:literal) => {
         concat!(
             "COALESCE((SELECT jsonb_agg(jsonb_build_object(
-              'catalog_id', a.catalog_connection_id, 'namespace', a.namespace, 'name', a.table_name)
+              'catalog_id', a.catalog_connection_id, 'namespace', a.namespace,
+              'name', a.table_name, 'revision', a.revision)
               ORDER BY a.catalog_connection_id, a.namespace, a.table_name)
             FROM table_aliases a WHERE a.organization_id = $1 AND a.table_identity_id = ",
             $table,

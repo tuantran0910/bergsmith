@@ -217,6 +217,7 @@ impl PreviewError {
                 CatalogError::DataLocationOutsideTable(_) => "catalog_data_location",
                 CatalogError::IdempotencyUnsupported => "catalog_idempotency_unsupported",
                 CatalogError::ResponseTooLarge { .. } => "catalog_response_too_large",
+                CatalogError::ListingOverflow { .. } => "catalog_listing_too_large",
             },
         }
     }

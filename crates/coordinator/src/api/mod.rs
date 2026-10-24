@@ -7,6 +7,7 @@
 mod catalogs;
 mod commands;
 mod creation;
+mod discovery;
 mod events;
 mod pagination;
 mod preview;
@@ -30,6 +31,7 @@ use serde_json::json;
 use sqlx::PgConnection;
 
 use crate::checks::CapabilityChecker;
+use crate::discovery::CatalogDiscovery;
 use crate::identity::{CSRF_HEADER, audit, routes::cookie, session};
 use crate::preview::CatalogPreviewer;
 
@@ -51,6 +53,8 @@ pub struct ApiState {
     pub events: JobEventHub,
     /// Runs catalog capability checks within the process and requester bounds.
     pub checks: CapabilityChecker,
+    /// Browses catalogs and loads the tables an operator registers.
+    pub discovery: CatalogDiscovery,
 }
 
 /// Builds the `/api/v1` resource router, including its `OpenAPI` document.
@@ -77,6 +81,15 @@ pub fn router(state: ApiState) -> Router {
             get(resources::catalog).patch(catalogs::update),
         )
         .route("/api/v1/catalogs/{id}/check", post(catalogs::check))
+        .route(
+            "/api/v1/catalogs/{id}/namespaces",
+            get(discovery::namespaces),
+        )
+        .route("/api/v1/catalogs/{id}/tables", get(discovery::tables))
+        .route(
+            "/api/v1/catalogs/{id}/registrations",
+            post(discovery::register).delete(discovery::unregister),
+        )
         .route("/api/v1/tables", get(resources::tables))
         .route("/api/v1/tables/{id}", get(resources::table))
         .route(
@@ -382,6 +395,12 @@ impl From<PersistenceError> for ApiError {
         match error {
             PersistenceError::CatalogConnectionInUse { .. } => {
                 Self::conflict("catalog_connection_in_use", "wait_for_jobs_to_resolve")
+            }
+            PersistenceError::TableInUse { .. } => {
+                Self::conflict("table_in_use", "wait_for_jobs_to_resolve")
+            }
+            PersistenceError::TableIdentityConflict { .. } => {
+                Self::conflict("table_identity_conflict", "unregister_then_register")
             }
             PersistenceError::NotFound { .. } => Self::not_found(),
             PersistenceError::PermissionDenied { .. } => Self::new(

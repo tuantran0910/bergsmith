@@ -51,13 +51,17 @@ async fn tables_are_listed_by_namespace() {
     let audit = warehouse.create_table("db", "audit").await;
     let connection = warehouse.connect().await;
 
-    let tables = connection.list_tables(&["db".to_owned()]).await.unwrap();
+    let tables = connection
+        .list_tables(&["db".to_owned()], None, 50)
+        .await
+        .unwrap();
     let missing = connection
-        .list_tables(&["nope".to_owned()])
+        .list_tables(&["nope".to_owned()], None, 50)
         .await
         .unwrap_err();
 
-    assert_eq!(tables, [audit, events]);
+    assert_eq!(tables.items, [audit, events]);
+    assert_eq!(tables.next_page_token, None);
     assert!(missing.is_not_found(), "{missing}");
 }
 

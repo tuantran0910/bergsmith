@@ -57,7 +57,12 @@ describe("format", () => {
         );
         expect(
             aliasName(
-                { catalog_id: "c", namespace: ["a", "b"], name: "t" },
+                {
+                    catalog_id: "c",
+                    namespace: ["a", "b"],
+                    name: "t",
+                    revision: 1,
+                },
                 new Map([["c", "lake"]]),
             ),
         ).toBe("lake.a.b.t");
@@ -69,8 +74,18 @@ describe("format", () => {
         expect(
             tableName(
                 [
-                    { catalog_id: "c", namespace: ["a"], name: "t" },
-                    { catalog_id: "c", namespace: ["b"], name: "u" },
+                    {
+                        catalog_id: "c",
+                        namespace: ["a"],
+                        name: "t",
+                        revision: 1,
+                    },
+                    {
+                        catalog_id: "c",
+                        namespace: ["b"],
+                        name: "u",
+                        revision: 2,
+                    },
                 ],
                 id,
                 catalogs,

@@ -75,6 +75,12 @@ pub enum PersistenceError {
         /// The identity of the table that was observed under the alias.
         observed: TableId,
     },
+    /// A table still has nonterminal work, so its catalog names are kept.
+    #[error("table {table} has nonterminal jobs")]
+    TableInUse {
+        /// The table whose alias removal was refused.
+        table: TableId,
+    },
     /// Another writer changed the job after the caller read it.
     #[error("job {job} is at revision {actual}, not the expected {expected}")]
     RevisionConflict {

@@ -109,6 +109,13 @@ pub enum CatalogError {
     /// The table's data location is outside its table location.
     #[error("table data location {0} is outside the table location")]
     DataLocationOutsideTable(String),
+    /// The catalog answered one page with more identifiers than one answer
+    /// may carry.
+    #[error("catalog {operation} answered a page larger than one answer may carry")]
+    ListingOverflow {
+        /// The operation.
+        operation: &'static str,
+    },
     /// An idempotency key was given for a catalog that does not advertise
     /// `idempotency-key-lifetime`.
     #[error("catalog does not support idempotency keys")]

@@ -171,7 +171,7 @@ pub(super) async fn update(
 
 /// Authorizes once inside the mutation transaction. On denial, roll back first
 /// so the best-effort denial audit survives outside that transaction.
-async fn authorized_transaction(
+pub(super) async fn authorized_transaction(
     state: &ApiState,
     caller: &Caller,
     scope: ResourceScope,
@@ -634,7 +634,7 @@ async fn record_check(
 ///
 /// The mapping matches the preview contract, so one catalog failure reads the
 /// same way wherever it happens.
-fn classify(error: &bergsmith_catalog::CatalogError) -> ApiError {
+pub(super) fn classify(error: &bergsmith_catalog::CatalogError) -> ApiError {
     use bergsmith_catalog::CatalogError;
     match error {
         CatalogError::Status {
@@ -699,6 +699,11 @@ fn classify(error: &bergsmith_catalog::CatalogError) -> ApiError {
             StatusCode::INTERNAL_SERVER_ERROR,
             "catalog_response_too_large",
             "check_catalog_configuration",
+        ),
+        CatalogError::ListingOverflow { .. } => ApiError::permanent(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "catalog_page_too_large",
+            "check_catalog_limits",
         ),
     }
 }

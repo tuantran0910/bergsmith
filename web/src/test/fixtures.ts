@@ -46,8 +46,18 @@ export const table = schema("Table", {
     table_uuid: "6f1c0d0e-1111-4222-8333-444455556666",
     created_at: "2026-10-01T00:00:00Z",
     aliases: [
-        { catalog_id: CATALOG_ID, namespace: ["sales"], name: "orders" },
-        { catalog_id: CATALOG_ID, namespace: ["legacy"], name: "orders_v1" },
+        {
+            catalog_id: CATALOG_ID,
+            namespace: ["sales"],
+            name: "orders",
+            revision: 7,
+        },
+        {
+            catalog_id: CATALOG_ID,
+            namespace: ["legacy"],
+            name: "orders_v1",
+            revision: 8,
+        },
     ],
 });
 

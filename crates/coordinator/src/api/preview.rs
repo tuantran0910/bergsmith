@@ -392,6 +392,11 @@ impl ApiError {
                 "catalog_response_too_large",
                 "check_catalog_configuration",
             ),
+            CatalogError::ListingOverflow { .. } => Self::permanent(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "catalog_page_too_large",
+                "check_catalog_limits",
+            ),
         }
     }
 }
