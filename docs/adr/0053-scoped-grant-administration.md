@@ -55,6 +55,15 @@ existed.
   reactivation, and takes it before authorization, so two concurrent changes
   cannot each see the other's grant as its replacement. The change, the guard,
   and the audit record commit together.
+- Grant creation takes that lock too, before authorization. A transaction alone
+  does not fence authorization against revocation: a creator could read its own
+  still-committed grant while another transaction's revocation was uncommitted,
+  block on the unique active-grant index, and insert once the revocation
+  committed, restoring the access it had just lost. Holding the lock through
+  authorization, the insert, and the audit record makes the revocation commit
+  first, so the creator is denied against the state that remains. Creation is
+  therefore serialized with revocation, deactivation, and reactivation per
+  organization.
 - An identical active grant is refused with `409 grant_already_exists` rather
   than silently returning the existing row: the caller asked for a new
   delegation and the answer should say that it already exists.
@@ -73,8 +82,9 @@ existed.
 - Listing a connection's grants also lists its tables' grants, which is more
   than the connection-wide rows but exactly the grants that affect it.
 - The last-administrator invariant now holds for both deactivation and
-  revocation, serialized per organization. Organizations are unaffected by
-  each other and the lock is held only for the transaction.
+  revocation, and creation cannot race a revocation that removes the creator's
+  own access. All four are serialized per organization; organizations are
+  unaffected by each other and the lock is held only for the transaction.
 - Grants held by deactivated principals remain listed because they are still
   active rows; they authorize nothing until the principal is reactivated.
 - The API creates grants for existing principals. Provisioning service

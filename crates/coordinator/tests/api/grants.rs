@@ -33,6 +33,100 @@ async fn wait_for_administration_lock(
 }
 
 #[sqlx::test(migrator = "MIGRATOR")]
+async fn a_grant_waits_for_a_revocation_and_is_denied(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let bob = support::user(&mut conn, tenant.organization, "bob").await;
+    grants::create_grant(
+        &mut conn,
+        &NewRoleGrant {
+            id: RoleGrantId::generate(),
+            organization_id: tenant.organization,
+            principal_id: bob,
+            role: Role::Administrator,
+            scope: GrantScope::organization(),
+            granted_by: Some(tenant.user),
+        },
+    )
+    .await
+    .unwrap();
+    let alice_grant: Uuid = sqlx::query_scalar(
+        "SELECT id FROM principal_role_grants
+         WHERE organization_id = $1 AND principal_id = $2 AND revoked_at IS NULL
+           AND catalog_connection_id IS NULL AND table_identity_id IS NULL",
+    )
+    .bind(tenant.organization.as_uuid())
+    .bind(tenant.user.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+
+    // A revocation has updated the row but not committed, so the actor's grant
+    // still reads as active. An identical self-grant must wait for the
+    // revocation to commit and then be denied, instead of inserting after it
+    // and restoring the access it just lost.
+    let mut blocking = pool.begin().await.unwrap();
+    tenancy::lock_principal_administration(&mut blocking, tenant.organization)
+        .await
+        .unwrap();
+    grants::revoke_grant(
+        &mut blocking,
+        tenant.organization,
+        RoleGrantId::from_uuid(alice_grant),
+        Some(bob),
+    )
+    .await
+    .unwrap();
+
+    let caller = browser.clone();
+    let alice = tenant.user;
+    let pending = tokio::spawn(async move {
+        caller
+            .request(
+                "POST",
+                "/api/v1/grants",
+                Some(json!({
+                    "principal_id": alice,
+                    "role": "Administrator",
+                    "scope": {}
+                })),
+                None,
+            )
+            .await
+    });
+    assert!(
+        wait_for_administration_lock(&pool, tenant.organization).await,
+        "grant creation must wait for the organization lifecycle lock"
+    );
+    blocking.commit().await.unwrap();
+
+    let (status, body) = pending.await.unwrap();
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["reason"], "permission_denied");
+    let active: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM principal_role_grants
+         WHERE organization_id = $1 AND principal_id = $2 AND revoked_at IS NULL",
+    )
+    .bind(tenant.organization.as_uuid())
+    .bind(tenant.user.as_uuid())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(active, 0, "the revoked access was not restored");
+    let denials: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_events
+         WHERE action = 'api.permission_denied'
+           AND detail->>'permission' = 'grants:manage'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(denials, 1, "the refusal is audited");
+}
+
+#[sqlx::test(migrator = "MIGRATOR")]
 async fn a_revocation_waits_for_the_lifecycle_lock(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let tenant = support::tenant(&mut conn, "acme").await;

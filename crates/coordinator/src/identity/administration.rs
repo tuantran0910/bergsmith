@@ -95,6 +95,14 @@ pub async fn provision_principal(
 
 /// Grant a role. The actor must be able to manage grants over the same scope.
 ///
+/// The lifecycle lock fences authorization against revocation: a grant created
+/// after the actor's own grant was revoked in an uncommitted transaction would
+/// otherwise still see the committed grant, wait on the unique active-grant
+/// index, and restore the access once that revocation commits. Holding the
+/// lock through authorization, the insert, and the audit record makes the
+/// revocation commit first, so the actor is denied against the state that
+/// remains.
+///
 /// # Errors
 ///
 /// [`AdministrationError`] when the actor is not an administrator over the
@@ -113,6 +121,7 @@ pub async fn grant_role(
         .into());
     }
     let mut tx = conn.begin().await?;
+    tenancy::lock_principal_administration(&mut tx, organization_id).await?;
     Authorizer::require(
         &mut tx,
         organization_id,
