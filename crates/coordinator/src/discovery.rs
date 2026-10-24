@@ -1,11 +1,12 @@
 //! Bounded catalog discovery and table registration (BS-022.T4).
 //!
 //! Browsing and registering are outbound catalog calls an administrator
-//! triggers by hand. They are bounded three times: a listing reads at most
-//! [`bergsmith_catalog::MAX_LISTING_PAGES`] pages, one registration records at
-//! most [`MAX_REGISTRATION_TABLES`] tables, and the process runs at most
-//! [`MAX_CONCURRENT_DISCOVERY`] discovery operations at once, so a slow or
-//! oversized catalog cannot starve planning, previews, or publication.
+//! triggers by hand. They are bounded three times: a listing reads one page of
+//! at most [`bergsmith_catalog::MAX_LISTING_ITEMS`] items and
+//! [`bergsmith_catalog::MAX_LISTING_BYTES`] identifier bytes, one registration
+//! records at most [`MAX_REGISTRATION_TABLES`] tables, and the process runs at
+//! most [`MAX_CONCURRENT_DISCOVERY`] discovery operations at once, so a slow
+//! or oversized catalog cannot starve planning, previews, or publication.
 //!
 //! Registration reads every table's metadata before it writes anything: the
 //! ledger records either the whole request or none of it, and the caller's
