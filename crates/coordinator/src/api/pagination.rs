@@ -11,6 +11,14 @@ pub(super) struct PageQuery {
     cursor: Option<String>,
 }
 
+impl PageQuery {
+    /// Builds a page query from a handler that parses the same two fields
+    /// beside its own filters.
+    pub(super) const fn new(limit: Option<usize>, cursor: Option<String>) -> Self {
+        Self { limit, cursor }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Cursor {

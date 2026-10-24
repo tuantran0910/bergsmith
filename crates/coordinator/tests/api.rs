@@ -10,6 +10,9 @@ mod catalog_management;
 #[path = "api/discovery.rs"]
 mod catalog_discovery;
 
+#[path = "api/principals.rs"]
+mod principals;
+
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, Request, StatusCode};
@@ -1108,6 +1111,10 @@ fn openapi_documents_every_route() {
         ("/api/v1/catalogs/{id}/tables", "get"),
         ("/api/v1/catalogs/{id}/registrations", "post"),
         ("/api/v1/catalogs/{id}/registrations", "delete"),
+        ("/api/v1/principals", "get"),
+        ("/api/v1/principals", "post"),
+        ("/api/v1/principals/{id}", "get"),
+        ("/api/v1/principals/{id}", "patch"),
         ("/api/v1/openapi.json", "get"),
     ];
     let document: Value = serde_json::from_str(include_str!("../src/api/openapi.json")).unwrap();

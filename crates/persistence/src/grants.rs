@@ -377,9 +377,17 @@ pub async fn has_permission(
             (Some(*table.as_uuid()), connections)
         }
     };
+    // Deactivation keeps the rows and the grants for audit, so the join on the
+    // principal decides whether any of them still applies. Admission,
+    // publication, and every browser command pass through this one query, so
+    // the check adds no round trip.
     let allowed: bool = sqlx::query_scalar(
         "SELECT EXISTS(
              SELECT 1 FROM principal_role_grants g
+             JOIN principals p
+               ON p.organization_id = g.organization_id
+              AND p.id = g.principal_id
+              AND p.deactivated_at IS NULL
              WHERE g.organization_id = $1 AND g.principal_id = $2
                AND g.revoked_at IS NULL AND g.role = ANY($3::text[])
                AND (

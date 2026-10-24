@@ -174,7 +174,18 @@ async fn the_migration_numbers_existing_events_per_job_in_append_order(pool: PgP
     // Seed only the historical schema this migration upgrades. Current tenant
     // fixtures may depend on columns introduced after migration 0013.
     let organization = support::organization(&mut conn, "acme").await;
-    let principal = support::user(&mut conn, organization, "alice").await;
+    // Seed the principal with the columns this migration era has; today's
+    // `create_principal` returns columns added by later migrations.
+    let principal = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO principals (id, organization_id, kind, issuer, subject, display_name)
+         VALUES ($1, $2, 'User', 'https://idp.example', 'alice', 'alice')",
+    )
+    .bind(principal)
+    .bind(organization.as_uuid())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
     let table = Uuid::now_v7();
     sqlx::query("INSERT INTO table_identities (id, organization_id, table_uuid) VALUES ($1,$2,$3)")
         .bind(table)
@@ -192,7 +203,7 @@ async fn the_migration_numbers_existing_events_per_job_in_append_order(pool: PgP
         .bind(id)
         .bind(organization.as_uuid())
         .bind(table)
-        .bind(principal.as_uuid())
+        .bind(principal)
         .execute(&mut *conn)
         .await
         .unwrap();

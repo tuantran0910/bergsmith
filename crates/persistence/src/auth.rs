@@ -122,6 +122,10 @@ struct SessionRow {
 }
 
 /// A session row plus the database-time validity flags.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one independent, SQL-computed rejection reason"
+)]
 #[derive(sqlx::FromRow)]
 struct SessionLookup {
     token_hash: Vec<u8>,
@@ -134,6 +138,7 @@ struct SessionLookup {
     last_seen_at: DateTime<Utc>,
     expires_at: DateTime<Utc>,
     revoked: bool,
+    deactivated: bool,
     expired: bool,
     idle: bool,
 }
@@ -143,6 +148,8 @@ impl SessionLookup {
     fn rejection(&self) -> Option<&'static str> {
         if self.revoked {
             Some("revoked")
+        } else if self.deactivated {
+            Some("deactivated")
         } else if self.expired {
             Some("expired")
         } else if self.idle {
@@ -373,9 +380,10 @@ pub async fn create_session(
 /// Authenticates a session token, refreshing its idle timestamp at most once
 /// per [`TOUCH_INTERVAL`].
 ///
-/// The row must still belong to a principal whose issuer and subject match the
-/// session's binding. An expired, revoked, or idle session is rejected with a
-/// typed reason that never includes the token. The read takes no row lock, so
+/// The row must still belong to an active principal whose issuer and subject
+/// match the session's binding. An expired, revoked, or idle session, or one
+/// whose principal was deactivated, is rejected with a typed reason that never
+/// includes the token. The read takes no row lock, so
 /// requests that share a session do not serialize; a revocation that lands
 /// concurrently applies to the next request.
 ///
@@ -438,6 +446,7 @@ async fn lookup_session(
         "SELECT s.token_hash, s.organization_id, s.principal_id, s.issuer, s.subject,
                 s.csrf_token_hash, s.created_at, s.last_seen_at, s.expires_at,
                 s.revoked_at IS NOT NULL AS revoked,
+                p.deactivated_at IS NOT NULL AS deactivated,
                 s.expires_at <= clock_timestamp() AS expired,
                 s.last_seen_at <= clock_timestamp() - make_interval(secs => $2) AS idle
          FROM auth_sessions s

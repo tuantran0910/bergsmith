@@ -8,6 +8,7 @@ use bergsmith_common::audit::{ActorKind, AuditAction, AuditOutcome};
 use bergsmith_common::ids::{OrganizationId, PrincipalId};
 use bergsmith_persistence::PersistenceError;
 use bergsmith_persistence::audit::{self, NewAuditEvent};
+use bergsmith_persistence::tenancy::Principal;
 use serde_json::{Value, json};
 use sqlx::PgConnection;
 use thiserror::Error;
@@ -292,6 +293,38 @@ pub async fn principal_provisioned(
         Some(&principal_id.to_string()),
         AuditOutcome::Allowed,
         json!({ "issuer": issuer }),
+    )
+    .await
+}
+
+/// Records a principal's deactivation or reactivation.
+///
+/// # Errors
+///
+/// [`AuditError`] when the ledger is unavailable.
+pub async fn principal_state_changed(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    actor: Option<PrincipalId>,
+    action: AuditAction,
+    principal: &Principal,
+    sessions_revoked: u64,
+) -> Result<(), AuditError> {
+    let kind = actor_kind(conn, organization_id, actor).await;
+    record(
+        conn,
+        Some(organization_id),
+        actor,
+        kind,
+        action,
+        "principal",
+        Some(&principal.id.to_string()),
+        AuditOutcome::Allowed,
+        json!({
+            "issuer": principal.issuer,
+            "active": principal.is_active(),
+            "sessions_revoked": sessions_revoked,
+        }),
     )
     .await
 }

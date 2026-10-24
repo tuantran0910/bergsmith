@@ -11,6 +11,7 @@ mod discovery;
 mod events;
 mod pagination;
 mod preview;
+mod principals;
 mod resources;
 mod scheduling;
 mod submission;
@@ -32,6 +33,8 @@ use sqlx::PgConnection;
 
 use crate::checks::CapabilityChecker;
 use crate::discovery::CatalogDiscovery;
+use crate::identity::administration::AdministrationError;
+use crate::identity::authorization::AuthorizationError;
 use crate::identity::{CSRF_HEADER, audit, routes::cookie, session};
 use crate::preview::CatalogPreviewer;
 
@@ -101,6 +104,14 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/jobs/{id}/cancel", post(commands::cancel))
         .route("/api/v1/jobs/{id}/retry", post(commands::retry))
         .route("/api/v1/jobs/{id}/events", get(events::events))
+        .route(
+            "/api/v1/principals",
+            get(principals::list).post(principals::create),
+        )
+        .route(
+            "/api/v1/principals/{id}",
+            get(principals::get).patch(principals::update),
+        )
         .route("/api/v1/audit", get(resources::audit))
         .route("/api/v1/workers", get(resources::workers))
         .route("/api/v1/previews", post(preview::preview))
@@ -420,6 +431,9 @@ impl From<PersistenceError> for ApiError {
             PersistenceError::ConfigRevisionConflict { .. } => {
                 Self::conflict("revision_conflict", "reload_and_retry")
             }
+            PersistenceError::LastAdministrator { .. } => {
+                Self::conflict("last_administrator", "grant_another_administrator")
+            }
             PersistenceError::IneligibleServiceIdentity { .. } => Self::new(
                 StatusCode::BAD_REQUEST,
                 "service_identity_not_eligible",
@@ -432,6 +446,32 @@ impl From<PersistenceError> for ApiError {
             other => {
                 tracing::error!(error = %other, "api persistence failure");
                 Self::internal()
+            }
+        }
+    }
+}
+
+impl From<AdministrationError> for ApiError {
+    fn from(error: AdministrationError) -> Self {
+        match error {
+            AdministrationError::Authorization(AuthorizationError::Denied { .. }) => Self::new(
+                StatusCode::FORBIDDEN,
+                "permission_denied",
+                "request_permission",
+            ),
+            AdministrationError::Authorization(other) => {
+                tracing::error!(
+                    reason = other.reason_code(),
+                    "api administration authorization failed"
+                );
+                Self::internal()
+            }
+            AdministrationError::Persistence(error) => Self::from(error),
+            AdministrationError::Audit(_) => {
+                // The change rolled back with the failed record, so retrying
+                // the same request is safe once the ledger is reachable.
+                tracing::warn!("api administration audit record failed");
+                Self::unavailable()
             }
         }
     }
