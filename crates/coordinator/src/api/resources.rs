@@ -9,6 +9,8 @@ use uuid::Uuid;
 
 use super::pagination::{Page, PageQuery};
 use super::{ApiError, ApiState, Caller};
+use crate::identity::administration::AdministrationError;
+use crate::identity::authorization::AuthorizationError;
 
 // Queries are compile-time literals. All request values are bound.
 // Filtering precedes ORDER BY / LIMIT, so inaccessible rows never consume a page.
@@ -410,6 +412,29 @@ pub(super) async fn require(
         return Err(error.into());
     }
     Ok(())
+}
+
+/// Maps an administration failure, recording a denial that the transactional
+/// check found after the request had already passed the route pre-check.
+///
+/// The administration transaction has rolled back by the time this runs, so
+/// the denial is written on the handler's own connection. That keeps it out of
+/// a second pool acquisition, which a small pool could refuse.
+pub(super) async fn administered<T>(
+    conn: &mut PgConnection,
+    caller: &Caller,
+    permission: Permission,
+    resource: ResourceScope,
+    result: Result<T, AdministrationError>,
+) -> Result<T, ApiError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error @ AdministrationError::Authorization(AuthorizationError::Denied { .. })) => {
+            record_denial(conn, &caller.0, permission, resource).await;
+            Err(error.into())
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 pub(super) async fn record_denial(

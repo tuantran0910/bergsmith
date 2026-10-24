@@ -111,6 +111,15 @@ macro_rules! grant_columns {
     };
 }
 
+/// The same columns, qualified for queries that join the grant table.
+macro_rules! qualified_grant_columns {
+    () => {
+        "g.id, g.organization_id, g.principal_id, g.role, \
+         g.catalog_connection_id, g.table_identity_id, g.granted_by, \
+         g.granted_at, g.revoked_at, g.revoked_by"
+    };
+}
+
 /// Creates a grant.
 ///
 /// # Errors
@@ -315,6 +324,146 @@ pub async fn organization_grants(
     .fetch_all(conn)
     .await?;
     rows.into_iter().map(TryInto::try_into).collect()
+}
+
+/// One active grant.
+///
+/// # Errors
+///
+/// [`PersistenceError::NotFound`] when the organization has no such active
+/// grant.
+pub async fn active_grant(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    grant_id: RoleGrantId,
+) -> Result<RoleGrant, PersistenceError> {
+    sqlx::query_as::<_, RoleGrantRow>(concat!(
+        "SELECT ",
+        grant_columns!(),
+        " FROM principal_role_grants
+         WHERE organization_id = $1 AND id = $2 AND revoked_at IS NULL"
+    ))
+    .bind(organization_id.as_uuid())
+    .bind(grant_id.as_uuid())
+    .fetch_optional(conn)
+    .await?
+    .ok_or_else(|| PersistenceError::NotFound {
+        entity: "role grant",
+        id: grant_id.to_string(),
+    })?
+    .try_into()
+}
+
+/// Filters for an active-grant page.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GrantFilter {
+    /// Restrict the page to one principal's grants.
+    pub principal_id: Option<PrincipalId>,
+    /// Restrict the page to grants that apply to one catalog connection: its
+    /// connection-wide grants and the grants on tables reached through it.
+    pub catalog_connection: Option<CatalogConnectionId>,
+    /// Restrict the page to one table's grants.
+    pub table: Option<TableId>,
+}
+
+/// Lists active grants in ascending identifier order.
+///
+/// A connection filter includes table grants for every table that has an alias
+/// on the connection, because those grants apply to it too. A table filter is
+/// exact. The caller is responsible for having established that the actor may
+/// manage grants over the filtered scope; this function only reads.
+///
+/// # Errors
+///
+/// Returns a database error if the query fails.
+pub async fn list_grants(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    filter: GrantFilter,
+    after: Option<RoleGrantId>,
+    limit: i64,
+) -> Result<Vec<RoleGrant>, PersistenceError> {
+    let rows = sqlx::query_as::<_, RoleGrantRow>(concat!(
+        "SELECT ",
+        qualified_grant_columns!(),
+        " FROM principal_role_grants g
+         WHERE g.organization_id = $1 AND g.revoked_at IS NULL
+           AND ($2::uuid IS NULL OR g.principal_id = $2)
+           AND ($3::uuid IS NULL
+                OR g.catalog_connection_id = $3
+                OR EXISTS (SELECT 1 FROM table_aliases a
+                           WHERE a.organization_id = g.organization_id
+                             AND a.table_identity_id = g.table_identity_id
+                             AND a.catalog_connection_id = $3))
+           AND ($4::uuid IS NULL OR g.table_identity_id = $4)
+           AND ($5::uuid IS NULL OR g.id > $5)
+         ORDER BY g.id
+         LIMIT $6"
+    ))
+    .bind(organization_id.as_uuid())
+    .bind(filter.principal_id.as_ref().map(PrincipalId::as_uuid))
+    .bind(
+        filter
+            .catalog_connection
+            .as_ref()
+            .map(CatalogConnectionId::as_uuid),
+    )
+    .bind(filter.table.as_ref().map(TableId::as_uuid))
+    .bind(after.as_ref().map(RoleGrantId::as_uuid))
+    .bind(limit)
+    .fetch_all(conn)
+    .await?;
+    rows.into_iter().map(TryInto::try_into).collect()
+}
+
+/// Refuses to revoke the organization's last active organization-wide
+/// administrator grant.
+///
+/// A connection- or table-scoped Administrator grant is real administration of
+/// that resource, but it cannot manage principals or restore organization
+/// administration, so it does not replace one. Only an active organization
+/// administrator can revoke, so the grant being revoked belongs to an active
+/// principal: a principal whose access ended cannot be the last administrator.
+///
+/// The caller must hold the organization's lifecycle lock in the same
+/// transaction and check that `grant` is active.
+///
+/// # Errors
+///
+/// [`PersistenceError::LastAdministrator`] when revoking would leave the
+/// organization without an active administrator, and database errors.
+pub async fn ensure_administrator_replacement(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    grant: &RoleGrant,
+) -> Result<(), PersistenceError> {
+    if grant.role != Role::Administrator || !grant.scope.is_organization() {
+        return Ok(());
+    }
+    let replacement: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1 FROM principal_role_grants g
+             JOIN principals p
+               ON p.organization_id = g.organization_id AND p.id = g.principal_id
+             WHERE g.organization_id = $1 AND g.id <> $2
+               AND g.revoked_at IS NULL AND g.role = $3
+               AND g.catalog_connection_id IS NULL
+               AND g.table_identity_id IS NULL
+               AND p.deactivated_at IS NULL
+         )",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(grant.id.as_uuid())
+    .bind(Role::Administrator.as_str())
+    .fetch_one(&mut *conn)
+    .await?;
+    if replacement {
+        return Ok(());
+    }
+    Err(PersistenceError::LastAdministrator {
+        organization: organization_id,
+        principal: grant.principal_id,
+    })
 }
 
 /// Whether `principal` holds `permission` over `resource`.

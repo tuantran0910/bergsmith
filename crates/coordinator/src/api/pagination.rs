@@ -34,7 +34,7 @@ pub(super) struct Page {
     pub(super) after: Option<String>,
     organization: OrganizationId,
     principal: PrincipalId,
-    resource: &'static str,
+    resource: String,
 }
 
 impl Page {
@@ -42,8 +42,9 @@ impl Page {
         query: PageQuery,
         organization: OrganizationId,
         principal: PrincipalId,
-        resource: &'static str,
+        resource: impl Into<String>,
     ) -> Result<Self, ApiError> {
+        let resource = resource.into();
         let limit = query.limit.unwrap_or(50);
         if !(1..=100).contains(&limit) {
             return Err(ApiError::invalid());
@@ -91,7 +92,7 @@ impl Page {
                         version: 1,
                         organization: self.organization,
                         principal: self.principal,
-                        resource: self.resource.into(),
+                        resource: self.resource.clone(),
                         after: after.clone(),
                     })
                     .map(|bytes| URL_SAFE_NO_PAD.encode(bytes))

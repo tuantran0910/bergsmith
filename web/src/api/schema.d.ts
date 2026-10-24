@@ -421,6 +421,41 @@ export interface paths {
         patch: operations["updatePrincipal"];
         trace?: never;
     };
+    "/api/v1/grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Active grants in ascending identifier order. Without a scope filter the page covers the whole organization and requires grants:manage over it; a catalog_connection filter covers that connection and the table grants reached through it, and a table filter covers that table. Both scope filters together are invalid. Revoked grants are kept but never listed. */
+        get: operations["listGrants"];
+        put?: never;
+        /** @description Grants a role over the organization, one catalog connection, or one table. Requires grants:manage over the target scope, so a connection administrator cannot grant organization-wide access and cannot reach another connection. The grant and its audit record commit together; an identical active grant is refused. */
+        post: operations["createGrant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/grants/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** @description Revokes one active grant. Requires grants:manage over the grant's scope. The row and its audit history stay; the revoked grant stops authorizing immediately. Revoking the last active organization-wide administrator grant is refused, serialized with deactivation by the organization lifecycle lock. */
+        delete: operations["revokeGrant"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -443,7 +478,7 @@ export interface components {
         };
         ApiError: {
             /** @enum {string} */
-            reason: "authentication_required" | "csrf_rejected" | "invalid_request" | "resource_not_found" | "permission_denied" | "idempotency_key_reused" | "ledger_unavailable" | "method_not_allowed" | "request_too_large" | "internal_error" | "catalog_credential_unavailable" | "catalog_connection_invalid" | "storage_profile_unavailable" | "storage_unavailable" | "catalog_access_denied" | "catalog_unavailable" | "table_staged" | "job_not_terminal" | "job_already_succeeded" | "table_identity_changed" | "catalog_table_missing" | "inventory_too_large" | "table_metadata_inconsistent" | "preview_capacity_exhausted" | "catalog_unsupported" | "catalog_credentials_unavailable" | "catalog_request_rejected" | "event_stream_capacity_exhausted" | "invalid_policy_parameters" | "invalid_policy_operation" | "invalid_cron_expression" | "invalid_time_zone" | "invalid_maintenance_window" | "run_budget_below_target_file_size" | "revision_conflict" | "service_identity_not_eligible" | "resource_already_exists" | "catalog_connection_disabled" | "catalog_connection_in_use" | "catalog_connection_changed" | "capability_check_capacity_exhausted" | "catalog_response_too_large" | "table_in_use" | "catalog_namespace_not_found" | "catalog_table_not_found" | "catalog_discovery_capacity_exhausted" | "registration_too_large" | "table_identity_conflict" | "catalog_namespace_mismatch" | "catalog_page_too_large" | "registration_incomplete" | "catalog_token_too_large" | "last_administrator";
+            reason: "authentication_required" | "csrf_rejected" | "invalid_request" | "resource_not_found" | "permission_denied" | "idempotency_key_reused" | "ledger_unavailable" | "method_not_allowed" | "request_too_large" | "internal_error" | "catalog_credential_unavailable" | "catalog_connection_invalid" | "storage_profile_unavailable" | "storage_unavailable" | "catalog_access_denied" | "catalog_unavailable" | "table_staged" | "job_not_terminal" | "job_already_succeeded" | "table_identity_changed" | "catalog_table_missing" | "inventory_too_large" | "table_metadata_inconsistent" | "preview_capacity_exhausted" | "catalog_unsupported" | "catalog_credentials_unavailable" | "catalog_request_rejected" | "event_stream_capacity_exhausted" | "invalid_policy_parameters" | "invalid_policy_operation" | "invalid_cron_expression" | "invalid_time_zone" | "invalid_maintenance_window" | "run_budget_below_target_file_size" | "revision_conflict" | "service_identity_not_eligible" | "resource_already_exists" | "catalog_connection_disabled" | "catalog_connection_in_use" | "catalog_connection_changed" | "capability_check_capacity_exhausted" | "catalog_response_too_large" | "table_in_use" | "catalog_namespace_not_found" | "catalog_table_not_found" | "catalog_discovery_capacity_exhausted" | "registration_too_large" | "table_identity_conflict" | "catalog_namespace_mismatch" | "catalog_page_too_large" | "registration_incomplete" | "catalog_token_too_large" | "last_administrator" | "grant_already_exists";
             /** @enum {string} */
             disposition: "RetrySameRequest" | "RetryTask" | "ReplanRequired" | "PermanentFailure" | "ResolvePublication";
             operator_action: string;
@@ -981,6 +1016,34 @@ export interface components {
         UpdatePrincipal: {
             /** @description false deactivates, true reactivates. */
             active: boolean;
+        };
+        /** @description The organization when both fields are absent or null, otherwise exactly one of a catalog connection or a table. */
+        GrantScope: {
+            catalog_connection?: string | null;
+            table?: string | null;
+        };
+        CreateGrant: {
+            /** Format: uuid */
+            principal_id: string;
+            /** @enum {string} */
+            role: "Viewer" | "Operator" | "Administrator" | "MaintenanceService";
+            scope?: components["schemas"]["GrantScope"];
+        };
+        RoleGrant: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            principal_id: string;
+            /** @enum {string} */
+            role: "Viewer" | "Operator" | "Administrator" | "MaintenanceService";
+            scope: components["schemas"]["GrantScope"];
+            granted_by?: string | null;
+            /** Format: date-time */
+            granted_at: string;
+        };
+        RoleGrantPage: {
+            items: components["schemas"]["RoleGrant"][];
+            next_cursor: string | null;
         };
     };
     responses: never;
@@ -4100,6 +4163,293 @@ export interface operations {
             };
             /** @description Request body is not JSON */
             415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    listGrants: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque continuation bound to organization, principal, resource, and filters. Current grants are rechecked. */
+                cursor?: string;
+                /** @description Restrict the page to one principal. */
+                principal_id?: string;
+                /** @description Restrict the page to grants that apply to one catalog connection, including grants on its tables. */
+                catalog_connection?: string;
+                /** @description Restrict the page to one table's grants. */
+                table?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Resource or page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleGrantPage"];
+                };
+            };
+            /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    createGrant: {
+        parameters: {
+            query?: never;
+            header: {
+                "x-csrf-token": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateGrant"];
+            };
+        };
+        responses: {
+            /** @description Stored grant */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleGrant"];
+                };
+            };
+            /** @description Invalid role or scope, or a principal, connection, or table outside the organization */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description An identical active grant exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request body too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request body is not JSON */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    revokeGrant: {
+        parameters: {
+            query?: never;
+            header: {
+                "x-csrf-token": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked grant */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleGrant"];
+                };
+            };
+            /** @description Invalid grant identifier */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unknown or already revoked grant */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Revoking would leave the organization without an active administrator */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

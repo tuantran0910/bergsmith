@@ -8,7 +8,7 @@
 //! keeping them here means the audited path is the only path.
 
 use bergsmith_common::ids::{OrganizationId, PrincipalId, RoleGrantId};
-use bergsmith_common::permission::{GrantScope, Permission, ResourceScope};
+use bergsmith_common::permission::{Permission, ResourceScope};
 use bergsmith_persistence::grants::{self, NewRoleGrant, RoleGrant};
 use bergsmith_persistence::tenancy::{self, NewPrincipal, Principal};
 use bergsmith_persistence::{PersistenceError, auth};
@@ -118,7 +118,7 @@ pub async fn grant_role(
         organization_id,
         actor,
         Permission::ManageGrants,
-        scope_of(new.scope),
+        new.scope.resource(),
     )
     .await?;
     let created = grants::create_grant(&mut tx, new).await?;
@@ -138,10 +138,15 @@ pub async fn grant_role(
 
 /// Revoke a role grant. The actor must be able to manage grants over its scope.
 ///
+/// The lifecycle lock serializes the last-administrator check with
+/// deactivation, so two concurrent changes cannot both leave the organization
+/// without an administrator.
+///
 /// # Errors
 ///
 /// [`AdministrationError`] when the actor is not an administrator over the
-/// scope, or the grant is missing or already revoked.
+/// scope, the grant is missing or already revoked, or revoking it would leave
+/// the organization without an active administrator.
 pub async fn revoke_role(
     conn: &mut PgConnection,
     organization_id: OrganizationId,
@@ -149,15 +154,17 @@ pub async fn revoke_role(
     grant_id: RoleGrantId,
 ) -> Result<RoleGrant, AdministrationError> {
     let mut tx = conn.begin().await?;
-    let existing = active_grant(&mut tx, organization_id, grant_id).await?;
+    tenancy::lock_principal_administration(&mut tx, organization_id).await?;
+    let existing = grants::active_grant(&mut tx, organization_id, grant_id).await?;
     Authorizer::require(
         &mut tx,
         organization_id,
         actor,
         Permission::ManageGrants,
-        scope_of(existing.scope),
+        existing.scope.resource(),
     )
     .await?;
+    grants::ensure_administrator_replacement(&mut tx, organization_id, &existing).await?;
     let revoked = grants::revoke_grant(&mut tx, organization_id, grant_id, Some(actor)).await?;
     audit::grant_changed(
         &mut tx,
@@ -302,46 +309,4 @@ pub async fn revoke_sessions(
     }
     tx.commit().await?;
     Ok(revoked)
-}
-
-fn scope_of(scope: GrantScope) -> ResourceScope {
-    match (scope.catalog_connection, scope.table) {
-        (_, Some(table)) => ResourceScope::Table(table),
-        (Some(connection), None) => ResourceScope::Connection(connection),
-        (None, None) => ResourceScope::Organization,
-    }
-}
-
-async fn active_grant(
-    conn: &mut PgConnection,
-    organization_id: OrganizationId,
-    grant_id: RoleGrantId,
-) -> Result<RoleGrant, AdministrationError> {
-    let principal_id: Option<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT principal_id FROM principal_role_grants
-         WHERE organization_id = $1 AND id = $2 AND revoked_at IS NULL",
-    )
-    .bind(organization_id.as_uuid())
-    .bind(grant_id.as_uuid())
-    .fetch_optional(&mut *conn)
-    .await
-    .map_err(PersistenceError::from)?;
-    let Some(principal_id) = principal_id else {
-        return Err(PersistenceError::NotFound {
-            entity: "role grant",
-            id: grant_id.to_string(),
-        }
-        .into());
-    };
-    let all =
-        grants::active_grants(conn, organization_id, PrincipalId::from_uuid(principal_id)).await?;
-    all.into_iter()
-        .find(|grant| grant.id == grant_id)
-        .ok_or_else(|| {
-            PersistenceError::NotFound {
-                entity: "role grant",
-                id: grant_id.to_string(),
-            }
-            .into()
-        })
 }

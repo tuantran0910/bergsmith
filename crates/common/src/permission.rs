@@ -156,7 +156,7 @@ impl fmt::Display for Role {
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
-#[serde(rename_all = "snake_case")]
+#[serde(default, rename_all = "snake_case", deny_unknown_fields)]
 pub struct GrantScope {
     /// Restricts the grant to one catalog connection.
     pub catalog_connection: Option<CatalogConnectionId>,
@@ -196,6 +196,20 @@ impl GrantScope {
     #[must_use]
     pub const fn is_organization(self) -> bool {
         self.catalog_connection.is_none() && self.table.is_none()
+    }
+
+    /// The resource this grant applies to.
+    ///
+    /// A table grant is narrower than a connection grant, which is narrower
+    /// than an organization grant, so authorization checks the most specific
+    /// resource the grant names.
+    #[must_use]
+    pub const fn resource(self) -> ResourceScope {
+        match (self.catalog_connection, self.table) {
+            (_, Some(table)) => ResourceScope::Table(table),
+            (Some(connection), None) => ResourceScope::Connection(connection),
+            (None, None) => ResourceScope::Organization,
+        }
     }
 
     /// Whether this scope covers a table reached through `connections`.

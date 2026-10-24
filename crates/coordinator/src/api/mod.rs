@@ -9,6 +9,7 @@ mod commands;
 mod creation;
 mod discovery;
 mod events;
+mod grants;
 mod pagination;
 mod preview;
 mod principals;
@@ -21,7 +22,7 @@ use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use bergsmith_common::disposition::FailureDisposition;
 use bergsmith_common::ids::{JobId, OrganizationId, PrincipalId};
@@ -112,6 +113,8 @@ pub fn router(state: ApiState) -> Router {
             "/api/v1/principals/{id}",
             get(principals::get).patch(principals::update),
         )
+        .route("/api/v1/grants", get(grants::list).post(grants::create))
+        .route("/api/v1/grants/{id}", delete(grants::revoke))
         .route("/api/v1/audit", get(resources::audit))
         .route("/api/v1/workers", get(resources::workers))
         .route("/api/v1/previews", post(preview::preview))
@@ -439,6 +442,10 @@ impl From<PersistenceError> for ApiError {
                 "service_identity_not_eligible",
                 "grant_maintenance_role",
             ),
+            PersistenceError::AlreadyExists {
+                entity: "role grant",
+                ..
+            } => Self::conflict("grant_already_exists", "read_the_existing_grant"),
             PersistenceError::AlreadyExists { .. } => {
                 Self::conflict("resource_already_exists", "choose_another_name")
             }
