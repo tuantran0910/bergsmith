@@ -125,6 +125,28 @@ export function hasConnectionPermission(
 }
 
 /**
+ * Whether the session holds `permission` over `table`, reached through
+ * `connections`: an organization grant covers every table, a table grant only
+ * its own table, and a connection grant every table named on that connection.
+ */
+export function hasTablePermission(
+    session: SessionInfo,
+    permission: Permission,
+    table: string,
+    connections: Iterable<string>,
+): boolean {
+    const reached = new Set(connections);
+    return session.permissions.some(
+        (held) =>
+            held.permission === permission &&
+            (held.scope.table === table ||
+                (held.scope.table === null &&
+                    (held.scope.catalog_connection === null ||
+                        reached.has(held.scope.catalog_connection)))),
+    );
+}
+
+/**
  * Whether the session can read organization audit history. Only an
  * organization-wide grant carries `audit:read`.
  */

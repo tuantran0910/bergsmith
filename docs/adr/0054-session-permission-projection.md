@@ -47,6 +47,11 @@ the API would allow.
 - The web helpers `canReadAudit`, `canManageWorkers`, and `canManageCatalog`
   are implemented with `hasOrganizationPermission` and
   `hasConnectionPermission`; no browser code branches on a role name.
+  `hasTablePermission` mirrors the server's table check: an organization
+  grant, a grant on the table itself, or a grant on any connection the table
+  is named on. The table page gates preview and submission with
+  `jobs:submit`, and the job page gates cancellation and retry with
+  `jobs:cancel` and `jobs:retry`, alongside the existing lifecycle checks.
 - A changed role-to-permission mapping reaches authorization and the session
   from one table. Browser fixtures mirror that table so a journey cannot pass
   with an impossible session.
@@ -55,6 +60,6 @@ the API would allow.
 - `/auth/session` remains outside the `/api/v1` OpenAPI contract and is typed
   by hand in `web/src/api/auth.ts`; a route test asserts the expanded,
   deduplicated, and sorted pairs and their refresh after revocation.
-- Table-level affordances that need to know which connections a table is
-  reached through can extend the same helper later; the projection does not
-  pre-expand table coverage, so it stays bounded and deterministic.
+- Journey tests cover a Viewer with no maintenance actions and grants that
+  cover another table or another connection, plus the positive case of a
+  connection grant for an alias.

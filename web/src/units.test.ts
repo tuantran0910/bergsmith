@@ -3,6 +3,7 @@ import {
     canManageWorkers,
     canReadAudit,
     hasConnectionPermission,
+    hasTablePermission,
     loginUrl,
 } from "./api/auth";
 import { ApiFailure, call, csrfToken } from "./api/client";
@@ -319,5 +320,57 @@ describe("auth", () => {
             hasConnectionPermission(tableScoped, "connections:manage", "t"),
         ).toBe(false);
         expect(canManageCatalog(tableScoped, "t")).toBe(false);
+    });
+
+    it("matches table grants by table and connection grants by alias", () => {
+        expect(
+            hasTablePermission(session("Operator"), "jobs:submit", "t", []),
+        ).toBe(true);
+        expect(
+            hasTablePermission(
+                session("Operator", { catalog_connection: null, table: "t" }),
+                "jobs:submit",
+                "t",
+                [],
+            ),
+        ).toBe(true);
+        expect(
+            hasTablePermission(
+                session("Operator", { catalog_connection: null, table: "u" }),
+                "jobs:submit",
+                "t",
+                [],
+            ),
+        ).toBe(false);
+        expect(
+            hasTablePermission(
+                session("Operator", {
+                    catalog_connection: "c",
+                    table: null,
+                }),
+                "jobs:submit",
+                "t",
+                ["c"],
+            ),
+        ).toBe(true);
+        expect(
+            hasTablePermission(
+                session("Operator", {
+                    catalog_connection: "c",
+                    table: null,
+                }),
+                "jobs:submit",
+                "t",
+                ["d"],
+            ),
+        ).toBe(false);
+        expect(
+            hasTablePermission(
+                session("Viewer", { catalog_connection: null, table: "t" }),
+                "jobs:submit",
+                "t",
+                [],
+            ),
+        ).toBe(false);
     });
 });

@@ -428,6 +428,51 @@ describe("preview and run", () => {
         expect(await request?.json()).toEqual({ table_id: TABLE_ID });
     });
 
+    it("gates preview and submission on the table's grant coverage", async () => {
+        const otherTable = "0190f3c4-0000-7000-8000-000000000002";
+        const otherConnection = "0190f3c4-0000-7000-8000-0000000000c2";
+        for (const current of [
+            session("Viewer"),
+            session("Operator", {
+                catalog_connection: null,
+                table: otherTable,
+            }),
+            session("Operator", {
+                catalog_connection: otherConnection,
+                table: null,
+            }),
+        ]) {
+            fake.on("GET", "/auth/session", () => json(200, current));
+            start(`/tables/${TABLE_ID}`);
+            expect(await screen.findByText("Table UUID")).toBeInTheDocument();
+            expect(
+                screen.queryByRole("button", { name: "Preview maintenance" }),
+            ).not.toBeInTheDocument();
+            expect(
+                screen.queryByRole("button", { name: "Run maintenance" }),
+            ).not.toBeInTheDocument();
+            cleanup();
+        }
+
+        // A grant over a connection the table is named on covers the table.
+        fake.on("GET", "/auth/session", () =>
+            json(
+                200,
+                session("Operator", {
+                    catalog_connection: CATALOG_ID,
+                    table: null,
+                }),
+            ),
+        );
+        start(`/tables/${TABLE_ID}`);
+        expect(
+            await screen.findByRole("button", { name: "Preview maintenance" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Run maintenance" }),
+        ).toBeInTheDocument();
+    });
+
     it("replaces every bin when a preview is repeated", async () => {
         const partition = (value: string) => ({
             partition: { spec_id: 0, values: [{ field_id: 1000, value }] },
@@ -891,6 +936,53 @@ describe("job commands", () => {
         const request = fake.sent("POST", `/api/v1/jobs/${JOB_ID}/cancel`)[0];
         expect(request?.headers.get("x-csrf-token")).toBe("csrf-value");
         expect(await request?.json()).toEqual({ reason: "wrong table" });
+    });
+
+    it("gates cancellation and retry on the job table's grant coverage", async () => {
+        const otherTable = "0190f3c4-0000-7000-8000-000000000002";
+        fake.on("GET", "/auth/session", () => json(200, session("Viewer"))).on(
+            "GET",
+            "/api/v1/jobs/{id}",
+            () => json(200, job("Running")),
+        );
+        start(`/jobs/${JOB_ID}`);
+        expect(await screen.findByText("Requested by")).toBeInTheDocument();
+        expect(
+            screen.queryByRole("button", { name: "Cancel job" }),
+        ).not.toBeInTheDocument();
+        cleanup();
+
+        // The grant covers another table, so neither command is offered.
+        fake.on("GET", "/auth/session", () =>
+            json(
+                200,
+                session("Operator", {
+                    catalog_connection: null,
+                    table: otherTable,
+                }),
+            ),
+        ).on("GET", "/api/v1/jobs/{id}", () => json(200, job("Failed")));
+        start(`/jobs/${JOB_ID}`);
+        expect(await screen.findByText("Requested by")).toBeInTheDocument();
+        expect(
+            screen.queryByRole("button", { name: "Retry with a fresh plan" }),
+        ).not.toBeInTheDocument();
+        cleanup();
+
+        // A connection grant for an alias covers the job's table.
+        fake.on("GET", "/auth/session", () =>
+            json(
+                200,
+                session("Operator", {
+                    catalog_connection: CATALOG_ID,
+                    table: null,
+                }),
+            ),
+        ).on("GET", "/api/v1/jobs/{id}", () => json(200, job("Running")));
+        start(`/jobs/${JOB_ID}`);
+        expect(
+            await screen.findByRole("button", { name: "Cancel job" }),
+        ).toBeInTheDocument();
     });
 
     it("sends no reason when none is given", async () => {
