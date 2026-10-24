@@ -16,6 +16,7 @@
 //! carries authority by itself: the session row is the authority and the CSRF
 //! value is checked against its stored digest.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,6 +28,8 @@ use axum::{Json, Router};
 use bergsmith_common::audit::{ActorKind, AuditAction, AuditOutcome};
 use bergsmith_common::digest::Sha256Digest;
 use bergsmith_common::ids::OrganizationId;
+use bergsmith_common::permission::{GrantScope, Permission};
+use bergsmith_persistence::grants::RoleGrant;
 use bergsmith_persistence::tenancy::PrincipalKind;
 use bergsmith_persistence::{Database, PersistenceError, tenancy};
 use serde::Deserialize;
@@ -547,6 +550,7 @@ async fn session_info(
     )
     .await
     .map_err(|_| HttpError::unavailable())?;
+    let permissions = effective_permissions(&grants);
     let mut response = Json(json!({
         "organization_id": session.organization_id.to_string(),
         "principal_id": session.principal_id.to_string(),
@@ -556,10 +560,32 @@ async fn session_info(
             "role": grant.role.as_str(),
             "scope": grant.scope,
         })).collect::<Vec<_>>(),
+        "permissions": permissions.iter().map(|(permission, scope)| json!({
+            "permission": permission.as_str(),
+            "scope": scope,
+        })).collect::<Vec<_>>(),
     }))
     .into_response();
     no_store(&mut response);
     Ok(response)
+}
+
+/// Expands active grants into the permissions the session may exercise, each
+/// with the scope its grant covers.
+///
+/// The pairs are sorted and deduplicated, so two roles that share a permission
+/// over the same scope produce one entry. This projection only drives the
+/// browser's navigation and action affordances; every API route and command
+/// re-checks the ledger, and it is recomputed on each session read so a
+/// revocation or deactivation shows up without signing in again.
+fn effective_permissions(grants: &[RoleGrant]) -> Vec<(Permission, GrantScope)> {
+    let mut held = BTreeSet::new();
+    for grant in grants {
+        for permission in grant.role.permissions() {
+            held.insert((permission, grant.scope));
+        }
+    }
+    held.into_iter().collect()
 }
 
 /// Records a rejected session or login state on its own short-lived

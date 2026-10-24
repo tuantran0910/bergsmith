@@ -1,12 +1,12 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { canManageCatalog, type SessionInfo } from "../api/auth";
+import { canManageCatalog } from "../api/auth";
 import { api, ApiFailure, call, csrfHeader } from "../api/client";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { GrantRequired } from "../components/GrantRequired";
 import { PageHeader } from "../components/Page";
-import { SESSION_KEY, useSessionMutation } from "../queryClient";
+import { useSession, useSessionMutation } from "../queryClient";
 import { Button } from "../ui/Button";
 import { Card, CardContent } from "../ui/Card";
 import { Capabilities } from "./catalogs/Capabilities";
@@ -18,7 +18,7 @@ import {
 /** Checks an unsaved draft, then explicitly creates the connection. */
 export function NewCatalogPage() {
     const client = useQueryClient();
-    const session = client.getQueryData<SessionInfo>(SESSION_KEY);
+    const session = useSession();
     const navigate = useNavigate();
     const [draft, setDraft] = useState<ConnectionDraft>({
         name: "",
@@ -55,8 +55,8 @@ export function NewCatalogPage() {
     if (!session || !canManageCatalog(session))
         return (
             <GrantRequired>
-                Adding a connection requires an organization-wide Administrator
-                grant.
+                Adding a connection requires organization-wide permission to
+                manage connections.
             </GrantRequired>
         );
     const missing =

@@ -1,6 +1,7 @@
 import { useNavigate } from "@tanstack/react-router";
 import { PlayIcon, ScanSearchIcon } from "lucide-react";
 
+import { hasTablePermission } from "../api/auth";
 import { api, call, csrfHeader } from "../api/client";
 import { useKeyedMutation } from "../api/keyed";
 import { useCatalogNames, useTable } from "../api/queries";
@@ -8,7 +9,7 @@ import { ErrorNotice } from "../components/ErrorNotice";
 import { LoadingDetail, PageHeader } from "../components/Page";
 import { ResourceId } from "../components/ResourceId";
 import { aliasName, timestamp } from "../format";
-import { useSessionMutation } from "../queryClient";
+import { useSession, useSessionMutation } from "../queryClient";
 import { Button } from "../ui/Button";
 import { Card, CardContent } from "../ui/Card";
 import { PreviewView } from "./PreviewView";
@@ -19,6 +20,7 @@ export function TablePage({ id }: { id: string }) {
     const table = useTable(id);
     const catalogs = useCatalogNames();
     const names = catalogs.data ?? new Map<string, string>();
+    const session = useSession();
 
     const preview = useSessionMutation({
         mutationFn: () =>
@@ -62,6 +64,14 @@ export function TablePage({ id }: { id: string }) {
         );
     }
     const [primary] = table.data.aliases;
+    const canSubmit =
+        session !== null &&
+        hasTablePermission(
+            session,
+            "jobs:submit",
+            table.data.id,
+            table.data.aliases.map((alias) => alias.catalog_id),
+        );
 
     return (
         <section>
@@ -69,31 +79,33 @@ export function TablePage({ id }: { id: string }) {
                 title={primary ? aliasName(primary, names) : table.data.id}
                 description="A preview reads current table metadata and creates no job. Running maintenance plans again from the table as it is then."
                 actions={
-                    <>
-                        <Button
-                            variant="outline"
-                            disabled={preview.isPending}
-                            onClick={() => {
-                                preview.mutate();
-                            }}
-                        >
-                            <ScanSearchIcon aria-hidden="true" />
-                            {preview.isPending
-                                ? "Previewing…"
-                                : "Preview maintenance"}
-                        </Button>
-                        <Button
-                            disabled={submit.isPending}
-                            onClick={() => {
-                                submit.mutate(undefined);
-                            }}
-                        >
-                            <PlayIcon aria-hidden="true" />
-                            {submit.isPending
-                                ? "Submitting…"
-                                : "Run maintenance"}
-                        </Button>
-                    </>
+                    canSubmit ? (
+                        <>
+                            <Button
+                                variant="outline"
+                                disabled={preview.isPending}
+                                onClick={() => {
+                                    preview.mutate();
+                                }}
+                            >
+                                <ScanSearchIcon aria-hidden="true" />
+                                {preview.isPending
+                                    ? "Previewing…"
+                                    : "Preview maintenance"}
+                            </Button>
+                            <Button
+                                disabled={submit.isPending}
+                                onClick={() => {
+                                    submit.mutate(undefined);
+                                }}
+                            >
+                                <PlayIcon aria-hidden="true" />
+                                {submit.isPending
+                                    ? "Submitting…"
+                                    : "Run maintenance"}
+                            </Button>
+                        </>
+                    ) : undefined
                 }
             />
 

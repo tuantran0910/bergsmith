@@ -1,13 +1,13 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
-import { canManageCatalog, type SessionInfo } from "../api/auth";
+import { canManageCatalog } from "../api/auth";
 import { useCatalog } from "../api/catalogs";
 import { api, call, csrfHeader } from "../api/client";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { LoadingDetail, PageHeader } from "../components/Page";
 import { ResourceId } from "../components/ResourceId";
-import { SESSION_KEY, useSessionMutation } from "../queryClient";
+import { useSession, useSessionMutation } from "../queryClient";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/Card";
@@ -20,8 +20,8 @@ import { Settings } from "./catalogs/Settings";
 export function CatalogPage({ id }: { id: string }) {
     const client = useQueryClient();
     const query = useCatalog(id);
-    const session = client.getQueryData<SessionInfo>(SESSION_KEY);
-    const manager = !!session && canManageCatalog(session, id);
+    const session = useSession();
+    const manager = session !== null && canManageCatalog(session, id);
     const [discover, setDiscover] = useState(false);
     const check = useSessionMutation({
         mutationFn: () =>

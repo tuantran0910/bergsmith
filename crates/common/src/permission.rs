@@ -144,6 +144,15 @@ impl Role {
     pub fn allows(self, permission: Permission) -> bool {
         permission.roles().contains(&self)
     }
+
+    /// The permissions this role carries, in [`Permission::ALL`] order.
+    #[must_use = "iterators are lazy and do nothing unless consumed"]
+    pub fn permissions(self) -> impl Iterator<Item = Permission> {
+        Permission::ALL
+            .iter()
+            .copied()
+            .filter(move |permission| self.allows(*permission))
+    }
 }
 
 impl fmt::Display for Role {
@@ -154,7 +163,17 @@ impl fmt::Display for Role {
 
 /// The part of the organization a grant covers.
 #[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 #[serde(default, rename_all = "snake_case", deny_unknown_fields)]
 pub struct GrantScope {

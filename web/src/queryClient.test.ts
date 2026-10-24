@@ -21,6 +21,7 @@ function session(overrides: Partial<SessionInfo> = {}): SessionInfo {
         display_name: "Alice",
         expires_at: "2026-10-22T00:00:00Z",
         grants: [],
+        permissions: [],
         ...overrides,
     };
 }

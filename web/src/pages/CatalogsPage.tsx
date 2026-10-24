@@ -1,7 +1,6 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { DatabaseIcon } from "lucide-react";
-import { canManageCatalog, type SessionInfo } from "../api/auth";
+import { canManageCatalog } from "../api/auth";
 import { useCatalogs } from "../api/catalogs";
 import { ErrorNotice } from "../components/ErrorNotice";
 import {
@@ -10,14 +9,14 @@ import {
     LoadingRows,
     PageHeader,
 } from "../components/Page";
-import { SESSION_KEY } from "../queryClient";
+import { useSession } from "../queryClient";
 import { Badge } from "../ui/Badge";
 import { Card, CardContent } from "../ui/Card";
 
 /** Authorized connections, including paused and disabled connections. */
 export function CatalogsPage() {
     const catalogs = useCatalogs();
-    const session = useQueryClient().getQueryData<SessionInfo>(SESSION_KEY);
+    const session = useSession();
     const items = catalogs.data?.pages.flatMap((page) => page.items) ?? [];
     return (
         <section>
@@ -25,7 +24,7 @@ export function CatalogsPage() {
                 title="Catalogs"
                 description="Connect Iceberg catalogs and choose the tables to maintain."
                 actions={
-                    session &&
+                    session !== null &&
                     canManageCatalog(session) && (
                         <Link to="/catalogs/new">Add connection</Link>
                     )

@@ -9,6 +9,7 @@ import {
 import { type ReactNode, useId, useState } from "react";
 
 import { type Job, api, call, csrfHeader } from "../api/client";
+import { hasTablePermission } from "../api/auth";
 import { useKeyedMutation } from "../api/keyed";
 import { useCatalogNames, useJob } from "../api/queries";
 import { ErrorNotice } from "../components/ErrorNotice";
@@ -27,7 +28,7 @@ import {
     notice,
     publicationStatus,
 } from "../jobs/status";
-import { useSessionMutation } from "../queryClient";
+import { useSession, useSessionMutation } from "../queryClient";
 import { Alert, AlertDescription, AlertTitle } from "../ui/Alert";
 import { Button } from "../ui/Button";
 import {
@@ -76,6 +77,14 @@ function JobDetail({ job }: { job: Job }) {
     const terminal = isTerminal(job.state);
     const live = useJobEvents(job.id, terminal);
     const attention = notice(job.state);
+    const session = useSession();
+    const connections = job.table_aliases.map((alias) => alias.catalog_id);
+    const cancelAllowed =
+        session !== null &&
+        hasTablePermission(session, "jobs:cancel", job.table_id, connections);
+    const retryAllowed =
+        session !== null &&
+        hasTablePermission(session, "jobs:retry", job.table_id, connections);
 
     const retry = useKeyedMutation(
         (key: string) =>
@@ -103,8 +112,11 @@ function JobDetail({ job }: { job: Job }) {
                 description={<ResourceId id={job.id} label="job ID" />}
                 actions={
                     <>
-                        <CancelJob job={job} />
-                        {canRetry(job) && (
+                        <CancelJob
+                            job={job}
+                            allowed={canCancel(job) && cancelAllowed}
+                        />
+                        {canRetry(job) && retryAllowed && (
                             <Button
                                 disabled={retry.isPending}
                                 onClick={() => {
@@ -339,7 +351,7 @@ function ConnectionState({
  * request achieved. The dialog stays until closed, even when the job ends
  * meanwhile, so the reported outcome is not lost.
  */
-function CancelJob({ job }: { job: Job }) {
+function CancelJob({ job, allowed }: { job: Job; allowed: boolean }) {
     const queryClient = useQueryClient();
     const [open, setOpen] = useState(false);
     const [reason, setReason] = useState("");
@@ -362,7 +374,7 @@ function CancelJob({ job }: { job: Job }) {
         },
     });
 
-    if (!canCancel(job) && !open) {
+    if (!allowed && !open) {
         return null;
     }
     const outcome = cancel.data
@@ -380,7 +392,7 @@ function CancelJob({ job }: { job: Job }) {
                 setOpen(next);
             }}
         >
-            {canCancel(job) && (
+            {allowed && (
                 <DialogTrigger render={<Button variant="destructive" />}>
                     <OctagonXIcon aria-hidden="true" />
                     Cancel job

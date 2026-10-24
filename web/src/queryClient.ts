@@ -3,6 +3,7 @@ import {
     QueryCache,
     QueryClient,
     useMutation,
+    useQuery,
     useQueryClient,
 } from "@tanstack/react-query";
 
@@ -123,6 +124,25 @@ export function setSession(
         clearProtected(client);
     }
     client.setQueryData(SESSION_KEY, next);
+}
+
+/**
+ * The current session, subscribed so a refreshed permission set rerenders the
+ * caller. Pages gate controls on permissions, and `getQueryData` only reads a
+ * snapshot: a memoized router outlet can keep a page that used it from seeing
+ * the root query's newer session.
+ */
+export function useSession(): SessionInfo | null {
+    const client = useQueryClient();
+    return (
+        useQuery({
+            queryKey: SESSION_KEY,
+            queryFn: ({ signal }) => readSession(client, signal),
+            // The root query owns the refresh, but this observer must ask for
+            // it too so its own mount or focus always finds the same answer.
+            refetchOnWindowFocus: true,
+        }).data ?? null
+    );
 }
 
 /**
