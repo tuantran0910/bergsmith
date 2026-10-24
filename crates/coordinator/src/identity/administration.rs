@@ -192,6 +192,14 @@ pub async fn deactivate_principal(
     principal_id: PrincipalId,
 ) -> Result<(Principal, u64), AdministrationError> {
     let mut tx = conn.begin().await?;
+    // The lifecycle lock comes before authorization: deactivation and
+    // reactivation both take it, so two changes to the same organization (for
+    // example an administrator deactivating another while that one tries to
+    // reactivate themselves) are authorized against the state the first change
+    // leaves behind, not the state it is about to replace. The persistence
+    // call acquires the same advisory lock again; PostgreSQL counts it and
+    // releases it at commit.
+    tenancy::lock_principal_administration(&mut tx, organization_id).await?;
     Authorizer::require(
         &mut tx,
         organization_id,
@@ -236,6 +244,7 @@ pub async fn reactivate_principal(
     principal_id: PrincipalId,
 ) -> Result<Principal, AdministrationError> {
     let mut tx = conn.begin().await?;
+    tenancy::lock_principal_administration(&mut tx, organization_id).await?;
     Authorizer::require(
         &mut tx,
         organization_id,

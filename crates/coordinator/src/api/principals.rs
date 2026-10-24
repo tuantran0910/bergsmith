@@ -24,7 +24,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::identity::administration;
+use crate::identity::administration::{self, AdministrationError};
+use crate::identity::authorization::AuthorizationError;
 
 use super::pagination::{Page, PageQuery};
 use super::{ApiError, ApiState, Caller, json_body, resources};
@@ -52,6 +53,34 @@ pub(super) struct CreatePrincipal {
 #[serde(deny_unknown_fields)]
 pub(super) struct UpdatePrincipal {
     active: bool,
+}
+
+/// Maps an administration failure, recording a denial that the transactional
+/// check found after the request had already passed the route pre-check.
+///
+/// The transaction has rolled back by the time this runs, so the denial is
+/// written on its own connection, like the catalog commands do.
+async fn administered<T>(
+    state: &ApiState,
+    caller: &Caller,
+    result: Result<T, AdministrationError>,
+) -> Result<T, ApiError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error @ AdministrationError::Authorization(AuthorizationError::Denied { .. })) => {
+            if let Ok(mut conn) = state.database.pool().acquire().await {
+                resources::record_denial(
+                    &mut conn,
+                    &caller.0,
+                    Permission::ManageGrants,
+                    ResourceScope::Organization,
+                )
+                .await;
+            }
+            Err(error.into())
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// The caller-visible shape of a principal. It never carries a credential:
@@ -158,11 +187,16 @@ pub(super) async fn create(
         subject: subject.to_owned(),
         display_name: display_name.to_owned(),
     };
-    let created = administration::provision_principal(
-        &mut conn,
-        caller.organization_id,
-        caller.principal_id,
-        &new,
+    let created = administered(
+        &state,
+        &caller,
+        administration::provision_principal(
+            &mut conn,
+            caller.organization_id,
+            caller.principal_id,
+            &new,
+        )
+        .await,
     )
     .await?;
     Ok((
@@ -211,19 +245,29 @@ pub(super) async fn update(
     )
     .await?;
     let principal = if body.active {
-        administration::reactivate_principal(
-            &mut conn,
-            caller.organization_id,
-            caller.principal_id,
-            id,
+        administered(
+            &state,
+            &caller,
+            administration::reactivate_principal(
+                &mut conn,
+                caller.organization_id,
+                caller.principal_id,
+                id,
+            )
+            .await,
         )
         .await?
     } else {
-        administration::deactivate_principal(
-            &mut conn,
-            caller.organization_id,
-            caller.principal_id,
-            id,
+        administered(
+            &state,
+            &caller,
+            administration::deactivate_principal(
+                &mut conn,
+                caller.organization_id,
+                caller.principal_id,
+                id,
+            )
+            .await,
         )
         .await?
         .0

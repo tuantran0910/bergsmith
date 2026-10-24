@@ -26,21 +26,33 @@ never a deletion.
   same access, because the grants were never removed.
 - Authorization requires an active principal. `has_permission` — which every
   command, admission check, publication check, and send authorization uses —
-  returns false for a deactivated principal regardless of its grants. The
-  inventory read filters make the same check.
+  joins the principal and returns false for a deactivated one regardless of its
+  grants, in the same query as the grant lookup. The inventory read filters
+  make the same check.
 - Session lookup requires an active principal, so a session issued before the
   change is rejected even if its revocation was somehow missed. Deactivation
   also revokes every session in the same transaction, and sign-in refuses a
   deactivated principal and records `auth.login_failed` with the reason
-  `identity_deactivated`.
+  `identity_deactivated`. Sign-in reads the principal under a share lock in the
+  same short transaction that inserts the session: a deactivation either waits
+  for the sign-in and its revocation then sees the new session, or it commits
+  first and the sign-in observes the deactivated row. The OIDC exchange happens
+  before the transaction, so no network call is held.
 - Running jobs are not cancelled and are not rewritten: deactivation stops the
   next admission or publication decision, like grant revocation.
 - Deactivating the organization's last active administrator is refused with
-  `last_administrator`. Two concurrent deactivations must not each see the
-  other as a remaining administrator, so the check and the write run under an
-  organization-scoped transaction advisory lock. A repeated deactivation (or
-  reactivation) returns the stored row, changes nothing, and writes no audit
-  record.
+  `last_administrator`. Only organization-scoped Administrator grants count: a
+  connection- or table-scoped administrator administers that resource but cannot
+  manage principals or restore organization administration, so it is not a
+  replacement.
+- Two concurrent lifecycle changes must not each authorize against the state
+  the other is about to replace, so the organization-scoped transaction
+  advisory lock is taken *before* the actor is authorized and held through the
+  change and its audit record. An administrator whose own access changes while
+  a request waits is therefore refused, instead of reactivating themselves
+  against the state the other change just committed.
+- A repeated deactivation (or reactivation) returns the stored row, changes
+  nothing, and writes no audit record.
 - Principal administration — list, provision, deactivate, reactivate — requires
   `grants:manage` over the organization, the same permission the audited
   operator path already used for provisioning. The issuer and subject are the
@@ -61,7 +73,7 @@ pool tokens are BS-023.T4.
 - A deactivated principal still exists for foreign keys and for audit
   attribution; queries that count people must decide whether to include it.
 - The last-administrator guard serializes principal lifecycle writes per
-  organization. The lock is held only for the transaction, so unrelated
-  organizations are unaffected.
+  organization, including their authorization. The lock is held only for the
+  transaction, so unrelated organizations are unaffected.
 - A display name can change at sign-in without an administration command; the
   provider remains the authority for people's names.

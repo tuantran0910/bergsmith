@@ -572,7 +572,12 @@ async fn update_deactivation(
     row.try_into()
 }
 
-/// Whether the principal holds an active administrator grant.
+/// Whether the principal holds an active organization-scoped administrator
+/// grant.
+///
+/// A connection- or table-scoped Administrator grant is real administration of
+/// that resource, but it cannot manage principals or restore organization
+/// administration, so it does not replace one.
 async fn is_administrator(
     conn: &mut PgConnection,
     organization_id: OrganizationId,
@@ -583,6 +588,8 @@ async fn is_administrator(
              SELECT 1 FROM principal_role_grants g
              WHERE g.organization_id = $1 AND g.principal_id = $2
                AND g.revoked_at IS NULL AND g.role = $3
+               AND g.catalog_connection_id IS NULL
+               AND g.table_identity_id IS NULL
          )",
     )
     .bind(organization_id.as_uuid())
@@ -593,7 +600,12 @@ async fn is_administrator(
     Ok(administrator)
 }
 
-/// Whether someone other than `principal_id` is an active administrator.
+/// Whether someone other than `principal_id` is an active organization
+/// administrator.
+///
+/// The replacement must hold an organization-scoped grant: a scoped
+/// administrator cannot manage principals or restore organization
+/// administration.
 async fn other_administrator_is_active(
     conn: &mut PgConnection,
     organization_id: OrganizationId,
@@ -608,6 +620,8 @@ async fn other_administrator_is_active(
              WHERE p.organization_id = $1 AND p.id <> $2
                AND p.deactivated_at IS NULL
                AND g.revoked_at IS NULL AND g.role = $3
+               AND g.catalog_connection_id IS NULL
+               AND g.table_identity_id IS NULL
          )",
     )
     .bind(organization_id.as_uuid())
@@ -672,6 +686,43 @@ pub async fn principal_by_subject(
         "SELECT ",
         principal_columns!(),
         " FROM principals WHERE organization_id = $1 AND issuer = $2 AND subject = $3"
+    ))
+    .bind(organization_id.as_uuid())
+    .bind(issuer)
+    .bind(subject)
+    .fetch_optional(conn)
+    .await?
+    .ok_or_else(|| PersistenceError::NotFound {
+        entity: "principal",
+        id: format!("{issuer} {subject}"),
+    })?
+    .try_into()
+}
+
+/// Looks up the principal a verified identity belongs to, holding a share
+/// lock on the row until the transaction ends.
+///
+/// Sign-in uses this so deactivation cannot commit between the active check and
+/// the new session. Either the session is inserted before deactivation updates
+/// the row (and the revocation that follows sees it), or deactivation commits
+/// first and this read observes the deactivated row, so the sign-in is refused.
+///
+/// # Errors
+///
+/// [`PersistenceError::NotFound`] when the organization has no principal for
+/// the issuer and subject.
+pub async fn principal_by_subject_for_share(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    issuer: &str,
+    subject: &str,
+) -> Result<Principal, PersistenceError> {
+    sqlx::query_as::<_, PrincipalRow>(concat!(
+        "SELECT ",
+        principal_columns!(),
+        " FROM principals
+         WHERE organization_id = $1 AND issuer = $2 AND subject = $3
+         FOR SHARE"
     ))
     .bind(organization_id.as_uuid())
     .bind(issuer)

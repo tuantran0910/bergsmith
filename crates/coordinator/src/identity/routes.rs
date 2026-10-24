@@ -31,6 +31,7 @@ use bergsmith_persistence::tenancy::PrincipalKind;
 use bergsmith_persistence::{Database, PersistenceError, tenancy};
 use serde::Deserialize;
 use serde_json::json;
+use sqlx::Connection;
 
 use super::audit;
 use super::oidc::OidcProvider;
@@ -331,8 +332,15 @@ async fn begin_session(
     login: &bergsmith_persistence::auth::LoginState,
     identity: &super::oidc::OidcIdentity,
 ) -> Result<session::IssuedSession, HttpError> {
-    let principal = match tenancy::principal_by_subject(
-        conn,
+    // One short transaction holds a share lock on the principal from the
+    // active check through session insertion. Deactivation updates the row and
+    // then revokes sessions, so either it waits for this transaction (and its
+    // revocation sees the new session) or it committed first and this read
+    // observes the deactivated row. The OIDC exchange is already complete; no
+    // network call happens inside the transaction.
+    let mut tx = conn.begin().await.map_err(|_| HttpError::unavailable())?;
+    let principal = match tenancy::principal_by_subject_for_share(
+        &mut tx,
         login.organization_id,
         &identity.issuer,
         &identity.subject,
@@ -342,27 +350,28 @@ async fn begin_session(
         Ok(principal) if principal.kind == PrincipalKind::User && principal.is_active() => {
             principal
         }
-        Ok(principal) if principal.kind != PrincipalKind::User => {
+        Ok(principal) => {
+            let reason = if principal.kind == PrincipalKind::User {
+                "identity_deactivated"
+            } else {
+                "identity_not_interactive"
+            };
+            if tx.rollback().await.is_err() {
+                tracing::warn!("login transaction rollback failed");
+            }
             let _ = audit::login_failed(
                 conn,
                 Some(login.organization_id),
                 Some(&identity.issuer),
-                "identity_not_interactive",
-            )
-            .await;
-            return Err(HttpError::unauthorized("identity_not_provisioned"));
-        }
-        Ok(_) => {
-            let _ = audit::login_failed(
-                conn,
-                Some(login.organization_id),
-                Some(&identity.issuer),
-                "identity_deactivated",
+                reason,
             )
             .await;
             return Err(HttpError::unauthorized("identity_not_provisioned"));
         }
         Err(error) => {
+            if tx.rollback().await.is_err() {
+                tracing::warn!("login transaction rollback failed");
+            }
             if matches!(error, PersistenceError::NotFound { .. }) {
                 let _ = audit::login_failed(
                     conn,
@@ -378,28 +387,8 @@ async fn begin_session(
             ));
         }
     };
-    // The provider owns the display name. A refresh failure must not block a
-    // valid sign-in, so the stored name stays until the next successful login.
-    let principal = if principal.display_name == identity.display_name {
-        principal
-    } else {
-        match tenancy::update_principal_display_name(
-            conn,
-            login.organization_id,
-            principal.id,
-            &bounded_display_name(&identity.display_name),
-        )
-        .await
-        {
-            Ok(updated) => updated,
-            Err(error) => {
-                tracing::warn!(error = %error, "principal display name could not be refreshed");
-                principal
-            }
-        }
-    };
     let issued = match session::issue(
-        conn,
+        &mut tx,
         &state.sessions,
         login.organization_id,
         principal.id,
@@ -414,6 +403,22 @@ async fn begin_session(
             return Err(session_error(&error));
         }
     };
+    tx.commit().await.map_err(|_| HttpError::unavailable())?;
+    // The provider owns the display name. This runs after the session
+    // transaction so a refresh failure cannot abort the issuance, and a
+    // failure must not block a valid sign-in: the stored name stays until the
+    // next successful login.
+    if principal.display_name != identity.display_name
+        && let Err(error) = tenancy::update_principal_display_name(
+            conn,
+            login.organization_id,
+            principal.id,
+            &bounded_display_name(&identity.display_name),
+        )
+        .await
+    {
+        tracing::warn!(error = %error, "principal display name could not be refreshed");
+    }
     if let Err(error) =
         audit::login_succeeded(conn, login.organization_id, principal.id, &identity.issuer).await
     {

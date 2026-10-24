@@ -412,3 +412,149 @@ async fn principals_page_by_identifier_and_filter_by_kind(pool: PgPool) {
     assert_eq!(items[0]["id"], scheduler.to_string());
     assert_eq!(items[0]["kind"], "Service");
 }
+
+/// Waits until a request is blocked on the organization's lifecycle lock.
+async fn wait_for_administration_lock(pool: &PgPool) -> bool {
+    for _ in 0..500 {
+        let waiting: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+                 SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted)",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if waiting {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    false
+}
+
+/// The route pre-check and the transactional check are separate. When the
+/// permission is revoked while the request waits for the lifecycle lock, only
+/// the second check refuses it, and that refusal must still be audited.
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_grant_revoked_behind_the_lifecycle_lock_is_audited_as_a_denial(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    let (browser, grant) = scoped(
+        &pool,
+        &tenant,
+        Role::Administrator,
+        GrantScope::organization(),
+    )
+    .await;
+
+    let mut blocking = pool.begin().await.unwrap();
+    tenancy::lock_principal_administration(&mut blocking, tenant.organization)
+        .await
+        .unwrap();
+    let caller = browser.clone();
+    let uri = format!("/api/v1/principals/{}", tenant.user);
+    let pending = tokio::spawn(async move {
+        caller
+            .request("PATCH", &uri, Some(json!({ "active": false })), None)
+            .await
+    });
+    assert!(
+        wait_for_administration_lock(&pool).await,
+        "the request must wait for the lifecycle lock"
+    );
+
+    let mut conn = pool.acquire().await.unwrap();
+    grants::revoke_grant(&mut conn, tenant.organization, grant, None)
+        .await
+        .unwrap();
+    drop(conn);
+    blocking.commit().await.unwrap();
+
+    let (status, body) = pending.await.unwrap();
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["reason"], "permission_denied");
+    let denials: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_events
+         WHERE action = 'api.permission_denied'
+           AND detail->>'permission' = 'grants:manage'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(denials, 1, "the transactional denial is recorded");
+    let active: bool =
+        sqlx::query_scalar("SELECT deactivated_at IS NULL FROM principals WHERE id = $1")
+            .bind(tenant.user.as_uuid())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(active, "the refused change is not applied");
+}
+
+/// The same ordering, with the actor deactivated rather than its grant
+/// revoked: the in-transaction check refuses it and the denial is audited.
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn an_actor_deactivated_behind_the_lifecycle_lock_is_audited_as_a_denial(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let actor = support::user(&mut conn, tenant.organization, "dana").await;
+    grants::create_grant(
+        &mut conn,
+        &NewRoleGrant {
+            id: RoleGrantId::generate(),
+            organization_id: tenant.organization,
+            principal_id: actor,
+            role: Role::Administrator,
+            scope: GrantScope::organization(),
+            granted_by: Some(tenant.user),
+        },
+    )
+    .await
+    .unwrap();
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, actor, "dana").await;
+
+    let mut blocking = pool.begin().await.unwrap();
+    tenancy::lock_principal_administration(&mut blocking, tenant.organization)
+        .await
+        .unwrap();
+    let caller = browser.clone();
+    let uri = format!("/api/v1/principals/{}", tenant.user);
+    let pending = tokio::spawn(async move {
+        caller
+            .request("PATCH", &uri, Some(json!({ "active": false })), None)
+            .await
+    });
+    assert!(
+        wait_for_administration_lock(&pool).await,
+        "the request must wait for the lifecycle lock"
+    );
+
+    // The actor's deactivation acquires the same lock, so it re-enters it
+    // inside the transaction that already holds it.
+    let (_, changed) = tenancy::deactivate_principal(&mut blocking, tenant.organization, actor)
+        .await
+        .unwrap();
+    assert!(changed);
+    blocking.commit().await.unwrap();
+
+    let (status, body) = pending.await.unwrap();
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["reason"], "permission_denied");
+    let denials: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_events
+         WHERE action = 'api.permission_denied'
+           AND detail->>'permission' = 'grants:manage'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(denials, 1, "the transactional denial is recorded");
+    let active: bool =
+        sqlx::query_scalar("SELECT deactivated_at IS NULL FROM principals WHERE id = $1")
+            .bind(tenant.user.as_uuid())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(active, "the refused change is not applied");
+}

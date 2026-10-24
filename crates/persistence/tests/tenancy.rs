@@ -1055,3 +1055,44 @@ async fn concurrent_deactivations_leave_one_active_administrator(pool: PgPool) {
         Err(PersistenceError::LastAdministrator { .. })
     ));
 }
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn scoped_administrator_grants_do_not_replace_organization_administration(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let on_connection = user(&mut conn, tenant.organization, "bob").await;
+    let on_table = user(&mut conn, tenant.organization, "carol").await;
+    for (principal, scope) in [
+        (on_connection, GrantScope::connection(tenant.connection)),
+        (on_table, GrantScope::table(tenant.table)),
+    ] {
+        grants::create_grant(
+            &mut conn,
+            &NewRoleGrant {
+                id: bergsmith_common::ids::RoleGrantId::generate(),
+                organization_id: tenant.organization,
+                principal_id: principal,
+                role: Role::Administrator,
+                scope,
+                granted_by: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    // Both replacements can administer their resource, but neither can manage
+    // principals or restore organization administration.
+    let refused = tenancy::deactivate_principal(&mut conn, tenant.organization, tenant.user).await;
+    assert!(
+        matches!(refused, Err(PersistenceError::LastAdministrator { .. })),
+        "a scoped administrator must not replace the organization's last one: {refused:?}"
+    );
+
+    // A scoped-only administrator is not an organization administrator, so
+    // deactivating them removes no organization administration.
+    let (_, changed) = tenancy::deactivate_principal(&mut conn, tenant.organization, on_connection)
+        .await
+        .unwrap();
+    assert!(changed);
+}
