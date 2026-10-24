@@ -1,6 +1,6 @@
 # 0032. OIDC sessions and scoped authorization
 
-- Status: Accepted; refined by [0033](0033-every-job-names-its-requester.md)
+- Status: Accepted; refined by [0033](0033-every-job-names-its-requester.md) and [0054](0054-session-permission-projection.md)
 - Date: 2026-10-19
 - Plan reference: `.private/BERGSMITH_PROJECT_PLAN.md` §4 BS-017, §5 Security and deployment
 

@@ -55,8 +55,8 @@ export function NewCatalogPage() {
     if (!session || !canManageCatalog(session))
         return (
             <GrantRequired>
-                Adding a connection requires an organization-wide Administrator
-                grant.
+                Adding a connection requires organization-wide permission to
+                manage connections.
             </GrantRequired>
         );
     const missing =

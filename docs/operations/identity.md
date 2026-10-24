@@ -42,7 +42,16 @@ this filter, so a restricted principal cannot scan another connection's tables.
 4. The browser receives an `HttpOnly` session cookie and a readable CSRF
    cookie. Unsafe requests must echo the CSRF value in `x-csrf-token`.
 5. `POST /auth/logout` revokes the session. `GET /auth/session` returns the
-   current principal and grants.
+   current principal, its grants, and the effective permissions with the
+   scope each covers.
+
+The session's permission list is a projection of the active grants, expanded
+from the same role table that authorization uses, deduplicated, and recomputed
+on every read. The browser uses it to show only the navigation and actions the
+session could use; it is not authority. Every API route and command re-checks
+the ledger, so a stale list only changes what is offered, never what is
+allowed. A revoked grant therefore disappears from the next session read
+without forcing a new sign-in.
 
 A principal must already exist in the organization with the token's issuer and
 subject. The coordinator never creates a principal or a grant during login.

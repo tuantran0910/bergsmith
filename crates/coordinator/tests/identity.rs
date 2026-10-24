@@ -1090,6 +1090,42 @@ mod oidc_flow {
         let mut conn = pool.acquire().await.unwrap();
         let organization = support::organization(&mut conn, "acme").await;
         let principal = provision(&mut conn, organization, &issuer).await;
+        let connection = support::connection(&mut conn, organization, "main").await;
+        let operator_grant = grants::create_grant(
+            &mut conn,
+            &grant(
+                organization,
+                principal,
+                Role::Operator,
+                GrantScope::organization(),
+            ),
+        )
+        .await
+        .unwrap();
+        // A second role over the same scope repeats three permissions; the
+        // session must list each permission and scope once.
+        grants::create_grant(
+            &mut conn,
+            &grant(
+                organization,
+                principal,
+                Role::Viewer,
+                GrantScope::organization(),
+            ),
+        )
+        .await
+        .unwrap();
+        grants::create_grant(
+            &mut conn,
+            &grant(
+                organization,
+                principal,
+                Role::Administrator,
+                GrantScope::connection(connection),
+            ),
+        )
+        .await
+        .unwrap();
         drop(conn);
 
         let verifier = provider.clone();
@@ -1187,6 +1223,68 @@ mod oidc_flow {
             .unwrap();
         let described: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(described["principal_id"], principal.to_string());
+        assert_eq!(
+            described["permissions"],
+            json!([
+                {"permission": "inventory:read", "scope": {"catalog_connection": null, "table": null}},
+                {"permission": "inventory:read", "scope": {"catalog_connection": connection, "table": null}},
+                {"permission": "jobs:read", "scope": {"catalog_connection": null, "table": null}},
+                {"permission": "jobs:read", "scope": {"catalog_connection": connection, "table": null}},
+                {"permission": "artifacts:read", "scope": {"catalog_connection": null, "table": null}},
+                {"permission": "artifacts:read", "scope": {"catalog_connection": connection, "table": null}},
+                {"permission": "jobs:submit", "scope": {"catalog_connection": null, "table": null}},
+                {"permission": "jobs:submit", "scope": {"catalog_connection": connection, "table": null}},
+                {"permission": "jobs:cancel", "scope": {"catalog_connection": null, "table": null}},
+                {"permission": "jobs:cancel", "scope": {"catalog_connection": connection, "table": null}},
+                {"permission": "jobs:retry", "scope": {"catalog_connection": null, "table": null}},
+                {"permission": "jobs:retry", "scope": {"catalog_connection": connection, "table": null}},
+                {"permission": "connections:manage", "scope": {"catalog_connection": connection, "table": null}},
+                {"permission": "schedules:manage", "scope": {"catalog_connection": connection, "table": null}},
+                {"permission": "workers:manage", "scope": {"catalog_connection": connection, "table": null}},
+                {"permission": "grants:manage", "scope": {"catalog_connection": connection, "table": null}},
+                {"permission": "audit:read", "scope": {"catalog_connection": connection, "table": null}},
+            ]),
+            "permissions are expanded from every active grant, deduplicated, and sorted"
+        );
+
+        // Revoking a grant changes the next read; the projection is not cached
+        // in the session row.
+        let mut conn = pool.acquire().await.unwrap();
+        grants::revoke_grant(&mut conn, organization, operator_grant.id, None)
+            .await
+            .unwrap();
+        drop(conn);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/auth/session")
+                    .header(header::COOKIE, format!("bergsmith_session={session}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let described: Value = serde_json::from_slice(&body).unwrap();
+        let permissions = described["permissions"].as_array().unwrap();
+        assert!(
+            !permissions.contains(&json!({
+                "permission": "jobs:cancel",
+                "scope": {"catalog_connection": null, "table": null},
+            })),
+            "the revoked organization grant no longer contributes permissions"
+        );
+        assert!(
+            permissions.contains(&json!({
+                "permission": "jobs:cancel",
+                "scope": {"catalog_connection": connection, "table": null},
+            })),
+            "the connection grant still contributes its scoped permission"
+        );
 
         // A wrong CSRF value is denied while still attributed to the
         // authenticated principal.

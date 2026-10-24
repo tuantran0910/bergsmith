@@ -589,15 +589,13 @@ it("shows read-only inventory to viewers and denies the create route", async () 
 
 it("requires an organization grant on the direct create route", async () => {
     fake.on("GET", "/auth/session", () =>
-        json(200, {
-            ...session("Administrator"),
-            grants: [
-                {
-                    role: "Administrator",
-                    scope: { catalog_connection: CATALOG_ID, table: null },
-                },
-            ],
-        }),
+        json(
+            200,
+            session("Administrator", {
+                catalog_connection: CATALOG_ID,
+                table: null,
+            }),
+        ),
     );
     start("/catalogs/new");
     expect(
@@ -608,15 +606,10 @@ it("requires an organization grant on the direct create route", async () => {
 it("checks connection scope and rejects secret-bearing or invalid URIs", () => {
     expect(canManageCatalog(session("Administrator"))).toBe(true);
     expect(canManageCatalog(session("Operator"), CATALOG_ID)).toBe(false);
-    const scoped = {
-        ...session(),
-        grants: [
-            {
-                role: "Administrator",
-                scope: { catalog_connection: CATALOG_ID, table: null },
-            },
-        ],
-    };
+    const scoped = session("Administrator", {
+        catalog_connection: CATALOG_ID,
+        table: null,
+    });
     expect(canManageCatalog(scoped)).toBe(false);
     expect(canManageCatalog(scoped, CATALOG_ID)).toBe(true);
     expect(canManageCatalog(scoped, TABLE_ID)).toBe(false);

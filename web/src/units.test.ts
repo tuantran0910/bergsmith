@@ -1,4 +1,10 @@
-import { canManageWorkers, canReadAudit, loginUrl } from "./api/auth";
+import {
+    canManageCatalog,
+    canManageWorkers,
+    canReadAudit,
+    hasConnectionPermission,
+    loginUrl,
+} from "./api/auth";
 import { ApiFailure, call, csrfToken } from "./api/client";
 import {
     aliasName,
@@ -265,15 +271,53 @@ describe("auth", () => {
         expect(canReadAudit(session("Administrator"))).toBe(true);
         expect(canReadAudit(session("Operator"))).toBe(false);
         expect(
+            canReadAudit(
+                session("Administrator", {
+                    catalog_connection: "c",
+                    table: null,
+                }),
+            ),
+        ).toBe(false);
+    });
+
+    it("gates on permissions rather than role names", () => {
+        const administrator = session("Administrator");
+        expect(canManageWorkers({ ...administrator, permissions: [] })).toBe(
+            false,
+        );
+        expect(canReadAudit({ ...administrator, permissions: [] })).toBe(false);
+        expect(
             canReadAudit({
-                ...session(),
-                grants: [
+                ...session("Viewer"),
+                permissions: [
                     {
-                        role: "Administrator",
-                        scope: { catalog_connection: "c", table: null },
+                        permission: "audit:read",
+                        scope: { catalog_connection: null, table: null },
                     },
                 ],
             }),
+        ).toBe(true);
+    });
+
+    it("treats an organization grant as covering every connection", () => {
+        const administrator = session("Administrator");
+        expect(
+            hasConnectionPermission(administrator, "connections:manage", "c"),
+        ).toBe(true);
+        expect(hasConnectionPermission(administrator, "jobs:read", "c")).toBe(
+            true,
+        );
+        expect(canManageCatalog(administrator, "c")).toBe(true);
+    });
+
+    it("does not let a table grant cover its connection", () => {
+        const tableScoped = session("Administrator", {
+            catalog_connection: null,
+            table: "t",
+        });
+        expect(
+            hasConnectionPermission(tableScoped, "connections:manage", "t"),
         ).toBe(false);
+        expect(canManageCatalog(tableScoped, "t")).toBe(false);
     });
 });

@@ -2,7 +2,12 @@
 // longer satisfy fails the typecheck, not just a test.
 
 import type { Job, JobEvent, JobState } from "../api/client";
-import type { SessionInfo } from "../api/auth";
+import type {
+    GrantScope,
+    Permission,
+    SessionInfo,
+    SessionPermission,
+} from "../api/auth";
 import { schema } from "./fakes";
 
 export const TABLE_ID = "0190f3c4-0000-7000-8000-000000000001";
@@ -11,14 +16,63 @@ export const JOB_ID = "0190f3c4-0000-7000-8000-00000000000a";
 export const RETRY_JOB_ID = "0190f3c4-0000-7000-8000-00000000000b";
 export const PRINCIPAL_ID = "0190f3c4-0000-7000-8000-0000000000aa";
 
-export function session(role = "Operator"): SessionInfo {
+const ORGANIZATION: GrantScope = { catalog_connection: null, table: null };
+
+// Mirrors the coordinator's role-to-permission table (ADR 0032). A session
+// fixture must carry the permissions the server would send for that role and
+// scope, or the browser tests would exercise an impossible session.
+const ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
+    Viewer: ["inventory:read", "jobs:read", "artifacts:read"],
+    Operator: [
+        "inventory:read",
+        "jobs:read",
+        "artifacts:read",
+        "jobs:submit",
+        "jobs:cancel",
+        "jobs:retry",
+    ],
+    Administrator: [
+        "inventory:read",
+        "jobs:read",
+        "artifacts:read",
+        "jobs:submit",
+        "jobs:cancel",
+        "jobs:retry",
+        "connections:manage",
+        "schedules:manage",
+        "workers:manage",
+        "grants:manage",
+        "audit:read",
+    ],
+    MaintenanceService: [
+        "inventory:read",
+        "jobs:read",
+        "artifacts:read",
+        "jobs:submit",
+        "jobs:retry",
+    ],
+};
+
+function heldBy(role: string, scope: GrantScope): SessionPermission[] {
+    return (ROLE_PERMISSIONS[role] ?? []).map((permission) => ({
+        permission,
+        scope,
+    }));
+}
+
+/** A session holding `role` over `scope` (the whole organization by default). */
+export function session(
+    role = "Operator",
+    scope: GrantScope = ORGANIZATION,
+): SessionInfo {
     return {
         organization_id: "0190f3c4-0000-7000-8000-0000000000e1",
         principal_id: PRINCIPAL_ID,
         display_name: "Alice",
         // Far enough ahead that no journey sees the expiry notice.
         expires_at: "2099-01-01T00:00:00Z",
-        grants: [{ role, scope: { catalog_connection: null, table: null } }],
+        grants: [{ role, scope }],
+        permissions: heldBy(role, scope),
     };
 }
 
