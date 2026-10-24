@@ -22,6 +22,7 @@ use bergsmith_common::permission::{Permission, ResourceScope};
 use bergsmith_persistence::tenancy::{self, NewPrincipal, Principal, PrincipalKind};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sqlx::PgConnection;
 use uuid::Uuid;
 
 use crate::identity::administration::{self, AdministrationError};
@@ -61,22 +62,24 @@ pub(super) struct UpdatePrincipal {
 /// The transaction has rolled back by the time this runs, so the denial is
 /// written on its own connection, like the catalog commands do.
 async fn administered<T>(
-    state: &ApiState,
+    conn: &mut PgConnection,
     caller: &Caller,
     result: Result<T, AdministrationError>,
 ) -> Result<T, ApiError> {
     match result {
         Ok(value) => Ok(value),
         Err(error @ AdministrationError::Authorization(AuthorizationError::Denied { .. })) => {
-            if let Ok(mut conn) = state.database.pool().acquire().await {
-                resources::record_denial(
-                    &mut conn,
-                    &caller.0,
-                    Permission::ManageGrants,
-                    ResourceScope::Organization,
-                )
-                .await;
-            }
+            // The administration transaction has rolled back, so the handler's
+            // connection is free again. Reusing it keeps the denial audited on
+            // a one-connection pool and under concurrent denials, instead of
+            // waiting for a second connection and dropping the record.
+            resources::record_denial(
+                conn,
+                &caller.0,
+                Permission::ManageGrants,
+                ResourceScope::Organization,
+            )
+            .await;
             Err(error.into())
         }
         Err(error) => Err(error.into()),
@@ -187,18 +190,14 @@ pub(super) async fn create(
         subject: subject.to_owned(),
         display_name: display_name.to_owned(),
     };
-    let created = administered(
-        &state,
-        &caller,
-        administration::provision_principal(
-            &mut conn,
-            caller.organization_id,
-            caller.principal_id,
-            &new,
-        )
-        .await,
+    let provisioned = administration::provision_principal(
+        &mut conn,
+        caller.organization_id,
+        caller.principal_id,
+        &new,
     )
-    .await?;
+    .await;
+    let created = administered(&mut conn, &caller, provisioned).await?;
     Ok((
         StatusCode::CREATED,
         [(
@@ -245,32 +244,23 @@ pub(super) async fn update(
     )
     .await?;
     let principal = if body.active {
-        administered(
-            &state,
-            &caller,
-            administration::reactivate_principal(
-                &mut conn,
-                caller.organization_id,
-                caller.principal_id,
-                id,
-            )
-            .await,
+        let reactivated = administration::reactivate_principal(
+            &mut conn,
+            caller.organization_id,
+            caller.principal_id,
+            id,
         )
-        .await?
+        .await;
+        administered(&mut conn, &caller, reactivated).await?
     } else {
-        administered(
-            &state,
-            &caller,
-            administration::deactivate_principal(
-                &mut conn,
-                caller.organization_id,
-                caller.principal_id,
-                id,
-            )
-            .await,
+        let deactivated = administration::deactivate_principal(
+            &mut conn,
+            caller.organization_id,
+            caller.principal_id,
+            id,
         )
-        .await?
-        .0
+        .await;
+        administered(&mut conn, &caller, deactivated).await?.0
     };
     Ok(Json(document(&principal)))
 }

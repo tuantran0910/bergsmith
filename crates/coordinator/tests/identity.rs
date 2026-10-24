@@ -9,7 +9,7 @@
 mod support;
 
 use bergsmith_common::audit::{ActorKind, AuditAction, AuditOutcome};
-use bergsmith_common::ids::{JobId, PrincipalId, RoleGrantId};
+use bergsmith_common::ids::{JobId, OrganizationId, PrincipalId, RoleGrantId};
 use bergsmith_common::permission::{GrantScope, Permission, ResourceScope, Role};
 use bergsmith_coordinator::identity::{
     administration, audit,
@@ -25,7 +25,7 @@ use sqlx::PgPool;
 use support::{Tenant, tenant};
 
 fn grant(
-    organization: bergsmith_common::ids::OrganizationId,
+    organization: OrganizationId,
     principal: PrincipalId,
     role: Role,
     scope: GrantScope,
@@ -42,7 +42,7 @@ fn grant(
 
 async fn service_principal(
     conn: &mut sqlx::PgConnection,
-    organization: bergsmith_common::ids::OrganizationId,
+    organization: OrganizationId,
     subject: &str,
 ) -> PrincipalId {
     let id = PrincipalId::generate();
@@ -375,7 +375,7 @@ async fn identity_and_maintenance_decisions_are_auditable(pool: PgPool) {
 
 async fn record_denied_publication(
     conn: &mut sqlx::PgConnection,
-    organization: bergsmith_common::ids::OrganizationId,
+    organization: OrganizationId,
     actor: PrincipalId,
 ) {
     bergsmith_coordinator::identity::routes::audit_denied_command(
@@ -916,7 +916,8 @@ mod oidc_flow {
                      SELECT 1 FROM pg_stat_activity
                      WHERE datname = current_database()
                        AND wait_event_type = 'Lock'
-                       AND state = 'active')",
+                       AND state = 'active'
+                       AND query LIKE '%FROM principals%')",
             )
             .fetch_one(pool)
             .await
@@ -1400,14 +1401,27 @@ mod oidc_flow {
     }
 }
 
-/// Waits until a backend is blocked on an advisory lock, so a test can order a
-/// change against a request that has already started.
-async fn wait_for_advisory_waiter(pool: &PgPool) -> bool {
+/// Waits until a request in this test's database is blocked on this
+/// organization's lifecycle lock.
+///
+/// Advisory locks are keyed by database, the class name, and the
+/// organization, so another test's waiter — or another organization's — never
+/// satisfies this check.
+async fn wait_for_advisory_waiter(pool: &PgPool, organization: OrganizationId) -> bool {
     for _ in 0..500 {
         let waiting: bool = sqlx::query_scalar(
             "SELECT EXISTS(
-                 SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted)",
+                 SELECT 1
+                 FROM pg_locks l
+                 JOIN pg_database d ON d.oid = l.database
+                 WHERE d.datname = current_database()
+                   AND l.locktype = 'advisory'
+                   AND l.objsubid = 2
+                   AND l.classid = hashtext('bergsmith.principals')::oid
+                   AND l.objid = hashtext($1::text)::oid
+                   AND NOT l.granted)",
         )
+        .bind(organization.to_string())
         .fetch_one(pool)
         .await
         .unwrap();
@@ -1457,7 +1471,7 @@ async fn a_deactivation_holding_the_lifecycle_lock_refuses_a_self_reactivation(p
         administration::reactivate_principal(&mut conn, organization, alice, alice).await
     });
     assert!(
-        wait_for_advisory_waiter(&pool).await,
+        wait_for_advisory_waiter(&pool, tenant.organization).await,
         "the reactivation must wait for the lifecycle lock"
     );
     deactivating.commit().await.unwrap();
@@ -1515,7 +1529,7 @@ async fn a_deactivation_cannot_consume_the_administrator_that_just_changed(pool:
         administration::deactivate_principal(&mut conn, organization, actor, target).await
     });
     assert!(
-        wait_for_advisory_waiter(&pool).await,
+        wait_for_advisory_waiter(&pool, tenant.organization).await,
         "the second deactivation must wait for the lifecycle lock"
     );
     deactivating.commit().await.unwrap();

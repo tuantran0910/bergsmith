@@ -1,4 +1,6 @@
 use super::*;
+use bergsmith_common::ids::OrganizationId;
+use sqlx::postgres::PgPoolOptions;
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
 async fn administrators_provision_list_and_deactivate_a_user(pool: PgPool) {
@@ -413,13 +415,27 @@ async fn principals_page_by_identifier_and_filter_by_kind(pool: PgPool) {
     assert_eq!(items[0]["kind"], "Service");
 }
 
-/// Waits until a request is blocked on the organization's lifecycle lock.
-async fn wait_for_administration_lock(pool: &PgPool) -> bool {
+/// Waits until a request in this test's database is blocked on this
+/// organization's lifecycle lock.
+///
+/// Advisory locks are keyed by database, the class name, and the
+/// organization, so another test's waiter — or another organization's — never
+/// satisfies this check.
+async fn wait_for_administration_lock(pool: &PgPool, organization: OrganizationId) -> bool {
     for _ in 0..500 {
         let waiting: bool = sqlx::query_scalar(
             "SELECT EXISTS(
-                 SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted)",
+                 SELECT 1
+                 FROM pg_locks l
+                 JOIN pg_database d ON d.oid = l.database
+                 WHERE d.datname = current_database()
+                   AND l.locktype = 'advisory'
+                   AND l.objsubid = 2
+                   AND l.classid = hashtext('bergsmith.principals')::oid
+                   AND l.objid = hashtext($1::text)::oid
+                   AND NOT l.granted)",
         )
+        .bind(organization.to_string())
         .fetch_one(pool)
         .await
         .unwrap();
@@ -459,7 +475,7 @@ async fn a_grant_revoked_behind_the_lifecycle_lock_is_audited_as_a_denial(pool: 
             .await
     });
     assert!(
-        wait_for_administration_lock(&pool).await,
+        wait_for_administration_lock(&pool, tenant.organization).await,
         "the request must wait for the lifecycle lock"
     );
 
@@ -526,7 +542,7 @@ async fn an_actor_deactivated_behind_the_lifecycle_lock_is_audited_as_a_denial(p
             .await
     });
     assert!(
-        wait_for_administration_lock(&pool).await,
+        wait_for_administration_lock(&pool, tenant.organization).await,
         "the request must wait for the lifecycle lock"
     );
 
@@ -557,4 +573,61 @@ async fn an_actor_deactivated_behind_the_lifecycle_lock_is_audited_as_a_denial(p
             .await
             .unwrap();
     assert!(active, "the refused change is not applied");
+}
+
+/// The transactional denial is recorded on the handler's own connection, so a
+/// one-connection pool does not wait for a second connection and lose it.
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_transactional_denial_is_audited_with_a_single_connection_pool(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    let constrained = PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(5))
+        .connect_with(pool.connect_options().as_ref().clone())
+        .await
+        .unwrap();
+    let (browser, grant) = scoped(
+        &constrained,
+        &tenant,
+        Role::Administrator,
+        GrantScope::organization(),
+    )
+    .await;
+
+    let mut blocking = pool.begin().await.unwrap();
+    tenancy::lock_principal_administration(&mut blocking, tenant.organization)
+        .await
+        .unwrap();
+    let caller = browser.clone();
+    let uri = format!("/api/v1/principals/{}", tenant.user);
+    let pending = tokio::spawn(async move {
+        caller
+            .request("PATCH", &uri, Some(json!({ "active": false })), None)
+            .await
+    });
+    assert!(
+        wait_for_administration_lock(&pool, tenant.organization).await,
+        "the request must wait for the lifecycle lock"
+    );
+    let mut conn = pool.acquire().await.unwrap();
+    grants::revoke_grant(&mut conn, tenant.organization, grant, None)
+        .await
+        .unwrap();
+    drop(conn);
+    blocking.commit().await.unwrap();
+
+    let (status, body) = pending.await.unwrap();
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["reason"], "permission_denied");
+    let denials: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_events
+         WHERE action = 'api.permission_denied'
+           AND detail->>'permission' = 'grants:manage'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(denials, 1, "the denial is recorded on the one connection");
 }

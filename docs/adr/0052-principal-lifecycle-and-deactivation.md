@@ -59,9 +59,9 @@ never a deletion.
   key sign-in is bound to, so reading or changing them is access
   administration, not inventory.
 - Sign-in keeps the stored display name in step with the ID token: when the
-  provider's chosen name differs, it is written before the session is issued,
-  clamped to the 200 characters the ledger accepts. A failed refresh does not
-  fail a valid sign-in.
+  provider's chosen name differs, it is written after the session transaction
+  commits, clamped to the 200 characters the ledger accepts. A failed refresh
+  does not fail a valid sign-in.
 
 Provisioning through this API creates people only. Service identities and their
 pool tokens are BS-023.T4.
