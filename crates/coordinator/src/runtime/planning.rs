@@ -51,23 +51,13 @@ fn execution_limits(
     mut limits: bergsmith_protocol::cluster::ResourceLimits,
     remaining: Option<Duration>,
 ) -> bergsmith_protocol::cluster::ResourceLimits {
-    let Some(remaining) = remaining else {
-        return limits;
-    };
-    let remaining = duration_seconds(remaining);
-    limits.max_duration = Some(match limits.max_duration {
-        Some(current) if current.seconds < remaining => current,
-        _ => prost_types::Duration {
-            seconds: remaining,
-            nanos: 0,
-        },
-    });
+    if let Some(remaining) = remaining {
+        limits.max_duration = Some(crate::workers::capped_duration(
+            limits.max_duration,
+            remaining,
+        ));
+    }
     limits
-}
-
-/// A duration in whole seconds, never negative.
-fn duration_seconds(duration: Duration) -> i64 {
-    i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
 }
 
 /// How many jobs one pass examines.
@@ -667,6 +657,44 @@ mod tests {
             Some(prost_types::Duration {
                 seconds: 90,
                 nanos: 0
+            })
+        );
+    }
+
+    #[test]
+    fn a_sub_second_budget_never_becomes_a_zero_duration() {
+        let limits = bergsmith_protocol::cluster::ResourceLimits {
+            max_duration: Some(prost_types::Duration {
+                seconds: 60,
+                nanos: 0,
+            }),
+            ..Default::default()
+        };
+
+        // A positive budget below one second keeps its nanoseconds: a zero
+        // duration is rejected by the envelope validation and by the worker.
+        let capped = execution_limits(limits, Some(Duration::from_millis(950)));
+        assert_eq!(
+            capped.max_duration,
+            Some(prost_types::Duration {
+                seconds: 0,
+                nanos: 950_000_000
+            })
+        );
+
+        // A shorter envelope limit wins even when it is fractional.
+        let short = bergsmith_protocol::cluster::ResourceLimits {
+            max_duration: Some(prost_types::Duration {
+                seconds: 0,
+                nanos: 500_000_000,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            execution_limits(short, Some(Duration::from_secs(5))).max_duration,
+            Some(prost_types::Duration {
+                seconds: 0,
+                nanos: 500_000_000
             })
         );
     }

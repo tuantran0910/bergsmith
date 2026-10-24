@@ -114,12 +114,12 @@ PATCH /api/v1/catalogs/{id}
 
 Bergsmith keeps its own work inside those bounds. A job never runs longer than
 E, so the inputs you keep readable for E are enough; a job that outruns the
-budget is given up. The budget covers the whole job: every attempt and every
-retry must fit before it, and it is counted from the moment the plan is
-recorded, which is right after the planning snapshot was captured. A
-publication that was already authorized is never stopped by the budget. The
-connection page shows how many publications of that connection are unresolved,
-how old the oldest is, and whether it is past U.
+budget is given up. The budget covers the whole job: every attempt, every
+retry, and every lease renewal must fit before it, and it is counted from the
+moment the plan is recorded, which is right after the planning snapshot was
+captured. A publication that was already authorized is never stopped by the
+budget. The connection page shows how many publications of that connection are
+unresolved, how old the oldest is, and whether it is past U.
 
 Then configure:
 

@@ -83,18 +83,22 @@ changes nothing. The bounds are part of the connection's configuration, so they
 are revision-checked and audited like the rest.
 
 The execution budget bounds a whole job, not one attempt. The job's plan
-carries a deadline, counted from the moment the plan is recorded: every
-attempt and every retry of that job must fit before it, and a job whose budget
-is spent starts no further work and ends with `ExecutionBudgetExceeded`. A
-publication that was already authorized is never disturbed by the deadline.
+carries a deadline, counted from the moment the plan is recorded: a grant and
+every later heartbeat cap the attempt at it, and a job whose budget is spent
+starts no further work, fences a renewal, and ends with
+`ExecutionBudgetExceeded`. A job created before the budget existed has no
+deadline and keeps the worker's own lease. A publication that was already
+authorized is never disturbed by the deadline.
 
 The detail reports the bounds under `settings`, the effective storage profile
 under `storage_profile`, and the connection's unresolved publications under
 `unresolved_publications`. The profile is read-only: it names the backends
 that serve the connection and whether the connection has an entry of its own
-(`"source":"connection"`) or uses the default set (`"source":"default"`). The
-publications report counts what is unresolved and whether the oldest is past
-the connection's own bound; it never resolves one.
+(`"source":"connection"`) or uses the default set (`"source":"default"`). An
+endpoint is reported only when it is an HTTP(S) URL with a host, without user
+information, query, or fragment; an opaque or unparseable value is omitted.
+The publications report counts what is unresolved and whether the oldest is
+past the connection's own bound; it never resolves one.
 
 Disabling stops new previews and execution admissions. Pausing maintenance
 stops new maintenance work only: previews, reads, and publication recovery

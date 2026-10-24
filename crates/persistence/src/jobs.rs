@@ -407,17 +407,21 @@ pub async fn in_state_after(
 
 /// The time left in a job's execution budget.
 ///
-/// `None` means the job has no deadline and is therefore not bounded. A spent
-/// budget reads as zero. The database clock decides, never the caller's.
+/// `None` means the job has no deadline and is therefore not bounded: jobs that
+/// predate the budget keep working. A spent budget reads as zero. The database
+/// clock decides, never the caller's.
 ///
 /// # Errors
 ///
-/// Returns a database error when the job cannot be read.
+/// Returns a database error when the job cannot be read, and
+/// [`PersistenceError::NotFound`] when it does not exist.
 pub async fn remaining_execution_budget(
     conn: &mut PgConnection,
     id: JobId,
 ) -> Result<Option<std::time::Duration>, PersistenceError> {
-    let milliseconds: Option<i64> = sqlx::query_scalar(
+    // The scalar is itself nullable: a job without a deadline produces SQL
+    // NULL, and the outer option reports a missing row.
+    let milliseconds: Option<Option<i64>> = sqlx::query_scalar::<_, Option<i64>>(
         "SELECT CASE WHEN deadline_at IS NULL THEN NULL
                 ELSE GREATEST(0, floor(EXTRACT(EPOCH FROM (deadline_at - clock_timestamp())) * 1000)::bigint)
             END
@@ -426,6 +430,7 @@ pub async fn remaining_execution_budget(
     .bind(id.as_uuid())
     .fetch_optional(conn)
     .await?;
+    let milliseconds = milliseconds.ok_or_else(|| job_not_found(id))?;
     Ok(milliseconds.map(|milliseconds| {
         std::time::Duration::from_millis(u64::try_from(milliseconds).unwrap_or_default())
     }))

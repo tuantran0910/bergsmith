@@ -380,9 +380,10 @@ fn profile_json(kind: &str, profile: &StorageProfile) -> Value {
 
 /// Adds the endpoint a profile names, without anything secret.
 ///
-/// A profile without an endpoint reports none. An endpoint that is not a URL
-/// is left out: the configuration accepts any string, and it may carry a
-/// secret that was never meant to be reported.
+/// A profile without an endpoint reports none. Only an HTTP(S) endpoint with a
+/// host is a storage endpoint: any other successfully parsed URL may be an
+/// opaque string that carries a secret, so it is left out, exactly like an
+/// input that is not a URL at all.
 fn insert_endpoint(value: &mut Value, endpoint: Option<&str>) {
     let Some(raw) = endpoint else {
         value["endpoint"] = Value::Null;
@@ -391,6 +392,9 @@ fn insert_endpoint(value: &mut Value, endpoint: Option<&str>) {
     let Ok(mut url) = Url::parse(raw) else {
         return;
     };
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return;
+    }
     let _ = url.set_username("");
     let _ = url.set_password(None);
     url.set_query(None);

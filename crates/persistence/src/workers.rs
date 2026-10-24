@@ -653,19 +653,33 @@ pub async fn renew(
     if attempt.state.is_terminal() || job.state != JobState::Running {
         return Ok(Renewal::Fenced);
     }
-    let deadline = sqlx::query_scalar(
-        "UPDATE attempts SET state = 'Running',
-        lease_expires_at = clock_timestamp() + $2 * interval '1 millisecond'
-        WHERE id = $1 RETURNING lease_expires_at",
+    // A renewal is bounded by the job's execution budget exactly like the
+    // initial grant, so a heartbeat cannot carry an attempt past the deadline
+    // the plan promised. When the budget is already spent the statement renews
+    // nothing and the attempt is fenced: a lease is never written before the
+    // grant that owns it.
+    let deadline: Option<DateTime<Utc>> = sqlx::query_scalar(
+        "UPDATE attempts a
+         SET state = 'Running',
+             lease_expires_at = LEAST(clock_timestamp() + $2 * interval '1 millisecond',
+                                      COALESCE(j.deadline_at,
+                                               clock_timestamp() + $2 * interval '1 millisecond'))
+         FROM jobs j, tasks t
+         WHERE a.id = $1 AND t.id = a.task_id AND j.id = t.job_id
+           AND (j.deadline_at IS NULL OR j.deadline_at > clock_timestamp())
+         RETURNING a.lease_expires_at",
     )
     .bind(attempt_id.as_uuid())
     .bind(millis(lease)?)
-    .fetch_one(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await?;
     leadership::ensure_leadership(&mut tx, epoch).await?;
     lock_session(&mut tx, identity, id).await?;
     tx.commit().await?;
-    Ok(Renewal::Renewed(deadline))
+    Ok(match deadline {
+        Some(deadline) => Renewal::Renewed(deadline),
+        None => Renewal::Fenced,
+    })
 }
 
 /// Drains a session; repeating it is harmless and existing work remains valid.

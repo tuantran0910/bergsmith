@@ -1264,3 +1264,38 @@ async fn an_endpoint_is_reported_without_anything_secret(pool: PgPool) {
     assert_eq!(endpoint, "http://127.0.0.1:59000/data");
     assert!(!detail.to_string().contains("private"));
 }
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn an_opaque_endpoint_is_not_reported(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    // A URL-shaped string with an opaque payload parses, but it is not a
+    // storage endpoint and may carry a secret.
+    let browser = Browser::with_previews(
+        &pool,
+        &tenant,
+        tenant.user,
+        "alice",
+        profiled_previewer(
+            tenant.connection,
+            StorageProfiles::new([StorageProfile::S3(S3Profile {
+                endpoint: Some("secret:example-test-token".to_owned()),
+                region: "us-east-1".to_owned(),
+                path_style_access: true,
+            })]),
+        ),
+    )
+    .await;
+    let path = format!("/api/v1/catalogs/{}", tenant.connection);
+
+    let (status, detail) = browser.request("GET", &path, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    let backend = &detail["storage_profile"]["backends"][0];
+    assert_eq!(backend["kind"], "s3");
+    assert!(
+        backend.get("endpoint").is_none(),
+        "an opaque endpoint must not be reported: {detail}"
+    );
+    assert!(!detail.to_string().contains("example-test-token"));
+}

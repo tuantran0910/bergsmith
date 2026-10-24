@@ -1051,22 +1051,41 @@ fn no_task() -> wire::RequestTaskResponse {
     }
 }
 
-/// Caps a task envelope with the time left in the job's execution budget.
+/// Caps a task's duration with the time left in the job's execution budget.
 ///
 /// The envelope's own limit stays authoritative: the budget may only shorten
-/// an attempt, never lengthen it.
+/// an attempt, never lengthen it. Nanoseconds are preserved, so a positive
+/// budget below one second never becomes a zero duration that the envelope
+/// validation and the worker both reject.
+pub(crate) fn capped_duration(
+    current: Option<prost_types::Duration>,
+    remaining: Duration,
+) -> prost_types::Duration {
+    let remaining = prost_duration(remaining);
+    match current {
+        Some(current)
+            if (current.seconds, current.nanos) < (remaining.seconds, remaining.nanos) =>
+        {
+            current
+        }
+        _ => remaining,
+    }
+}
+
+/// A standard duration as the protocol carries it.
+fn prost_duration(duration: Duration) -> prost_types::Duration {
+    prost_types::Duration {
+        seconds: i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
+        nanos: i32::try_from(duration.subsec_nanos()).unwrap_or(0),
+    }
+}
+
+/// Caps a task envelope with the time left in the job's execution budget.
 fn capped_limits(
     mut limits: bergsmith_protocol::cluster::ResourceLimits,
     remaining: Duration,
 ) -> bergsmith_protocol::cluster::ResourceLimits {
-    let remaining = i64::try_from(remaining.as_secs()).unwrap_or(i64::MAX);
-    limits.max_duration = Some(match limits.max_duration {
-        Some(current) if current.seconds < remaining => current,
-        _ => prost_types::Duration {
-            seconds: remaining,
-            nanos: 0,
-        },
-    });
+    limits.max_duration = Some(capped_duration(limits.max_duration, remaining));
     limits
 }
 

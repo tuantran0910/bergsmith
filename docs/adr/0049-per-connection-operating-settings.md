@@ -43,13 +43,18 @@ carries a deadline, written with the plan from the database clock: the budget
 runs from the moment the plan is recorded, which is right after the planning
 baseline was captured and is therefore the moment the operator's promise that
 the inputs stay readable begins. Every attempt and every retry of that job
-must fit before the deadline: an attempt's lease never outlives it, the
-envelope a worker receives carries only the time that is left, and a job whose
-budget is spent starts no further work and ends with `ExecutionBudgetExceeded`.
-The deadline bounds execution only: a publication that was already authorized
-is never disturbed by it, and its recovery keeps its own rules. The
-coordinator's own task limit stays authoritative, so a connection may only
-shorten a job.
+must fit before the deadline: a grant and every later heartbeat cap the
+attempt's lease at it, the envelope a worker receives carries only the time
+that is left (nanoseconds included, so a positive budget below one second
+stays a positive duration), and a job whose budget is spent starts no further
+work, fences a renewal, and ends with `ExecutionBudgetExceeded`. The deadline
+bounds execution only: a publication that was already authorized is never
+disturbed by it, and its recovery keeps its own rules. The coordinator's own
+task limit stays authoritative, so a connection may only shorten a job.
+
+A job created before this decision carries no deadline and is therefore
+unbounded; it keeps the worker's own lease. Storing the deadline with the plan
+is what makes the budget survive a restart and cover every attempt of the job.
 
 The unresolved-publication age is the age at which an operator is expected to
 investigate. The connection detail reports how many publications of that
@@ -73,8 +78,10 @@ reported read-only. The detail names the backends that serve the connection
 and whether the connection has an entry of its own or uses the default set, so
 an operator notices a mistyped connection key. A profile names an endpoint and
 an addressing, never a credential: those come from the catalog. An endpoint is
-reported without user information, query, or fragment, and an endpoint that is
-not a URL at all is left out.
+reported only when it is an HTTP(S) URL with a host, and without user
+information, query, or fragment. Anything else — a string that is not a URL,
+or a URL-shaped string whose payload is opaque — is left out, because the
+configuration accepts any string and it may carry a secret.
 
 ## Consequences
 

@@ -172,6 +172,68 @@ async fn a_paused_connection_blocks_new_admission_but_preserves_admitted_jobs(po
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_job_without_a_deadline_is_not_bounded_by_a_budget(pool: PgPool) {
+    use chrono::Duration as ChronoDuration;
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let (job, tasks) = configured(&mut conn, &tenant, 1).await;
+    // A job created before the budget existed carries no deadline.
+    sqlx::query("UPDATE jobs SET deadline_at = NULL WHERE id = $1")
+        .bind(job.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        jobs::remaining_execution_budget(&mut conn, job)
+            .await
+            .unwrap(),
+        None
+    );
+    let attempt = support::grant(&mut conn, tasks[0]).await.unwrap();
+    let granted_at = attempt.granted_at;
+    // The worker's own lease applies, not a capped one.
+    assert!(attempt.lease_expires_at > granted_at + ChronoDuration::seconds(60));
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_one_second_budget_bounds_the_plan_and_its_attempt(pool: PgPool) {
+    use chrono::{Duration as ChronoDuration, Utc};
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let job = support::job(&mut conn, &tenant).await;
+    let tasks = support::plan_with_budget(&mut conn, job, 1, Duration::from_secs(1)).await;
+    support::force_job_state(&mut conn, job, JobState::Queued).await;
+    let deadline: chrono::DateTime<Utc> =
+        sqlx::query_scalar("SELECT deadline_at FROM jobs WHERE id = $1")
+            .bind(job.as_uuid())
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+    let created: chrono::DateTime<Utc> =
+        sqlx::query_scalar("SELECT created_at FROM plans WHERE job_id = $1")
+            .bind(job.as_uuid())
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+    // The budget starts with the plan, so the deadline is about a second after
+    // it; the margin only absorbs the database clock's sub-millisecond steps.
+    assert!(deadline >= created + ChronoDuration::milliseconds(500));
+    assert!(deadline <= created + ChronoDuration::seconds(2));
+    let remaining = jobs::remaining_execution_budget(&mut conn, job)
+        .await
+        .unwrap()
+        .expect("a planned job carries its budget");
+    assert!(remaining > Duration::ZERO);
+    assert!(remaining <= Duration::from_secs(1));
+
+    // The attempt fits inside what is left, and it is still a future lease.
+    let attempt = support::grant(&mut conn, tasks[0]).await.unwrap();
+    assert!(attempt.lease_expires_at > attempt.granted_at);
+    assert!(attempt.lease_expires_at <= deadline);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
 async fn an_attempt_never_outlasts_the_jobs_execution_budget(pool: PgPool) {
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
     let mut conn = pool.acquire().await.unwrap();
