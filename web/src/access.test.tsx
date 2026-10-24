@@ -100,8 +100,13 @@ it("provisions a user and grants a table role using the observed scope", async (
     await user.type(screen.getByLabelText("Subject"), userPrincipal.subject);
     await user.click(screen.getByRole("button", { name: "Provision" }));
     await user.click(await screen.findByRole("button", { name: "Grant role" }));
-    await user.selectOptions(screen.getByLabelText("Role"), "Operator");
-    await user.selectOptions(screen.getByLabelText("Scope"), "table");
+    await user.click(screen.getByRole("combobox", { name: "Role" }));
+    await user.click(screen.getByRole("option", { name: "Operator" }));
+    await waitFor(() => {
+        expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    });
+    await user.click(screen.getByRole("combobox", { name: "Scope" }));
+    await user.click(await screen.findByRole("option", { name: "Table" }));
     await user.type(screen.getByLabelText("Table ID"), TABLE_ID);
     await user.click(screen.getByRole("button", { name: "Save grant" }));
     await waitFor(() =>
@@ -624,10 +629,39 @@ it.each(["grants", "tokens"] as const)(
 it("suggests connection names in the grant scope picker", async () => {
     const { user } = start(`/users/${USER_ID}`);
     await user.click(await screen.findByRole("button", { name: "Grant role" }));
-    await user.selectOptions(screen.getByLabelText("Scope"), "connection");
+    await user.click(screen.getByRole("combobox", { name: "Scope" }));
+    await user.click(screen.getByRole("option", { name: "Connection" }));
     expect(
         await screen.findByRole("option", { name: "lake", hidden: true }),
     ).toHaveValue(CATALOG_ID);
     await user.type(screen.getByLabelText("Connection ID"), CATALOG_ID);
     expect(screen.getByRole("button", { name: "Save grant" })).toBeEnabled();
+});
+
+it("shows principal and resource names without redundant identifiers", async () => {
+    fake.on("GET", "/api/v1/grants", () =>
+        json(
+            200,
+            schema("RoleGrantPage", {
+                items: [
+                    {
+                        ...roleGrant,
+                        role: "MaintenanceService",
+                        principal_name: "Bob Chen",
+                        scope: { table: TABLE_ID },
+                        scope_name: "lake.sales.orders",
+                    },
+                ],
+                next_cursor: null,
+            }),
+        ),
+    );
+    start(`/users/${USER_ID}`);
+    expect(await screen.findByText("Table lake.sales.orders")).toBeVisible();
+    const grants = within(screen.getByRole("table"));
+    expect(grants.getByText("Bob Chen")).toBeVisible();
+    expect(grants.getByText("Maintenance Service")).toBeVisible();
+    expect(grants.queryByText(USER_ID)).not.toBeInTheDocument();
+    expect(grants.queryByTitle(USER_ID)).not.toBeInTheDocument();
+    expect(grants.queryByText(USER_ID.slice(-8))).not.toBeInTheDocument();
 });

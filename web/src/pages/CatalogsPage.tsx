@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { DatabaseIcon } from "lucide-react";
+import { DatabaseIcon, PlusIcon } from "lucide-react";
 import { canManageCatalog } from "../api/auth";
 import { useCatalogs } from "../api/catalogs";
 import { ErrorNotice } from "../components/ErrorNotice";
@@ -12,6 +12,7 @@ import {
 import { useSession } from "../queryClient";
 import { Badge } from "../ui/Badge";
 import { Card, CardContent } from "../ui/Card";
+import { buttonVariants } from "../ui/Button";
 
 /** Authorized connections, including paused and disabled connections. */
 export function CatalogsPage() {
@@ -26,7 +27,16 @@ export function CatalogsPage() {
                 actions={
                     session !== null &&
                     canManageCatalog(session) && (
-                        <Link to="/catalogs/new">Add connection</Link>
+                        <Link
+                            to="/catalogs/new"
+                            className={buttonVariants({
+                                size: "lg",
+                                className: "hover:no-underline",
+                            })}
+                        >
+                            <PlusIcon aria-hidden="true" />
+                            Add Connection
+                        </Link>
                     )
                 }
             />
@@ -48,17 +58,23 @@ export function CatalogsPage() {
                     existing one.
                 </EmptyState>
             )}
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-3">
                 {items.map((catalog) => (
                     <Card key={catalog.id}>
-                        <CardContent className="grid gap-3">
-                            <Link
-                                to="/catalogs/$catalogId"
-                                params={{ catalogId: catalog.id }}
-                                className="text-base font-medium"
-                            >
-                                {catalog.name}
-                            </Link>
+                        <CardContent className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+                            <div className="grid gap-1">
+                                <Link
+                                    to="/catalogs/$catalogId"
+                                    params={{ catalogId: catalog.id }}
+                                    className="text-base font-medium"
+                                >
+                                    {catalog.name}
+                                </Link>
+                                <p className="m-0 text-sm text-muted-foreground">
+                                    Execution budget:{" "}
+                                    {catalog.settings.max_execution_seconds} s
+                                </p>
+                            </div>
                             <div className="flex flex-wrap gap-2">
                                 <Badge>
                                     {catalog.enabled ? "Enabled" : "Disabled"}
@@ -69,10 +85,6 @@ export function CatalogsPage() {
                                         : "Maintenance paused"}
                                 </Badge>
                             </div>
-                            <p className="m-0 text-muted-foreground">
-                                Execution budget:{" "}
-                                {catalog.settings.max_execution_seconds} s
-                            </p>
                         </CardContent>
                     </Card>
                 ))}

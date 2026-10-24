@@ -136,7 +136,28 @@ test("follows a job's events to success, then closes the stream", async ({
             "GET",
             "/api/v1/jobs/{id}",
             () => json(200, job("Running")),
-            () => json(200, job("Succeeded", { publication_started: true })),
+            () =>
+                json(
+                    200,
+                    job("Succeeded", {
+                        publication_started: true,
+                        statistics: {
+                            plan_recorded: true,
+                            planned_input_files: "8",
+                            planned_input_bytes: "8192",
+                            tasks_total: "2",
+                            tasks_accepted: "2",
+                            attempts: "2",
+                            input_files: "8",
+                            input_bytes: "8192",
+                            output_files: "1",
+                            output_bytes: "4096",
+                            delete_files_applied: "1",
+                            elapsed_millis: "65000",
+                            publication_confirmed: true,
+                        },
+                    }),
+                ),
         )
         .on("GET", "/api/v1/jobs/{id}/events", () =>
             eventStream([
@@ -150,6 +171,15 @@ test("follows a job's events to success, then closes the stream", async ({
     await page.goto(`/jobs/${JOB_ID}`);
 
     await expect(page.getByText("Confirmed")).toBeVisible();
+    await expect(
+        page.getByRole("heading", { name: "Maintenance statistics" }),
+    ).toBeVisible();
+    await expect(
+        page.getByText("Input files rewritten").locator(".."),
+    ).toContainText("8");
+    await expect(
+        page.getByText(/Accepted outputs were committed to the table/),
+    ).toBeVisible();
     await expect(page.getByText("The job has ended.")).toBeVisible();
     await expect(
         page.getByRole("list", { name: "Job events" }).getByRole("listitem"),

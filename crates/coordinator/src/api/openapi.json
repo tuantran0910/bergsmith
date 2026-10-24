@@ -6052,6 +6052,9 @@
           },
           "publication_started": {
             "type": "boolean"
+          },
+          "statistics": {
+            "$ref": "#/components/schemas/JobStatistics"
           }
         }
       },
@@ -7550,6 +7553,28 @@
             "type": "string",
             "format": "uuid"
           },
+          "principal_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Current display name of the principal. For display only; principal_id remains the key."
+          },
+          "scope_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Organization, a connection name, or a table name through an alias the caller can see. Null when no visible name exists; never used for authorization."
+          },
           "role": {
             "type": "string",
             "enum": [
@@ -7849,6 +7874,92 @@
                 "type": "null"
               }
             ]
+          }
+        }
+      },
+      "JobStatistics": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Detail-only ledger snapshot. Inputs are logical file sizes for accepted tasks; outputs are verified accepted output files. Elapsed time includes planning, queueing and publication. Decimal strings preserve integer precision. Accepted work does not imply publication.",
+        "required": [
+          "tasks_total",
+          "tasks_accepted",
+          "attempts",
+          "input_files",
+          "input_bytes",
+          "output_files",
+          "output_bytes",
+          "delete_files_applied",
+          "elapsed_millis",
+          "planned_input_files",
+          "planned_input_bytes",
+          "plan_recorded",
+          "publication_confirmed"
+        ],
+        "properties": {
+          "tasks_total": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "tasks_accepted": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "attempts": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "input_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "input_bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "output_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "output_bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "delete_files_applied": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "elapsed_millis": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "planned_input_files": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "planned_input_bytes": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "plan_recorded": {
+            "type": "boolean"
+          },
+          "publication_confirmed": {
+            "type": "boolean"
           }
         }
       }

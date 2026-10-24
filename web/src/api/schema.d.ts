@@ -770,6 +770,7 @@ export interface components {
             updated_at: string;
             cancellation_requested: boolean;
             publication_started: boolean;
+            statistics?: components["schemas"]["JobStatistics"];
         };
         /** @description The data of one job event. `reason` is set only for transitions, as the typed state reason; operator cancellation text is never included. */
         JobEvent: {
@@ -1122,6 +1123,10 @@ export interface components {
             id: string;
             /** Format: uuid */
             principal_id: string;
+            /** @description Current display name of the principal. For display only; principal_id remains the key. */
+            principal_name?: string | null;
+            /** @description Organization, a connection name, or a table name through an alias the caller can see. Null when no visible name exists; never used for authorization. */
+            scope_name?: string | null;
             /** @enum {string} */
             role: "Viewer" | "Operator" | "Administrator" | "MaintenanceService";
             scope: components["schemas"]["GrantScope"];
@@ -1179,6 +1184,22 @@ export interface components {
         IssueWorkerPoolToken: {
             pool: string;
             label?: string | null;
+        };
+        /** @description Detail-only ledger snapshot. Inputs are logical file sizes for accepted tasks; outputs are verified accepted output files. Elapsed time includes planning, queueing and publication. Decimal strings preserve integer precision. Accepted work does not imply publication. */
+        JobStatistics: {
+            tasks_total: string;
+            tasks_accepted: string;
+            attempts: string;
+            input_files: string;
+            input_bytes: string;
+            output_files: string;
+            output_bytes: string;
+            delete_files_applied: string;
+            elapsed_millis: string;
+            planned_input_files: string | null;
+            planned_input_bytes: string | null;
+            plan_recorded: boolean;
+            publication_confirmed: boolean;
         };
     };
     responses: never;

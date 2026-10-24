@@ -160,6 +160,7 @@ export function TablePage({ id }: { id: string }) {
             {preview.data && <PreviewView preview={preview.data} />}
             <Access
                 scope={{ table: id }}
+                scopeLabel={primary ? aliasName(primary, names) : id}
                 connections={table.data.aliases.map(
                     (alias) => alias.catalog_id,
                 )}

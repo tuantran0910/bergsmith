@@ -10,7 +10,6 @@ import {
     LoadingRows,
     PageHeader,
 } from "../components/Page";
-import { ResourceId } from "../components/ResourceId";
 import { aliasName, timestamp } from "../format";
 import {
     Table,
@@ -62,7 +61,6 @@ export function TablesPage() {
                                         Table
                                     </TableHead>
                                     <TableHead>Other names</TableHead>
-                                    <TableHead>Table UUID</TableHead>
                                     <TableHead className="pr-4">
                                         Registered
                                     </TableHead>
@@ -79,6 +77,7 @@ export function TablesPage() {
                                                     params={{
                                                         tableId: table.id,
                                                     }}
+                                                    title={table.table_uuid}
                                                 >
                                                     {primary
                                                         ? aliasName(
@@ -94,13 +93,6 @@ export function TablesPage() {
                                                         aliasName(alias, names),
                                                     )
                                                     .join(", ")}
-                                            </TableCell>
-                                            <TableCell>
-                                                <ResourceId
-                                                    id={table.table_uuid}
-                                                    label="table UUID"
-                                                    short
-                                                />
                                             </TableCell>
                                             <TableCell className="pr-4 whitespace-nowrap text-muted-foreground">
                                                 {timestamp(table.created_at)}

@@ -1,25 +1,40 @@
 import type { Schemas } from "../../api/client";
+import type { ReactNode } from "react";
 import { timestamp } from "../../format";
 import { Badge } from "../../ui/Badge";
-import { Card, CardContent, CardHeader, CardTitle } from "../../ui/Card";
+import {
+    Card,
+    CardContent,
+    CardDescription,
+    CardHeader,
+    CardTitle,
+} from "../../ui/Card";
 
 /** Advertised support is diagnostic; unknown vending requires a real table load. */
 export function Capabilities({
     capabilities,
     checkedAt,
+    action,
 }: {
     capabilities?: Schemas["CatalogCapabilities"] | undefined;
     checkedAt?: string | undefined;
+    action?: ReactNode;
 }) {
     return (
         <Card>
-            <CardHeader>
-                <CardTitle>Capabilities</CardTitle>
+            <CardHeader className="flex flex-wrap items-start justify-between gap-3">
+                <div className="grid gap-1">
+                    <CardTitle>Capabilities</CardTitle>
+                    <CardDescription>
+                        Support advertised by this catalog.
+                    </CardDescription>
+                </div>
+                {action}
             </CardHeader>
             <CardContent>
                 {capabilities ? (
                     <>
-                        <dl className="grid gap-3 sm:grid-cols-2">
+                        <dl className="m-0 grid gap-2">
                             {(
                                 [
                                     ["List tables", capabilities.list_tables],
@@ -37,10 +52,10 @@ export function Capabilities({
                             ).map(([name, state]) => (
                                 <div
                                     key={name}
-                                    className="flex items-center justify-between gap-3"
+                                    className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2"
                                 >
                                     <dt>{name}</dt>
-                                    <dd>
+                                    <dd className="m-0">
                                         <Badge
                                             variant={
                                                 state === "met"
@@ -55,7 +70,7 @@ export function Capabilities({
                                     </dd>
                                 </div>
                             ))}
-                            <div>
+                            <div className="grid gap-1 rounded-lg border px-3 py-2">
                                 <dt>Idempotency lifetime (optional)</dt>
                                 <dd className="m-0 text-muted-foreground">
                                     {capabilities.idempotency_key_lifetime_seconds ===
@@ -77,11 +92,16 @@ export function Capabilities({
                         routing settings.
                     </p>
                 )}
-                <p className="mb-0 text-muted-foreground">
-                    The catalog advertises these endpoints. Vended credentials
-                    are only proven by loading a table; unknown does not mean
-                    supported.
-                </p>
+                <aside className="mt-3 grid gap-1 rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+                    <p className="m-0 font-medium text-foreground">
+                        Reading this report
+                    </p>
+                    <p className="m-0">
+                        Endpoints are advertised by the catalog. Credential
+                        vending is verified only when a table loads; unknown
+                        means unverified.
+                    </p>
+                </aside>
             </CardContent>
         </Card>
     );

@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useId, useState } from "react";
 import {
     api,
     ApiFailure,
@@ -10,7 +10,13 @@ import {
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { useSessionMutation } from "../../queryClient";
 import { Button } from "../../ui/Button";
-import { Card, CardContent, CardHeader, CardTitle } from "../../ui/Card";
+import {
+    Card,
+    CardContent,
+    CardDescription,
+    CardHeader,
+    CardTitle,
+} from "../../ui/Card";
 import { Input, Label } from "../../ui/Input";
 import { ConnectionFields, type ConnectionDraft } from "./ConnectionFields";
 
@@ -49,6 +55,8 @@ export function changedSettings(
 /** An explicit reload discards a conflicted edit; never silently rebase a PATCH. */
 export function Settings({ catalog }: { catalog: Schemas["Catalog"] }) {
     const client = useQueryClient();
+    const availabilityHelp = useId();
+    const maintenanceHelp = useId();
     const [draft, setDraft] = useState({
         expected_revision: catalog.revision,
         name: catalog.name,
@@ -96,6 +104,10 @@ export function Settings({ catalog }: { catalog: Schemas["Catalog"] }) {
         <Card>
             <CardHeader>
                 <CardTitle>Connection settings</CardTitle>
+                <CardDescription>
+                    Availability and runtime limits. Edit the catalog endpoint
+                    and credentials separately under routing.
+                </CardDescription>
             </CardHeader>
             <CardContent className="grid gap-4">
                 <form
@@ -108,7 +120,7 @@ export function Settings({ catalog }: { catalog: Schemas["Catalog"] }) {
                         disabled={blocked}
                         className="m-0 grid gap-4 border-0 p-0 sm:grid-cols-2"
                     >
-                        <Label>
+                        <Label className="sm:col-span-2">
                             Connection name
                             <Input
                                 required
@@ -169,43 +181,62 @@ export function Settings({ catalog }: { catalog: Schemas["Catalog"] }) {
                                 }}
                             />
                         </Label>
-                        <div className="grid gap-3">
-                            <label className="flex items-center gap-2 text-sm">
-                                <input
-                                    type="checkbox"
-                                    checked={draft.enabled}
-                                    onChange={(event) => {
-                                        setDraft({
-                                            ...draft,
-                                            enabled: event.target.checked,
-                                        });
-                                    }}
-                                />
-                                Connection enabled
-                            </label>
-                            <label className="flex items-center gap-2 text-sm">
-                                <input
-                                    type="checkbox"
-                                    checked={draft.maintenance_enabled}
-                                    onChange={(event) => {
-                                        setDraft({
-                                            ...draft,
-                                            maintenance_enabled:
-                                                event.target.checked,
-                                        });
-                                    }}
-                                />
-                                Maintenance enabled
-                            </label>
+                        <div className="grid gap-3 sm:col-span-2 sm:grid-cols-2">
+                            <div className="grid gap-2 rounded-lg border p-3">
+                                <label className="flex items-center gap-2 text-sm">
+                                    <input
+                                        type="checkbox"
+                                        aria-describedby={availabilityHelp}
+                                        checked={draft.enabled}
+                                        onChange={(event) => {
+                                            setDraft({
+                                                ...draft,
+                                                enabled: event.target.checked,
+                                            });
+                                        }}
+                                    />
+                                    Connection enabled
+                                </label>
+                                <p
+                                    id={availabilityHelp}
+                                    className="m-0 text-xs text-muted-foreground"
+                                >
+                                    Disabling stops new previews and admissions.
+                                    Existing work and publication recovery
+                                    continue.
+                                </p>
+                            </div>
+                            <div className="grid gap-2 rounded-lg border p-3">
+                                <label className="flex items-center gap-2 text-sm">
+                                    <input
+                                        type="checkbox"
+                                        aria-describedby={maintenanceHelp}
+                                        checked={draft.maintenance_enabled}
+                                        onChange={(event) => {
+                                            setDraft({
+                                                ...draft,
+                                                maintenance_enabled:
+                                                    event.target.checked,
+                                            });
+                                        }}
+                                    />
+                                    Maintenance enabled
+                                </label>
+                                <p
+                                    id={maintenanceHelp}
+                                    className="m-0 text-xs text-muted-foreground"
+                                >
+                                    Pausing stops new maintenance jobs while
+                                    previews, reads, and publication recovery
+                                    remain available.
+                                </p>
+                            </div>
                         </div>
                         <p className="m-0 text-sm text-muted-foreground sm:col-span-2">
-                            Pausing maintenance keeps previews, reads, and
-                            publication recovery available. Disabling also stops
-                            previews and new admissions. Existing work and
-                            publication recovery continue. The coordinator may
-                            impose a shorter execution budget. The unresolved
-                            publication bound is an investigation threshold; it
-                            never resolves a publication.
+                            The coordinator may impose a shorter execution
+                            budget. The unresolved publication bound is an
+                            investigation threshold; it never resolves a
+                            publication.
                         </p>
                         <Button
                             type="submit"

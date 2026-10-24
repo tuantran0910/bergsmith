@@ -50,6 +50,7 @@ import {
 } from "../ui/Dialog";
 import { Input, Label } from "../ui/Input";
 import { cn } from "../ui/cn";
+import { JobStatistics } from "./jobs/JobStatistics";
 
 /** One job: live progress, cancellation, and fresh-plan retry. */
 export function JobPage({ id }: { id: string }) {
@@ -159,6 +160,7 @@ function JobDetail({ job }: { job: Job }) {
                 </Lane>
             </div>
 
+            <JobStatistics statistics={job.statistics} />
             <JobFacts job={job} />
 
             <Card>

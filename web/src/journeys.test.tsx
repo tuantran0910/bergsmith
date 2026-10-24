@@ -68,6 +68,41 @@ function events() {
     return within(screen.getByRole("list", { name: "Job events" }));
 }
 
+it("shows ledger statistics on the job detail page", async () => {
+    fake.on("GET", "/api/v1/jobs/{id}", () =>
+        json(
+            200,
+            job("Succeeded", {
+                statistics: {
+                    plan_recorded: true,
+                    planned_input_files: "8",
+                    planned_input_bytes: "8192",
+                    tasks_total: "2",
+                    tasks_accepted: "2",
+                    attempts: "2",
+                    input_files: "8",
+                    input_bytes: "8192",
+                    output_files: "1",
+                    output_bytes: "4096",
+                    delete_files_applied: "1",
+                    elapsed_millis: "65000",
+                    publication_confirmed: true,
+                },
+            }),
+        ),
+    );
+    start(`/jobs/${JOB_ID}`);
+    expect(
+        await screen.findByRole("heading", { name: "Maintenance statistics" }),
+    ).toBeInTheDocument();
+    expect(
+        screen.getByText("Input files rewritten").nextElementSibling,
+    ).toHaveTextContent("8");
+    expect(
+        screen.getByText(/Accepted outputs were committed to the table/),
+    ).toBeInTheDocument();
+});
+
 describe("sign-in", () => {
     it("offers sign-in without a session and returns to the requested page", async () => {
         fake.on("GET", "/auth/session", () =>
@@ -313,16 +348,16 @@ describe("browsing", () => {
         ).not.toBeInTheDocument();
     });
 
-    it("copies a table's full UUID from its short form", async () => {
+    it("copies a table's full UUID from its details page", async () => {
         fake.on("GET", "/api/v1/tables", () =>
             json(200, { items: [table], next_cursor: null }),
-        );
+        ).on("GET", "/api/v1/tables/{id}", () => json(200, table));
         const user = start("/tables");
 
-        expect(await screen.findByText("55556666")).toHaveAttribute(
-            "title",
-            table.table_uuid,
+        await user.click(
+            await screen.findByRole("link", { name: "lake.sales.orders" }),
         );
+        expect(await screen.findByText(table.table_uuid)).toBeInTheDocument();
         await user.click(
             screen.getByRole("button", { name: "Copy table UUID" }),
         );

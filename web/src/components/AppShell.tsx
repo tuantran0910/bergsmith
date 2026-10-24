@@ -124,7 +124,7 @@ export function AppShell({
                             <li key={to}>
                                 <Link
                                     to={to}
-                                    className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground hover:no-underline aria-[current=page]:bg-muted aria-[current=page]:text-foreground"
+                                    className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs font-semibold tracking-wide text-muted-foreground uppercase hover:bg-muted hover:text-foreground hover:no-underline aria-[current=page]:bg-muted aria-[current=page]:text-foreground"
                                 >
                                     <Icon
                                         aria-hidden="true"

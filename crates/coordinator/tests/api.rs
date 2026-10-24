@@ -13,6 +13,9 @@ mod catalog_discovery;
 #[path = "api/grants.rs"]
 mod grants_api;
 
+#[path = "api/job_statistics.rs"]
+mod job_statistics;
+
 #[path = "api/principals.rs"]
 mod principals;
 
@@ -416,10 +419,21 @@ async fn reads_filter_before_pagination_and_hide_foreign_resources(pool: PgPool)
         assert_eq!(body["items"].as_array().unwrap().len(), 1);
         assert_eq!(body["items"][0]["id"], id);
         assert!(body["next_cursor"].is_null());
-        let (status, detail) = browser
+        let (status, mut detail) = browser
             .request("GET", &format!("/api/v1/{resource}/{id}"), None, None)
             .await;
         assert_eq!(status, StatusCode::OK);
+        if resource == "jobs" {
+            // Detail adds ledger statistics; the inventory projection stays
+            // inexpensive and otherwise identical, including alias visibility.
+            assert!(
+                detail
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("statistics")
+                    .is_some()
+            );
+        }
         assert_eq!(detail, body["items"][0]);
         assert_eq!(
             browser

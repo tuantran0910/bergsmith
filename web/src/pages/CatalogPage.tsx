@@ -7,6 +7,7 @@ import { api, call, csrfHeader } from "../api/client";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { LoadingDetail, PageHeader } from "../components/Page";
 import { ResourceId } from "../components/ResourceId";
+import { duration, words } from "../format";
 import { useSession, useSessionMutation } from "../queryClient";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
@@ -67,116 +68,235 @@ export function CatalogPage({ id }: { id: string }) {
                 }
                 actions={<Link to="/catalogs">All catalogs</Link>}
             />
-            <Access scope={{ catalog_connection: id }} connections={[id]} />
             <Card>
+                <CardHeader>
+                    <CardTitle>Connection details</CardTitle>
+                </CardHeader>
                 <CardContent className="grid gap-3 text-sm">
-                    <ResourceId id={catalog.id} label="connection ID" />
-                    {catalog.uri && (
-                        <p className="m-0 break-all">{catalog.uri}</p>
-                    )}
-                    {catalog.warehouse && (
-                        <p className="m-0">Warehouse: {catalog.warehouse}</p>
-                    )}
-                    {catalog.credential_ref && (
-                        <p className="m-0">
-                            Credential reference: {catalog.credential_ref}
-                        </p>
-                    )}
-                    <p className="m-0">
-                        Execution budget:{" "}
-                        {catalog.settings.max_execution_seconds} s · Unresolved
-                        publication bound:{" "}
-                        {catalog.settings.max_unresolved_publication_seconds} s
-                    </p>
+                    <dl className="m-0 grid gap-4 sm:grid-cols-2">
+                        {catalog.uri && (
+                            <div className="sm:col-span-2">
+                                <dt className="text-xs text-muted-foreground">
+                                    Catalog endpoint
+                                </dt>
+                                <dd className="m-0 mt-1 break-all font-medium">
+                                    {catalog.uri}
+                                </dd>
+                            </div>
+                        )}
+                        {catalog.warehouse && (
+                            <div>
+                                <dt className="text-xs text-muted-foreground">
+                                    Warehouse
+                                </dt>
+                                <dd className="m-0 mt-1 font-medium wrap-anywhere">
+                                    {catalog.warehouse}
+                                </dd>
+                            </div>
+                        )}
+                        {catalog.credential_ref && (
+                            <div>
+                                <dt className="text-xs text-muted-foreground">
+                                    Credential reference
+                                </dt>
+                                <dd className="m-0 mt-1 wrap-anywhere">
+                                    {catalog.credential_ref}
+                                </dd>
+                            </div>
+                        )}
+                        <div>
+                            <dt className="text-xs text-muted-foreground">
+                                Connection ID
+                            </dt>
+                            <dd className="m-0 mt-1">
+                                <ResourceId
+                                    id={catalog.id}
+                                    label="connection ID"
+                                    short
+                                />
+                            </dd>
+                        </div>
+                        {!manager && (
+                            <>
+                                <div>
+                                    <dt className="text-xs text-muted-foreground">
+                                        Execution budget
+                                    </dt>
+                                    <dd className="m-0 mt-1">
+                                        {catalog.settings.max_execution_seconds}{" "}
+                                        s
+                                    </dd>
+                                </div>
+                                <div>
+                                    <dt className="text-xs text-muted-foreground">
+                                        Unresolved publication bound
+                                    </dt>
+                                    <dd className="m-0 mt-1">
+                                        {
+                                            catalog.settings
+                                                .max_unresolved_publication_seconds
+                                        }{" "}
+                                        s
+                                    </dd>
+                                </div>
+                            </>
+                        )}
+                    </dl>
                 </CardContent>
             </Card>
-            {manager && (
-                <>
-                    <div>
-                        <Button
-                            disabled={check.isPending}
-                            onClick={() => {
-                                check.mutate();
-                            }}
-                        >
-                            {check.isPending
-                                ? "Checking…"
-                                : "Check capabilities"}
-                        </Button>
+            {manager && <Settings key={catalog.revision} catalog={catalog} />}
+            <div
+                className={
+                    manager
+                        ? "grid items-start gap-6 lg:grid-cols-2"
+                        : "grid gap-6"
+                }
+            >
+                {manager && (
+                    <div className="grid gap-3">
+                        <Capabilities
+                            capabilities={catalog.capabilities}
+                            checkedAt={catalog.capabilities_checked_at}
+                            action={
+                                <Button
+                                    variant="outline"
+                                    disabled={check.isPending}
+                                    onClick={() => {
+                                        check.mutate();
+                                    }}
+                                >
+                                    {check.isPending
+                                        ? "Checking…"
+                                        : "Check capabilities"}
+                                </Button>
+                            }
+                        />
                         {check.error !== null && (
                             <ErrorNotice error={check.error} />
                         )}
                     </div>
-                    <Capabilities
-                        capabilities={catalog.capabilities}
-                        checkedAt={catalog.capabilities_checked_at}
-                    />
-                    <Settings key={catalog.revision} catalog={catalog} />
-                </>
-            )}
-            {catalog.storage_profile && (
-                <Card>
-                    <CardHeader>
-                        <CardTitle>Effective storage profile</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                        <p className="mt-0">
-                            {catalog.storage_profile.source === "connection"
-                                ? "Connection-specific profiles"
-                                : "Default profiles"}{" "}
-                            · Read-only; managed in coordinator configuration.
-                        </p>
-                        {catalog.storage_profile.backends.length === 0 && (
-                            <p>No storage backends configured.</p>
-                        )}
-                        <ul className="grid gap-2">
-                            {catalog.storage_profile.backends.map(
-                                (backend, index) => (
-                                    <li key={`${backend.kind}-${index}`}>
-                                        <strong>{backend.kind}</strong>
-                                        {Object.entries(backend)
-                                            .filter(
-                                                ([key, value]) =>
-                                                    key !== "kind" &&
-                                                    value !== null,
-                                            )
-                                            .map(([key, value]) => (
-                                                <span
-                                                    key={key}
-                                                    className="ml-2 break-all"
-                                                >
-                                                    {key.replaceAll("_", " ")}:{" "}
-                                                    {String(value)}
-                                                </span>
-                                            ))}
-                                    </li>
-                                ),
-                            )}
-                        </ul>
-                    </CardContent>
-                </Card>
-            )}
-            {catalog.unresolved_publications && (
-                <Card>
-                    <CardHeader>
-                        <CardTitle>Unresolved publications</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                        <p className="mt-0">
-                            {catalog.unresolved_publications.count} unresolved ·
-                            Oldest age:{" "}
-                            {catalog.unresolved_publications.oldest_seconds} s
-                        </p>
-                        {catalog.unresolved_publications.overdue && (
-                            <p role="alert">
-                                The oldest publication exceeds this connection’s
-                                age bound. Investigate its outcome; the bound
-                                never declares it failed.
-                            </p>
-                        )}
-                    </CardContent>
-                </Card>
-            )}
+                )}
+                <div className="grid gap-6">
+                    {catalog.storage_profile && (
+                        <Card>
+                            <CardHeader>
+                                <CardTitle>Effective storage profile</CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                                <p className="mt-0 mb-4 text-muted-foreground">
+                                    {catalog.storage_profile.source ===
+                                    "connection"
+                                        ? "Connection-specific profiles"
+                                        : "Default profiles"}{" "}
+                                    · Read-only; managed in coordinator
+                                    configuration.
+                                </p>
+                                {catalog.storage_profile.backends.length ===
+                                    0 && <p>No storage backends configured.</p>}
+                                <ul className="m-0 grid list-none gap-3 p-0">
+                                    {catalog.storage_profile.backends.map(
+                                        (backend, index) => (
+                                            <li
+                                                key={`${backend.kind}-${index}`}
+                                                className="grid gap-3 rounded-lg border p-3"
+                                            >
+                                                <strong className="text-xs tracking-wide uppercase">
+                                                    {backend.kind}
+                                                </strong>
+                                                <dl className="m-0 grid gap-3 sm:grid-cols-2">
+                                                    {Object.entries(backend)
+                                                        .filter(
+                                                            ([key, value]) =>
+                                                                key !==
+                                                                    "kind" &&
+                                                                value !== null,
+                                                        )
+                                                        .map(([key, value]) => (
+                                                            <div
+                                                                key={key}
+                                                                className={
+                                                                    key ===
+                                                                    "endpoint"
+                                                                        ? "sm:col-span-2"
+                                                                        : undefined
+                                                                }
+                                                            >
+                                                                <dt className="text-xs text-muted-foreground">
+                                                                    {words(key)}
+                                                                </dt>
+                                                                <dd className="m-0 mt-1 wrap-anywhere">
+                                                                    {typeof value ===
+                                                                    "boolean"
+                                                                        ? value
+                                                                            ? "Enabled"
+                                                                            : "Disabled"
+                                                                        : String(
+                                                                              value,
+                                                                          )}
+                                                                </dd>
+                                                            </div>
+                                                        ))}
+                                                </dl>
+                                            </li>
+                                        ),
+                                    )}
+                                </ul>
+                            </CardContent>
+                        </Card>
+                    )}
+                    {catalog.unresolved_publications && (
+                        <Card>
+                            <CardHeader>
+                                <CardTitle>Unresolved publications</CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                                <dl className="m-0 grid grid-cols-2 gap-4">
+                                    <div>
+                                        <dt className="text-xs text-muted-foreground">
+                                            Awaiting resolution
+                                        </dt>
+                                        <dd className="m-0 mt-1 text-2xl font-semibold tabular-nums">
+                                            {
+                                                catalog.unresolved_publications
+                                                    .count
+                                            }
+                                        </dd>
+                                    </div>
+                                    <div>
+                                        <dt className="text-xs text-muted-foreground">
+                                            Oldest age
+                                        </dt>
+                                        <dd className="m-0 mt-1 text-lg font-medium tabular-nums">
+                                            {catalog.unresolved_publications
+                                                .count === 0
+                                                ? "None"
+                                                : duration(
+                                                      catalog
+                                                          .unresolved_publications
+                                                          .oldest_seconds *
+                                                          1000,
+                                                  )}
+                                        </dd>
+                                    </div>
+                                </dl>
+                                {catalog.unresolved_publications.overdue && (
+                                    <p role="alert">
+                                        The oldest publication exceeds this
+                                        connection’s age bound. Investigate its
+                                        outcome; the bound never declares it
+                                        failed.
+                                    </p>
+                                )}
+                            </CardContent>
+                        </Card>
+                    )}
+                </div>
+            </div>
+            <Access
+                scope={{ catalog_connection: id }}
+                connections={[id]}
+                scopeLabel={catalog.name}
+            />
             <RegisteredTables id={id} manager={manager} />
             {manager && (
                 <div className="grid gap-4">
