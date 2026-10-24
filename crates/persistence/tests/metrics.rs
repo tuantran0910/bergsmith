@@ -66,6 +66,7 @@ async fn the_snapshot_counts_jobs_tasks_plans_cancellations_and_sessions(pool: P
             content: serde_json::json!({ "estimate": { "bytes": 1234 } }),
             content_hash: support::digest('b'),
             task_ids: vec![TaskId::generate(), TaskId::generate()],
+            execution_budget: Duration::from_secs(180),
         },
     )
     .await

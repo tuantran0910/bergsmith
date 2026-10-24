@@ -111,6 +111,12 @@ pub enum PersistenceError {
         /// The scheduled job.
         job: JobId,
     },
+    /// The job's execution budget ran out before the attempt was granted.
+    #[error("job {job} ran out of its execution budget")]
+    ExecutionBudgetExceeded {
+        /// The job.
+        job: JobId,
+    },
     /// The job lifecycle forbids the change.
     #[error(transparent)]
     JobTransition(#[from] JobTransitionError),

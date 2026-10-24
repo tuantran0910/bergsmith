@@ -14,10 +14,14 @@ use bergsmith_common::capabilities::{
 };
 use bergsmith_common::ids::CatalogConnectionId;
 use bergsmith_common::permission::{Permission, ResourceScope};
+use bergsmith_common::settings::ConnectionSettings;
 use bergsmith_persistence::audit::NewAuditEvent;
 use bergsmith_persistence::capabilities::CapabilityCheck;
-use bergsmith_persistence::tenancy::{self, CatalogConnection, NewCatalogConnection};
+use bergsmith_persistence::tenancy::{
+    self, CatalogConnection, NewCatalogConnection, UnresolvedPublications,
+};
 use bergsmith_persistence::{PersistenceError, grants};
+use bergsmith_storage::{StorageProfile, StorageProfiles};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -56,6 +60,12 @@ pub(super) struct UpdateCatalog {
     )]
     credential_ref: Option<Option<String>>,
     enabled: Option<bool>,
+    /// The job duration budget, in seconds.
+    max_execution_seconds: Option<u64>,
+    /// The age at which an unresolved publication needs an operator, in seconds.
+    max_unresolved_publication_seconds: Option<u64>,
+    /// Whether maintenance may run on this connection's tables.
+    maintenance_enabled: Option<bool>,
 }
 
 pub(super) async fn create(
@@ -82,10 +92,12 @@ pub(super) async fn create(
     let created = tenancy::create_catalog_connection(&mut tx, &new).await?;
     record(&mut tx, &caller, &created, AuditAction::CatalogCreated).await?;
     tx.commit().await?;
+    let mut conn = state.database.pool().acquire().await?;
+    let document = document_with_reports(&state, &mut conn, &created, None).await?;
     Ok((
         StatusCode::CREATED,
         [(header::LOCATION, format!("/api/v1/catalogs/{}", created.id))],
-        Json(document(&created, None)),
+        Json(document),
     )
         .into_response())
 }
@@ -107,6 +119,9 @@ pub(super) async fn update(
         && body.warehouse.is_none()
         && body.credential_ref.is_none()
         && body.enabled.is_none()
+        && body.max_execution_seconds.is_none()
+        && body.max_unresolved_publication_seconds.is_none()
+        && body.maintenance_enabled.is_none()
     {
         return Err(ApiError::invalid());
     }
@@ -127,16 +142,31 @@ pub(super) async fn update(
         warehouse: body.warehouse.unwrap_or(current.warehouse),
         credential_ref: body.credential_ref.unwrap_or(current.credential_ref),
     };
+    // The bounds are validated before the write, so an out-of-range value
+    // never reaches the ledger.
+    let settings = ConnectionSettings::new(
+        body.max_execution_seconds
+            .unwrap_or(current.settings.max_execution_seconds()),
+        body.max_unresolved_publication_seconds
+            .unwrap_or(current.settings.max_unresolved_publication_seconds()),
+        body.maintenance_enabled
+            .unwrap_or(current.settings.maintenance_enabled()),
+    )
+    .map_err(|_| ApiError::invalid())?;
     let updated = tenancy::update_catalog_connection(
         &mut tx,
         &new,
         body.expected_revision,
         body.enabled.unwrap_or(current.enabled),
+        settings,
     )
     .await?;
     record(&mut tx, &caller, &updated, AuditAction::CatalogUpdated).await?;
     tx.commit().await?;
-    Ok(Json(document(&updated, None)))
+    let mut conn = state.database.pool().acquire().await?;
+    Ok(Json(
+        document_with_reports(&state, &mut conn, &updated, None).await?,
+    ))
 }
 
 /// Authorizes once inside the mutation transaction. On denial, roll back first
@@ -234,6 +264,7 @@ pub(super) fn document(connection: &CatalogConnection, check: Option<&Capability
         uri.set_fragment(None);
         document["uri"] = json!(uri.as_str());
     }
+    document["settings"] = settings_json(&connection.settings);
     // The last capability check is diagnostic, not configuration, but only a
     // caller who may manage this connection sees the answer.
     if let Some(check) = check {
@@ -259,6 +290,130 @@ fn capabilities_json(capabilities: &ConnectionCapabilities) -> Value {
     })
 }
 
+/// The operating bounds of a connection, as the API returns them.
+pub(super) fn settings_json(settings: &ConnectionSettings) -> Value {
+    json!({
+        "maintenance_enabled": settings.maintenance_enabled(),
+        "max_execution_seconds": settings.max_execution_seconds(),
+        "max_unresolved_publication_seconds": settings.max_unresolved_publication_seconds(),
+    })
+}
+
+/// The document of a connection, with the read-only reports it carries.
+///
+/// The reports describe the connection as it is now: the storage profile that
+/// serves it, and the publications of it whose outcome is unknown. They are
+/// never stored with the connection.
+pub(super) async fn document_with_reports(
+    state: &ApiState,
+    conn: &mut sqlx::PgConnection,
+    connection: &CatalogConnection,
+    check: Option<&CapabilityCheck>,
+) -> Result<Value, ApiError> {
+    let mut document = document(connection, check);
+    document["storage_profile"] = storage_profile_json(
+        state.previews.profiles_for(connection.id),
+        state.previews.has_own_profiles(connection.id),
+    );
+    let publications =
+        tenancy::unresolved_publications(conn, connection.organization_id, connection.id).await?;
+    document["unresolved_publications"] = unresolved_json(
+        &publications,
+        connection.settings.max_unresolved_publication_seconds(),
+    );
+    Ok(document)
+}
+
+/// The effective storage profile of a connection, as the API returns it.
+///
+/// The profiles stay in the coordinator configuration, so this is read-only.
+/// The source says whether the connection has an entry of its own or uses the
+/// default set, which is how an operator notices a mistyped connection key.
+pub(super) fn storage_profile_json(profiles: &StorageProfiles, explicit: bool) -> Value {
+    let backends: Vec<Value> = profiles
+        .backends()
+        .map(|(backend, profile)| profile_json(backend.name(), profile))
+        .collect();
+    json!({
+        "source": if explicit { "connection" } else { "default" },
+        "backends": backends,
+    })
+}
+
+/// One storage backend, as the API returns it.
+///
+/// A profile names an endpoint and an addressing, never a credential: those
+/// come from the catalog. An endpoint the configuration carries as user
+/// information, a query, or a fragment is reported without them, and an
+/// endpoint that is not a URL at all is left out.
+fn profile_json(kind: &str, profile: &StorageProfile) -> Value {
+    match profile {
+        StorageProfile::S3(profile) => {
+            let mut value = json!({
+                "kind": kind,
+                "region": profile.region,
+                "path_style_access": profile.path_style_access,
+            });
+            insert_endpoint(&mut value, profile.endpoint.as_deref());
+            value
+        }
+        StorageProfile::Gcs(profile) => {
+            let mut value = json!({
+                "kind": kind,
+                "project": profile.project,
+            });
+            insert_endpoint(&mut value, profile.endpoint.as_deref());
+            value
+        }
+        StorageProfile::Azure(profile) => {
+            let mut value = json!({
+                "kind": kind,
+                "account": profile.account,
+                "hierarchical_namespace": profile.hierarchical_namespace,
+            });
+            insert_endpoint(&mut value, profile.endpoint.as_deref());
+            value
+        }
+        StorageProfile::LocalFs | StorageProfile::Memory => json!({"kind": kind}),
+    }
+}
+
+/// Adds the endpoint a profile names, without anything secret.
+///
+/// A profile without an endpoint reports none. Only an HTTP(S) endpoint with a
+/// host is a storage endpoint: any other successfully parsed URL may be an
+/// opaque string that carries a secret, so it is left out, exactly like an
+/// input that is not a URL at all.
+fn insert_endpoint(value: &mut Value, endpoint: Option<&str>) {
+    let Some(raw) = endpoint else {
+        value["endpoint"] = Value::Null;
+        return;
+    };
+    let Ok(mut url) = Url::parse(raw) else {
+        return;
+    };
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return;
+    }
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_query(None);
+    url.set_fragment(None);
+    value["endpoint"] = json!(url.as_str());
+}
+
+/// The unresolved publications of a connection, as the API returns them.
+///
+/// The age is compared with the connection's own bound, so `overdue` says
+/// what the operator declared rather than a fixed number of seconds.
+pub(super) fn unresolved_json(publications: &UnresolvedPublications, limit_seconds: u64) -> Value {
+    json!({
+        "count": publications.count,
+        "oldest_seconds": publications.oldest_seconds,
+        "overdue": publications.is_overdue(limit_seconds),
+    })
+}
+
 async fn record(
     conn: &mut sqlx::PgConnection,
     caller: &Caller,
@@ -276,7 +431,13 @@ async fn record(
             resource_id: Some(&connection.id.to_string()),
             outcome: AuditOutcome::Allowed,
             // Do not copy URIs, warehouse values, or credential references into audit.
-            detail: json!({"revision":connection.revision,"enabled":connection.enabled}),
+            detail: json!({
+                "revision": connection.revision,
+                "enabled": connection.enabled,
+                "maintenance_enabled": connection.settings.maintenance_enabled(),
+                "max_execution_seconds": connection.settings.max_execution_seconds(),
+                "max_unresolved_publication_seconds": connection.settings.max_unresolved_publication_seconds(),
+            }),
         },
     )
     .await?;

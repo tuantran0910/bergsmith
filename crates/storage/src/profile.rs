@@ -150,6 +150,14 @@ impl StorageProfiles {
         }
     }
 
+    /// The configured profiles, one per backend, in backend order.
+    ///
+    /// The order is stable, so a report of the effective profiles is
+    /// deterministic.
+    pub fn backends(&self) -> impl Iterator<Item = (&Backend, &StorageProfile)> {
+        self.by_backend.iter()
+    }
+
     /// The profile for the backend that serves `location`.
     ///
     /// # Errors

@@ -320,12 +320,74 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AcceptedJob: {
+            /** Format: uuid */
+            operation_id: string;
+            /** Format: uuid */
+            job_id: string;
+            resource_url: string;
+        };
+        AcceptedRetry: {
+            /** Format: uuid */
+            operation_id: string;
+            /** Format: uuid */
+            job_id: string;
+            resource_url: string;
+            /** Format: uuid */
+            retry_of_job_id: string;
+        };
         ApiError: {
             /** @enum {string} */
             reason: "authentication_required" | "csrf_rejected" | "invalid_request" | "resource_not_found" | "permission_denied" | "idempotency_key_reused" | "ledger_unavailable" | "method_not_allowed" | "request_too_large" | "internal_error" | "catalog_credential_unavailable" | "catalog_connection_invalid" | "storage_profile_unavailable" | "storage_unavailable" | "catalog_access_denied" | "catalog_unavailable" | "table_staged" | "job_not_terminal" | "job_already_succeeded" | "table_identity_changed" | "catalog_table_missing" | "inventory_too_large" | "table_metadata_inconsistent" | "preview_capacity_exhausted" | "catalog_unsupported" | "catalog_credentials_unavailable" | "catalog_request_rejected" | "event_stream_capacity_exhausted" | "invalid_policy_parameters" | "invalid_policy_operation" | "invalid_cron_expression" | "invalid_time_zone" | "invalid_maintenance_window" | "run_budget_below_target_file_size" | "revision_conflict" | "service_identity_not_eligible" | "resource_already_exists" | "catalog_connection_disabled" | "catalog_connection_in_use" | "catalog_connection_changed" | "capability_check_capacity_exhausted" | "catalog_response_too_large";
             /** @enum {string} */
             disposition: "RetrySameRequest" | "RetryTask" | "ReplanRequired" | "PermanentFailure" | "ResolvePublication";
             operator_action: string;
+        };
+        AuditEvent: {
+            id: string;
+            actor_principal_id: string | null;
+            actor_display_name: string | null;
+            /** @enum {string} */
+            actor_kind: "User" | "Service" | "Anonymous" | "System";
+            action: string;
+            resource_type: string;
+            resource_id: string | null;
+            /** @enum {string} */
+            outcome: "Allowed" | "Denied" | "Failed";
+            detail: {
+                [key: string]: unknown;
+            };
+            /** Format: date-time */
+            occurred_at: string;
+        };
+        AuditEventPage: {
+            items: components["schemas"]["AuditEvent"][];
+            next_cursor: string | null;
+        };
+        Bin: {
+            partition: components["schemas"]["PartitionKey"];
+            ordinal: number;
+            input: components["schemas"]["Tally"];
+            has_deletes: boolean;
+            /** Format: int64 */
+            files_removed: number;
+            /** @enum {string} */
+            disposition: "admitted" | "no_benefit" | "deferred_job_input" | "deferred_job_files" | "deferred_duration";
+        };
+        CancelJobRequest: {
+            reason?: string | null;
+        };
+        CancelJobResult: {
+            /** Format: uuid */
+            job_id: string;
+            /** @enum {string} */
+            state: "Planning" | "Queued" | "Running" | "ReadyToCommit" | "Committing" | "CommitOutcomeUnknown" | "Cancelling" | "Succeeded" | "NoOp" | "Cancelled" | "ReplanRequired" | "Failed";
+            /** Format: int64 */
+            revision: number;
+            /** @enum {string} */
+            cancellation: "cancelling" | "too_late_publication_started" | "publication_unresolved" | "too_late_committed" | "cancelled" | "already_ended";
+            cancellation_requested: boolean;
+            publication_started: boolean;
         };
         Catalog: {
             /** Format: uuid */
@@ -349,15 +411,110 @@ export interface components {
              * @description When the last capability check ran; only returned to connection managers.
              */
             capabilities_checked_at?: string;
+            settings: components["schemas"]["CatalogSettings"];
+            storage_profile?: components["schemas"]["CatalogStorageProfile"];
+            unresolved_publications?: components["schemas"]["CatalogUnresolvedPublications"];
         };
-        Table: {
+        CatalogCapabilities: {
+            /**
+             * @description Whether the catalog lists the tables of a namespace.
+             * @enum {string}
+             */
+            list_tables: "met" | "missing" | "unknown";
+            /**
+             * @description Whether the catalog loads a table's metadata.
+             * @enum {string}
+             */
+            load_table: "met" | "missing" | "unknown";
+            /**
+             * @description Whether the catalog accepts a commit.
+             * @enum {string}
+             */
+            commit_table: "met" | "missing" | "unknown";
+            /**
+             * @description Whether the catalog vends table-scoped storage credentials. The catalog configuration cannot show it; loading a table proves it.
+             * @enum {string}
+             */
+            vended_credentials: "met" | "missing" | "unknown";
+            /**
+             * @description Whether the catalog can refresh vended credentials on request.
+             * @enum {string}
+             */
+            credentials_endpoint: "met" | "missing" | "unknown";
+            /** @description How long the catalog remembers idempotency keys, in seconds, as a decimal string; null when it advertises no lifetime. */
+            idempotency_key_lifetime_seconds: string | null;
+        };
+        CatalogCapabilityCheck: {
             /** Format: uuid */
-            id: string;
-            /** Format: uuid */
-            table_uuid: string;
+            catalog_id: string;
             /** Format: date-time */
-            created_at: string;
-            aliases: components["schemas"]["TableAlias"][];
+            checked_at: string;
+            capabilities: components["schemas"]["CatalogCapabilities"];
+        };
+        CatalogPage: {
+            items: components["schemas"]["Catalog"][];
+            next_cursor: string | null;
+        };
+        /** @description The operating bounds this connection declares. The summary and the detail carry the same bounds. */
+        CatalogSettings: {
+            /** @description Whether maintenance may run on this connection's tables. A paused connection stays in service: previews and reads still work, and an unresolved publication is still recovered. */
+            maintenance_enabled: boolean;
+            /** @description How long one job may run on this connection. The coordinator never grants a longer job than this, and the operator keeps the table's inputs readable for the same time. */
+            max_execution_seconds: number;
+            /** @description How long a publication may stay unresolved before an operator investigates. The bound never resolves a publication. */
+            max_unresolved_publication_seconds: number;
+        };
+        CatalogStorageBackend: {
+            /** @description The storage backend this profile serves. */
+            kind: string;
+            /** @description The endpoint, when the backend names one. User information, a query, and a fragment are removed; an endpoint that is not a URL is left out. */
+            endpoint?: string | null;
+            /** @description The signing region, for S3. */
+            region?: string;
+            /** @description Whether buckets are addressed as a path. */
+            path_style_access?: boolean;
+            /** @description The project that owns the buckets, for GCS. */
+            project?: string | null;
+            /** @description The storage account, for Azure. */
+            account?: string;
+            /** @description Whether the account has a hierarchical namespace. */
+            hierarchical_namespace?: boolean;
+        };
+        /** @description The storage profiles that apply to this connection. They stay in the coordinator configuration, so they are read-only. */
+        CatalogStorageProfile: {
+            /**
+             * @description Whether the connection has profiles of its own or uses the default set.
+             * @enum {string}
+             */
+            source: "connection" | "default";
+            backends: components["schemas"]["CatalogStorageBackend"][];
+        };
+        /** @description The publications of this connection whose outcome is unknown. */
+        CatalogUnresolvedPublications: {
+            count: number;
+            oldest_seconds: number;
+            /** @description Whether the oldest unresolved publication is older than the connection's own bound. */
+            overdue: boolean;
+        };
+        CreateCatalog: {
+            name: string;
+            /** @description Catalog HTTP(S) base URI without user information, query parameters, fragments, or whitespace. */
+            uri: string;
+            warehouse?: string | null;
+            /** @description Reference to an externally held credential; never supply a secret value. */
+            credential_ref?: string | null;
+        };
+        Estimate: {
+            /** Format: int64 */
+            tasks: number;
+            /** Format: int64 */
+            files: number;
+            /** Format: int64 */
+            bytes: number;
+            /** Format: int64 */
+            files_removed: number;
+            /** Format: int64 */
+            duration_millis: number;
         };
         Job: {
             /** Format: uuid */
@@ -397,161 +554,9 @@ export interface components {
             /** Format: date-time */
             occurred_at: string;
         };
-        AuditEvent: {
-            id: string;
-            actor_principal_id: string | null;
-            actor_display_name: string | null;
-            /** @enum {string} */
-            actor_kind: "User" | "Service" | "Anonymous" | "System";
-            action: string;
-            resource_type: string;
-            resource_id: string | null;
-            /** @enum {string} */
-            outcome: "Allowed" | "Denied" | "Failed";
-            detail: {
-                [key: string]: unknown;
-            };
-            /** Format: date-time */
-            occurred_at: string;
-        };
-        SubmitJob: {
-            /** Format: uuid */
-            table_id: string;
-        };
-        AcceptedJob: {
-            /** Format: uuid */
-            operation_id: string;
-            /** Format: uuid */
-            job_id: string;
-            resource_url: string;
-        };
-        CatalogPage: {
-            items: components["schemas"]["Catalog"][];
-            next_cursor: string | null;
-        };
-        TablePage: {
-            items: components["schemas"]["Table"][];
-            next_cursor: string | null;
-        };
         JobPage: {
             items: components["schemas"]["Job"][];
             next_cursor: string | null;
-        };
-        AuditEventPage: {
-            items: components["schemas"]["AuditEvent"][];
-            next_cursor: string | null;
-        };
-        TableAlias: {
-            /** Format: uuid */
-            catalog_id: string;
-            namespace: string[];
-            name: string;
-        };
-        PreviewRequest: {
-            /** Format: uuid */
-            table_id: string;
-        };
-        CancelJobRequest: {
-            reason?: string | null;
-        };
-        CancelJobResult: {
-            /** Format: uuid */
-            job_id: string;
-            /** @enum {string} */
-            state: "Planning" | "Queued" | "Running" | "ReadyToCommit" | "Committing" | "CommitOutcomeUnknown" | "Cancelling" | "Succeeded" | "NoOp" | "Cancelled" | "ReplanRequired" | "Failed";
-            /** Format: int64 */
-            revision: number;
-            /** @enum {string} */
-            cancellation: "cancelling" | "too_late_publication_started" | "publication_unresolved" | "too_late_committed" | "cancelled" | "already_ended";
-            cancellation_requested: boolean;
-            publication_started: boolean;
-        };
-        AcceptedRetry: {
-            /** Format: uuid */
-            operation_id: string;
-            /** Format: uuid */
-            job_id: string;
-            resource_url: string;
-            /** Format: uuid */
-            retry_of_job_id: string;
-        };
-        Tally: {
-            /** Format: int64 */
-            files: number;
-            /** Format: int64 */
-            bytes: number;
-        };
-        Estimate: {
-            /** Format: int64 */
-            tasks: number;
-            /** Format: int64 */
-            files: number;
-            /** Format: int64 */
-            bytes: number;
-            /** Format: int64 */
-            files_removed: number;
-            /** Format: int64 */
-            duration_millis: number;
-        };
-        PartitionValue: {
-            /** Format: int32 */
-            field_id: number;
-            value: string | null;
-        };
-        PartitionKey: {
-            /** Format: int32 */
-            spec_id: number;
-            values: components["schemas"]["PartitionValue"][];
-        };
-        Rejection: {
-            /** @enum {string} */
-            reason: "format_version" | "sorted_table" | "encrypted" | "write_format" | "non_parquet_file" | "equality_key" | "void_spec_equality_delete";
-            detail: string;
-            path: string | null;
-            version: number | null;
-            sort_order_id: number | null;
-            format: string | null;
-            field_id: number | null;
-            problem: ("floating_point" | "nested" | "not_in_schema") | null;
-        };
-        Skipped: {
-            /** @enum {string} */
-            reason: "outside_selection" | "too_large" | "at_target_size";
-            /** Format: int64 */
-            files: number;
-            /** Format: int64 */
-            bytes: number;
-        };
-        Bin: {
-            partition: components["schemas"]["PartitionKey"];
-            ordinal: number;
-            input: components["schemas"]["Tally"];
-            has_deletes: boolean;
-            /** Format: int64 */
-            files_removed: number;
-            /** @enum {string} */
-            disposition: "admitted" | "no_benefit" | "deferred_job_input" | "deferred_job_files" | "deferred_duration";
-        };
-        Preview: {
-            /** Format: uuid */
-            table_id: string;
-            /** @enum {string} */
-            outcome: "planned" | "no_op" | "rejected";
-            no_op_reason: ("no_snapshot" | "no_beneficial_work") | null;
-            baseline: {
-                /** @description 64-bit snapshot ID as a decimal string, so clients that parse JSON numbers as doubles do not round it. */
-                snapshot_id: string;
-                /** Format: int64 */
-                sequence_number: number;
-            } | null;
-            rejections: components["schemas"]["Rejection"][];
-            candidates: components["schemas"]["Tally"];
-            skipped: components["schemas"]["Skipped"][];
-            bins: components["schemas"]["Bin"][];
-            estimate: components["schemas"]["Estimate"];
-            /** Format: int64 */
-            bins_total: number;
-            bins_truncated: boolean;
         };
         MaintenancePolicy: {
             /** Format: uuid */
@@ -651,6 +656,106 @@ export interface components {
             /** Format: int32 */
             end_minute: number;
         };
+        PartitionKey: {
+            /** Format: int32 */
+            spec_id: number;
+            values: components["schemas"]["PartitionValue"][];
+        };
+        PartitionValue: {
+            /** Format: int32 */
+            field_id: number;
+            value: string | null;
+        };
+        Preview: {
+            /** Format: uuid */
+            table_id: string;
+            /** @enum {string} */
+            outcome: "planned" | "no_op" | "rejected";
+            no_op_reason: ("no_snapshot" | "no_beneficial_work") | null;
+            baseline: {
+                /** @description 64-bit snapshot ID as a decimal string, so clients that parse JSON numbers as doubles do not round it. */
+                snapshot_id: string;
+                /** Format: int64 */
+                sequence_number: number;
+            } | null;
+            rejections: components["schemas"]["Rejection"][];
+            candidates: components["schemas"]["Tally"];
+            skipped: components["schemas"]["Skipped"][];
+            bins: components["schemas"]["Bin"][];
+            estimate: components["schemas"]["Estimate"];
+            /** Format: int64 */
+            bins_total: number;
+            bins_truncated: boolean;
+        };
+        PreviewRequest: {
+            /** Format: uuid */
+            table_id: string;
+        };
+        Rejection: {
+            /** @enum {string} */
+            reason: "format_version" | "sorted_table" | "encrypted" | "write_format" | "non_parquet_file" | "equality_key" | "void_spec_equality_delete";
+            detail: string;
+            path: string | null;
+            version: number | null;
+            sort_order_id: number | null;
+            format: string | null;
+            field_id: number | null;
+            problem: ("floating_point" | "nested" | "not_in_schema") | null;
+        };
+        Skipped: {
+            /** @enum {string} */
+            reason: "outside_selection" | "too_large" | "at_target_size";
+            /** Format: int64 */
+            files: number;
+            /** Format: int64 */
+            bytes: number;
+        };
+        SubmitJob: {
+            /** Format: uuid */
+            table_id: string;
+        };
+        Table: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            table_uuid: string;
+            /** Format: date-time */
+            created_at: string;
+            aliases: components["schemas"]["TableAlias"][];
+        };
+        TableAlias: {
+            /** Format: uuid */
+            catalog_id: string;
+            namespace: string[];
+            name: string;
+        };
+        TablePage: {
+            items: components["schemas"]["Table"][];
+            next_cursor: string | null;
+        };
+        Tally: {
+            /** Format: int64 */
+            files: number;
+            /** Format: int64 */
+            bytes: number;
+        };
+        /** @description Supply expected_revision and at least one editable field. Only supplied fields are validated; omitted legacy values are preserved. */
+        UpdateCatalog: {
+            expected_revision: number;
+            name?: string;
+            /** @description Catalog HTTP(S) base URI without user information, query parameters, fragments, or whitespace. */
+            uri?: string;
+            warehouse?: string | null;
+            /** @description Reference to an externally held credential; never supply a secret value. */
+            credential_ref?: string | null;
+            enabled?: boolean;
+            /** @description How long one job may run on this connection. */
+            max_execution_seconds?: number;
+            /** @description How long a publication may stay unresolved before an operator investigates. */
+            max_unresolved_publication_seconds?: number;
+            /** @description Whether maintenance may run on this connection's tables. */
+            maintenance_enabled?: boolean;
+        };
         WorkerSession: {
             /** Format: uuid */
             id: string;
@@ -677,61 +782,6 @@ export interface components {
         WorkerSessionPage: {
             items: components["schemas"]["WorkerSession"][];
             next_cursor: string | null;
-        };
-        CreateCatalog: {
-            name: string;
-            /** @description Catalog HTTP(S) base URI without user information, query parameters, fragments, or whitespace. */
-            uri: string;
-            warehouse?: string | null;
-            /** @description Reference to an externally held credential; never supply a secret value. */
-            credential_ref?: string | null;
-        };
-        /** @description Supply expected_revision and at least one editable field. Only supplied fields are validated; omitted legacy values are preserved. */
-        UpdateCatalog: {
-            expected_revision: number;
-            name?: string;
-            /** @description Catalog HTTP(S) base URI without user information, query parameters, fragments, or whitespace. */
-            uri?: string;
-            warehouse?: string | null;
-            /** @description Reference to an externally held credential; never supply a secret value. */
-            credential_ref?: string | null;
-            enabled?: boolean;
-        };
-        CatalogCapabilities: {
-            /**
-             * @description Whether the catalog lists the tables of a namespace.
-             * @enum {string}
-             */
-            list_tables: "met" | "missing" | "unknown";
-            /**
-             * @description Whether the catalog loads a table's metadata.
-             * @enum {string}
-             */
-            load_table: "met" | "missing" | "unknown";
-            /**
-             * @description Whether the catalog accepts a commit.
-             * @enum {string}
-             */
-            commit_table: "met" | "missing" | "unknown";
-            /**
-             * @description Whether the catalog vends table-scoped storage credentials. The catalog configuration cannot show it; loading a table proves it.
-             * @enum {string}
-             */
-            vended_credentials: "met" | "missing" | "unknown";
-            /**
-             * @description Whether the catalog can refresh vended credentials on request.
-             * @enum {string}
-             */
-            credentials_endpoint: "met" | "missing" | "unknown";
-            /** @description How long the catalog remembers idempotency keys, in seconds, as a decimal string; null when it advertises no lifetime. */
-            idempotency_key_lifetime_seconds: string | null;
-        };
-        CatalogCapabilityCheck: {
-            /** Format: uuid */
-            catalog_id: string;
-            /** Format: date-time */
-            checked_at: string;
-            capabilities: components["schemas"]["CatalogCapabilities"];
         };
     };
     responses: never;

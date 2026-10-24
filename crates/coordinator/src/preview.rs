@@ -107,6 +107,14 @@ impl PreviewProfiles {
             .get(&connection)
             .unwrap_or(&self.fallback)
     }
+
+    /// Whether `connection` has profiles of its own.
+    ///
+    /// A connection without an entry uses the fallback set.
+    #[must_use]
+    pub fn has_own_profiles(&self, connection: CatalogConnectionId) -> bool {
+        self.by_connection.contains_key(&connection)
+    }
 }
 
 /// Why a preview could not be produced.
@@ -368,6 +376,21 @@ impl CatalogPreviewer {
     #[must_use]
     pub const fn limits(&self) -> PreviewLimits {
         self.limits
+    }
+
+    /// The storage profiles that apply to `connection`.
+    ///
+    /// The profiles stay in the coordinator configuration, so the API reports
+    /// the effective ones and never changes them.
+    #[must_use]
+    pub fn profiles_for(&self, connection: CatalogConnectionId) -> &StorageProfiles {
+        self.profiles.for_connection(connection)
+    }
+
+    /// Whether `connection` has storage profiles of its own.
+    #[must_use]
+    pub fn has_own_profiles(&self, connection: CatalogConnectionId) -> bool {
+        self.profiles.has_own_profiles(connection)
     }
 
     /// Assesses `target` without creating any work.

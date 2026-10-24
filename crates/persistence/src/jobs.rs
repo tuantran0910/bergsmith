@@ -14,7 +14,7 @@ macro_rules! job_columns {
     () => {
         "id, organization_id, table_identity_id, state, state_revision, state_reason, \
          retry_of_job_id, created_by, created_at, updated_at, cancellation_requested_at, \
-         cancellation_requested_by, cancellation_reason, publication_started_at"
+         cancellation_requested_by, cancellation_reason, publication_started_at, deadline_at"
     };
 }
 pub(crate) use job_columns;
@@ -50,6 +50,12 @@ pub struct Job {
     /// When the first outbound commit request was authorized. Once set,
     /// cancellation can no longer prevent publication.
     pub publication_started_at: Option<DateTime<Utc>>,
+    /// When the job's execution budget runs out.
+    ///
+    /// The deadline is written once, with the job's plan, and bounds the whole
+    /// job: every attempt and every retry must fit before it. It never
+    /// disturbs a publication that was already authorized.
+    pub deadline_at: Option<DateTime<Utc>>,
 }
 
 /// A recorded cancellation request.
@@ -156,6 +162,7 @@ pub(crate) struct JobRow {
     cancellation_requested_by: Option<Uuid>,
     cancellation_reason: Option<String>,
     publication_started_at: Option<DateTime<Utc>>,
+    deadline_at: Option<DateTime<Utc>>,
 }
 
 impl TryFrom<JobRow> for Job {
@@ -181,6 +188,7 @@ impl TryFrom<JobRow> for Job {
                     reason: row.cancellation_reason,
                 }),
             publication_started_at: row.publication_started_at,
+            deadline_at: row.deadline_at,
         })
     }
 }
@@ -395,6 +403,62 @@ pub async fn in_state_after(
     .fetch_all(conn)
     .await?;
     rows.into_iter().map(Job::try_from).collect()
+}
+
+/// The time left in a job's execution budget.
+///
+/// `None` means the job has no deadline and is therefore not bounded: jobs that
+/// predate the budget keep working. A spent budget reads as zero. The database
+/// clock decides, never the caller's.
+///
+/// # Errors
+///
+/// Returns a database error when the job cannot be read, and
+/// [`PersistenceError::NotFound`] when it does not exist.
+pub async fn remaining_execution_budget(
+    conn: &mut PgConnection,
+    id: JobId,
+) -> Result<Option<std::time::Duration>, PersistenceError> {
+    // The scalar is itself nullable: a job without a deadline produces SQL
+    // NULL, and the outer option reports a missing row.
+    let milliseconds: Option<Option<i64>> = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT CASE WHEN deadline_at IS NULL THEN NULL
+                ELSE GREATEST(0, floor(EXTRACT(EPOCH FROM (deadline_at - clock_timestamp())) * 1000)::bigint)
+            END
+         FROM jobs WHERE id = $1",
+    )
+    .bind(id.as_uuid())
+    .fetch_optional(conn)
+    .await?;
+    let milliseconds = milliseconds.ok_or_else(|| job_not_found(id))?;
+    Ok(milliseconds.map(|milliseconds| {
+        std::time::Duration::from_millis(u64::try_from(milliseconds).unwrap_or_default())
+    }))
+}
+
+/// Whether a job's execution budget is spent and no attempt is in flight.
+///
+/// A job without a deadline is never spent. An attempt that is still running
+/// keeps the job alive until its lease ends, so a report that arrives inside
+/// the budget is still accepted.
+///
+/// # Errors
+///
+/// Returns a database error when the job cannot be read.
+pub async fn execution_budget_spent(
+    conn: &mut PgConnection,
+    id: JobId,
+) -> Result<bool, PersistenceError> {
+    let spent: Option<bool> = sqlx::query_scalar(
+        "SELECT j.deadline_at IS NOT NULL AND j.deadline_at <= clock_timestamp()
+                AND NOT EXISTS(SELECT 1 FROM attempts a JOIN tasks t ON t.id = a.task_id
+                               WHERE t.job_id = j.id AND a.state IN ('Granted','Running'))
+         FROM jobs j WHERE j.id = $1",
+    )
+    .bind(id.as_uuid())
+    .fetch_optional(conn)
+    .await?;
+    Ok(spent.unwrap_or(false))
 }
 
 /// Returns a job's events, oldest first.

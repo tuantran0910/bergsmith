@@ -70,6 +70,13 @@ pub struct NewPlan {
     pub content_hash: String,
     /// One identifier per task; the position becomes the task's ordinal.
     pub task_ids: Vec<TaskId>,
+    /// How long the whole job may run, counted from the moment the plan is
+    /// persisted.
+    ///
+    /// The plan is the job's execution contract, so the deadline belongs with
+    /// it: every attempt and every retry must fit before it. The deadline is
+    /// computed by the database clock, never by the caller's.
+    pub execution_budget: std::time::Duration,
 }
 
 /// One task of a plan.
@@ -183,6 +190,19 @@ pub async fn create_plan(conn: &mut PgConnection, new: &NewPlan) -> Result<Plan,
     .await
     .map_err(|error| PersistenceError::from_write("plan", error))?
     .into();
+
+    // The deadline is written with the plan, from the database clock: the
+    // budget covers the whole job from the moment its baseline was captured.
+    let budget_ms = i64::try_from(new.execution_budget.as_millis()).unwrap_or(i64::MAX);
+    sqlx::query(
+        "UPDATE jobs SET deadline_at = clock_timestamp() + $2 * interval '1 millisecond'
+         WHERE id = $1 AND deadline_at IS NULL",
+    )
+    .bind(new.job_id.as_uuid())
+    .bind(budget_ms)
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| PersistenceError::from_write("job", error))?;
 
     let ids: Vec<Uuid> = new.task_ids.iter().map(|id| *id.as_uuid()).collect();
     sqlx::query(

@@ -42,7 +42,14 @@ async fn routing_edits_wait_for_job_creation_and_preserve_its_connection(pool: P
         .await
         .unwrap();
     let edit = tokio::spawn(async move {
-        tenancy::update_catalog_connection(&mut editing, &new, 0, true).await
+        tenancy::update_catalog_connection(
+            &mut editing,
+            &new,
+            0,
+            true,
+            bergsmith_common::settings::ConnectionSettings::default(),
+        )
+        .await
     });
     support::wait_until_blocked(&mut conn, waiter, blocker).await;
     creating.commit().await.unwrap();
@@ -57,6 +64,117 @@ async fn routing_edits_wait_for_job_creation_and_preserve_its_connection(pool: P
             .uri,
         "https://catalog.example/catalog"
     );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn connection_settings_are_stored_and_read_back(pool: PgPool) {
+    use bergsmith_common::settings::ConnectionSettings;
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let current = tenancy::catalog_connection(&mut conn, tenant.organization, tenant.connection)
+        .await
+        .unwrap();
+    // A new connection starts with the default bounds and maintenance allowed.
+    assert_eq!(current.settings, ConnectionSettings::default());
+
+    let settings = ConnectionSettings::new(600, 7200, false).unwrap();
+    let updated = tenancy::update_catalog_connection(
+        &mut conn,
+        &NewCatalogConnection {
+            id: current.id,
+            organization_id: current.organization_id,
+            name: current.name,
+            uri: current.uri,
+            warehouse: current.warehouse,
+            credential_ref: current.credential_ref,
+        },
+        current.revision,
+        current.enabled,
+        settings,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(updated.settings, settings);
+    assert_eq!(updated.revision, current.revision + 1);
+    let read = tenancy::catalog_connection(&mut conn, tenant.organization, tenant.connection)
+        .await
+        .unwrap();
+    assert_eq!(read.settings, settings);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_connection_without_unresolved_publications_reports_none(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+
+    let publications =
+        tenancy::unresolved_publications(&mut conn, tenant.organization, tenant.connection)
+            .await
+            .unwrap();
+
+    assert_eq!(publications.count, 0);
+    assert_eq!(publications.oldest_seconds, 0);
+    assert!(!publications.is_overdue(60));
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn an_unresolved_publication_is_reported_against_its_own_connection(pool: PgPool) {
+    use bergsmith_common::ids::PublicationId;
+    use bergsmith_common::job::JobState;
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let other = connection(&mut conn, tenant.organization, "other").await;
+    let job = support::job(&mut conn, &tenant).await;
+    let publication = PublicationId::generate();
+    sqlx::query("INSERT INTO publications (id, job_id) VALUES ($1, $2)")
+        .bind(publication.as_uuid())
+        .bind(job.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    // The intent names the connection that sent the request.
+    sqlx::query(
+        "INSERT INTO publication_intents
+             (job_id, publication_id, content, request_body, request_hash)
+         VALUES ($1, $2, jsonb_build_object('catalog_connection_id', $3::text), $4, $5)",
+    )
+    .bind(job.as_uuid())
+    .bind(publication.as_uuid())
+    .bind(tenant.connection.to_string())
+    .bind(Vec::<u8>::new())
+    .bind("0".repeat(64))
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    support::force_job_state(&mut conn, job, JobState::Committing).await;
+    sqlx::query(
+        "UPDATE jobs SET publication_started_at = clock_timestamp() - interval '120 seconds' WHERE id = $1",
+    )
+    .bind(job.as_uuid())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+
+    let publications =
+        tenancy::unresolved_publications(&mut conn, tenant.organization, tenant.connection)
+            .await
+            .unwrap();
+    assert_eq!(publications.count, 1);
+    assert!(
+        publications.oldest_seconds >= 120,
+        "the age of the oldest unresolved publication is reported"
+    );
+    assert!(publications.is_overdue(60));
+    assert!(!publications.is_overdue(3600));
+
+    // The publication belongs to the connection that sent it, not to another
+    // connection of the same organization.
+    let elsewhere = tenancy::unresolved_publications(&mut conn, tenant.organization, other)
+        .await
+        .unwrap();
+    assert_eq!(elsewhere.count, 0);
+    assert!(!elsewhere.is_overdue(60));
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]

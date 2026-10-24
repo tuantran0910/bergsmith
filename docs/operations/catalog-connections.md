@@ -104,6 +104,23 @@ Define these bounds for each connection:
 - **Maximum unresolved-publication age (U):** how long a job may stay
   `Committing` or `CommitOutcomeUnknown` before an operator investigates.
 
+Record both with the connection, so Bergsmith holds them next to the catalog
+they describe:
+
+```
+PATCH /api/v1/catalogs/{id}
+{"expected_revision": 3, "max_execution_seconds": 180, "max_unresolved_publication_seconds": 3600}
+```
+
+Bergsmith keeps its own work inside those bounds. A job never runs longer than
+E, so the inputs you keep readable for E are enough; a job that outruns the
+budget is given up. The budget covers the whole job: every attempt, every
+retry, and every lease renewal must fit before it, and it is counted from the
+moment the plan is recorded, which is right after the planning snapshot was
+captured. A publication that was already authorized is never stopped by the
+budget. The connection page shows how many publications of that connection are
+unresolved, how old the oldest is, and whether it is past U.
+
 Then configure:
 
 | Control | Requirement |
@@ -124,6 +141,33 @@ cleaner. When you register a connection, record:
 - their retention windows;
 - how the `bergsmith/` prefix is excluded, or how cleanup is suspended while
   jobs are unresolved.
+
+## Pausing maintenance on one connection
+
+A connection can be taken out of service entirely, or only have its maintenance
+paused:
+
+```
+PATCH /api/v1/catalogs/{id}
+{"expected_revision": 4, "maintenance_enabled": false}
+```
+
+A paused connection stays in service. Previews, reads, and the recovery of an
+unresolved publication continue, and the connection page still shows its
+capabilities. No new maintenance job is admitted and no scheduled occurrence
+creates one; a job that was already admitted continues. Use the pause for a
+window in which the table must keep serving reads but must not be rewritten.
+
+Disabling the connection is the stronger lever: it stops previews as well, so
+use it when the connection itself is wrong.
+
+## Where the outputs go
+
+The storage profile that serves a connection stays in the coordinator
+configuration, so it is shown read-only on the connection page. The page names
+the backends that serve the connection, and whether the connection has a
+profile entry of its own or uses the default set; a connection entry that is
+missing shows as the default set.
 
 ## When history is gone
 

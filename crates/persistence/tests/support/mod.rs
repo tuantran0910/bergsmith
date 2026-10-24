@@ -202,6 +202,16 @@ pub(crate) async fn job(conn: &mut PgConnection, tenant: &Tenant) -> JobId {
 
 /// Persists a plan with `task_count` tasks for a `Planning` job.
 pub(crate) async fn plan(conn: &mut PgConnection, job: JobId, task_count: usize) -> Vec<TaskId> {
+    plan_with_budget(conn, job, task_count, Duration::from_secs(180)).await
+}
+
+/// Persists a plan whose job may run for `budget`.
+pub(crate) async fn plan_with_budget(
+    conn: &mut PgConnection,
+    job: JobId,
+    task_count: usize,
+    budget: Duration,
+) -> Vec<TaskId> {
     let task_ids: Vec<TaskId> = (0..task_count).map(|_| TaskId::generate()).collect();
     plans::create_plan(
         conn,
@@ -211,6 +221,7 @@ pub(crate) async fn plan(conn: &mut PgConnection, job: JobId, task_count: usize)
             content: serde_json::json!({ "groups": task_count }),
             content_hash: digest('a'),
             task_ids: task_ids.clone(),
+            execution_budget: budget,
         },
     )
     .await

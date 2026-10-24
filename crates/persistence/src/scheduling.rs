@@ -322,13 +322,14 @@ pub async fn admit(
     if is_admitted(&mut tx, job_id).await? {
         return Ok(true);
     }
-    if !crate::tenancy::lock_enabled_execution_connection(
+    if !crate::tenancy::lock_execution_route(
         &mut tx,
         job.organization_id,
         job.created_by,
         job.table_id,
     )
     .await?
+    .is_allowed()
     {
         return Ok(false);
     }
@@ -409,13 +410,14 @@ pub async fn validation_need(
         return Ok(ValidationNeed::None);
     }
     if !is_admitted(conn, job_id).await? {
-        if !crate::tenancy::lock_enabled_execution_connection(
+        if !crate::tenancy::lock_execution_route(
             conn,
             job.organization_id,
             job.created_by,
             job.table_id,
         )
         .await?
+        .is_allowed()
         {
             return Ok(ValidationNeed::None);
         }

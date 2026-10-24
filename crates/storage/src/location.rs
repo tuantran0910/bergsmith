@@ -44,6 +44,20 @@ pub enum Backend {
     Memory,
 }
 
+impl Backend {
+    /// The stable name of the backend, as a report names it.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::S3 => "s3",
+            Self::Gcs => "gcs",
+            Self::Azure => "azure",
+            Self::LocalFs => "local_fs",
+            Self::Memory => "memory",
+        }
+    }
+}
+
 impl Scheme {
     /// The scheme as written in URIs.
     #[must_use]

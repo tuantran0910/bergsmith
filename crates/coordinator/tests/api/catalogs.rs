@@ -1002,3 +1002,300 @@ async fn disabled_connections_refuse_previews_and_preserve_recovery_settings(poo
         JobState::CommitOutcomeUnknown
     );
 }
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_connection_keeps_the_bounds_it_is_given(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+    let path = format!("/api/v1/catalogs/{}", tenant.connection);
+
+    // A new connection starts with the default bounds and maintenance allowed.
+    let (status, detail) = browser.request("GET", &path, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert_eq!(detail["settings"]["maintenance_enabled"], true);
+    assert_eq!(detail["settings"]["max_execution_seconds"], 180);
+    assert_eq!(
+        detail["settings"]["max_unresolved_publication_seconds"],
+        3600
+    );
+
+    let (status, updated) = browser
+        .request(
+            "PATCH",
+            &path,
+            Some(json!({
+                "expected_revision": 0,
+                "max_execution_seconds": 600,
+                "max_unresolved_publication_seconds": 7200,
+                "maintenance_enabled": false,
+            })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["settings"]["maintenance_enabled"], false);
+    assert_eq!(updated["settings"]["max_execution_seconds"], 600);
+    assert_eq!(
+        updated["settings"]["max_unresolved_publication_seconds"],
+        7200
+    );
+    assert_eq!(updated["revision"], 1);
+
+    let mut conn = pool.acquire().await.unwrap();
+    let stored = tenancy::catalog_connection(&mut conn, tenant.organization, tenant.connection)
+        .await
+        .unwrap();
+    assert_eq!(stored.settings.max_execution_seconds(), 600);
+    assert_eq!(stored.settings.max_unresolved_publication_seconds(), 7200);
+    assert!(!stored.settings.maintenance_enabled());
+
+    // The audit names the bounds, never the connection's routing.
+    let detail: Value = sqlx::query_scalar(
+        "SELECT detail FROM audit_events WHERE action='catalog.updated' ORDER BY occurred_at DESC LIMIT 1",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(detail["maintenance_enabled"], false);
+    assert_eq!(detail["max_execution_seconds"], 600);
+    assert_eq!(detail["max_unresolved_publication_seconds"], 7200);
+    assert!(detail.get("uri").is_none());
+    assert!(detail.get("credential_ref").is_none());
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn bounds_outside_their_range_are_refused(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+    let path = format!("/api/v1/catalogs/{}", tenant.connection);
+    for body in [
+        json!({"expected_revision": 0, "max_execution_seconds": 0}),
+        json!({"expected_revision": 0, "max_execution_seconds": 86401}),
+        json!({"expected_revision": 0, "max_unresolved_publication_seconds": 0}),
+        json!({"expected_revision": 0, "max_unresolved_publication_seconds": 2_592_001}),
+    ] {
+        let (status, error) = browser.request("PATCH", &path, Some(body), None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    }
+    // A refused bound leaves the stored bounds untouched.
+    let mut conn = pool.acquire().await.unwrap();
+    let stored = tenancy::catalog_connection(&mut conn, tenant.organization, tenant.connection)
+        .await
+        .unwrap();
+    assert_eq!(stored.settings.max_execution_seconds(), 180);
+    assert_eq!(stored.settings.max_unresolved_publication_seconds(), 3600);
+    assert_eq!(stored.revision, 0);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn the_detail_reports_the_effective_profile_and_the_unresolved_publications(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+    let path = format!("/api/v1/catalogs/{}", tenant.connection);
+
+    let (status, detail) = browser.request("GET", &path, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    // The profiles stay in the coordinator configuration, so the connection
+    // without an entry of its own uses the default set.
+    assert_eq!(detail["storage_profile"]["source"], "default");
+    assert_eq!(detail["storage_profile"]["backends"][0]["kind"], "local_fs");
+    assert_eq!(detail["unresolved_publications"]["count"], 0);
+    assert_eq!(detail["unresolved_publications"]["oldest_seconds"], 0);
+    assert_eq!(detail["unresolved_publications"]["overdue"], false);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn the_summary_carries_the_same_bounds_as_the_detail(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+
+    let (status, page) = browser.request("GET", "/api/v1/catalogs", None, None).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let summary = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == json!(tenant.connection.to_string()))
+        .unwrap();
+    assert_eq!(summary["settings"]["maintenance_enabled"], true);
+    assert_eq!(summary["settings"]["max_execution_seconds"], 180);
+    assert_eq!(
+        summary["settings"]["max_unresolved_publication_seconds"],
+        3600
+    );
+    // The summary never carries the connection's routing.
+    assert!(summary.get("uri").is_none());
+}
+
+/// A previewer whose profiles name one connection of its own.
+fn profiled_previewer(
+    connection: CatalogConnectionId,
+    profiles: StorageProfiles,
+) -> CatalogPreviewer {
+    CatalogPreviewer::new(
+        PreviewProfiles::new(StorageProfiles::new([StorageProfile::LocalFs]))
+            .with_connection(connection, profiles),
+        PlannerConfig::default(),
+    )
+    .unwrap()
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_connection_with_its_own_profile_reports_it(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    let browser = Browser::with_previews(
+        &pool,
+        &tenant,
+        tenant.user,
+        "alice",
+        profiled_previewer(
+            tenant.connection,
+            StorageProfiles::new([StorageProfile::S3(S3Profile {
+                endpoint: Some("http://127.0.0.1:59000".to_owned()),
+                region: "us-east-1".to_owned(),
+                path_style_access: true,
+            })]),
+        ),
+    )
+    .await;
+    let path = format!("/api/v1/catalogs/{}", tenant.connection);
+
+    let (status, detail) = browser.request("GET", &path, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert_eq!(detail["storage_profile"]["source"], "connection");
+    let backend = &detail["storage_profile"]["backends"][0];
+    assert_eq!(backend["kind"], "s3");
+    assert_eq!(backend["endpoint"], "http://127.0.0.1:59000/");
+    assert_eq!(backend["region"], "us-east-1");
+    assert_eq!(backend["path_style_access"], true);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_profile_without_optional_values_reports_them_as_absent(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    // A plain AWS profile names no endpoint, and a GCS profile may name no
+    // project. Both are reported as absent, not as a missing field.
+    let browser = Browser::with_previews(
+        &pool,
+        &tenant,
+        tenant.user,
+        "alice",
+        profiled_previewer(
+            tenant.connection,
+            StorageProfiles::new([
+                StorageProfile::S3(S3Profile {
+                    endpoint: None,
+                    region: "us-east-1".to_owned(),
+                    path_style_access: false,
+                }),
+                StorageProfile::Gcs(GcsProfile {
+                    project: None,
+                    endpoint: None,
+                }),
+            ]),
+        ),
+    )
+    .await;
+    let path = format!("/api/v1/catalogs/{}", tenant.connection);
+
+    // The response is checked against the published contract.
+    let (status, detail) = browser.request("GET", &path, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    let backends = detail["storage_profile"]["backends"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let s3 = backends
+        .iter()
+        .find(|backend| backend["kind"] == "s3")
+        .unwrap();
+    assert_eq!(s3["endpoint"], json!(null));
+    assert_eq!(s3["region"], "us-east-1");
+    let gcs = backends
+        .iter()
+        .find(|backend| backend["kind"] == "gcs")
+        .unwrap();
+    assert_eq!(gcs["endpoint"], json!(null));
+    assert_eq!(gcs["project"], json!(null));
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn an_endpoint_is_reported_without_anything_secret(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    let browser = Browser::with_previews(
+        &pool,
+        &tenant,
+        tenant.user,
+        "alice",
+        profiled_previewer(
+            tenant.connection,
+            StorageProfiles::new([StorageProfile::S3(S3Profile {
+                endpoint: Some(
+                    "http://user:private-password@127.0.0.1:59000/data?token=private#fragment"
+                        .to_owned(),
+                ),
+                region: "us-east-1".to_owned(),
+                path_style_access: true,
+            })]),
+        ),
+    )
+    .await;
+    let path = format!("/api/v1/catalogs/{}", tenant.connection);
+
+    let (status, detail) = browser.request("GET", &path, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    let endpoint = detail["storage_profile"]["backends"][0]["endpoint"]
+        .as_str()
+        .unwrap();
+    assert_eq!(endpoint, "http://127.0.0.1:59000/data");
+    assert!(!detail.to_string().contains("private"));
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn an_opaque_endpoint_is_not_reported(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    // A URL-shaped string with an opaque payload parses, but it is not a
+    // storage endpoint and may carry a secret.
+    let browser = Browser::with_previews(
+        &pool,
+        &tenant,
+        tenant.user,
+        "alice",
+        profiled_previewer(
+            tenant.connection,
+            StorageProfiles::new([StorageProfile::S3(S3Profile {
+                endpoint: Some("secret:example-test-token".to_owned()),
+                region: "us-east-1".to_owned(),
+                path_style_access: true,
+            })]),
+        ),
+    )
+    .await;
+    let path = format!("/api/v1/catalogs/{}", tenant.connection);
+
+    let (status, detail) = browser.request("GET", &path, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    let backend = &detail["storage_profile"]["backends"][0];
+    assert_eq!(backend["kind"], "s3");
+    assert!(
+        backend.get("endpoint").is_none(),
+        "an opaque endpoint must not be reported: {detail}"
+    );
+    assert!(!detail.to_string().contains("example-test-token"));
+}

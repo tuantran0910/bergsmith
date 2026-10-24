@@ -5,6 +5,9 @@ mod native_gate;
 mod peer;
 mod publication;
 
+/// The execution budget the tests plan with.
+const EXECUTION_BUDGET: Duration = Duration::from_secs(180);
+
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -199,7 +202,7 @@ impl Harness {
         let saved = jobs::job(&mut conn, tenant.organization, job)
             .await
             .unwrap();
-        planning::record_outcome(&mut conn, &saved, &outcome)
+        planning::record_outcome(&mut conn, &saved, &outcome, EXECUTION_BUDGET)
             .await
             .unwrap();
         drop(conn);
@@ -321,7 +324,7 @@ impl Harness {
             assert_eq!(artifact.job_id, retry.id.to_string());
             assert_eq!(artifact.plan_id, fresh.plan_id().to_string());
         }
-        planning::record_outcome(&mut conn, &retry, &outcome)
+        planning::record_outcome(&mut conn, &retry, &outcome, EXECUTION_BUDGET)
             .await
             .unwrap();
         let counts: (i64, i64, i64) = sqlx::query_as("SELECT count(*),count(*) FILTER (WHERE state='Pending'),(SELECT count(*) FROM receipts r JOIN tasks t ON t.id=r.task_id WHERE t.job_id=$1) FROM tasks WHERE job_id=$1")

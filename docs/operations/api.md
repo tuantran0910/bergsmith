@@ -75,13 +75,42 @@ state, revision, and timestamps, without the settings. Detail responses strip
 URI user information, query, and fragment from legacy connections; an
 unparseable legacy URI is omitted.
 
-Disabling stops new previews and execution admissions. Due schedules record
-`ConnectionDisabled` without creating work when they have no enabled alias
-their service identity may use. Queued jobs wait; admitted jobs and publication
-recovery continue. No alias or job is deleted. Endpoint, warehouse, and
-credential-reference edits return `catalog_connection_in_use` while any
-nonterminal job belongs to a table registered through the connection. Resolve
-those jobs before changing routing; disabling remains available.
+PATCH also accepts the connection's operating bounds:
+`max_execution_seconds` (1 to 86 400, default 180),
+`max_unresolved_publication_seconds` (1 to 2 592 000, default 3 600), and
+`maintenance_enabled` (default true). A value outside its range returns 400 and
+changes nothing. The bounds are part of the connection's configuration, so they
+are revision-checked and audited like the rest.
+
+The execution budget bounds a whole job, not one attempt. The job's plan
+carries a deadline, counted from the moment the plan is recorded: a grant and
+every later heartbeat cap the attempt at it, and a job whose budget is spent
+starts no further work, fences a renewal, and ends with
+`ExecutionBudgetExceeded`. A job created before the budget existed has no
+deadline and keeps the worker's own lease. A publication that was already
+authorized is never disturbed by the deadline.
+
+The detail reports the bounds under `settings`, the effective storage profile
+under `storage_profile`, and the connection's unresolved publications under
+`unresolved_publications`. The profile is read-only: it names the backends
+that serve the connection and whether the connection has an entry of its own
+(`"source":"connection"`) or uses the default set (`"source":"default"`). An
+endpoint is reported only when it is an HTTP(S) URL with a host, without user
+information, query, or fragment; an opaque or unparseable value is omitted.
+The publications report counts what is unresolved and whether the oldest is
+past the connection's own bound; it never resolves one.
+
+Disabling stops new previews and execution admissions. Pausing maintenance
+stops new maintenance work only: previews, reads, and publication recovery
+continue. A permission must hold on a connection that allows maintenance, so a
+requester who may only use a paused connection has no usable route. Due
+schedules record `MaintenancePaused` without creating work while maintenance is
+paused, and `ConnectionDisabled` when no enabled alias their service identity
+may use. Queued jobs wait; admitted jobs and publication recovery continue. No
+alias or job is deleted. Endpoint, warehouse, and credential-reference edits
+return `catalog_connection_in_use` while any nonterminal job belongs to a table
+registered through the connection. Resolve those jobs before changing routing;
+disabling remains available.
 
 ## Capability check
 

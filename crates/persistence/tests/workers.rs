@@ -255,6 +255,72 @@ async fn poll_and_grant_are_immutable_and_foreign_session_is_rejected(pool: PgPo
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_renewal_never_outlasts_the_jobs_execution_budget(pool: PgPool) {
+    use chrono::{DateTime, Utc};
+    let (job, attempt) = support::running_attempt(&pool, "acme").await;
+    let mut conn = pool.acquire().await.unwrap();
+    let identity = identity(&mut conn, attempt.worker_session_id).await;
+    let epoch = support::leader(&mut conn).await;
+
+    // The grant gave the attempt a lease of its own; the job's budget is
+    // shorter, and a heartbeat must not extend it.
+    sqlx::query(
+        "UPDATE jobs SET deadline_at = clock_timestamp() + interval '5 seconds' WHERE id = $1",
+    )
+    .bind(job.as_uuid())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    let deadline: DateTime<Utc> = sqlx::query_scalar("SELECT deadline_at FROM jobs WHERE id = $1")
+        .bind(job.as_uuid())
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+    let renewal = workers::renew(
+        &mut conn,
+        &identity,
+        attempt.worker_session_id,
+        attempt.id,
+        attempt.generation,
+        epoch,
+        Duration::from_secs(90),
+    )
+    .await
+    .unwrap();
+    let workers::Renewal::Renewed(lease) = renewal else {
+        panic!("the heartbeat renews an attempt inside its budget");
+    };
+    assert!(
+        lease <= deadline,
+        "the renewal must not outlast the job's budget"
+    );
+
+    // Once the budget is spent, the heartbeat fences the attempt instead of
+    // renewing it.
+    sqlx::query(
+        "UPDATE jobs SET deadline_at = clock_timestamp() - interval '1 second' WHERE id = $1",
+    )
+    .bind(job.as_uuid())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(
+        workers::renew(
+            &mut conn,
+            &identity,
+            attempt.worker_session_id,
+            attempt.id,
+            attempt.generation,
+            epoch,
+            Duration::from_secs(90),
+        )
+        .await
+        .unwrap(),
+        workers::Renewal::Fenced
+    );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
 async fn heartbeat_waiting_for_the_job_lock_cannot_revive_an_expired_attempt(pool: PgPool) {
     renewal_wait(&pool, false).await;
 }
