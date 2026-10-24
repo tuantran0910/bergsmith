@@ -5,12 +5,10 @@ all-features = true
 
 [advisories]
 yanked = "deny"
-ignore = [
-    # `paste` is archived (unmaintained, not a vulnerability). It is a
-    # compile-time proc-macro used by `parquet` 58.4, and no maintained release
-    # exists. Remove when Arrow/Parquet drop it.
-    { id = "RUSTSEC-2024-0436", reason = "unmaintained proc-macro via parquet; no fix available" },
-]
+# The `paste` advisory that used to need an ignore is gone: nothing in the
+# graph matches RUSTSEC-2024-0436, and cargo-deny fails an ignore that matches
+# no crate. Add an entry here only for an advisory that is still reported.
+ignore = []
 
 [licenses]
 confidence-threshold = 0.9
