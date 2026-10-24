@@ -180,7 +180,8 @@ pub enum SessionError {
     /// The session is unknown or no longer usable.
     #[error("session rejected: {reason}")]
     Rejected {
-        /// Stable reason: `unknown`, `expired`, `idle`, or `revoked`.
+        /// Stable reason: `unknown`, `deactivated`, `expired`, `idle`, or
+        /// `revoked`.
         reason: &'static str,
     },
     /// The presented CSRF token does not match the session.

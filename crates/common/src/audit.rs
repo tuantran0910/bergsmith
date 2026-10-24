@@ -62,6 +62,10 @@ pub enum AuditAction {
     SessionRevoked,
     /// A principal was provisioned for a verified issuer and subject.
     IdentityProvisioned,
+    /// A principal was deactivated; its sessions ended and its grants stay.
+    PrincipalDeactivated,
+    /// A previously deactivated principal was reactivated.
+    PrincipalReactivated,
     /// Admission authorized a job.
     JobAdmitted,
     /// Admission refused a job because the requester's grant was revoked or
@@ -115,6 +119,8 @@ impl AuditAction {
             Self::GrantRevoked => "grant.revoked",
             Self::SessionRevoked => "session.revoked",
             Self::IdentityProvisioned => "identity.provisioned",
+            Self::PrincipalDeactivated => "principal.deactivated",
+            Self::PrincipalReactivated => "principal.reactivated",
             Self::JobAdmitted => "job.admitted",
             Self::JobAdmissionDenied => "job.admission_denied",
             Self::JobPublished => "job.published",

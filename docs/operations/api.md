@@ -24,6 +24,9 @@ as `x-csrf-token`. All responses use `Cache-Control: no-store`.
 | `POST /api/v1/catalogs` | Create a connection under organization-wide `connections:manage`; 201 |
 | `PATCH /api/v1/catalogs/{id}` | Edit, enable, or disable under connection-scoped `connections:manage`, using `expected_revision`; 409 for stale revisions or routing edits while jobs depend on the connection |
 | `POST /api/v1/catalogs/{id}/check` | Read what the connection's catalog advertises and record the answer; requires connection-scoped `connections:manage` |
+| `GET /api/v1/principals`, `GET /api/v1/principals/{id}` | The organization's users and service accounts, active and deactivated alike; requires organization-wide `grants:manage` |
+| `POST /api/v1/principals` | Provision a user for an issuer and subject with a display name; 201; requires organization-wide `grants:manage` |
+| `PATCH /api/v1/principals/{id}` | Deactivate (`{"active":false}`) or reactivate (`{"active":true}`) a principal; 409 `last_administrator` for the last active administrator |
 | `GET /api/v1/tables`, `GET /api/v1/tables/{id}` | Authorized canonical table identities |
 | `GET /api/v1/jobs`, `GET /api/v1/jobs/{id}` | Authorized job state, revision, requester and their display name, the table's caller-visible aliases, cancellation/publication boundary, retry link |
 | `POST /api/v1/jobs` | Idempotent durable submission; returns 202 with job and operation IDs and Location |
@@ -38,6 +41,15 @@ as `x-csrf-token`. All responses use `Cache-Control: no-store`.
 | `GET /api/v1/schedules`, `GET /api/v1/schedules/{id}` | Maintenance schedules; requires organization-wide `schedules:manage` |
 | `POST /api/v1/schedules` | Bind a policy to one table with a cron expression, time zone, and service identity; 201; requires organization-wide `schedules:manage` |
 | `PATCH /api/v1/schedules/{id}` | Edit a schedule's timing or enabled state using the revision read; requires organization-wide `schedules:manage` |
+
+Principal administration requires `grants:manage` over the organization,
+because the issuer and subject are the key sign-in is bound to. Deactivation is
+a lifecycle change, not a deletion: the row, its grants, and its history stay,
+its sessions end in the same transaction, sign-in refuses it, the inventory read
+filters no longer reveal resources to it, and every admission and publication
+check stops applying its grants. Running jobs are not cancelled. Reactivation
+restores the same access because the grants were never removed. A repeated
+deactivation or reactivation changes nothing and writes no audit record.
 
 Submit `{"table_id":"<canonical table UUID>"}` with a nonempty, printable ASCII
 `Idempotency-Key` of at most 255 bytes. Unknown body fields are rejected, so a

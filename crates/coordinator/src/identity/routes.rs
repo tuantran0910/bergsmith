@@ -319,10 +319,12 @@ async fn exchange_code(
     }
 }
 
-/// Resolves the provisioned interactive principal and issues its session.
+/// Resolves the provisioned interactive principal, keeps its display name in
+/// step with the identity provider, and issues its session.
 ///
-/// Login never creates rights, and a service account is not an interactive
-/// identity, so both are refused before a session exists.
+/// Login never creates rights, a service account is not an interactive
+/// identity, and a deactivated principal is refused, so none of them receives
+/// a session.
 async fn begin_session(
     state: &IdentityState,
     conn: &mut sqlx::PgConnection,
@@ -337,13 +339,25 @@ async fn begin_session(
     )
     .await
     {
-        Ok(principal) if principal.kind == PrincipalKind::User => principal,
-        Ok(_) => {
+        Ok(principal) if principal.kind == PrincipalKind::User && principal.is_active() => {
+            principal
+        }
+        Ok(principal) if principal.kind != PrincipalKind::User => {
             let _ = audit::login_failed(
                 conn,
                 Some(login.organization_id),
                 Some(&identity.issuer),
                 "identity_not_interactive",
+            )
+            .await;
+            return Err(HttpError::unauthorized("identity_not_provisioned"));
+        }
+        Ok(_) => {
+            let _ = audit::login_failed(
+                conn,
+                Some(login.organization_id),
+                Some(&identity.issuer),
+                "identity_deactivated",
             )
             .await;
             return Err(HttpError::unauthorized("identity_not_provisioned"));
@@ -362,6 +376,26 @@ async fn begin_session(
                 &error,
                 HttpError::unauthorized("identity_not_provisioned"),
             ));
+        }
+    };
+    // The provider owns the display name. A refresh failure must not block a
+    // valid sign-in, so the stored name stays until the next successful login.
+    let principal = if principal.display_name == identity.display_name {
+        principal
+    } else {
+        match tenancy::update_principal_display_name(
+            conn,
+            login.organization_id,
+            principal.id,
+            &bounded_display_name(&identity.display_name),
+        )
+        .await
+        {
+            Ok(updated) => updated,
+            Err(error) => {
+                tracing::warn!(error = %error, "principal display name could not be refreshed");
+                principal
+            }
         }
     };
     let issued = match session::issue(
@@ -386,6 +420,15 @@ async fn begin_session(
         tracing::warn!(reason = error.reason_code(), "login audit record failed");
     }
     Ok(issued)
+}
+
+/// Clamps a provider-chosen display name to what the ledger accepts.
+fn bounded_display_name(name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return "unknown".to_owned();
+    }
+    trimmed.chars().take(200).collect()
 }
 
 async fn logout(

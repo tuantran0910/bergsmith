@@ -719,22 +719,27 @@ mod oidc_flow {
 
     /// Builds an RS256 ID token bound to `nonce` and signed by the test key.
     fn id_token(issuer: &str, audience: &str, nonce: &str) -> String {
+        id_token_named(issuer, audience, nonce, None)
+    }
+
+    /// Builds an ID token with an optional `name` claim.
+    fn id_token_named(issuer: &str, audience: &str, nonce: &str, name: Option<&str>) -> String {
         let der = BASE64_STANDARD.decode(PKCS8_B64).unwrap();
         let key = RsaKeyPair::from_pkcs8(&der).unwrap();
         let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256","kid":"test","typ":"JWT"}"#);
         let now = Utc::now().timestamp();
-        let claims = URL_SAFE_NO_PAD.encode(
-            json!({
-                "iss": issuer,
-                "sub": "alice",
-                "aud": audience,
-                "exp": now + 600,
-                "iat": now,
-                "nonce": nonce,
-            })
-            .to_string()
-            .as_bytes(),
-        );
+        let mut claims = json!({
+            "iss": issuer,
+            "sub": "alice",
+            "aud": audience,
+            "exp": now + 600,
+            "iat": now,
+            "nonce": nonce,
+        });
+        if let Some(name) = name {
+            claims["name"] = json!(name);
+        }
+        let claims = URL_SAFE_NO_PAD.encode(claims.to_string().as_bytes());
         let signing_input = format!("{header}.{claims}");
         let mut signature = vec![0; key.public().modulus_len()];
         key.sign(
@@ -827,6 +832,15 @@ mod oidc_flow {
         organization_id: OrganizationId,
         issuer: &str,
     ) -> PrincipalId {
+        provision_named(conn, organization_id, issuer, "Alice").await
+    }
+
+    async fn provision_named(
+        conn: &mut sqlx::PgConnection,
+        organization_id: OrganizationId,
+        issuer: &str,
+        display_name: &str,
+    ) -> PrincipalId {
         let id = PrincipalId::generate();
         tenancy::create_principal(
             conn,
@@ -836,12 +850,115 @@ mod oidc_flow {
                 kind: PrincipalKind::User,
                 issuer: issuer.to_owned(),
                 subject: "alice".to_owned(),
-                display_name: "Alice".to_owned(),
+                display_name: display_name.to_owned(),
             },
         )
         .await
         .unwrap();
         id
+    }
+
+    /// Runs the authorization-code flow against the mock provider and returns
+    /// the callback response. The token and JWKS mocks are removed afterwards
+    /// so a later sign-in in the same test can present different claims.
+    async fn sign_in(
+        app: &Router,
+        server: &mut mockito::ServerGuard,
+        issuer: &str,
+        name: Option<&str>,
+    ) -> axum::response::Response {
+        let response = get(app, "/auth/login?organization=acme").await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let login = set_cookie(response.headers(), LOGIN_COOKIE).unwrap();
+        let state_value = query_param(&location, "state");
+        let nonce = query_param(&location, "nonce");
+        let token = server
+            .mock("POST", "/token")
+            .with_body(
+                json!({ "id_token": id_token_named(issuer, "bergsmith", &nonce, name) })
+                    .to_string(),
+            )
+            .create_async()
+            .await;
+        let jwks = server
+            .mock("GET", "/jwks")
+            .with_body(jwks())
+            .create_async()
+            .await;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/auth/callback?code=abc&state={state_value}"))
+                    .header(header::COOKIE, format!("{LOGIN_COOKIE}={login}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        token.remove_async().await;
+        jwks.remove_async().await;
+        response
+    }
+
+    #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+    async fn a_sign_in_refreshes_the_display_name_and_refuses_a_deactivated_principal(
+        pool: PgPool,
+    ) {
+        let mut server = mockito::Server::new_async().await;
+        let provider = provider(&mut server).await;
+        let issuer = server.url();
+
+        let mut conn = pool.acquire().await.unwrap();
+        let organization = support::organization(&mut conn, "acme").await;
+        let principal = provision_named(&mut conn, organization, &issuer, "Stale").await;
+        drop(conn);
+
+        let state = IdentityState::new(
+            Database::from_pool(pool.clone()),
+            provider,
+            SessionConfig {
+                secure: false,
+                ..SessionConfig::default()
+            },
+        );
+        let app = router(state);
+
+        let response = sign_in(&app, &mut server, &issuer, Some("Alice Cooper")).await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let mut conn = pool.acquire().await.unwrap();
+        let stored: String =
+            sqlx::query_scalar("SELECT display_name FROM principals WHERE id = $1")
+                .bind(principal.as_uuid())
+                .fetch_one(&mut *conn)
+                .await
+                .unwrap();
+        assert_eq!(stored, "Alice Cooper");
+
+        let mut tx = pool.begin().await.unwrap();
+        tenancy::deactivate_principal(&mut tx, organization, principal)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let response = sign_in(&app, &mut server, &issuer, Some("Alice Cooper")).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let reason: String = sqlx::query_scalar(
+            "SELECT detail->>'reason' FROM audit_events
+             WHERE action = 'auth.login_failed'
+             ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+        assert_eq!(reason, "identity_deactivated");
     }
 
     #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
@@ -875,7 +992,7 @@ mod oidc_flow {
             .to_str()
             .unwrap()
             .to_owned();
-        let login = set_cookie(response.headers(), LOGIN_COOKIE).expect("login binding cookie");
+        let login = set_cookie(response.headers(), LOGIN_COOKIE).unwrap();
         let state_value = query_param(&location, "state");
         let nonce = query_param(&location, "nonce");
 

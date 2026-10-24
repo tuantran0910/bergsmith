@@ -1,6 +1,7 @@
 //! Organizations, principals, and catalog connections.
 
 use bergsmith_common::ids::{CatalogConnectionId, OrganizationId, PrincipalId, TableId};
+use bergsmith_common::permission::Role;
 use bergsmith_common::settings::ConnectionSettings;
 use chrono::{DateTime, Utc};
 use sqlx::{Connection, PgConnection};
@@ -81,6 +82,19 @@ pub struct Principal {
     pub display_name: String,
     /// When the principal was created (database time).
     pub created_at: DateTime<Utc>,
+    /// When an administrator deactivated it, if it is deactivated.
+    pub deactivated_at: Option<DateTime<Utc>>,
+}
+
+impl Principal {
+    /// Whether the principal may hold sessions and exercise grants.
+    ///
+    /// Deactivation keeps the row, the grants, and the history, so the row's
+    /// existence says nothing about access; this is the authority.
+    #[must_use]
+    pub const fn is_active(&self) -> bool {
+        self.deactivated_at.is_none()
+    }
 }
 
 /// Fields for a new principal.
@@ -173,6 +187,7 @@ struct PrincipalRow {
     subject: String,
     display_name: String,
     created_at: DateTime<Utc>,
+    deactivated_at: Option<DateTime<Utc>>,
 }
 
 impl TryFrom<PrincipalRow> for Principal {
@@ -187,8 +202,18 @@ impl TryFrom<PrincipalRow> for Principal {
             subject: row.subject,
             display_name: row.display_name,
             created_at: row.created_at,
+            deactivated_at: row.deactivated_at,
         })
     }
+}
+
+/// Columns selected for [`Principal`], in [`PrincipalRow`] order. A macro so
+/// queries stay `&'static str` literals.
+macro_rules! principal_columns {
+    () => {
+        "id, organization_id, kind, issuer, subject, display_name, created_at, \
+         deactivated_at"
+    };
 }
 
 #[derive(sqlx::FromRow)]
@@ -303,11 +328,12 @@ pub async fn create_principal(
     conn: &mut PgConnection,
     new: &NewPrincipal,
 ) -> Result<Principal, PersistenceError> {
-    let row = sqlx::query_as::<_, PrincipalRow>(
+    let row = sqlx::query_as::<_, PrincipalRow>(concat!(
         "INSERT INTO principals (id, organization_id, kind, issuer, subject, display_name)
          VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id, organization_id, kind, issuer, subject, display_name, created_at",
-    )
+         RETURNING ",
+        principal_columns!()
+    ))
     .bind(new.id.as_uuid())
     .bind(new.organization_id.as_uuid())
     .bind(new.kind.as_str())
@@ -330,10 +356,11 @@ pub async fn principal(
     organization_id: OrganizationId,
     principal_id: PrincipalId,
 ) -> Result<Principal, PersistenceError> {
-    sqlx::query_as::<_, PrincipalRow>(
-        "SELECT id, organization_id, kind, issuer, subject, display_name, created_at
-         FROM principals WHERE organization_id = $1 AND id = $2",
-    )
+    sqlx::query_as::<_, PrincipalRow>(concat!(
+        "SELECT ",
+        principal_columns!(),
+        " FROM principals WHERE organization_id = $1 AND id = $2"
+    ))
     .bind(organization_id.as_uuid())
     .bind(principal_id.as_uuid())
     .fetch_optional(conn)
@@ -343,6 +370,252 @@ pub async fn principal(
         id: principal_id.to_string(),
     })?
     .try_into()
+}
+
+/// Lists an organization's principals in ascending identifier order.
+///
+/// `kind` filters people from service accounts; `after` continues a page.
+///
+/// # Errors
+///
+/// Returns a database error if the query fails.
+pub async fn list_principals(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    kind: Option<PrincipalKind>,
+    after: Option<PrincipalId>,
+    limit: usize,
+) -> Result<Vec<Principal>, PersistenceError> {
+    let limit = i64::try_from(limit).map_err(|_| PersistenceError::InvalidValue {
+        entity: "principal page",
+        constraint: "the page size must fit in an identifier count".to_owned(),
+    })?;
+    let rows = sqlx::query_as::<_, PrincipalRow>(concat!(
+        "SELECT ",
+        principal_columns!(),
+        " FROM principals
+         WHERE organization_id = $1
+           AND ($2::text IS NULL OR kind = $2)
+           AND ($3::uuid IS NULL OR id > $3)
+         ORDER BY id
+         LIMIT $4"
+    ))
+    .bind(organization_id.as_uuid())
+    .bind(kind.map(PrincipalKind::as_str))
+    .bind(after.as_ref().map(PrincipalId::as_uuid))
+    .bind(limit)
+    .fetch_all(conn)
+    .await?;
+    rows.into_iter().map(TryInto::try_into).collect()
+}
+
+/// Whether the principal exists and is not deactivated.
+///
+/// # Errors
+///
+/// Returns a database error if the check cannot run.
+pub async fn principal_is_active(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    principal_id: PrincipalId,
+) -> Result<bool, PersistenceError> {
+    let active: Option<bool> = sqlx::query_scalar(
+        "SELECT deactivated_at IS NULL FROM principals
+         WHERE organization_id = $1 AND id = $2",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(principal_id.as_uuid())
+    .fetch_optional(conn)
+    .await?;
+    Ok(active == Some(true))
+}
+
+/// Keeps a provisioned user's display name in step with the identity provider.
+///
+/// # Errors
+///
+/// [`PersistenceError::NotFound`] when the principal does not exist, and
+/// [`PersistenceError::InvalidValue`] for an empty or over-long name.
+pub async fn update_principal_display_name(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    principal_id: PrincipalId,
+    display_name: &str,
+) -> Result<Principal, PersistenceError> {
+    if display_name.is_empty() || display_name.chars().count() > 200 {
+        return Err(PersistenceError::InvalidValue {
+            entity: "principal",
+            constraint: "the display name must be 1 to 200 characters".to_owned(),
+        });
+    }
+    sqlx::query_as::<_, PrincipalRow>(concat!(
+        "UPDATE principals SET display_name = $3
+         WHERE organization_id = $1 AND id = $2
+         RETURNING ",
+        principal_columns!()
+    ))
+    .bind(organization_id.as_uuid())
+    .bind(principal_id.as_uuid())
+    .bind(display_name)
+    .fetch_optional(conn)
+    .await?
+    .ok_or_else(|| PersistenceError::NotFound {
+        entity: "principal",
+        id: principal_id.to_string(),
+    })?
+    .try_into()
+}
+
+/// Serializes principal lifecycle changes for one organization.
+///
+/// Deactivation admits or refuses the last active administrator, so two
+/// concurrent deactivations of two administrators must not both see the other
+/// as a remaining administrator. The transaction-scoped advisory lock gives
+/// each change a consistent view; it is released on commit or rollback.
+///
+/// # Errors
+///
+/// Returns a database error if the lock cannot be taken.
+pub async fn lock_principal_administration(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+) -> Result<(), PersistenceError> {
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtext('bergsmith.principals'), hashtext($1::text))",
+    )
+    .bind(organization_id.to_string())
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// Deactivates a principal inside the caller's transaction.
+///
+/// The row, its grants, and its history stay; access stops because
+/// authorization and session lookup require an active principal.
+///
+/// Returns the stored principal and whether this call changed it. An already
+/// deactivated principal is returned unchanged, so a repeated command writes
+/// nothing.
+///
+/// # Errors
+///
+/// [`PersistenceError::NotFound`] when the organization has no such principal,
+/// [`PersistenceError::LastAdministrator`] when the change would leave the
+/// organization without an active administrator, and database errors.
+pub async fn deactivate_principal(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    principal_id: PrincipalId,
+) -> Result<(Principal, bool), PersistenceError> {
+    lock_principal_administration(conn, organization_id).await?;
+    let principal = principal(conn, organization_id, principal_id).await?;
+    if !principal.is_active() {
+        return Ok((principal, false));
+    }
+    if is_administrator(conn, organization_id, principal_id).await?
+        && !other_administrator_is_active(conn, organization_id, principal_id).await?
+    {
+        return Err(PersistenceError::LastAdministrator {
+            organization: organization_id,
+            principal: principal_id,
+        });
+    }
+    let updated = update_deactivation(conn, organization_id, principal_id, true).await?;
+    Ok((updated, true))
+}
+
+/// Reactivates a principal inside the caller's transaction.
+///
+/// Returns the stored principal and whether this call changed it.
+///
+/// # Errors
+///
+/// [`PersistenceError::NotFound`] when the organization has no such principal,
+/// and database errors.
+pub async fn reactivate_principal(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    principal_id: PrincipalId,
+) -> Result<(Principal, bool), PersistenceError> {
+    lock_principal_administration(conn, organization_id).await?;
+    let principal = principal(conn, organization_id, principal_id).await?;
+    if principal.is_active() {
+        return Ok((principal, false));
+    }
+    let updated = update_deactivation(conn, organization_id, principal_id, false).await?;
+    Ok((updated, true))
+}
+
+async fn update_deactivation(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    principal_id: PrincipalId,
+    deactivate: bool,
+) -> Result<Principal, PersistenceError> {
+    let row = sqlx::query_as::<_, PrincipalRow>(concat!(
+        "UPDATE principals
+         SET deactivated_at = CASE WHEN $3 THEN clock_timestamp() ELSE NULL END
+         WHERE organization_id = $1 AND id = $2
+         RETURNING ",
+        principal_columns!()
+    ))
+    .bind(organization_id.as_uuid())
+    .bind(principal_id.as_uuid())
+    .bind(deactivate)
+    .fetch_optional(conn)
+    .await?
+    .ok_or_else(|| PersistenceError::NotFound {
+        entity: "principal",
+        id: principal_id.to_string(),
+    })?;
+    row.try_into()
+}
+
+/// Whether the principal holds an active administrator grant.
+async fn is_administrator(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    principal_id: PrincipalId,
+) -> Result<bool, PersistenceError> {
+    let administrator: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1 FROM principal_role_grants g
+             WHERE g.organization_id = $1 AND g.principal_id = $2
+               AND g.revoked_at IS NULL AND g.role = $3
+         )",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(principal_id.as_uuid())
+    .bind(Role::Administrator.as_str())
+    .fetch_one(conn)
+    .await?;
+    Ok(administrator)
+}
+
+/// Whether someone other than `principal_id` is an active administrator.
+async fn other_administrator_is_active(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    principal_id: PrincipalId,
+) -> Result<bool, PersistenceError> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1 FROM principals p
+             JOIN principal_role_grants g
+               ON g.organization_id = p.organization_id
+              AND g.principal_id = p.id
+             WHERE p.organization_id = $1 AND p.id <> $2
+               AND p.deactivated_at IS NULL
+               AND g.revoked_at IS NULL AND g.role = $3
+         )",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(principal_id.as_uuid())
+    .bind(Role::Administrator.as_str())
+    .fetch_one(conn)
+    .await
+    .map_err(PersistenceError::from)
 }
 
 /// Creates a principal unless the organization already has that issuer and
@@ -358,12 +631,13 @@ pub async fn ensure_principal(
     conn: &mut PgConnection,
     new: &NewPrincipal,
 ) -> Result<(Principal, bool), PersistenceError> {
-    let inserted = sqlx::query_as::<_, PrincipalRow>(
+    let inserted = sqlx::query_as::<_, PrincipalRow>(concat!(
         "INSERT INTO principals (id, organization_id, kind, issuer, subject, display_name)
          VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT DO NOTHING
-         RETURNING id, organization_id, kind, issuer, subject, display_name, created_at",
-    )
+         RETURNING ",
+        principal_columns!()
+    ))
     .bind(new.id.as_uuid())
     .bind(new.organization_id.as_uuid())
     .bind(new.kind.as_str())
@@ -394,10 +668,11 @@ pub async fn principal_by_subject(
     issuer: &str,
     subject: &str,
 ) -> Result<Principal, PersistenceError> {
-    sqlx::query_as::<_, PrincipalRow>(
-        "SELECT id, organization_id, kind, issuer, subject, display_name, created_at
-         FROM principals WHERE organization_id = $1 AND issuer = $2 AND subject = $3",
-    )
+    sqlx::query_as::<_, PrincipalRow>(concat!(
+        "SELECT ",
+        principal_columns!(),
+        " FROM principals WHERE organization_id = $1 AND issuer = $2 AND subject = $3"
+    ))
     .bind(organization_id.as_uuid())
     .bind(issuer)
     .bind(subject)

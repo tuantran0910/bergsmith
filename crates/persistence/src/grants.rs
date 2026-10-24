@@ -329,6 +329,12 @@ pub async fn has_permission(
     permission: Permission,
     resource: ResourceScope,
 ) -> Result<bool, PersistenceError> {
+    // Deactivation keeps the rows and the grants for audit, so the principal
+    // itself decides whether any of them still applies. Admission, publication,
+    // and every browser command pass through this check.
+    if !crate::tenancy::principal_is_active(&mut *conn, organization_id, principal_id).await? {
+        return Ok(false);
+    }
     let roles: Vec<String> = permission
         .roles()
         .iter()
