@@ -208,9 +208,6 @@ function Directory({ services }: { services: boolean }) {
                             <TableRow>
                                 <TableHead>Name</TableHead>
                                 <TableHead>Status</TableHead>
-                                {!services && (
-                                    <TableHead>Principal ID</TableHead>
-                                )}
                             </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -235,15 +232,6 @@ function Directory({ services }: { services: boolean }) {
                                             ? "Active"
                                             : "Deactivated"}
                                     </TableCell>
-                                    {!services && (
-                                        <TableCell>
-                                            <ResourceId
-                                                id={principal.id}
-                                                label="principal ID"
-                                                short
-                                            />
-                                        </TableCell>
-                                    )}
                                 </TableRow>
                             ))}
                         </TableBody>
