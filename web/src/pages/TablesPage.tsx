@@ -1,6 +1,6 @@
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { Table2Icon } from "lucide-react";
-import { useDeferredValue, useMemo } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
 import type { Schemas } from "../api/client";
 import { useCatalogNames, useTables } from "../api/queries";
@@ -19,10 +19,10 @@ import {
     PageHeader,
 } from "../components/Page";
 import { ResourceLabel } from "../components/ResourceLabel";
-import { aliasName, date, number, shortId, timestamp } from "../format";
+import { aliasName, count, date, number, shortId, timestamp } from "../format";
 import { buttonVariants } from "../ui/Button";
 import { Select } from "../ui/Select";
-import { sortColumn, type TablesSearch } from "./tables/search";
+import { namespaceKey, sortColumn, type TablesSearch } from "./tables/search";
 
 /** The names and context one table shows, without losing its other aliases. */
 function display(table: Schemas["Table"], names: ReadonlyMap<string, string>) {
@@ -48,11 +48,15 @@ function display(table: Schemas["Table"], names: ReadonlyMap<string, string>) {
                   : undefined,
         catalogs: catalogs.length > 0 ? catalogs.join(", ") : "None",
         namespaces: namespaces.length > 0 ? namespaces.join(", ") : "None",
+        location: [catalogs.join(", "), namespaces.join(", ")]
+            .filter((value) => value !== "")
+            .join(", "),
     };
 }
 
 /** Canonical tables the session may see, named through their aliases. */
-export function TablesPage({ search }: { search: TablesSearch }) {
+export function TablesPage() {
+    const search = useSearch({ from: "/tables" });
     const navigate = useNavigate();
     const tables = useTables();
     const catalogs = useCatalogNames();
@@ -65,17 +69,23 @@ export function TablesPage({ search }: { search: TablesSearch }) {
         [tables.data],
     );
 
-    const namespaceOptions = useMemo(
-        () =>
-            [
-                ...new Set(
-                    items.flatMap((table) =>
-                        table.aliases.map((alias) => alias.namespace.join(".")),
-                    ),
-                ),
-            ].sort((left, right) => left.localeCompare(right)),
-        [items],
-    );
+    const namespaceOptions = useMemo(() => {
+        const options = new Map<string, string[]>();
+        for (const table of items) {
+            for (const alias of table.aliases) {
+                options.set(namespaceKey(alias.namespace), alias.namespace);
+            }
+        }
+        return [...options.entries()]
+            .map(([value, levels]) => ({ value, levels }))
+            .sort((left, right) =>
+                left.levels
+                    .join(".")
+                    .localeCompare(right.levels.join("."), undefined, {
+                        numeric: true,
+                    }),
+            );
+    }, [items]);
     const catalogOptions = useMemo(
         () =>
             [...names.entries()].sort(([, left], [, right]) =>
@@ -99,7 +109,8 @@ export function TablesPage({ search }: { search: TablesSearch }) {
             if (
                 search.namespace !== undefined &&
                 !table.aliases.some(
-                    (alias) => alias.namespace.join(".") === search.namespace,
+                    (alias) =>
+                        namespaceKey(alias.namespace) === search.namespace,
                 )
             ) {
                 return false;
@@ -107,8 +118,15 @@ export function TablesPage({ search }: { search: TablesSearch }) {
             if (needle === "") {
                 return true;
             }
-            return table.aliases
-                .map((alias) => aliasName(alias, names))
+            const info = display(table, names);
+            return [
+                info.name,
+                info.catalogs,
+                info.namespaces,
+                table.id,
+                table.table_uuid,
+                ...table.aliases.map((alias) => aliasName(alias, names)),
+            ]
                 .join(" ")
                 .toLowerCase()
                 .includes(needle);
@@ -154,6 +172,36 @@ export function TablesPage({ search }: { search: TablesSearch }) {
         direction: search.order ?? "asc",
     };
 
+    const tableFrame = useRef<HTMLDivElement>(null);
+    const [tableOverflows, setTableOverflows] = useState(false);
+    useEffect(() => {
+        const container = tableFrame.current?.querySelector<HTMLElement>(
+            '[data-slot="table-container"]',
+        );
+        if (container === null || container === undefined) {
+            setTableOverflows(false);
+            return undefined;
+        }
+        const measure = () => {
+            setTableOverflows(
+                container.scrollWidth > container.clientWidth + 1,
+            );
+        };
+        measure();
+        if (typeof ResizeObserver === "undefined") {
+            return undefined;
+        }
+        const observer = new ResizeObserver(measure);
+        observer.observe(container);
+        const table = container.querySelector("table");
+        if (table !== null) {
+            observer.observe(table);
+        }
+        return () => {
+            observer.disconnect();
+        };
+    }, [visible.length]);
+
     const columns: DataTableColumn<Schemas["Table"]>[] = [
         {
             id: "name",
@@ -171,6 +219,12 @@ export function TablesPage({ search }: { search: TablesSearch }) {
                                 className="break-words"
                             >
                                 {info.name}
+                                {info.location !== "" && (
+                                    <span className="sr-only">
+                                        {" "}
+                                        in {info.location}
+                                    </span>
+                                )}
                             </Link>
                         }
                         context={info.context}
@@ -340,9 +394,9 @@ export function TablesPage({ search }: { search: TablesSearch }) {
                                                 label: "All namespaces",
                                             },
                                             ...namespaceOptions.map(
-                                                (namespace) => ({
-                                                    value: namespace,
-                                                    label: namespace,
+                                                ({ value, levels }) => ({
+                                                    value,
+                                                    label: levels.join("."),
                                                 }),
                                             ),
                                         ]}
@@ -351,28 +405,43 @@ export function TablesPage({ search }: { search: TablesSearch }) {
                             </span>
                         )}
                     </FilterBar>
-                    <DataTable
-                        rows={visible}
-                        columns={columns}
-                        getRowKey={(table) => table.id}
-                        sort={sort}
-                        onSortChange={onSortChange}
-                        caption="Tables"
-                        empty={
-                            <NoResults
-                                onClear={
-                                    filtersActive ? clearFilters : undefined
-                                }
-                            >
-                                No tables match these filters. Adjust the search
-                                or clear the filters to see every loaded table.
-                            </NoResults>
-                        }
-                    />
-                    <p className="mt-2 text-xs text-muted-foreground md:hidden">
-                        Scroll horizontally for more columns.
-                    </p>
-                    {(visible.length > 0 || !filtersActive) && (
+                    {(filtersActive || search.sort !== undefined) &&
+                        tables.hasNextPage && (
+                            <p className="mb-3 text-xs text-muted-foreground">
+                                Search and sort cover the{" "}
+                                {count(items.length, "loaded table")}. Load more
+                                to widen them.
+                            </p>
+                        )}
+                    <div ref={tableFrame}>
+                        <DataTable
+                            rows={visible}
+                            columns={columns}
+                            getRowKey={(table) => table.id}
+                            sort={sort}
+                            onSortChange={onSortChange}
+                            caption="Tables"
+                            empty={
+                                <NoResults
+                                    onClear={
+                                        filtersActive ? clearFilters : undefined
+                                    }
+                                >
+                                    No tables match these filters. Adjust the
+                                    search or clear the filters to see every
+                                    loaded table.
+                                </NoResults>
+                            }
+                        />
+                    </div>
+                    {tableOverflows && (
+                        <p className="mt-2 text-xs text-muted-foreground">
+                            Scroll horizontally for more columns.
+                        </p>
+                    )}
+                    {(visible.length > 0 ||
+                        tables.hasNextPage ||
+                        !filtersActive) && (
                         <LoadMore
                             shown={visible.length}
                             noun="tables"

@@ -17,6 +17,28 @@ function text(value: unknown): string | undefined {
     return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }
 
+/**
+ * A namespace's canonical URL key. Iceberg keeps namespace levels separate
+ * and a level may contain a dot, so the key is JSON rather than a flattening
+ * join (ADR 0056).
+ */
+export function namespaceKey(levels: readonly string[]): string {
+    return JSON.stringify(levels);
+}
+
+/** The levels in a namespace key, or `undefined` for a malformed one. */
+export function parseNamespaceKey(value: string): string[] | undefined {
+    try {
+        const parsed: unknown = JSON.parse(value);
+        return Array.isArray(parsed) &&
+            parsed.every((level) => typeof level === "string")
+            ? parsed
+            : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
 export function sortColumn(value: unknown): TableSort | undefined {
     return SORTS.find((candidate) => candidate === value);
 }
@@ -28,6 +50,8 @@ export function validateTablesSearch(
     const q = text(search["q"]);
     const catalog = text(search["catalog"]);
     const namespace = text(search["namespace"]);
+    const levels =
+        namespace === undefined ? undefined : parseNamespaceKey(namespace);
     const sort = sortColumn(search["sort"]);
     const order =
         search["order"] === "asc" || search["order"] === "desc"
@@ -36,7 +60,7 @@ export function validateTablesSearch(
     return {
         ...(q !== undefined ? { q } : {}),
         ...(catalog !== undefined ? { catalog } : {}),
-        ...(namespace !== undefined ? { namespace } : {}),
+        ...(levels !== undefined ? { namespace: namespaceKey(levels) } : {}),
         ...(sort !== undefined ? { sort } : {}),
         ...(order !== undefined ? { order } : {}),
     };

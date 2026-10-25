@@ -41,25 +41,35 @@ export function timestamp(value: string): string {
     return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-/** A calendar date in the viewer's locale, without the time of day. */
-export function date(value: string): string {
+/**
+ * A calendar date in the viewer's locale, without the time of day. Tests pass
+ * a locale so their expectations do not depend on the machine's default.
+ */
+export function date(value: string, locale?: string): string {
     const parsed = new Date(value);
     return Number.isNaN(parsed.getTime())
         ? value
-        : new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(
+        : new Intl.DateTimeFormat(locale, { dateStyle: "medium" }).format(
               parsed,
           );
 }
 
-/** How long ago a timestamp was, for example `3 days ago`; errors pass through. */
-export function relativeTime(value: string, now = Date.now()): string {
+/**
+ * How long ago a timestamp was, for example `3 days ago`; errors pass through.
+ * Tests pass a locale so their expectations do not depend on the machine.
+ */
+export function relativeTime(
+    value: string,
+    now = Date.now(),
+    locale?: string,
+): string {
     const parsed = Date.parse(value);
     if (Number.isNaN(parsed)) {
         return value;
     }
     const seconds = (parsed - now) / 1000;
     const magnitude = Math.abs(seconds);
-    const format = new Intl.RelativeTimeFormat(undefined, {
+    const format = new Intl.RelativeTimeFormat(locale, {
         numeric: "always",
     });
     if (magnitude < 60) {
@@ -81,8 +91,8 @@ export function relativeTime(value: string, now = Date.now()): string {
 }
 
 /** A count in the viewer's locale, with grouping for large numbers. */
-export function number(value: number): string {
-    return new Intl.NumberFormat().format(value);
+export function number(value: number, locale?: string): string {
+    return new Intl.NumberFormat(locale).format(value);
 }
 
 /** A stable machine code such as `retry_same_request` as words. */

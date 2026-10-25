@@ -323,7 +323,7 @@ describe("browsing", () => {
         expect(window.location.pathname).toBe("/tables");
 
         expect(
-            await screen.findByRole("link", { name: "orders" }),
+            await screen.findByRole("link", { name: /^orders/ }),
         ).toHaveAttribute("href", `/tables/${TABLE_ID}`);
         expect(screen.getByRole("link", { name: "Tables" })).toHaveAttribute(
             "aria-current",
@@ -357,7 +357,7 @@ describe("browsing", () => {
         ).on("GET", "/api/v1/tables/{id}", () => json(200, table));
         const user = start("/tables");
 
-        await user.click(await screen.findByRole("link", { name: "orders" }));
+        await user.click(await screen.findByRole("link", { name: /^orders/ }));
         expect(await screen.findByText(table.table_uuid)).toBeInTheDocument();
         await user.click(
             screen.getByRole("button", { name: "Copy table UUID" }),
@@ -373,7 +373,7 @@ describe("browsing", () => {
         ).on("GET", "/api/v1/tables/{id}", () => json(200, table));
         const user = start("/tables");
 
-        await user.click(await screen.findByRole("link", { name: "orders" }));
+        await user.click(await screen.findByRole("link", { name: /^orders/ }));
 
         expect(
             await screen.findByRole("heading", { name: "lake.sales.orders" }),
@@ -408,10 +408,10 @@ describe("browsing", () => {
         const user = start("/tables");
 
         expect(
-            await screen.findByRole("link", { name: "orders" }),
+            await screen.findByRole("link", { name: /^orders/ }),
         ).toBeInTheDocument();
         expect(
-            screen.getByRole("link", { name: "events" }),
+            screen.getByRole("link", { name: /^events/ }),
         ).toBeInTheDocument();
 
         await user.type(
@@ -421,11 +421,11 @@ describe("browsing", () => {
 
         await waitFor(() => {
             expect(
-                screen.queryByRole("link", { name: "orders" }),
+                screen.queryByRole("link", { name: /^orders/ }),
             ).not.toBeInTheDocument();
         });
         expect(
-            screen.getByRole("link", { name: "events" }),
+            screen.getByRole("link", { name: /^events/ }),
         ).toBeInTheDocument();
         expect(new URL(window.location.href).searchParams.get("q")).toBe(
             "events",
@@ -434,7 +434,7 @@ describe("browsing", () => {
 
         await user.click(screen.getByRole("button", { name: "Clear filters" }));
         expect(
-            await screen.findByRole("link", { name: "orders" }),
+            await screen.findByRole("link", { name: /^orders/ }),
         ).toBeInTheDocument();
         expect(new URL(window.location.href).searchParams.get("q")).toBeNull();
     });
@@ -447,7 +447,7 @@ describe("browsing", () => {
             ),
         );
         const user = start("/tables");
-        await screen.findByRole("link", { name: "orders" });
+        await screen.findByRole("link", { name: /^orders/ });
 
         await user.type(
             screen.getByRole("searchbox", { name: "Search tables" }),
@@ -462,8 +462,101 @@ describe("browsing", () => {
         // compete above an empty grid.
         await user.click(screen.getByRole("button", { name: "Clear filters" }));
         expect(
-            await screen.findByRole("link", { name: "orders" }),
+            await screen.findByRole("link", { name: /^orders/ }),
         ).toBeInTheDocument();
+    });
+
+    it("finds an unnamed table by its short ID", async () => {
+        const unnamed = schema("Table", {
+            ...table,
+            id: "0190f3c4-0000-7000-8000-000000000002",
+            table_uuid: "6f1c0d0e-1111-4222-8333-444455556667",
+            aliases: [],
+        });
+        fake.on("GET", "/api/v1/tables", () =>
+            json(
+                200,
+                schema("TablePage", {
+                    items: [table, unnamed],
+                    next_cursor: null,
+                }),
+            ),
+        );
+        const user = start("/tables");
+        await screen.findByRole("link", { name: /^orders/ });
+
+        await user.type(
+            screen.getByRole("searchbox", { name: "Search tables" }),
+            "00000002",
+        );
+
+        expect(
+            await screen.findByRole("link", { name: "00000002" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.queryByRole("link", { name: /^orders/ }),
+        ).not.toBeInTheDocument();
+    });
+
+    it("keeps loading more available when a filter has no matches", async () => {
+        const other = schema("Table", {
+            ...table,
+            id: "0190f3c4-0000-7000-8000-000000000004",
+            table_uuid: "6f1c0d0e-1111-4222-8333-444455556668",
+            created_at: "2026-10-05T00:00:00Z",
+            aliases: [
+                {
+                    catalog_id: CATALOG_ID,
+                    namespace: ["marketing"],
+                    name: "events",
+                    revision: 1,
+                },
+            ],
+        });
+        fake.on(
+            "GET",
+            "/api/v1/tables",
+            () =>
+                json(
+                    200,
+                    schema("TablePage", {
+                        items: [table],
+                        next_cursor: "next-page",
+                    }),
+                ),
+            () =>
+                json(
+                    200,
+                    schema("TablePage", {
+                        items: [other],
+                        next_cursor: null,
+                    }),
+                ),
+        );
+        const user = start("/tables");
+        await screen.findByRole("link", { name: /^orders/ });
+
+        await user.type(
+            screen.getByRole("searchbox", { name: "Search tables" }),
+            "events",
+        );
+
+        expect(await screen.findByText("No matches.")).toBeInTheDocument();
+        expect(
+            screen.getByText(/cover the 1 loaded table/),
+        ).toBeInTheDocument();
+        await user.click(
+            screen.getByRole("button", { name: "Load more tables" }),
+        );
+
+        expect(
+            await screen.findByRole("link", { name: /^events/ }),
+        ).toBeInTheDocument();
+        expect(
+            new URL(
+                fake.sent("GET", "/api/v1/tables")[1]?.url ?? "",
+            ).searchParams.get("cursor"),
+        ).toBe("next-page");
     });
 
     it("sorts by registered date through the address", async () => {
@@ -491,7 +584,7 @@ describe("browsing", () => {
             ),
         );
         const user = start("/tables");
-        await screen.findByRole("link", { name: "orders" });
+        await screen.findByRole("link", { name: /^orders/ });
 
         const header = screen.getByRole("columnheader", {
             name: /Registered/,
@@ -510,7 +603,7 @@ describe("browsing", () => {
         const rows = screen.getAllByRole("row").slice(1);
         expect(
             within(rows[0] as HTMLElement).getByRole("link", {
-                name: "orders",
+                name: /^orders/,
             }),
         ).toBeInTheDocument();
 
@@ -526,7 +619,7 @@ describe("browsing", () => {
         const ordered = screen.getAllByRole("row").slice(1);
         expect(
             within(ordered[0] as HTMLElement).getByRole("link", {
-                name: "events",
+                name: /^events/,
             }),
         ).toBeInTheDocument();
     });
@@ -623,7 +716,7 @@ describe("overview and shell", () => {
         );
 
         expect(
-            await screen.findByRole("link", { name: "orders" }),
+            await screen.findByRole("link", { name: /^orders/ }),
         ).toBeInTheDocument();
         expect(
             within(screen.getByRole("navigation", { name: "Main" })).getByText(

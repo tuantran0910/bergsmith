@@ -22,6 +22,7 @@ import { Button } from "../ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/Card";
 import { PreviewView } from "./PreviewView";
 import { Access } from "./access/Access";
+import { namespaceKey } from "./tables/search";
 
 /** One table: its names and technical identity, then preview and run. */
 export function TablePage({ id }: { id: string }) {
@@ -85,9 +86,12 @@ export function TablePage({ id }: { id: string }) {
         ).entries(),
     ];
     const namespaces = [
-        ...new Set(
-            table.data.aliases.map((alias) => alias.namespace.join(".")),
-        ),
+        ...new Map(
+            table.data.aliases.map((alias) => [
+                namespaceKey(alias.namespace),
+                alias.namespace,
+            ]),
+        ).values(),
     ];
     const canSubmit =
         session !== null &&
@@ -158,7 +162,11 @@ export function TablePage({ id }: { id: string }) {
                     label="Namespaces"
                     value={namespaces.length}
                     detail={
-                        namespaces.length === 0 ? "None" : namespaces.join(", ")
+                        namespaces.length === 0
+                            ? "None"
+                            : namespaces
+                                  .map((levels) => levels.join("."))
+                                  .join(", ")
                     }
                 />
             </MetricGrid>
@@ -188,7 +196,11 @@ export function TablePage({ id }: { id: string }) {
                                         <ul className="m-0 grid list-none gap-1 p-0">
                                             {table.data.aliases.map((alias) => (
                                                 <li
-                                                    key={`${alias.catalog_id}-${alias.namespace.join(".")}-${alias.name}`}
+                                                    key={JSON.stringify([
+                                                        alias.catalog_id,
+                                                        alias.namespace,
+                                                        alias.name,
+                                                    ])}
                                                 >
                                                     <code>
                                                         {aliasName(

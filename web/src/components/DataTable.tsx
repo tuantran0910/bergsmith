@@ -103,7 +103,10 @@ export function DataTable<Row>({
 
     return (
         <GridFrame>
-            <Table className="min-w-[36rem]">
+            <Table
+                className="min-w-[36rem]"
+                containerLabel={caption ?? "Table"}
+            >
                 {caption !== undefined && (
                     <TableCaption className="sr-only">{caption}</TableCaption>
                 )}
@@ -134,7 +137,6 @@ export function DataTable<Row>({
                                             : undefined
                                     }
                                     className={cn(
-                                        "px-[var(--density-cell-x)]",
                                         column.align === "end" && "text-right",
                                         column.className,
                                     )}
@@ -182,7 +184,6 @@ export function DataTable<Row>({
                                 <TableCell
                                     key={column.id}
                                     className={cn(
-                                        "px-[var(--density-cell-x)] py-[var(--density-cell-y)]",
                                         column.align === "end" &&
                                             "text-right tabular-nums",
                                         column.className,

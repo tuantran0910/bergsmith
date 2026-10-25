@@ -25,3 +25,16 @@ it("starts comfortable and switches the whole document to compact", () => {
     expect(document.documentElement).toHaveAttribute("data-density", "compact");
     expect(window.localStorage.getItem("bergsmith.density")).toBe("compact");
 });
+
+it("reports a controlled choice without applying it itself", () => {
+    const onChange = vi.fn();
+    render(<DensityToggle density="comfortable" onChange={onChange} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Compact density" }));
+
+    expect(onChange).toHaveBeenCalledWith("compact");
+    expect(
+        screen.getByRole("button", { name: "Comfortable density" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(document.documentElement).not.toHaveAttribute("data-density");
+});

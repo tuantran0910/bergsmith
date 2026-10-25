@@ -116,6 +116,9 @@ validated search parameters so links, back/forward, and saved views work.
 - Filters and sorting are pushed to the API when the API supports them. A
   client-side filter is acceptable only for a bounded first page, never by
   fetching every row.
+- Until the list APIs accept search and sort, the Tables page filters and
+  sorts the pages the operator has already loaded, labels that scope, and
+  keeps loading more available; it never fetches every row to filter.
 - Cursor pagination stays the contract. Saved views store filters and sort
   order, not result sets.
 - At narrow widths, primary tables switch to a stacked card mode instead of

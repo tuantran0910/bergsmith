@@ -126,7 +126,7 @@ export function NoResults({
             title="No matches."
             className="py-8"
             action={
-                onClear !== undefined && (
+                onClear === undefined ? undefined : (
                     <Button variant="outline" size="sm" onClick={onClear}>
                         Clear filters
                     </Button>

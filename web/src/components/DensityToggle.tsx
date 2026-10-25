@@ -8,17 +8,18 @@ const OPTIONS: Record<Density, { label: string; icon: LucideIcon }> = {
     compact: { label: "Compact density", icon: Rows4Icon },
 };
 
+type DensityToggleProps =
+    | {
+          density: Density;
+          onChange: (density: Density) => void;
+      }
+    | { density?: undefined; onChange?: undefined };
+
 /** Chooses comfortable or compact table rows; the current choice is pressed. */
-export function DensityToggle({
-    density: controlled,
-    onChange,
-}: {
-    density?: Density;
-    onChange?: (density: Density) => void;
-} = {}) {
+export function DensityToggle(props: DensityToggleProps = {}) {
     const [stored, chooseStored] = useDensityPreference();
-    const density = controlled ?? stored;
-    const choose = onChange ?? chooseStored;
+    const density = props.density ?? stored;
+    const choose = props.onChange ?? chooseStored;
     return (
         <div
             role="group"

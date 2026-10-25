@@ -124,10 +124,7 @@ const tablesRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/tables",
     validateSearch: validateTablesSearch,
-    component: function TablesRoute() {
-        const search = tablesRoute.useSearch();
-        return <TablesPage search={search} />;
-    },
+    component: TablesPage,
 });
 
 const catalogsRoute = createRoute({

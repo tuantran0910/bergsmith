@@ -13,17 +13,18 @@ const OPTIONS: Record<ThemePreference, { label: string; icon: LucideIcon }> = {
     dark: { label: "Dark theme", icon: MoonIcon },
 };
 
+type ThemeToggleProps =
+    | {
+          preference: ThemePreference;
+          onChange: (preference: ThemePreference) => void;
+      }
+    | { preference?: undefined; onChange?: undefined };
+
 /** Chooses the system, light, or dark theme; the current choice is pressed. */
-export function ThemeToggle({
-    preference: controlled,
-    onChange,
-}: {
-    preference?: ThemePreference;
-    onChange?: (preference: ThemePreference) => void;
-} = {}) {
+export function ThemeToggle(props: ThemeToggleProps = {}) {
     const [stored, chooseStored] = useThemePreference();
-    const preference = controlled ?? stored;
-    const choose = onChange ?? chooseStored;
+    const preference = props.preference ?? stored;
+    const choose = props.onChange ?? chooseStored;
     return (
         <div
             role="group"
