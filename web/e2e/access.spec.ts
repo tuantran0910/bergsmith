@@ -427,7 +427,7 @@ test("uses named grants, compact selectors, uppercase navigation, and pointer cu
     await expect(
         page
             .getByRole("navigation", { name: "Main" })
-            .getByRole("link", { name: "Users", exact: true }),
+            .getByRole("heading", { name: "Administration", exact: true }),
     ).toHaveCSS("text-transform", "uppercase");
     await page.goto("/tables");
     await expect(page.getByRole("columnheader").first()).toHaveText("Table");

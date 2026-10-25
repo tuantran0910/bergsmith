@@ -1,34 +1,45 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { Link, useRouterState } from "@tanstack/react-router";
+import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import {
     AnvilIcon,
     DatabaseIcon,
+    GaugeIcon,
+    KeyRoundIcon,
     ListChecksIcon,
     LogOutIcon,
-    type LucideIcon,
+    MenuIcon,
+    PlusIcon,
     ScrollTextIcon,
+    SearchIcon,
     ServerIcon,
     Table2Icon,
     UsersIcon,
-    KeyRoundIcon,
+    XIcon,
+    type LucideIcon,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import {
     type SessionInfo,
+    canManageCatalog,
     canManageWorkers,
     canReadAudit,
-    signOut,
     hasOrganizationPermission,
+    signOut,
 } from "../api/auth";
 import { setSession, useSessionMutation } from "../queryClient";
-import { Button } from "../ui/Button";
+import { Button, buttonVariants } from "../ui/Button";
+import { DialogClose } from "../ui/Dialog";
 import { ErrorNotice } from "./ErrorNotice";
 import { SessionExpiry } from "./SessionExpiry";
 import { ThemeToggle } from "./ThemeToggle";
+import { Breadcrumbs } from "./Breadcrumbs";
 
+/** A principal destination of the rail. */
 interface Destination {
     to:
+        | "/"
         | "/catalogs"
         | "/tables"
         | "/jobs"
@@ -41,45 +52,154 @@ interface Destination {
     allowed: (session: SessionInfo) => boolean;
 }
 
-const DESTINATIONS: readonly Destination[] = [
+/** A shell-level create action; the rail does not list these. */
+interface CreateTarget {
+    to: "/catalogs/new";
+    label: string;
+    allowed: (session: SessionInfo) => boolean;
+}
+
+/** The rail's groups; empty groups do not render. */
+const GROUPS: readonly { label: string; items: Destination[] }[] = [
     {
-        to: "/users",
-        label: "Users",
-        icon: UsersIcon,
-        allowed: (session) =>
-            hasOrganizationPermission(session, "grants:manage"),
+        label: "Data",
+        items: [
+            {
+                to: "/catalogs",
+                label: "Catalogs",
+                icon: DatabaseIcon,
+                allowed: () => true,
+            },
+            {
+                to: "/tables",
+                label: "Tables",
+                icon: Table2Icon,
+                allowed: () => true,
+            },
+        ],
     },
     {
-        to: "/service-identities",
-        label: "Service identities",
-        icon: KeyRoundIcon,
-        allowed: canManageWorkers,
+        label: "Operations",
+        items: [
+            {
+                to: "/jobs",
+                label: "Jobs",
+                icon: ListChecksIcon,
+                allowed: () => true,
+            },
+            {
+                to: "/workers",
+                label: "Workers",
+                icon: ServerIcon,
+                allowed: canManageWorkers,
+            },
+        ],
     },
     {
-        to: "/catalogs",
-        label: "Catalogs",
-        icon: DatabaseIcon,
-        allowed: () => true,
-    },
-    { to: "/tables", label: "Tables", icon: Table2Icon, allowed: () => true },
-    { to: "/jobs", label: "Jobs", icon: ListChecksIcon, allowed: () => true },
-    {
-        to: "/workers",
-        label: "Workers",
-        icon: ServerIcon,
-        allowed: canManageWorkers,
-    },
-    {
-        to: "/audit",
-        label: "Audit",
-        icon: ScrollTextIcon,
-        allowed: canReadAudit,
+        label: "Administration",
+        items: [
+            {
+                to: "/users",
+                label: "Users",
+                icon: UsersIcon,
+                allowed: (session) =>
+                    hasOrganizationPermission(session, "grants:manage"),
+            },
+            {
+                to: "/service-identities",
+                label: "Service identities",
+                icon: KeyRoundIcon,
+                allowed: canManageWorkers,
+            },
+            {
+                to: "/audit",
+                label: "Audit",
+                icon: ScrollTextIcon,
+                allowed: canReadAudit,
+            },
+        ],
     },
 ];
 
+const OVERVIEW: Destination = {
+    to: "/",
+    label: "Overview",
+    icon: GaugeIcon,
+    allowed: () => true,
+};
+
+/** Where something can still be created; sorted, expandable in later tasks. */
+const CREATE_TARGETS: readonly CreateTarget[] = [
+    {
+        to: "/catalogs/new",
+        label: "Connect a catalog",
+        allowed: (session) => canManageCatalog(session),
+    },
+];
+
+function railGroups(session: SessionInfo) {
+    return GROUPS.map((group) => ({
+        label: group.label,
+        items: group.items.filter((item) => item.allowed(session)),
+    })).filter((group) => group.items.length > 0);
+}
+
+const railLinkClass =
+    "flex items-center gap-2 rounded-md px-2.5 py-1.5 no-underline text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground aria-[current=page]:bg-muted aria-[current=page]:font-semibold aria-[current=page]:text-foreground";
+
+function NavBody({
+    session,
+    onNavigate,
+}: {
+    session: SessionInfo;
+    onNavigate?: () => void;
+}) {
+    return (
+        <>
+            <ul className="m-0 list-none p-0">
+                <li>
+                    <Link
+                        to={OVERVIEW.to}
+                        onClick={onNavigate}
+                        className={railLinkClass}
+                    >
+                        <OVERVIEW.icon aria-hidden="true" className="size-4" />
+                        {OVERVIEW.label}
+                    </Link>
+                </li>
+            </ul>
+            {railGroups(session).map(({ label, items }) => (
+                <section key={label} aria-label={label} className="mt-4">
+                    <h2 className="m-0 px-2 py-1 text-[0.7rem] font-semibold tracking-widest text-muted-foreground uppercase">
+                        {label}
+                    </h2>
+                    <ul className="m-0 list-none p-0">
+                        {items.map(({ to, label: itemLabel, icon: Icon }) => (
+                            <li key={to}>
+                                <Link
+                                    to={to}
+                                    onClick={onNavigate}
+                                    className={railLinkClass}
+                                >
+                                    <Icon
+                                        aria-hidden="true"
+                                        className="size-4"
+                                    />
+                                    {itemLabel}
+                                </Link>
+                            </li>
+                        ))}
+                    </ul>
+                </section>
+            ))}
+        </>
+    );
+}
+
 /**
- * The signed-in layout: a sidebar (a top bar on narrow screens) with the
- * destinations the session may use, the account, and the page.
+ * The signed-in layout (ADR 0056): a grouped sidebar with the account, a
+ * page-top bar (breadcrumb, search placeholder, create), and, on narrow
+ * screens, a drawer navigation instead of the rail.
  */
 export function AppShell({
     session,
@@ -90,22 +210,42 @@ export function AppShell({
 }) {
     const queryClient = useQueryClient();
     const href = useRouterState({ select: (state) => state.location.href });
+    const [open, setOpen] = useState(false);
     const logout = useSessionMutation({
         mutationFn: signOut,
         onSuccess: () => {
             // Forget everything the session could see, then show sign-in
-            // without asking the coordinator again.
+            // without calling the coordinator again.
             setSession(queryClient, null);
         },
     });
+    const creates = CREATE_TARGETS.filter((item) => item.allowed(session));
 
     return (
         <div className="min-h-dvh md:grid md:grid-cols-[15rem_minmax(0,1fr)]">
-            <header className="sticky top-0 z-40 flex flex-wrap items-center gap-x-4 gap-y-2 border-b bg-background/90 px-4 py-2 backdrop-blur md:h-dvh md:flex-col md:flex-nowrap md:items-stretch md:gap-6 md:border-r md:border-b-0 md:px-3 md:py-4">
+            <a
+                href="#main"
+                className="sr-only focus:not-sr-only focus:absolute focus:top-3 focus:left-3 focus:z-50 focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-semibold focus:text-foreground focus:no-underline focus:ring-1 focus:ring-foreground/20"
+            >
+                Skip to main content
+            </a>
+            <header className="sticky top-0 z-40 flex items-center gap-2 border-b bg-background/90 px-3 py-2 backdrop-blur md:h-dvh md:flex-col md:items-stretch md:gap-5 md:border-r md:border-b-0 md:px-3 md:py-4">
+                <button
+                    type="button"
+                    aria-label="Open navigation"
+                    aria-haspopup="dialog"
+                    aria-expanded={open}
+                    onClick={() => {
+                        setOpen(true);
+                    }}
+                    className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-ring md:hidden"
+                >
+                    <MenuIcon aria-hidden="true" className="size-5" />
+                </button>
                 <Link
-                    to="/tables"
+                    to="/"
                     aria-label="Bergsmith home"
-                    className="flex items-center gap-2 px-2 font-semibold text-foreground hover:no-underline"
+                    className="flex items-center gap-2 px-2 font-semibold no-underline text-foreground"
                 >
                     <AnvilIcon
                         aria-hidden="true"
@@ -115,30 +255,13 @@ export function AppShell({
                 </Link>
                 <nav
                     aria-label="Main"
-                    className="order-last w-full md:order-none md:flex-1"
+                    className="hidden flex-1 flex-col overflow-y-auto md:flex"
                 >
-                    <ul className="m-0 flex list-none gap-1 overflow-x-auto p-0 md:flex-col">
-                        {DESTINATIONS.filter((item) =>
-                            item.allowed(session),
-                        ).map(({ to, label, icon: Icon }) => (
-                            <li key={to}>
-                                <Link
-                                    to={to}
-                                    className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs font-semibold tracking-wide text-muted-foreground uppercase hover:bg-muted hover:text-foreground hover:no-underline aria-[current=page]:bg-muted aria-[current=page]:text-foreground"
-                                >
-                                    <Icon
-                                        aria-hidden="true"
-                                        className="size-4"
-                                    />
-                                    {label}
-                                </Link>
-                            </li>
-                        ))}
-                    </ul>
+                    <NavBody session={session} />
                 </nav>
                 <section
                     aria-label="Account"
-                    className="ml-auto flex items-center gap-2 md:ml-0 md:flex-col md:items-stretch md:border-t md:pt-4"
+                    className="hidden flex-col items-stretch border-t pt-4 md:flex"
                 >
                     <span className="truncate px-2 text-sm text-muted-foreground">
                         {session.display_name}
@@ -166,10 +289,110 @@ export function AppShell({
                         <ErrorNotice error={logout.error} />
                     </div>
                 )}
-                <main className="mx-auto w-full max-w-6xl px-4 py-6 md:px-8 md:py-8">
+                <main
+                    id="main"
+                    tabIndex={-1}
+                    className="mx-auto w-full max-w-6xl px-4 py-6 outline-none md:px-8 md:py-8"
+                >
+                    <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                        <Breadcrumbs />
+                        <div className="flex items-center gap-2">
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                disabled
+                                title="Search is not yet available"
+                            >
+                                <SearchIcon aria-hidden="true" />
+                                Search
+                            </Button>
+                            {creates[0] && (
+                                <Link
+                                    to={creates[0].to}
+                                    className={buttonVariants({
+                                        variant: "outline",
+                                        size: "sm",
+                                    })}
+                                >
+                                    <PlusIcon aria-hidden="true" />
+                                    New
+                                </Link>
+                            )}
+                        </div>
+                    </div>
                     {children}
                 </main>
             </div>
+            <NavigationDrawer
+                open={open}
+                onOpenChange={setOpen}
+                session={session}
+                logout={logout}
+            />
         </div>
+    );
+}
+
+/**
+ * Narrow-layout navigation: a heading, the same grouped destinations, and
+ * the account. The Base UI dialog supplies focus trap, backdrop, and
+ * Escape-to-close; choosing a destination closes it.
+ */
+function NavigationDrawer({
+    open,
+    onOpenChange,
+    session,
+    logout,
+}: {
+    open: boolean;
+    onOpenChange: (value: boolean) => void;
+    session: SessionInfo;
+    logout: { isPending: boolean; mutate: () => void };
+}) {
+    return (
+        <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
+            <DialogPrimitive.Portal>
+                <DialogPrimitive.Backdrop className="fixed inset-0 z-50 bg-black/20 transition-opacity duration-150 data-ending-style:opacity-0 data-starting-style:opacity-0 motion-reduce:transition-none" />
+                <DialogPrimitive.Popup className="fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] flex-col gap-3 overflow-y-auto bg-background p-3 shadow-xl ring-1 ring-foreground/10 transition-[transform,opacity] duration-200 outline-none data-ending-style:-translate-x-full data-ending-style:opacity-0 data-starting-style:-translate-x-full data-starting-style:opacity-0 motion-reduce:transition-none">
+                    <div className="flex items-center justify-between">
+                        <DialogPrimitive.Title className="px-2 text-sm font-semibold text-foreground">
+                            Navigation
+                        </DialogPrimitive.Title>
+                        <DialogClose
+                            render={<Button variant="ghost" size="icon-sm" />}
+                        >
+                            <XIcon aria-hidden="true" />
+                            <span className="sr-only">Close navigation</span>
+                        </DialogClose>
+                    </div>
+                    <div className="flex flex-1 flex-col overflow-y-auto pb-3">
+                        <NavBody
+                            session={session}
+                            onNavigate={() => {
+                                onOpenChange(false);
+                            }}
+                        />
+                    </div>
+                    <section
+                        aria-label="Account"
+                        className="flex flex-col items-stretch gap-2 border-t pt-3"
+                    >
+                        <div className="flex items-center gap-2">
+                            <ThemeToggle />
+                            <Button
+                                variant="ghost"
+                                disabled={logout.isPending}
+                                onClick={() => {
+                                    logout.mutate();
+                                }}
+                            >
+                                <LogOutIcon aria-hidden="true" />
+                                Sign out
+                            </Button>
+                        </div>
+                    </section>
+                </DialogPrimitive.Popup>
+            </DialogPrimitive.Portal>
+        </DialogPrimitive.Root>
     );
 }

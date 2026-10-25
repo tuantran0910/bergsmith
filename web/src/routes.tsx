@@ -9,7 +9,6 @@ import {
     createRoute,
     createRouter,
     notFound,
-    redirect,
 } from "@tanstack/react-router";
 
 import { CompassIcon } from "lucide-react";
@@ -19,6 +18,7 @@ import { EmptyState } from "./components/Page";
 import { AuditPage } from "./pages/AuditPage";
 import { JobPage } from "./pages/JobPage";
 import { JobsPage } from "./pages/JobsPage";
+import { OverviewPage } from "./pages/OverviewPage";
 import { TablePage } from "./pages/TablePage";
 import { TablesPage } from "./pages/TablesPage";
 import { WorkersPage } from "./pages/WorkersPage";
@@ -39,8 +39,7 @@ export function NotFound() {
     return (
         <div role="alert">
             <EmptyState icon={CompassIcon} title="This page does not exist.">
-                Check the address, or <Link to="/tables">go to the tables</Link>
-                .
+                Check the address, or <Link to="/">go to the overview</Link>.
             </EmptyState>
         </div>
     );
@@ -54,10 +53,8 @@ const rootRoute = createRootRoute({
 const indexRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/",
-    // Tables are the home page; one address keeps the sidebar's active link.
-    beforeLoad: () => {
-        throw redirect({ to: "/tables", replace: true });
-    },
+    // The overview is the home page and keeps its own address.
+    component: OverviewPage,
 });
 
 const tablesRoute = createRoute({

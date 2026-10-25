@@ -55,10 +55,10 @@ describe("routes", () => {
         expect(resolved.params).toEqual(params);
     });
 
-    it("sends the home page to the tables", async () => {
+    it("serves the overview at the root address", async () => {
         expect(await resolve("/")).toMatchObject({
-            pathname: "/tables",
-            leaf: "/tables",
+            pathname: "/",
+            leaf: "/",
             notFound: false,
         });
     });
