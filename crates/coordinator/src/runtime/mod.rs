@@ -13,6 +13,7 @@ pub mod http;
 pub mod planning;
 pub mod publication;
 pub mod serve;
+pub mod statistics;
 
 pub use catalogs::{AccessError, RuntimeCatalogs};
 pub use config::{ConfigError, CoordinatorConfig};
@@ -20,3 +21,4 @@ pub use http::{HttpError, app};
 pub use planning::{PlannerService, PlanningSummary};
 pub use publication::{PublicationService, PublicationSummary};
 pub use serve::{ServeError, serve};
+pub use statistics::{SampleError, SampleSummary, SamplingSettings, StatisticsCollector};
