@@ -16,7 +16,10 @@ import { lazy, type ComponentType } from "react";
 
 import { Root } from "./Root";
 import { EmptyState } from "./components/Page";
-import { validateTablesSearch } from "./pages/tables/search";
+import {
+    validateTableSearch,
+    validateTablesSearch,
+} from "./pages/tables/search";
 
 /**
  * A page chunk with the `preload` hook TanStack Router calls on intent.
@@ -154,6 +157,7 @@ const catalogRoute = createRoute({
 const tableRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/tables/$tableId",
+    validateSearch: validateTableSearch,
     beforeLoad: ({ params }) => {
         if (!isResourceId(params.tableId)) {
             throw notFound();

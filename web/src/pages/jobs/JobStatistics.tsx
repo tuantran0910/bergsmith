@@ -1,4 +1,5 @@
 import type { Schemas } from "../../api/client";
+import { exactBytes } from "../../format";
 import {
     Card,
     CardContent,
@@ -6,19 +7,6 @@ import {
     CardHeader,
     CardTitle,
 } from "../../ui/Card";
-
-/** Formats exact byte counts without converting ledger integers to doubles. */
-function bytes(value: bigint): string {
-    const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
-    let divisor = 1n;
-    let unit = 0;
-    while (value >= divisor * 1024n && unit < units.length - 1) {
-        divisor *= 1024n;
-        unit++;
-    }
-    const tenths = (value * 10n) / divisor;
-    return `${(tenths / 10n).toLocaleString()}${unit === 0 ? "" : `.${tenths % 10n}`} ${units[unit]}`;
-}
 
 /** Accepted work is reported separately from catalog publication. */
 export function JobStatistics({
@@ -29,9 +17,11 @@ export function JobStatistics({
     const metrics: [string, string][] = [];
     if (s) {
         const count = (value: string) => BigInt(value).toLocaleString();
-        const size = (value: string) => bytes(BigInt(value));
+        const size = (value: string) => exactBytes(value);
         const average = (total: string, files: string) =>
-            BigInt(files) === 0n ? "—" : bytes(BigInt(total) / BigInt(files));
+            BigInt(files) === 0n
+                ? "—"
+                : exactBytes((BigInt(total) / BigInt(files)).toString());
         const seconds = BigInt(s.elapsed_millis) / 1000n;
         metrics.push(
             [

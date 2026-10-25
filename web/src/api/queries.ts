@@ -75,6 +75,28 @@ export function useTable(id: string) {
     });
 }
 
+/**
+ * The table's newest sample and its history, newest first. The newest sample
+ * is returned with every page, so the summary does not wait for the history.
+ */
+export function useTableStatistics(id: string) {
+    const client = useQueryClient();
+    return useInfiniteQuery({
+        queryKey: ["table", id, "statistics"],
+        initialPageParam: null as string | null,
+        queryFn: ({ pageParam, signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/tables/{id}/statistics", {
+                        params: { path: { id }, query: page(pageParam) },
+                        signal,
+                    }),
+                ),
+            ),
+        getNextPageParam: (last) => last.next_cursor,
+    });
+}
+
 export function useJobs() {
     const client = useQueryClient();
     return useInfiniteQuery({

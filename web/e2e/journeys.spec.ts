@@ -14,6 +14,7 @@ import {
     plannedPreview,
     session,
     table,
+    tableStatistics,
 } from "../src/test/fixtures";
 import {
     type FakeCoordinator,
@@ -128,6 +129,41 @@ test("browses to a table, previews it, and submits a job", async ({
     expect(submitted?.body).toEqual({ table_id: TABLE_ID });
     expect(submitted?.headers["x-csrf-token"]).toBe("csrf-value");
     expect(submitted?.headers["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/);
+});
+
+test("shows a table's statistics on an addressable tab", async ({
+    page,
+    coordinator,
+}) => {
+    signedIn(coordinator);
+    coordinator.on("GET", "/api/v1/tables/{id}/statistics", () =>
+        json(200, tableStatistics),
+    );
+
+    await page.goto(`/tables/${TABLE_ID}`);
+    await page.getByRole("tab", { name: "Statistics" }).click();
+
+    await expect(page).toHaveURL(
+        new RegExp(`/tables/${TABLE_ID}\\?tab=statistics$`),
+    );
+    await expect(
+        page.getByRole("img", { name: /Data file sizes/ }),
+    ).toBeVisible();
+    await expect(
+        page.getByText("+2.0 KiB since the previous sample"),
+    ).toBeVisible();
+    await expect(
+        page.getByRole("columnheader", { name: "Rows" }),
+    ).toBeVisible();
+    await expect(page.getByText("day=2026-10-01")).toBeVisible();
+    await expectAccessible(page);
+
+    // The overview is still one click away and keeps its own address.
+    await page.getByRole("tab", { name: "Overview" }).click();
+    await expect(page).toHaveURL(`/tables/${TABLE_ID}`);
+    await expect(
+        page.getByRole("button", { name: "Preview maintenance" }),
+    ).toBeVisible();
 });
 
 test("follows a job's events to success, then closes the stream", async ({

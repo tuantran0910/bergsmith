@@ -2,18 +2,26 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { canManageCatalog } from "../api/auth";
-import { useCatalog } from "../api/catalogs";
+import { useCatalog, useCatalogTotals } from "../api/catalogs";
 import { api, call, csrfHeader } from "../api/client";
 import { useBreadcrumbLabel } from "../components/Breadcrumbs";
 import { ErrorNotice } from "../components/ErrorNotice";
+import { Metric, MetricGrid } from "../components/Metric";
 import { LoadingDetail, PageHeader } from "../components/Page";
 import { ResourceId } from "../components/ResourceId";
 import { TechnicalDetails } from "../components/TechnicalDetails";
-import { duration, words } from "../format";
+import {
+    duration,
+    exactBytes,
+    exactCount,
+    relativeTime,
+    words,
+} from "../format";
 import { useSession, useSessionMutation } from "../queryClient";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/Card";
+import { Skeleton } from "../ui/Skeleton";
 import { Capabilities } from "./catalogs/Capabilities";
 import { Discovery } from "./catalogs/Discovery";
 import { RegisteredTables } from "./catalogs/RegisteredTables";
@@ -24,6 +32,7 @@ import { Access } from "./access/Access";
 export function CatalogPage({ id }: { id: string }) {
     const client = useQueryClient();
     const query = useCatalog(id);
+    const totals = useCatalogTotals(id);
     const session = useSession();
     const manager = session !== null && canManageCatalog(session, id);
     useBreadcrumbLabel(query.data?.name);
@@ -71,6 +80,63 @@ export function CatalogPage({ id }: { id: string }) {
                 }
                 actions={<Link to="/catalogs">All catalogs</Link>}
             />
+            <Card>
+                <CardHeader>
+                    <CardTitle>Table statistics</CardTitle>
+                </CardHeader>
+                <CardContent>
+                    {totals.isPending && <Skeleton className="h-16 w-full" />}
+                    {totals.error && (
+                        <ErrorNotice
+                            error={totals.error}
+                            onRetry={() => {
+                                void totals.refetch();
+                            }}
+                        />
+                    )}
+                    {totals.data && totals.data.tables === "0" && (
+                        <p className="m-0 text-sm text-muted-foreground">
+                            No sampled tables yet. The coordinator samples every
+                            registered table on its interval.
+                        </p>
+                    )}
+                    {totals.data && totals.data.tables !== "0" && (
+                        <MetricGrid>
+                            <Metric
+                                label="Tables sampled"
+                                value={exactCount(totals.data.tables)}
+                                detail={
+                                    totals.data.last_sampled_at === null
+                                        ? "Never sampled"
+                                        : `Last sampled ${relativeTime(totals.data.last_sampled_at)}`
+                                }
+                            />
+                            <Metric
+                                label="Rows"
+                                value={exactCount(totals.data.record_count)}
+                            />
+                            <Metric
+                                label="Data size"
+                                value={exactBytes(totals.data.data_bytes)}
+                            />
+                            <Metric
+                                label="Data files"
+                                value={exactCount(totals.data.data_files)}
+                                detail={`${exactCount(totals.data.small_files)} small`}
+                            />
+                            <Metric
+                                label="Delete files"
+                                value={exactCount(totals.data.delete_files)}
+                                detail={exactBytes(totals.data.delete_bytes)}
+                            />
+                            <Metric
+                                label="Snapshots"
+                                value={exactCount(totals.data.snapshot_count)}
+                            />
+                        </MetricGrid>
+                    )}
+                </CardContent>
+            </Card>
             <Card>
                 <CardHeader>
                     <CardTitle>Connection details</CardTitle>

@@ -1,9 +1,28 @@
 // The table list's URL state (ADR 0056): search, filters, and sort live in
 // validated search parameters so links, back/forward, and saved views work.
 
-const SORTS = ["name", "catalog", "namespace", "registered"] as const;
+const SORTS = [
+    "name",
+    "catalog",
+    "namespace",
+    "registered",
+    "records",
+    "size",
+    "files",
+    "small",
+] as const;
 
 export type TableSort = (typeof SORTS)[number];
+
+const TABS = ["overview", "statistics"] as const;
+
+/** The table detail's addressable tab. */
+export type TableTab = (typeof TABS)[number];
+
+/** The table detail's URL state: which tab is open. */
+export interface TableSearch {
+    tab?: TableTab;
+}
 
 export interface TablesSearch {
     q?: string;
@@ -41,6 +60,19 @@ export function parseNamespaceKey(value: string): string[] | undefined {
 
 export function sortColumn(value: unknown): TableSort | undefined {
     return SORTS.find((candidate) => candidate === value);
+}
+
+/** The tab in a search parameter, or `undefined` for anything else. */
+export function tab(value: unknown): TableTab | undefined {
+    return TABS.find((candidate) => candidate === value);
+}
+
+/** Keeps unknown or malformed table-detail search parameters out of the page. */
+export function validateTableSearch(
+    search: Record<string, unknown>,
+): TableSearch {
+    const selected = tab(search["tab"]);
+    return selected === undefined ? {} : { tab: selected };
 }
 
 /** Keeps unknown or malformed search parameters out of the page. */

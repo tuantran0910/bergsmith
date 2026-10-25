@@ -32,6 +32,7 @@ import {
     rejectedPreview,
     session,
     table,
+    tableStatistics,
 } from "./test/fixtures";
 
 let fake: FakeApi;
@@ -292,6 +293,34 @@ describe("session identity", () => {
 });
 
 describe("browsing", () => {
+    it("opens a table's statistics tab and keeps it in the URL", async () => {
+        fake.on("GET", "/api/v1/tables/{id}/statistics", () =>
+            json(200, tableStatistics),
+        );
+        const user = start(`/tables/${TABLE_ID}`);
+
+        await user.click(
+            await screen.findByRole("tab", { name: "Statistics" }),
+        );
+
+        expect(window.location.search).toBe("?tab=statistics");
+        expect(
+            await screen.findByRole("img", { name: /Data file sizes/ }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByText("+2.0 KiB since the previous sample"),
+        ).toBeInTheDocument();
+        expect(screen.getByText("day=2026-10-01")).toBeInTheDocument();
+        expect(screen.getAllByText("200").length).toBeGreaterThan(0);
+        expect(screen.getAllByText("120").length).toBeGreaterThan(0);
+
+        await user.click(screen.getByRole("tab", { name: "Overview" }));
+        expect(window.location.search).toBe("");
+        expect(
+            screen.getByRole("button", { name: "Preview maintenance" }),
+        ).toBeInTheDocument();
+    });
+
     it("lists tables by alias and pages with the cursor", async () => {
         fake.on(
             "GET",

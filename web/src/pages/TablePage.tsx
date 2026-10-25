@@ -1,4 +1,4 @@
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { PlayIcon, ScanSearchIcon } from "lucide-react";
 
 import { hasTablePermission } from "../api/auth";
@@ -22,13 +22,17 @@ import {
 import { useSession, useSessionMutation } from "../queryClient";
 import { Button } from "../ui/Button";
 import { Card, CardContent } from "../ui/Card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/Tabs";
 import { PreviewView } from "./PreviewView";
 import { Access } from "./access/Access";
-import { namespaceKey } from "./tables/search";
+import { namespaceKey, type TableTab } from "./tables/search";
+import { TableStatistics } from "./tables/Statistics";
 
 /** One table: its names and technical identity, then preview and run. */
 export function TablePage({ id }: { id: string }) {
     const navigate = useNavigate();
+    const search = useSearch({ from: "/tables/$tableId" });
+    const current: TableTab = search.tab ?? "overview";
     const table = useTable(id);
     const catalogs = useCatalogNames();
     const names = catalogs.data ?? new Map<string, string>();
@@ -148,135 +152,173 @@ export function TablePage({ id }: { id: string }) {
                 }
             />
 
-            <MetricGrid className="mb-6">
-                <Metric
-                    label="Registered"
-                    value={date(table.data.created_at)}
-                    detail={relativeTime(table.data.created_at)}
-                />
-                <Metric
-                    label="Registered names"
-                    value={table.data.aliases.length}
-                    detail={`Across ${count(catalogLinks.length, "catalog")}`}
-                />
-                <Metric
-                    label="Catalogs"
-                    value={catalogLinks.length}
-                    detail={
-                        catalogLinks.length === 0
-                            ? "None"
-                            : catalogLinks.map(([, name]) => name).join(", ")
-                    }
-                />
-                <Metric
-                    label="Namespaces"
-                    value={namespaces.length}
-                    detail={
-                        namespaces.length === 0
-                            ? "None"
-                            : namespaces
-                                  .map((levels) => levels.join("."))
-                                  .join(", ")
-                    }
-                />
-            </MetricGrid>
+            <Tabs
+                value={current}
+                onValueChange={(next) => {
+                    void navigate({
+                        to: "/tables/$tableId",
+                        params: { tableId: id },
+                        search:
+                            next === "statistics" ? { tab: "statistics" } : {},
+                        replace: true,
+                    });
+                }}
+                className="mb-6"
+            >
+                <TabsList>
+                    <TabsTrigger value="overview">Overview</TabsTrigger>
+                    <TabsTrigger value="statistics">Statistics</TabsTrigger>
+                </TabsList>
+                <TabsContent value="overview">
+                    <MetricGrid className="mb-6">
+                        <Metric
+                            label="Registered"
+                            value={date(table.data.created_at)}
+                            detail={relativeTime(table.data.created_at)}
+                        />
+                        <Metric
+                            label="Registered names"
+                            value={table.data.aliases.length}
+                            detail={`Across ${count(catalogLinks.length, "catalog")}`}
+                        />
+                        <Metric
+                            label="Catalogs"
+                            value={catalogLinks.length}
+                            detail={
+                                catalogLinks.length === 0
+                                    ? "None"
+                                    : catalogLinks
+                                          .map(([, name]) => name)
+                                          .join(", ")
+                            }
+                        />
+                        <Metric
+                            label="Namespaces"
+                            value={namespaces.length}
+                            detail={
+                                namespaces.length === 0
+                                    ? "None"
+                                    : namespaces
+                                          .map((levels) => levels.join("."))
+                                          .join(", ")
+                            }
+                        />
+                    </MetricGrid>
 
-            <Card className="mb-6">
-                <CardContent>
-                    <TechnicalDetails
-                        className="border-t-0 pt-0"
-                        items={[
-                            {
-                                term: "Table UUID",
-                                description: (
-                                    <ResourceId
-                                        id={table.data.table_uuid}
-                                        label="table UUID"
-                                    />
-                                ),
-                            },
-                            {
-                                term: "Registered names",
-                                description:
-                                    table.data.aliases.length === 0 ? (
-                                        "None"
-                                    ) : (
-                                        <ul className="m-0 grid list-none gap-1 p-0">
-                                            {table.data.aliases.map((alias) => (
-                                                <li
-                                                    key={JSON.stringify([
-                                                        alias.catalog_id,
-                                                        alias.namespace,
-                                                        alias.name,
-                                                    ])}
-                                                >
-                                                    <code>
-                                                        {aliasName(
-                                                            alias,
-                                                            names,
-                                                        )}
-                                                    </code>{" "}
-                                                    <span className="text-xs text-muted-foreground">
-                                                        revision{" "}
-                                                        {alias.revision}
-                                                    </span>
-                                                </li>
-                                            ))}
-                                        </ul>
-                                    ),
-                            },
-                            {
-                                term: "Catalog connections",
-                                description:
-                                    catalogLinks.length === 0 ? (
-                                        "None"
-                                    ) : (
-                                        <ul className="m-0 grid list-none gap-1 p-0">
-                                            {catalogLinks.map(([id, name]) => (
-                                                <li key={id}>
-                                                    <Link
-                                                        to="/catalogs/$catalogId"
-                                                        params={{
-                                                            catalogId: id,
-                                                        }}
-                                                    >
-                                                        {name}
-                                                    </Link>
-                                                </li>
-                                            ))}
-                                        </ul>
-                                    ),
-                            },
-                            {
-                                term: "Registered",
-                                description: (
-                                    <time dateTime={table.data.created_at}>
-                                        {timestamp(table.data.created_at)}
-                                    </time>
-                                ),
-                            },
-                        ]}
-                    />
-                </CardContent>
-            </Card>
+                    <Card className="mb-6">
+                        <CardContent>
+                            <TechnicalDetails
+                                className="border-t-0 pt-0"
+                                items={[
+                                    {
+                                        term: "Table UUID",
+                                        description: (
+                                            <ResourceId
+                                                id={table.data.table_uuid}
+                                                label="table UUID"
+                                            />
+                                        ),
+                                    },
+                                    {
+                                        term: "Registered names",
+                                        description:
+                                            table.data.aliases.length === 0 ? (
+                                                "None"
+                                            ) : (
+                                                <ul className="m-0 grid list-none gap-1 p-0">
+                                                    {table.data.aliases.map(
+                                                        (alias) => (
+                                                            <li
+                                                                key={JSON.stringify(
+                                                                    [
+                                                                        alias.catalog_id,
+                                                                        alias.namespace,
+                                                                        alias.name,
+                                                                    ],
+                                                                )}
+                                                            >
+                                                                <code>
+                                                                    {aliasName(
+                                                                        alias,
+                                                                        names,
+                                                                    )}
+                                                                </code>{" "}
+                                                                <span className="text-xs text-muted-foreground">
+                                                                    revision{" "}
+                                                                    {
+                                                                        alias.revision
+                                                                    }
+                                                                </span>
+                                                            </li>
+                                                        ),
+                                                    )}
+                                                </ul>
+                                            ),
+                                    },
+                                    {
+                                        term: "Catalog connections",
+                                        description:
+                                            catalogLinks.length === 0 ? (
+                                                "None"
+                                            ) : (
+                                                <ul className="m-0 grid list-none gap-1 p-0">
+                                                    {catalogLinks.map(
+                                                        ([id, name]) => (
+                                                            <li key={id}>
+                                                                <Link
+                                                                    to="/catalogs/$catalogId"
+                                                                    params={{
+                                                                        catalogId:
+                                                                            id,
+                                                                    }}
+                                                                >
+                                                                    {name}
+                                                                </Link>
+                                                            </li>
+                                                        ),
+                                                    )}
+                                                </ul>
+                                            ),
+                                    },
+                                    {
+                                        term: "Registered",
+                                        description: (
+                                            <time
+                                                dateTime={table.data.created_at}
+                                            >
+                                                {timestamp(
+                                                    table.data.created_at,
+                                                )}
+                                            </time>
+                                        ),
+                                    },
+                                ]}
+                            />
+                        </CardContent>
+                    </Card>
 
-            {submit.error !== null && (
-                <ErrorNotice
-                    error={submit.error}
-                    onRetry={() => {
-                        submit.mutate(undefined);
-                    }}
-                />
-            )}
-            {preview.error !== null && (
-                <ErrorNotice
-                    error={preview.error}
-                    onRetry={() => {
-                        preview.mutate();
-                    }}
-                />
-            )}
-            {preview.data && <PreviewView preview={preview.data} />}
+                    {submit.error !== null && (
+                        <ErrorNotice
+                            error={submit.error}
+                            onRetry={() => {
+                                submit.mutate(undefined);
+                            }}
+                        />
+                    )}
+                    {preview.error !== null && (
+                        <ErrorNotice
+                            error={preview.error}
+                            onRetry={() => {
+                                preview.mutate();
+                            }}
+                        />
+                    )}
+                    {preview.data && <PreviewView preview={preview.data} />}
+                </TabsContent>
+                <TabsContent value="statistics">
+                    <TableStatistics id={id} />
+                </TabsContent>
+            </Tabs>
             <Access
                 scope={{ table: id }}
                 scopeLabel={fullName}

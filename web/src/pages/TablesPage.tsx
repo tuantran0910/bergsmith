@@ -19,7 +19,16 @@ import {
     PageHeader,
 } from "../components/Page";
 import { ResourceLabel } from "../components/ResourceLabel";
-import { aliasName, count, date, number, shortId, timestamp } from "../format";
+import {
+    aliasName,
+    count,
+    date,
+    exactBytes,
+    exactCount,
+    number,
+    shortId,
+    timestamp,
+} from "../format";
 import { buttonVariants } from "../ui/Button";
 import { Select } from "../ui/Select";
 import { namespaceKey, sortColumn, type TablesSearch } from "./tables/search";
@@ -265,6 +274,60 @@ export function TablesPage() {
             cell: (table) => (
                 <span className="text-muted-foreground">
                     {display(table, names).namespaces}
+                </span>
+            ),
+        },
+        {
+            id: "records",
+            header: "Rows",
+            align: "end",
+            // Sorting compares doubles, while the cell keeps every digit, so
+            // only an ordering tie above 2^53 could differ.
+            sortValue: (table) => Number(table.statistics?.record_count ?? -1),
+            cell: (table) => (
+                <span className="tabular-nums">
+                    {table.statistics === null || table.statistics === undefined
+                        ? "—"
+                        : exactCount(table.statistics.record_count)}
+                </span>
+            ),
+        },
+        {
+            id: "size",
+            header: "Data size",
+            align: "end",
+            sortValue: (table) => Number(table.statistics?.data_bytes ?? -1),
+            cell: (table) => (
+                <span className="tabular-nums">
+                    {table.statistics === null || table.statistics === undefined
+                        ? "—"
+                        : exactBytes(table.statistics.data_bytes)}
+                </span>
+            ),
+        },
+        {
+            id: "files",
+            header: "Data files",
+            align: "end",
+            sortValue: (table) => Number(table.statistics?.data_files ?? -1),
+            cell: (table) => (
+                <span className="tabular-nums">
+                    {table.statistics === null || table.statistics === undefined
+                        ? "—"
+                        : exactCount(table.statistics.data_files)}
+                </span>
+            ),
+        },
+        {
+            id: "small",
+            header: "Small files",
+            align: "end",
+            sortValue: (table) => Number(table.statistics?.small_files ?? -1),
+            cell: (table) => (
+                <span className="tabular-nums">
+                    {table.statistics === null || table.statistics === undefined
+                        ? "—"
+                        : exactCount(table.statistics.small_files)}
                 </span>
             ),
         },

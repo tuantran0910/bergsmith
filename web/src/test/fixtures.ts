@@ -1,7 +1,7 @@
 // Contract-typed fixtures. A change to the OpenAPI document that these no
 // longer satisfy fails the typecheck, not just a test.
 
-import type { Job, JobEvent, JobState } from "../api/client";
+import type { Job, JobEvent, JobState, Schemas } from "../api/client";
 import type {
     GrantScope,
     Permission,
@@ -153,6 +153,83 @@ export const table = schema("Table", {
             revision: 8,
         },
     ],
+    statistics: null,
+});
+
+/** One metadata-only sample; `rows` and `bytes` are decimal strings. */
+export function tableSample(
+    sampledAt: string,
+    rows: string,
+    bytes: string,
+): Schemas["TableStatistics"] {
+    return schema("TableStatistics", {
+        sampled_at: sampledAt,
+        catalog_connection_id: CATALOG_ID,
+        snapshot_id: "3",
+        last_operation: "append",
+        record_count: rows,
+        data_files: "3",
+        data_bytes: bytes,
+        delete_files: "1",
+        delete_bytes: "4096",
+        position_delete_files: "1",
+        equality_delete_files: "0",
+        position_delete_records: "10",
+        equality_delete_records: "0",
+        manifest_count: "2",
+        manifest_bytes: "2048",
+        partition_count: "2",
+        small_files: "1",
+        target_file_size_bytes: "1048576",
+        snapshot_count: "4",
+        oldest_snapshot_at: "2026-09-30T00:00:00Z",
+        newest_snapshot_at: "2026-10-01T00:00:00Z",
+        oldest_snapshot_age_seconds: "86400",
+        newest_snapshot_age_seconds: "3600",
+        size_histogram: [
+            {
+                lower_bound_bytes: "0",
+                upper_bound_bytes: "1024",
+                files: "1",
+                bytes: "512",
+            },
+            {
+                lower_bound_bytes: "1024",
+                upper_bound_bytes: null,
+                files: "2",
+                bytes: "3584",
+            },
+        ],
+        top_partitions: [
+            {
+                spec_id: 0,
+                partition: "day=2026-10-01",
+                files: "2",
+                bytes: "2048",
+            },
+        ],
+    });
+}
+
+export const tableStatistics = schema("TableStatisticsPage", {
+    items: [
+        tableSample("2026-10-02T00:00:00Z", "200", "4096"),
+        tableSample("2026-10-01T00:00:00Z", "120", "2048"),
+    ],
+    next_cursor: null,
+    latest: tableSample("2026-10-02T00:00:00Z", "200", "4096"),
+});
+
+export const catalogTotals = schema("StatisticsTotals", {
+    tables: "2",
+    record_count: "1200",
+    data_files: "12",
+    data_bytes: "1048576",
+    delete_files: "1",
+    delete_bytes: "4096",
+    small_files: "3",
+    snapshot_count: "8",
+    last_sampled_at: "2026-10-02T00:00:00Z",
 });
 
 export function job(state: JobState, overrides: Partial<Job> = {}): Job {

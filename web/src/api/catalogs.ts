@@ -48,6 +48,23 @@ export function useCatalog(id: string) {
     });
 }
 
+/** Totals over the newest sample of every table the caller may view here. */
+export function useCatalogTotals(id: string) {
+    const client = useQueryClient();
+    return useQuery({
+        queryKey: ["catalog", id, "statistics"],
+        queryFn: ({ signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/catalogs/{id}/statistics", {
+                        params: { path: { id } },
+                        signal,
+                    }),
+                ),
+            ),
+    });
+}
+
 /** Lists one level at a time; namespace levels are serialized as repeated parameters. */
 export function useNamespaces(id: string, parent: string[]) {
     const client = useQueryClient();
