@@ -30,7 +30,10 @@ as `x-csrf-token`. All responses use `Cache-Control: no-store`.
 | `GET /api/v1/grants` | Active grants in ascending identifier order, optionally filtered by `principal_id`, `catalog_connection`, or `table`; the filter's scope requires `grants:manage`. A connection page includes the grants on its tables |
 | `POST /api/v1/grants` | Grant a role over the organization (`"scope": {}`), one connection, or one table; 201; requires `grants:manage` over that scope; 409 `grant_already_exists` for an identical active grant |
 | `DELETE /api/v1/grants/{id}` | Revoke an active grant, keeping the row for audit; requires `grants:manage` over its scope; 409 `last_administrator` when it is the last active organization-wide administrator grant |
-| `GET /api/v1/tables`, `GET /api/v1/tables/{id}` | Authorized canonical table identities |
+| `GET /api/v1/tables`, `GET /api/v1/tables/{id}` | Authorized canonical table identities, each with the newest metadata-only statistics summary or `null` when unsampled |
+| `GET /api/v1/tables/{id}/statistics` | The table's newest sample and a cursor page of its history; `since` filters by instant; counts and bytes are decimal strings; partition values appear only for callers allowed to submit jobs on the table; 404 for unknown or invisible tables |
+| `GET /api/v1/catalogs/{id}/statistics` | Totals over the newest sample of every visible table on one connection; 404 when the connection is not visible |
+| `GET /api/v1/statistics` | The same totals over every table the caller may view in the organization |
 | `GET /api/v1/jobs`, `GET /api/v1/jobs/{id}` | Authorized job state, revision, requester and their display name, the table's caller-visible aliases, cancellation/publication boundary, retry link |
 | `POST /api/v1/jobs` | Idempotent durable submission; returns 202 with job and operation IDs and Location |
 | `POST /api/v1/jobs/{id}/cancel` | Record a cancellation request and report what it achieved |

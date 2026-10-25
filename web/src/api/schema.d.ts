@@ -108,6 +108,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tables/{id}/statistics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Metadata-only samples of one table, newest first, with the newest sample regardless of the requested range. Unknown and inaccessible identifiers both return 404. */
+        get: operations["getTableStatistics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/statistics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Totals over the newest sample of every table the caller may view in the organization. */
+        get: operations["getOrganizationStatistics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/jobs": {
         parameters: {
             query?: never;
@@ -380,6 +414,23 @@ export interface paths {
         post: operations["registerCatalogTables"];
         /** @description Removes the catalog name the caller observed, identified by its alias revision. Requires connections:manage for the connection. The canonical table and its other names stay: jobs and publication evidence still reference the table. Every alias of a table with nonterminal jobs is kept, so a commit is never left without a name to verify it through. */
         delete: operations["unregisterCatalogTable"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/catalogs/{id}/statistics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Totals over the newest sample of every table the caller may view on this connection. Unknown and inaccessible identifiers both return 404. */
+        get: operations["getCatalogStatistics"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -956,6 +1007,8 @@ export interface components {
             /** Format: date-time */
             created_at: string;
             aliases: components["schemas"]["TableAlias"][];
+            /** @description Newest metadata-only sample, or null when the table has never been sampled. */
+            statistics?: components["schemas"]["TableStatisticsSummary"] | null;
         };
         /** @description One catalog name of a table, with the revision a removal names. */
         TableAlias: {
@@ -1200,6 +1253,79 @@ export interface components {
             planned_input_bytes: string | null;
             plan_recorded: boolean;
             publication_confirmed: boolean;
+        };
+        TableStatisticsSizeBucket: {
+            lower_bound_bytes: string;
+            /** @description Exclusive upper bound; null for the final bucket. */
+            upper_bound_bytes: string | null;
+            files: string;
+            bytes: string;
+        };
+        TableStatisticsPartition: {
+            /** Format: int32 */
+            spec_id: number;
+            /** @description field=value pairs in partition-field order; empty when unpartitioned. */
+            partition: string;
+            files: string;
+            bytes: string;
+        };
+        TableStatistics: {
+            /** Format: date-time */
+            sampled_at: string;
+            /** Format: uuid */
+            catalog_connection_id: string;
+            /** @description Decimal string; null when the table has no snapshot. */
+            snapshot_id: string | null;
+            last_operation: string | null;
+            record_count: string;
+            data_files: string;
+            data_bytes: string;
+            delete_files: string;
+            delete_bytes: string;
+            position_delete_files: string;
+            equality_delete_files: string;
+            position_delete_records: string;
+            equality_delete_records: string;
+            manifest_count: string;
+            manifest_bytes: string;
+            partition_count: string;
+            small_files: string;
+            target_file_size_bytes: string;
+            snapshot_count: string;
+            oldest_snapshot_at: string | null;
+            newest_snapshot_at: string | null;
+            /** @description Whole seconds since the oldest snapshot; null without a snapshot log. */
+            oldest_snapshot_age_seconds: string | null;
+            /** @description Whole seconds since the last commit; null without a snapshot log. */
+            newest_snapshot_age_seconds: string | null;
+            size_histogram: components["schemas"]["TableStatisticsSizeBucket"][];
+            top_partitions: components["schemas"]["TableStatisticsPartition"][];
+        };
+        TableStatisticsPage: {
+            items: components["schemas"]["TableStatistics"][];
+            next_cursor: string | null;
+            /** @description Newest sample regardless of the requested range. */
+            latest: components["schemas"]["TableStatistics"] | null;
+        };
+        StatisticsTotals: {
+            tables: string;
+            record_count: string;
+            data_files: string;
+            data_bytes: string;
+            delete_files: string;
+            delete_bytes: string;
+            small_files: string;
+            snapshot_count: string;
+            last_sampled_at: string | null;
+        };
+        TableStatisticsSummary: {
+            /** Format: date-time */
+            sampled_at: string;
+            record_count: string;
+            data_files: string;
+            data_bytes: string;
+            delete_files: string;
+            small_files: string;
         };
     };
     responses: never;
@@ -1901,6 +2027,171 @@ export interface operations {
             };
             /** @description Unknown or inaccessible resource */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    getTableStatistics: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque continuation bound to organization, principal, and resource. Current grants are rechecked. */
+                cursor?: string;
+                /** @description Inclusive RFC 3339 lower bound for the history. */
+                since?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Statistics page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TableStatisticsPage"];
+                };
+            };
+            /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unknown or inaccessible resource */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    getOrganizationStatistics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Statistics totals */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatisticsTotals"];
+                };
+            };
+            /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3929,6 +4220,91 @@ export interface operations {
             };
             /** @description The alias is not the revision the caller observed, or the table still has nonterminal jobs */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    getCatalogStatistics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Statistics totals */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatisticsTotals"];
+                };
+            };
+            /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unknown or inaccessible resource */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
                 headers: {
                     [name: string]: unknown;
                 };

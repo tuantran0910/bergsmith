@@ -891,6 +891,210 @@
         ]
       }
     },
+    "/api/v1/tables/{id}/statistics": {
+      "get": {
+        "operationId": "getTableStatistics",
+        "description": "Metadata-only samples of one table, newest first, with the newest sample regardless of the requested range. Unknown and inaccessible identifiers both return 404.",
+        "responses": {
+          "400": {
+            "description": "Invalid request or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or inaccessible resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Statistics page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TableStatisticsPage"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque continuation bound to organization, principal, and resource. Current grants are rechecked.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Inclusive RFC 3339 lower bound for the history.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/statistics": {
+      "get": {
+        "operationId": "getOrganizationStatistics",
+        "description": "Totals over the newest sample of every table the caller may view in the organization.",
+        "responses": {
+          "400": {
+            "description": "Invalid request or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Statistics totals",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatisticsTotals"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/jobs": {
       "get": {
         "operationId": "listJobs",
@@ -3445,6 +3649,105 @@
             }
           }
         }
+      }
+    },
+    "/api/v1/catalogs/{id}/statistics": {
+      "get": {
+        "operationId": "getCatalogStatistics",
+        "description": "Totals over the newest sample of every table the caller may view on this connection. Unknown and inaccessible identifiers both return 404.",
+        "responses": {
+          "400": {
+            "description": "Invalid request or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or inaccessible resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Statistics totals",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatisticsTotals"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
       }
     },
     "/api/v1/principals": {
@@ -6893,6 +7196,17 @@
             "items": {
               "$ref": "#/components/schemas/TableAlias"
             }
+          },
+          "statistics": {
+            "description": "Newest metadata-only sample, or null when the table has never been sampled.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TableStatisticsSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -7960,6 +8274,387 @@
           },
           "publication_confirmed": {
             "type": "boolean"
+          }
+        }
+      },
+      "TableStatisticsSizeBucket": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "lower_bound_bytes",
+          "upper_bound_bytes",
+          "files",
+          "bytes"
+        ],
+        "properties": {
+          "lower_bound_bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "upper_bound_bytes": {
+            "description": "Exclusive upper bound; null for the final bucket.",
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          }
+        }
+      },
+      "TableStatisticsPartition": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "spec_id",
+          "partition",
+          "files",
+          "bytes"
+        ],
+        "properties": {
+          "spec_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "partition": {
+            "type": "string",
+            "description": "field=value pairs in partition-field order; empty when unpartitioned."
+          },
+          "files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          }
+        }
+      },
+      "TableStatistics": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sampled_at",
+          "catalog_connection_id",
+          "snapshot_id",
+          "last_operation",
+          "record_count",
+          "data_files",
+          "data_bytes",
+          "delete_files",
+          "delete_bytes",
+          "position_delete_files",
+          "equality_delete_files",
+          "position_delete_records",
+          "equality_delete_records",
+          "manifest_count",
+          "manifest_bytes",
+          "partition_count",
+          "small_files",
+          "target_file_size_bytes",
+          "snapshot_count",
+          "oldest_snapshot_at",
+          "newest_snapshot_at",
+          "oldest_snapshot_age_seconds",
+          "newest_snapshot_age_seconds",
+          "size_histogram",
+          "top_partitions"
+        ],
+        "properties": {
+          "sampled_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "catalog_connection_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "snapshot_id": {
+            "description": "Decimal string; null when the table has no snapshot.",
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_operation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "record_count": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "data_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "data_bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "delete_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "delete_bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "position_delete_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "equality_delete_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "position_delete_records": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "equality_delete_records": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "manifest_count": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "manifest_bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "partition_count": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "small_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "target_file_size_bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "snapshot_count": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "oldest_snapshot_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "newest_snapshot_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "oldest_snapshot_age_seconds": {
+            "description": "Whole seconds since the oldest snapshot; null without a snapshot log.",
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "newest_snapshot_age_seconds": {
+            "description": "Whole seconds since the last commit; null without a snapshot log.",
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "size_histogram": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TableStatisticsSizeBucket"
+            }
+          },
+          "top_partitions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TableStatisticsPartition"
+            }
+          }
+        }
+      },
+      "TableStatisticsPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "next_cursor",
+          "latest"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TableStatistics"
+            }
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "latest": {
+            "description": "Newest sample regardless of the requested range.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TableStatistics"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "StatisticsTotals": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "tables",
+          "record_count",
+          "data_files",
+          "data_bytes",
+          "delete_files",
+          "delete_bytes",
+          "small_files",
+          "snapshot_count",
+          "last_sampled_at"
+        ],
+        "properties": {
+          "tables": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "record_count": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "data_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "data_bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "delete_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "delete_bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "small_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "snapshot_count": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "last_sampled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "TableStatisticsSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sampled_at",
+          "record_count",
+          "data_files",
+          "data_bytes",
+          "delete_files",
+          "small_files"
+        ],
+        "properties": {
+          "sampled_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "record_count": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "data_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "data_bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "delete_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "small_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
           }
         }
       }
