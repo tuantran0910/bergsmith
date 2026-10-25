@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { InboxIcon } from "lucide-react";
 
-import { EmptyState, LoadMore, LoadingRows } from "./Page";
+import { NoResults, EmptyState, LoadMore, LoadingRows } from "./Page";
 import { COPY_FEEDBACK_MS, CopyButton, ResourceId } from "./ResourceId";
 
 const ID = "0190f3c4-0000-7000-8000-00000000000a";
@@ -86,6 +86,31 @@ describe("page states", () => {
         );
         expect(screen.getByText("Nothing here.")).toBeInTheDocument();
         expect(screen.getByText("What to do next.")).toBeInTheDocument();
+    });
+
+    it("offers the next step from an empty list", () => {
+        render(
+            <EmptyState
+                icon={InboxIcon}
+                title="No tables yet."
+                action={<a href="/catalogs">Browse catalogs</a>}
+            />,
+        );
+        expect(
+            screen.getByRole("link", { name: "Browse catalogs" }),
+        ).toBeInTheDocument();
+    });
+
+    it("clears a filtered list from its no-results state", () => {
+        const onClear = vi.fn();
+        render(
+            <NoResults onClear={onClear}>
+                No tables match these filters.
+            </NoResults>,
+        );
+        expect(screen.getByText("No matches.")).toBeInTheDocument();
+        fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+        expect(onClear).toHaveBeenCalledTimes(1);
     });
 
     it("counts loaded rows and offers more only when there are more", () => {

@@ -41,6 +41,50 @@ export function timestamp(value: string): string {
     return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
+/** A calendar date in the viewer's locale, without the time of day. */
+export function date(value: string): string {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime())
+        ? value
+        : new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(
+              parsed,
+          );
+}
+
+/** How long ago a timestamp was, for example `3 days ago`; errors pass through. */
+export function relativeTime(value: string, now = Date.now()): string {
+    const parsed = Date.parse(value);
+    if (Number.isNaN(parsed)) {
+        return value;
+    }
+    const seconds = (parsed - now) / 1000;
+    const magnitude = Math.abs(seconds);
+    const format = new Intl.RelativeTimeFormat(undefined, {
+        numeric: "always",
+    });
+    if (magnitude < 60) {
+        return format.format(Math.round(seconds), "second");
+    }
+    if (magnitude < 3600) {
+        return format.format(Math.round(seconds / 60), "minute");
+    }
+    if (magnitude < 86_400) {
+        return format.format(Math.round(seconds / 3600), "hour");
+    }
+    if (magnitude < 2_592_000) {
+        return format.format(Math.round(seconds / 86_400), "day");
+    }
+    if (magnitude < 31_536_000) {
+        return format.format(Math.round(seconds / 2_592_000), "month");
+    }
+    return format.format(Math.round(seconds / 31_536_000), "year");
+}
+
+/** A count in the viewer's locale, with grouping for large numbers. */
+export function number(value: number): string {
+    return new Intl.NumberFormat().format(value);
+}
+
 /** A stable machine code such as `retry_same_request` as words. */
 export function words(code: string): string {
     const text = code.replace(/_/g, " ");

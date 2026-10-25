@@ -14,8 +14,16 @@ const OPTIONS: Record<ThemePreference, { label: string; icon: LucideIcon }> = {
 };
 
 /** Chooses the system, light, or dark theme; the current choice is pressed. */
-export function ThemeToggle() {
-    const [preference, choose] = useThemePreference();
+export function ThemeToggle({
+    preference: controlled,
+    onChange,
+}: {
+    preference?: ThemePreference;
+    onChange?: (preference: ThemePreference) => void;
+} = {}) {
+    const [stored, chooseStored] = useThemePreference();
+    const preference = controlled ?? stored;
+    const choose = onChange ?? chooseStored;
     return (
         <div
             role="group"
@@ -31,6 +39,7 @@ export function ThemeToggle() {
                         size="icon-sm"
                         aria-label={label}
                         aria-pressed={preference === option}
+                        title={label}
                         onClick={() => {
                             choose(option);
                         }}

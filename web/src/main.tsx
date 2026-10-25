@@ -4,11 +4,13 @@ import { createRoot } from "react-dom/client";
 
 import { App } from "./App";
 import { reloadOnMissingChunk } from "./chunkReload";
+import { applyDensityPreference, readDensityPreference } from "./density";
 import { createQueryClient } from "./queryClient";
 import "./styles.css";
 import { applyThemePreference, readThemePreference } from "./theme";
 
 applyThemePreference(readThemePreference());
+applyDensityPreference(readDensityPreference());
 reloadOnMissingChunk(window, window.sessionStorage, () => {
     window.location.reload();
 });

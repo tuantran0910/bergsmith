@@ -9,6 +9,10 @@ export function Table({ className, ...props }: ComponentProps<"table">) {
     return (
         <div
             data-slot="table-container"
+            // A horizontally scrollable data table must be reachable by
+            // keyboard (WCAG 2.2 AA); the table remains the semantic element.
+            // eslint-disable-next-line jsx-a11y-x/no-noninteractive-tabindex
+            tabIndex={0}
             className="relative w-full overflow-x-auto"
         >
             <table

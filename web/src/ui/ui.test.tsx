@@ -193,6 +193,8 @@ describe("Table", () => {
             screen.getByRole("columnheader", { name: "Table" }),
         ).toHaveAttribute("scope", "col");
         expect(table).toHaveTextContent("sales.orders");
+        // The horizontal scroll container is reachable by keyboard.
+        expect(table.parentElement).toHaveAttribute("tabindex", "0");
     });
 });
 
