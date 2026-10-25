@@ -16,6 +16,7 @@ import { lazy, type ComponentType } from "react";
 
 import { Root } from "./Root";
 import { EmptyState } from "./components/Page";
+import { validateTablesSearch } from "./pages/tables/search";
 
 /**
  * A page chunk with the `preload` hook TanStack Router calls on intent.
@@ -122,7 +123,11 @@ const indexRoute = createRoute({
 const tablesRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/tables",
-    component: TablesPage,
+    validateSearch: validateTablesSearch,
+    component: function TablesRoute() {
+        const search = tablesRoute.useSearch();
+        return <TablesPage search={search} />;
+    },
 });
 
 const catalogsRoute = createRoute({

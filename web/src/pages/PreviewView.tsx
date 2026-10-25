@@ -4,9 +4,8 @@ import {
     CircleXIcon,
     type LucideIcon,
 } from "lucide-react";
-import type { ReactNode } from "react";
-
 import type { Schemas } from "../api/client";
+import { Metric, MetricGrid } from "../components/Metric";
 import { GridFrame } from "../components/Page";
 import { bytes, count, duration, words } from "../format";
 import { Alert, AlertDescription, AlertTitle } from "../ui/Alert";
@@ -55,33 +54,6 @@ function outcomeText(preview: Preview): string {
         case "rejected":
             return "Unsupported: Bergsmith will not rewrite this table";
     }
-}
-
-/** One figure of the estimate, with an optional line under it. */
-function Stat({
-    label,
-    value,
-    detail,
-}: {
-    label: string;
-    value: ReactNode;
-    detail?: ReactNode;
-}) {
-    return (
-        <div className="rounded-xl bg-card px-4 py-3 ring-1 ring-foreground/10">
-            <dt className="text-xs font-medium text-muted-foreground">
-                {label}
-            </dt>
-            <dd className="m-0 mt-1 text-xl font-semibold tabular-nums">
-                {value}
-            </dd>
-            {detail !== undefined && (
-                <dd className="m-0 text-xs text-muted-foreground tabular-nums">
-                    {detail}
-                </dd>
-            )}
-        </div>
-    );
 }
 
 /** What a job would be built from, including why a table is unsupported. */
@@ -138,31 +110,31 @@ export function PreviewView({ preview }: { preview: Preview }) {
             )}
 
             {preview.outcome === "planned" && (
-                <dl className="m-0 grid grid-cols-2 gap-3 md:grid-cols-5">
-                    <Stat
+                <MetricGrid className="md:grid-cols-5">
+                    <Metric
                         label="Bins"
                         value={preview.bins_total}
                         detail={count(preview.estimate.tasks, "task")}
                     />
-                    <Stat
+                    <Metric
                         label="Input"
                         value={bytes(preview.estimate.bytes)}
                         detail={count(preview.estimate.files, "file")}
                     />
-                    <Stat
+                    <Metric
                         label="Files removed"
                         value={preview.estimate.files_removed}
                     />
-                    <Stat
+                    <Metric
                         label="Expected duration"
                         value={duration(preview.estimate.duration_millis)}
                     />
-                    <Stat
+                    <Metric
                         label="Candidates"
                         value={bytes(preview.candidates.bytes)}
                         detail={count(preview.candidates.files, "file")}
                     />
-                </dl>
+                </MetricGrid>
             )}
 
             {preview.skipped.length > 0 && (
