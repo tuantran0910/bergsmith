@@ -11,21 +11,83 @@ import {
     notFound,
 } from "@tanstack/react-router";
 
-import { CompassIcon } from "lucide-react";
+import { CompassIcon, LoaderCircleIcon } from "lucide-react";
+import { lazy, type ComponentType } from "react";
 
 import { Root } from "./Root";
 import { EmptyState } from "./components/Page";
-import { AuditPage } from "./pages/AuditPage";
-import { JobPage } from "./pages/JobPage";
-import { JobsPage } from "./pages/JobsPage";
-import { OverviewPage } from "./pages/OverviewPage";
-import { TablePage } from "./pages/TablePage";
-import { TablesPage } from "./pages/TablesPage";
-import { WorkersPage } from "./pages/WorkersPage";
-import { CatalogsPage } from "./pages/CatalogsPage";
-import { CatalogPage } from "./pages/CatalogPage";
-import { NewCatalogPage } from "./pages/NewCatalogPage";
-import { PrincipalPage, PrincipalsPage } from "./pages/access/Principals";
+
+/**
+ * A page chunk with the `preload` hook TanStack Router calls on intent.
+ * React.lazy owns the pending state; a `use()`-based wrapper would call
+ * `use()` only before the module resolves, which React 19 warns about.
+ */
+function lazyPage<
+    Module extends Record<string, unknown>,
+    Name extends keyof Module & string,
+>(importer: () => Promise<Module>, exportName: Name) {
+    type Props = Module[Name] extends ComponentType<infer P> ? P : never;
+    const component = lazy(async () => ({
+        default: (await importer())[exportName] as ComponentType<Props>,
+    }));
+    return Object.assign(component, {
+        preload: async () => {
+            await importer();
+        },
+    });
+}
+
+// Pages load as their own chunks so the shell and first paint stay within
+// the first-load budget (ADR 0056, BS-032.T2).
+const OverviewPage = lazyPage(
+    () => import("./pages/OverviewPage"),
+    "OverviewPage",
+);
+const TablesPage = lazyPage(() => import("./pages/TablesPage"), "TablesPage");
+const TablePage = lazyPage(() => import("./pages/TablePage"), "TablePage");
+const CatalogsPage = lazyPage(
+    () => import("./pages/CatalogsPage"),
+    "CatalogsPage",
+);
+const NewCatalogPage = lazyPage(
+    () => import("./pages/NewCatalogPage"),
+    "NewCatalogPage",
+);
+const CatalogPage = lazyPage(
+    () => import("./pages/CatalogPage"),
+    "CatalogPage",
+);
+const JobsPage = lazyPage(() => import("./pages/JobsPage"), "JobsPage");
+const JobPage = lazyPage(() => import("./pages/JobPage"), "JobPage");
+const AuditPage = lazyPage(() => import("./pages/AuditPage"), "AuditPage");
+const WorkersPage = lazyPage(
+    () => import("./pages/WorkersPage"),
+    "WorkersPage",
+);
+const PrincipalsPage = lazyPage(
+    () => import("./pages/access/Principals"),
+    "PrincipalsPage",
+);
+const PrincipalPage = lazyPage(
+    () => import("./pages/access/Principals"),
+    "PrincipalPage",
+);
+
+/** The in-shell placeholder while a page chunk is on its way. */
+function RoutePending() {
+    return (
+        <p
+            role="status"
+            className="flex min-h-48 items-center justify-center gap-2 text-sm text-muted-foreground"
+        >
+            <LoaderCircleIcon
+                aria-hidden="true"
+                className="size-4 animate-spin motion-reduce:animate-none"
+            />
+            Loading page…
+        </p>
+    );
+}
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -188,10 +250,15 @@ export function createAppRouter(history?: RouterHistory) {
     return createRouter({
         routeTree,
         defaultNotFoundComponent: NotFound,
-        ...(history === undefined ? {} : { history }),
+        // A lazy page shows the shell with a status while its chunk loads.
+        defaultPendingComponent: RoutePending,
+        defaultPendingMs: 150,
+        defaultPendingMinMs: 300,
         // Queries own data loading and caching; the router only matches.
         defaultPreloadStaleTime: 0,
+        defaultPreload: "intent",
         scrollRestoration: true,
+        ...(history === undefined ? {} : { history }),
     });
 }
 

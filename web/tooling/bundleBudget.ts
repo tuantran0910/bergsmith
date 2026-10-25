@@ -1,38 +1,77 @@
-// A size budget for the JavaScript the browser downloads (BS-021.T4). It
-// counts gzipped bytes, what a user pays for, and fails `vite build` when the
-// total grows past the budget, so growth is a decision rather than drift.
+// A size budget for the JavaScript the browser downloads on first load
+// (BS-021.T4, refined by ADR 0056). It counts the entry chunk and the
+// chunks statically imported from it, follows that graph transitively, and
+// ignores lazy route chunks: what a user pays before any navigation, in
+// gzipped bytes. `vite build` fails when that total grows past the budget,
+// so growth is a decision rather than drift.
 
 import { gzipSync } from "node:zlib";
 
 import type { Plugin } from "vite";
 
-/** One emitted file and its gzipped size. */
-export interface ChunkSize {
+/** One emitted JavaScript chunk and the graph edges the budget follows. */
+export interface EmittedChunk {
     fileName: string;
     gzipBytes: number;
+    isEntry: boolean;
+    /** Statically imported chunks; dynamic imports are deliberately absent. */
+    imports: readonly string[];
 }
 
-/** Why the budget failed, largest chunk first, or `null` within budget. */
-export function budgetFailure(
-    chunks: readonly ChunkSize[],
+/** The first-load bytes: entry chunks and their static import closure. */
+export function firstLoadBytes(chunks: readonly EmittedChunk[]): number {
+    return measured(chunks).total;
+}
+
+/** Entry-reachable chunks and their gzipped total. */
+function measured(chunks: readonly EmittedChunk[]): {
+    total: number;
+    counted: readonly EmittedChunk[];
+} {
+    const byName = new Map(chunks.map((chunk) => [chunk.fileName, chunk]));
+    const firstLoad = new Set<string>();
+    const queue = chunks
+        .filter((chunk) => chunk.isEntry)
+        .map((chunk) => chunk.fileName);
+    while (queue.length > 0) {
+        const name = queue.shift();
+        if (name === undefined || firstLoad.has(name)) {
+            continue;
+        }
+        firstLoad.add(name);
+        const chunk = byName.get(name);
+        if (chunk !== undefined) {
+            queue.push(...chunk.imports);
+        }
+    }
+    const counted = chunks.filter((chunk) => firstLoad.has(chunk.fileName));
+    return {
+        total: counted.reduce((sum, chunk) => sum + chunk.gzipBytes, 0),
+        counted,
+    };
+}
+
+/** Why the first load failed, largest chunk first, or `null` within budget. */
+export function firstLoadFailure(
+    chunks: readonly EmittedChunk[],
     budgetBytes: number,
 ): string | null {
-    const total = chunks.reduce((sum, chunk) => sum + chunk.gzipBytes, 0);
+    const { total, counted } = measured(chunks);
     if (total <= budgetBytes) {
         return null;
     }
-    const largest = [...chunks]
+    const largest = [...counted]
         .sort((a, b) => b.gzipBytes - a.gzipBytes)
         .map((chunk) => `${chunk.fileName} ${kilobytes(chunk.gzipBytes)}`)
         .join(", ");
-    return `JavaScript is ${kilobytes(total)} gzipped, over the ${kilobytes(budgetBytes)} budget: ${largest}`;
+    return `First-load JavaScript is ${kilobytes(total)} gzipped, over the ${kilobytes(budgetBytes)} budget: ${largest}`;
 }
 
 function kilobytes(bytes: number): string {
     return `${(bytes / 1000).toFixed(1)} kB`;
 }
 
-/** Fails the production build when gzipped JavaScript exceeds `budgetBytes`. */
+/** Fails the production build when first-load gzipped JavaScript is too big. */
 export function bundleBudget(budgetBytes: number): Plugin {
     return {
         name: "bergsmith-bundle-budget",
@@ -44,11 +83,17 @@ export function bundleBudget(budgetBytes: number): Plugin {
                           {
                               fileName: output.fileName,
                               gzipBytes: gzipSync(output.code).length,
+                              isEntry: output.isEntry,
+                              imports: output.imports,
                           },
                       ]
                     : [],
             );
-            const failure = budgetFailure(chunks, budgetBytes);
+            const firstLoad = firstLoadBytes(chunks);
+            this.info(
+                `First-load JavaScript: ${kilobytes(firstLoad)} gzipped (budget ${kilobytes(budgetBytes)})`,
+            );
+            const failure = firstLoadFailure(chunks, budgetBytes);
             if (failure !== null) {
                 this.error(failure);
             }
