@@ -19,6 +19,9 @@ mod job_statistics;
 #[path = "api/principals.rs"]
 mod principals;
 
+#[path = "api/schedule_occurrences.rs"]
+mod schedule_occurrences;
+
 #[path = "api/service_identities.rs"]
 mod service_identities;
 
@@ -1137,6 +1140,7 @@ fn openapi_documents_every_route() {
         ("/api/v1/schedules", "post"),
         ("/api/v1/schedules/{id}", "get"),
         ("/api/v1/schedules/{id}", "patch"),
+        ("/api/v1/schedules/{id}/occurrences", "get"),
         ("/api/v1/policies", "get"),
         ("/api/v1/policies", "post"),
         ("/api/v1/policies/{id}", "get"),
@@ -3824,6 +3828,11 @@ async fn table_scoped_administrators_cannot_manage_schedules(pool: PgPool) {
     for (method, uri, body) in [
         ("GET", format!("/api/v1/schedules/{schedule_id}"), None),
         (
+            "GET",
+            format!("/api/v1/schedules/{schedule_id}/occurrences"),
+            None,
+        ),
+        (
             "PATCH",
             format!("/api/v1/schedules/{schedule_id}"),
             Some(json!({ "revision": 1, "enabled": false })),
@@ -3856,7 +3865,7 @@ async fn table_scoped_administrators_cannot_manage_schedules(pool: PgPool) {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(denials, 3);
+    assert_eq!(denials, 4);
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]

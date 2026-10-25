@@ -3078,6 +3078,123 @@
         }
       }
     },
+    "/api/v1/schedules/{id}/occurrences": {
+      "get": {
+        "operationId": "listScheduleOccurrences",
+        "description": "One schedule's evaluations, newest first. An admitted occurrence names the job it created, a coalesced one names the job that already owned the table, and a skipped one carries a stable reason such as OutsideWindow. Requires schedules:manage.",
+        "responses": {
+          "400": {
+            "description": "Invalid request or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found in this organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Occurrence page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleOccurrencePage"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque continuation bound to organization, principal, and resource. Current grants are rechecked.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
     "/api/v1/catalogs/{id}/namespaces": {
       "get": {
         "operationId": "listCatalogNamespaces",
@@ -6677,7 +6794,9 @@
           "time_zone",
           "window",
           "service_principal_id",
+          "service_identity_name",
           "enabled",
+          "next_occurrences",
           "revision",
           "created_at",
           "updated_at"
@@ -6719,8 +6838,21 @@
             "type": "string",
             "format": "uuid"
           },
+          "service_identity_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
           "enabled": {
             "type": "boolean"
+          },
+          "next_occurrences": {
+            "type": "array",
+            "description": "The next cron instants strictly after this response was built, in UTC. A maintenance window can still skip one at admission.",
+            "items": {
+              "type": "string",
+              "format": "date-time"
+            }
           },
           "revision": {
             "type": "integer",
@@ -7119,6 +7251,101 @@
                   "nested",
                   "not_in_schema"
                 ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ScheduleOccurrence": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "scheduled_for",
+          "coalesced_until",
+          "state",
+          "job_id",
+          "reason",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "scheduled_for": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "coalesced_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "Pending",
+              "Admitted",
+              "Coalesced",
+              "Skipped"
+            ]
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Stable reason for a coalesced or skipped evaluation, such as OutsideWindow. Null for an admitted one."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ScheduleOccurrencePage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScheduleOccurrence"
+            }
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
               },
               {
                 "type": "null"

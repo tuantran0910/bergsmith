@@ -1762,3 +1762,81 @@ async fn a_skewed_timing_change_cannot_rearm_to_a_recorded_occurrence(pool: PgPo
         .is_none()
     );
 }
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn history_reads_newest_first_and_continues_before_an_instant(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let current = fixture(&mut conn, "acme", "0 * * * *", "UTC").await;
+    set_due(&mut conn, &current, at(2026, 5, 1, 10, 0)).await;
+    let admitted = occurrences::admit_at(
+        &mut conn,
+        current.schedule,
+        at(2026, 5, 1, 10, 0),
+        current.epoch,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(admitted.state, OccurrenceState::Admitted);
+
+    // The admitted job keeps the table, so the later evaluations coalesce.
+    let second = occurrences::admit_at(
+        &mut conn,
+        current.schedule,
+        at(2026, 5, 1, 11, 0),
+        current.epoch,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let third = occurrences::admit_at(
+        &mut conn,
+        current.schedule,
+        at(2026, 5, 1, 12, 0),
+        current.epoch,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(second.state, OccurrenceState::Coalesced);
+    assert_eq!(third.state, OccurrenceState::Coalesced);
+
+    let page = occurrences::occurrences_before(
+        &mut conn,
+        current.tenant.organization,
+        current.schedule,
+        None,
+        2,
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.len(), 2);
+    assert_eq!(page[0].scheduled_for, at(2026, 5, 1, 12, 0));
+    assert_eq!(page[1].scheduled_for, at(2026, 5, 1, 11, 0));
+
+    // The cursor is the last instant read, so the page continues before it.
+    let rest = occurrences::occurrences_before(
+        &mut conn,
+        current.tenant.organization,
+        current.schedule,
+        Some(page[1].scheduled_for),
+        2,
+    )
+    .await
+    .unwrap();
+    assert_eq!(rest.len(), 1);
+    assert_eq!(rest[0].scheduled_for, at(2026, 5, 1, 10, 0));
+    assert_eq!(rest[0].state, OccurrenceState::Admitted);
+
+    // Another schedule's history is never mixed in.
+    let empty = occurrences::occurrences_before(
+        &mut conn,
+        current.tenant.organization,
+        ScheduleId::generate(),
+        None,
+        10,
+    )
+    .await
+    .unwrap();
+    assert!(empty.is_empty());
+}

@@ -15,19 +15,22 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use bergsmith_common::audit::{ActorKind, AuditAction, AuditOutcome};
-use bergsmith_common::ids::{PolicyId, ScheduleId, TableId};
+use bergsmith_common::ids::{OrganizationId, PolicyId, PrincipalId, ScheduleId, TableId};
 use bergsmith_common::permission::{Permission, ResourceScope};
 use bergsmith_common::policy::{MaintenanceOperation, PolicyError, PolicySpec};
 use bergsmith_common::schedule::{CronSchedule, ScheduleError};
 use bergsmith_common::window::MaintenanceWindow;
 use bergsmith_persistence::audit::NewAuditEvent;
+use bergsmith_persistence::occurrences::{self, Occurrence};
 use bergsmith_persistence::schedules::{
     self, MaintenancePolicy, MaintenanceSchedule, NewMaintenancePolicy, NewMaintenanceSchedule,
     PolicyUpdate, ScheduleUpdate,
 };
-use chrono::SecondsFormat;
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
+
+use std::collections::BTreeMap;
 
 use super::pagination::{Page, PageQuery};
 use super::{ApiError, ApiState, Caller, json_body, resources};
@@ -62,7 +65,7 @@ pub(super) struct CreateScheduleRequest {
     cron_expression: String,
     time_zone: String,
     window: Option<WindowBody>,
-    service_principal_id: bergsmith_common::ids::PrincipalId,
+    service_principal_id: PrincipalId,
 }
 
 #[derive(Deserialize)]
@@ -310,10 +313,15 @@ pub(super) async fn schedules(
     let mut conn = state.database.pool().acquire().await?;
     let limit = i64::try_from(page.limit.saturating_add(1)).map_err(|_| ApiError::invalid())?;
     let rows = schedules::schedules(&mut conn, caller.organization_id, after, limit).await?;
+    let names = service_identity_names(&mut conn, caller.organization_id, &rows).await?;
+    let now = Utc::now();
     Ok(Json(
         page.finish(
             rows.iter()
-                .map(|schedule| (schedule.id.to_string(), schedule_json(schedule)))
+                .map(|schedule| {
+                    let name = identity_name(&names, schedule.service_principal_id);
+                    (schedule.id.to_string(), schedule_json(schedule, &name, now))
+                })
                 .collect(),
         )?,
     ))
@@ -329,7 +337,62 @@ pub(super) async fn schedule(
     authorize(&state, &caller, ResourceScope::Organization).await?;
     let mut conn = state.database.pool().acquire().await?;
     let stored = schedules::schedule(&mut conn, caller.organization_id, id).await?;
-    Ok(Json(schedule_json(&stored)))
+    let names = service_identity_names(
+        &mut conn,
+        caller.organization_id,
+        std::slice::from_ref(&stored),
+    )
+    .await?;
+    Ok(Json(schedule_json(
+        &stored,
+        &identity_name(&names, stored.service_principal_id),
+        Utc::now(),
+    )))
+}
+
+/// Lists one schedule's evaluations, newest first.
+///
+/// The history is the durable record of what admission decided: admitted runs
+/// with their job, coalesced evaluations with the job that already owned the
+/// table, and skipped ones with their stable reason. Paging continues from the
+/// last `scheduled_for`, which is unique within a schedule.
+pub(super) async fn schedule_occurrences(
+    State(state): State<ApiState>,
+    caller: Caller,
+    id: Result<Path<uuid::Uuid>, axum::extract::rejection::PathRejection>,
+    query: Result<Query<PageQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let id = ScheduleId::from_uuid(id.map_err(|_| ApiError::invalid())?.0);
+    let page = Page::parse(
+        query.map_err(|_| ApiError::invalid())?.0,
+        caller.organization_id,
+        caller.principal_id,
+        format!("schedules:{id}:occurrences"),
+    )?;
+    let before = page
+        .after
+        .as_deref()
+        .map(|raw| {
+            DateTime::parse_from_rfc3339(raw)
+                .map(|at| at.with_timezone(&Utc))
+                .map_err(|_| ApiError::invalid())
+        })
+        .transpose()?;
+    authorize(&state, &caller, ResourceScope::Organization).await?;
+    let mut conn = state.database.pool().acquire().await?;
+    // An unknown schedule is not an empty history.
+    schedules::schedule(&mut conn, caller.organization_id, id).await?;
+    let limit = i64::try_from(page.limit.saturating_add(1)).map_err(|_| ApiError::invalid())?;
+    let rows =
+        occurrences::occurrences_before(&mut conn, caller.organization_id, id, before, limit)
+            .await?;
+    Ok(Json(
+        page.finish(
+            rows.iter()
+                .map(|row| (rfc3339(row.scheduled_for), occurrence_json(row)))
+                .collect(),
+        )?,
+    ))
 }
 
 /// Creates a schedule and audits it in the same transaction.
@@ -361,6 +424,12 @@ pub(super) async fn create_schedule(
         },
     )
     .await?;
+    let names = service_identity_names(
+        &mut tx,
+        caller.organization_id,
+        std::slice::from_ref(&created),
+    )
+    .await?;
     record(
         &mut tx,
         &caller,
@@ -378,7 +447,14 @@ pub(super) async fn create_schedule(
     )
     .await?;
     tx.commit().await?;
-    Ok((StatusCode::CREATED, Json(schedule_json(&created))))
+    Ok((
+        StatusCode::CREATED,
+        Json(schedule_json(
+            &created,
+            &identity_name(&names, created.service_principal_id),
+            Utc::now(),
+        )),
+    ))
 }
 
 /// Edits a schedule when the revision still matches.
@@ -430,6 +506,12 @@ pub(super) async fn update_schedule(
         },
     )
     .await?;
+    let names = service_identity_names(
+        &mut tx,
+        caller.organization_id,
+        std::slice::from_ref(&updated),
+    )
+    .await?;
     record(
         &mut tx,
         &caller,
@@ -446,7 +528,11 @@ pub(super) async fn update_schedule(
     )
     .await?;
     tx.commit().await?;
-    Ok(Json(schedule_json(&updated)))
+    Ok(Json(schedule_json(
+        &updated,
+        &identity_name(&names, updated.service_principal_id),
+        Utc::now(),
+    )))
 }
 
 /// Requires `schedules:manage` over `resource`.
@@ -540,8 +626,60 @@ fn policy_json(policy: &MaintenancePolicy) -> Value {
     })
 }
 
+/// How many upcoming instants a schedule resource lists.
+const NEXT_OCCURRENCES: usize = 5;
+
+/// An instant in the API's timestamp form.
+fn rfc3339(at: DateTime<Utc>) -> String {
+    at.to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+/// The service identity's name, or its identifier if the read found none.
+fn identity_name(names: &BTreeMap<PrincipalId, String>, id: PrincipalId) -> String {
+    names.get(&id).cloned().unwrap_or_else(|| id.to_string())
+}
+
+/// The display names of the schedules' service identities, in one read.
+async fn service_identity_names(
+    conn: &mut sqlx::PgConnection,
+    organization_id: OrganizationId,
+    schedules: &[MaintenanceSchedule],
+) -> Result<BTreeMap<PrincipalId, String>, ApiError> {
+    let mut ids: Vec<PrincipalId> = Vec::new();
+    for schedule in schedules {
+        if !ids.contains(&schedule.service_principal_id) {
+            ids.push(schedule.service_principal_id);
+        }
+    }
+    Ok(
+        bergsmith_persistence::tenancy::principal_display_names(conn, organization_id, &ids)
+            .await?,
+    )
+}
+
+/// The next `count` instants the timing names, strictly after `now`.
+///
+/// The search follows the documented DST rules; the schedule's window can
+/// still skip an instant at admission, which the history records.
+fn upcoming(timing: &CronSchedule, now: DateTime<Utc>, count: usize) -> Vec<DateTime<Utc>> {
+    let mut instants = Vec::with_capacity(count);
+    let mut after = now;
+    while instants.len() < count {
+        let Some(next) = timing.next_occurrence(after) else {
+            break;
+        };
+        instants.push(next);
+        after = next;
+    }
+    instants
+}
+
 /// The public representation of a schedule.
-fn schedule_json(schedule: &MaintenanceSchedule) -> Value {
+fn schedule_json(
+    schedule: &MaintenanceSchedule,
+    service_identity_name: &str,
+    now: DateTime<Utc>,
+) -> Value {
     json!({
         "id": schedule.id,
         "policy_id": schedule.policy_id,
@@ -550,10 +688,28 @@ fn schedule_json(schedule: &MaintenanceSchedule) -> Value {
         "time_zone": schedule.timing.time_zone.as_str(),
         "window": window_json(schedule.window),
         "service_principal_id": schedule.service_principal_id,
+        "service_identity_name": service_identity_name,
         "enabled": schedule.enabled,
+        "next_occurrences": upcoming(&schedule.timing, now, NEXT_OCCURRENCES)
+            .into_iter()
+            .map(rfc3339)
+            .collect::<Vec<_>>(),
         "revision": schedule.revision,
-        "created_at": schedule.created_at.to_rfc3339_opts(SecondsFormat::Millis, true),
-        "updated_at": schedule.updated_at.to_rfc3339_opts(SecondsFormat::Millis, true),
+        "created_at": rfc3339(schedule.created_at),
+        "updated_at": rfc3339(schedule.updated_at),
+    })
+}
+
+/// The public representation of one evaluation.
+fn occurrence_json(occurrence: &Occurrence) -> Value {
+    json!({
+        "id": occurrence.id,
+        "scheduled_for": rfc3339(occurrence.scheduled_for),
+        "coalesced_until": occurrence.coalesced_until.map(rfc3339),
+        "state": occurrence.state.as_str(),
+        "job_id": occurrence.job_id,
+        "reason": occurrence.reason,
+        "created_at": rfc3339(occurrence.created_at),
     })
 }
 

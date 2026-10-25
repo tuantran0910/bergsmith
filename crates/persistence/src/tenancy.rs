@@ -3,6 +3,8 @@
 use bergsmith_common::ids::{CatalogConnectionId, OrganizationId, PrincipalId, TableId};
 use bergsmith_common::permission::Role;
 use bergsmith_common::settings::ConnectionSettings;
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
@@ -407,6 +409,39 @@ pub async fn list_principals(
     .fetch_all(conn)
     .await?;
     rows.into_iter().map(TryInto::try_into).collect()
+}
+
+/// The display names of `ids` within `organization_id`.
+///
+/// The API names the principals it references, and a page names several at
+/// once, so this reads them in one query instead of one per row. Only existing
+/// principals appear; a caller that finds an identifier missing falls back to
+/// the identifier itself, which only a corrupt reference can cause.
+///
+/// # Errors
+///
+/// Returns a database error if the read fails.
+pub async fn principal_display_names(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    ids: &[PrincipalId],
+) -> Result<BTreeMap<PrincipalId, String>, PersistenceError> {
+    if ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let ids: Vec<Uuid> = ids.iter().map(|id| *id.as_uuid()).collect();
+    let rows = sqlx::query_as::<_, (Uuid, String)>(
+        "SELECT id, display_name FROM principals
+         WHERE organization_id = $1 AND id = ANY($2)",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(&ids)
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name)| (PrincipalId::from_uuid(id), name))
+        .collect())
 }
 
 /// Whether the principal exists and is not deactivated.

@@ -355,6 +355,41 @@ pub async fn occurrences(
     rows.into_iter().map(TryInto::try_into).collect()
 }
 
+/// Lists a schedule's evaluations newest first, before `before` when given.
+///
+/// `scheduled_for` is unique within a schedule (the admission identity), so it
+/// is the whole cursor. The unique index also serves this read: equality on
+/// the schedule, a descending range on the instant.
+///
+/// # Errors
+///
+/// Returns a database error or a corrupt-row error.
+pub async fn occurrences_before(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    schedule_id: ScheduleId,
+    before: Option<DateTime<Utc>>,
+    limit: i64,
+) -> Result<Vec<Occurrence>, PersistenceError> {
+    let limit = limit.clamp(1, MAX_PAGE);
+    let rows = sqlx::query_as::<_, OccurrenceRow>(concat!(
+        "SELECT ",
+        occurrence_columns!(),
+        " FROM maintenance_schedule_occurrences
+         WHERE organization_id = $1 AND schedule_id = $2
+           AND ($3::timestamptz IS NULL OR scheduled_for < $3)
+         ORDER BY scheduled_for DESC
+         LIMIT $4"
+    ))
+    .bind(organization_id.as_uuid())
+    .bind(schedule_id.as_uuid())
+    .bind(before)
+    .bind(limit)
+    .fetch_all(conn)
+    .await?;
+    rows.into_iter().map(TryInto::try_into).collect()
+}
+
 /// Admits the schedule's next due evaluation at the current instant.
 ///
 /// The admission clock is sampled **after** the schedule and state rows are
