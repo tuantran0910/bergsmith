@@ -52,6 +52,8 @@ afterEach(() => {
 });
 
 function start(path: string) {
+    // A previous test's tree unmounts first, so every `start` is fresh.
+    cleanup();
     window.history.replaceState(null, "", path);
     const user = userEvent.setup();
     client = createQueryClient(0);
@@ -317,13 +319,12 @@ describe("browsing", () => {
                     }),
                 ),
         );
-        const user = start("/");
+        const user = start("/tables");
+        expect(window.location.pathname).toBe("/tables");
 
         expect(
             await screen.findByRole("link", { name: "lake.sales.orders" }),
         ).toHaveAttribute("href", `/tables/${TABLE_ID}`);
-        // The home page is the tables page, under one address.
-        expect(window.location.pathname).toBe("/tables");
         expect(screen.getByRole("link", { name: "Tables" })).toHaveAttribute(
             "aria-current",
             "page",
@@ -429,6 +430,141 @@ describe("browsing", () => {
             ).toBeInTheDocument();
         },
     );
+});
+
+describe("overview and shell", () => {
+    it("lands on the overview with quick links and honest placeholders", async () => {
+        start("/");
+
+        expect(
+            await screen.findByRole("heading", { name: "Overview" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("link", { name: /Browse tables and start/ }),
+        ).toHaveAttribute("href", "/tables");
+        expect(
+            screen.getByRole("link", { name: /Watch maintenance run/ }),
+        ).toHaveAttribute("href", "/jobs");
+        expect(
+            screen.getByText("Attention overview is not yet available"),
+        ).toBeInTheDocument();
+        expect(
+            screen.queryByRole("link", { name: /Browse tables/ }),
+        ).not.toHaveAttribute("aria-current", "page");
+        expect(screen.getByRole("link", { name: "Overview" })).toHaveAttribute(
+            "aria-current",
+            "page",
+        );
+    });
+
+    it("reaches the tables quickly and the rail keeps its groups", async () => {
+        fake.on("GET", "/auth/session", () =>
+            json(200, session("Administrator")),
+        ).on("GET", "/api/v1/tables", () =>
+            json(
+                200,
+                schema("TablePage", { items: [table], next_cursor: null }),
+            ),
+        );
+        start("/");
+        const user = userEvent.setup();
+        await user.click(
+            await screen.findByRole("link", {
+                name: /Browse tables and start/,
+            }),
+        );
+
+        expect(
+            await screen.findByRole("link", { name: "lake.sales.orders" }),
+        ).toBeInTheDocument();
+        expect(
+            within(screen.getByRole("navigation", { name: "Main" })).getByText(
+                "Data",
+            ),
+        ).toBeInTheDocument();
+        expect(
+            within(screen.getByRole("navigation", { name: "Main" })).getByText(
+                "Operations",
+            ),
+        ).toBeInTheDocument();
+        expect(
+            within(screen.getByRole("navigation", { name: "Main" })).getByText(
+                "Administration",
+            ),
+        ).toBeInTheDocument();
+    });
+
+    it("hides the administration rail group without the permission", async () => {
+        fake.on("GET", "/auth/session", () => json(200, session("Viewer")));
+        fake.on("GET", "/api/v1/tables", () =>
+            json(200, schema("TablePage", { items: [], next_cursor: null })),
+        );
+        start("/tables");
+
+        const nav = await screen.findByRole("navigation", { name: "Main" });
+        expect(within(nav).getByText("Data")).toBeInTheDocument();
+        expect(within(nav).getByText("Operations")).toBeInTheDocument();
+        expect(
+            within(nav).queryByText("Administration"),
+        ).not.toBeInTheDocument();
+    });
+
+    it("moves through the navigation drawer in the narrow layout", async () => {
+        fake.on("GET", "/api/v1/tables", () =>
+            json(200, schema("TablePage", { items: [], next_cursor: null })),
+        );
+        fake.on("GET", "/api/v1/jobs", () =>
+            json(200, schema("JobPage", { items: [], next_cursor: null })),
+        );
+        const user = start("/tables");
+        await user.click(
+            await screen.findByRole("button", { name: "Open navigation" }),
+        );
+
+        const drawer = await screen.findByRole("dialog");
+        expect(
+            within(drawer).getByRole("link", { name: "Tables" }),
+        ).toHaveAttribute("aria-current", "page");
+        await user.click(within(drawer).getByRole("link", { name: "Jobs" }));
+
+        expect(
+            await screen.findByRole("heading", { name: "Jobs" }),
+        ).toBeInTheDocument();
+        await waitFor(() => {
+            expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        });
+        // The new page owns focus instead of the drawer trigger.
+        expect(document.getElementById("main")).toHaveFocus();
+    });
+
+    it("names the skip link target", async () => {
+        fake.on("GET", "/api/v1/tables", () =>
+            json(200, schema("TablePage", { items: [], next_cursor: null })),
+        );
+        start("/tables");
+        expect(
+            await screen.findByRole("link", { name: "Skip to main content" }),
+        ).toHaveAttribute("href", "#main");
+    });
+
+    it("locates a resource page with breadcrumbs", async () => {
+        fake.on("GET", "/api/v1/tables/{id}", () => json(200, table));
+        start(`/tables/${TABLE_ID}`);
+
+        const trail = await screen.findByRole("navigation", {
+            name: "Breadcrumb",
+        });
+        expect(
+            within(trail).getByRole("link", { name: "Overview" }),
+        ).toHaveAttribute("href", "/");
+        expect(
+            within(trail).getByRole("link", { name: "Tables" }),
+        ).toHaveAttribute("href", "/tables");
+        expect(within(trail).getByText("00000001")).toHaveAttribute(
+            "title",
+            TABLE_ID,
+        );
+    });
 });
 
 describe("preview and run", () => {
@@ -1530,6 +1666,5 @@ describe("workers", () => {
 });
 
 function cleanupAndStart(path: string) {
-    cleanup();
     return start(path);
 }
