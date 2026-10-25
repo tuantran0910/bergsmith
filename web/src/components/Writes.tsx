@@ -1,14 +1,17 @@
+// Shared behavior for non-idempotent writes: an answer that may have taken
+// effect is surfaced instead of retried, and a confirmation names the action.
+
 import { useState, type ReactNode } from "react";
-import { ApiFailure } from "../../api/client";
-import { ErrorNotice } from "../../components/ErrorNotice";
-import { Button } from "../../ui/Button";
+import { ApiFailure } from "../api/client";
+import { ErrorNotice } from "./ErrorNotice";
+import { Button } from "../ui/Button";
 import {
     Dialog,
     DialogContent,
     DialogDescription,
     DialogTitle,
     DialogTrigger,
-} from "../../ui/Dialog";
+} from "../ui/Dialog";
 
 /** Non-idempotent writes stop after an uncertain answer; reconcile via the list. */
 export function WriteError({ error }: { error: unknown }) {

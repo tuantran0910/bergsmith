@@ -61,6 +61,18 @@ export class ApiFailure extends Error {
     }
 }
 
+/**
+ * Whether the failure is the API's answer to a stale expected revision: the
+ * resource changed after it was read, and nothing was written.
+ */
+export function isRevisionConflict(error: unknown): boolean {
+    return (
+        error instanceof ApiFailure &&
+        error.status === 409 &&
+        error.body?.reason === "revision_conflict"
+    );
+}
+
 /** Reads the CSRF value issued with the session, or an empty string. */
 export function csrfToken(): string {
     for (const pair of document.cookie.split(";")) {

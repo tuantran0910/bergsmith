@@ -31,7 +31,7 @@ import {
     TableHeader,
     TableRow,
 } from "../../ui/Table";
-import { Confirm, uncertain, WriteError } from "./Controls";
+import { Confirm, uncertain, WriteError } from "../../components/Writes";
 import { Select } from "../../ui/Select";
 import { ScopeResource } from "./ScopeResource";
 
