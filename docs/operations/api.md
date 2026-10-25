@@ -445,7 +445,9 @@ display name of the service principal it runs as, so a reader names the identity
 without a separate grant. `next_occurrences` lists the next five cron instants
 strictly after the response was built, computed in the schedule's time zone by
 the same DST rules as admission; the maintenance window still applies, so
-admission can skip one of them.
+admission can skip one of them. The instants come from the timing alone, so a
+disabled schedule still lists them: disabling stops admission, not the
+arithmetic.
 
 `GET /api/v1/schedules/{id}/occurrences` returns the durable evaluations newest
 first. Each item carries `scheduled_for`, `coalesced_until` when downtime folded

@@ -154,6 +154,22 @@ async fn the_schedule_names_its_identity_and_lists_occurrences_newest_first(pool
     assert_eq!(rest[0]["state"], "Admitted");
     assert_eq!(rest[0]["reason"], Value::Null);
 
+    // A cursor is bound to its organization, caller, and schedule; reusing it
+    // against another schedule is invalid rather than silently misplaced.
+    let (status, reused) = browser
+        .request(
+            "GET",
+            &format!(
+                "/api/v1/schedules/{}/occurrences?cursor={cursor}",
+                ScheduleId::generate()
+            ),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{reused}");
+    assert_eq!(reused["reason"], "invalid_request");
+
     // An unknown schedule is a 404, not an empty history.
     let (status, _) = browser
         .request(
