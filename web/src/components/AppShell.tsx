@@ -18,7 +18,7 @@ import {
     XIcon,
     type LucideIcon,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import {
     type SessionInfo,
@@ -55,7 +55,6 @@ interface Destination {
 /** A shell-level create action; the rail does not list these. */
 interface CreateTarget {
     to: "/catalogs/new";
-    label: string;
     allowed: (session: SessionInfo) => boolean;
 }
 
@@ -132,7 +131,6 @@ const OVERVIEW: Destination = {
 const CREATE_TARGETS: readonly CreateTarget[] = [
     {
         to: "/catalogs/new",
-        label: "Connect a catalog",
         allowed: (session) => canManageCatalog(session),
     },
 ];
@@ -211,6 +209,8 @@ export function AppShell({
     const queryClient = useQueryClient();
     const href = useRouterState({ select: (state) => state.location.href });
     const [open, setOpen] = useState(false);
+    const mainRef = useRef<HTMLElement>(null);
+    const focusMainNext = useRef(false);
     const logout = useSessionMutation({
         mutationFn: signOut,
         onSuccess: () => {
@@ -219,6 +219,15 @@ export function AppShell({
             setSession(queryClient, null);
         },
     });
+    // A drawer destination was chosen: once the address changed, the new
+    // page should own focus rather than the drawer trigger.
+    useEffect(() => {
+        if (!focusMainNext.current) {
+            return;
+        }
+        focusMainNext.current = false;
+        mainRef.current?.focus();
+    }, [href]);
     const creates = CREATE_TARGETS.filter((item) => item.allowed(session));
 
     return (
@@ -291,12 +300,13 @@ export function AppShell({
                 )}
                 <main
                     id="main"
+                    ref={mainRef}
                     tabIndex={-1}
                     className="mx-auto w-full max-w-6xl px-4 py-6 outline-none md:px-8 md:py-8"
                 >
                     <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
                         <Breadcrumbs />
-                        <div className="flex items-center gap-2">
+                        <div className="ml-auto flex items-center gap-2">
                             <Button
                                 variant="ghost"
                                 size="sm"
@@ -328,6 +338,10 @@ export function AppShell({
                 onOpenChange={setOpen}
                 session={session}
                 logout={logout}
+                onNavigate={() => {
+                    focusMainNext.current = true;
+                    setOpen(false);
+                }}
             />
         </div>
     );
@@ -343,11 +357,13 @@ function NavigationDrawer({
     onOpenChange,
     session,
     logout,
+    onNavigate,
 }: {
     open: boolean;
     onOpenChange: (value: boolean) => void;
     session: SessionInfo;
     logout: { isPending: boolean; mutate: () => void };
+    onNavigate: () => void;
 }) {
     return (
         <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
@@ -366,12 +382,7 @@ function NavigationDrawer({
                         </DialogClose>
                     </div>
                     <div className="flex flex-1 flex-col overflow-y-auto pb-3">
-                        <NavBody
-                            session={session}
-                            onNavigate={() => {
-                                onOpenChange(false);
-                            }}
-                        />
+                        <NavBody session={session} onNavigate={onNavigate} />
                     </div>
                     <section
                         aria-label="Account"

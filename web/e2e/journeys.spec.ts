@@ -436,10 +436,14 @@ test("stays accessible in the narrow layout", async ({ page, coordinator }) => {
     await expect(
         drawer.getByRole("heading", { name: "Administration" }),
     ).toBeVisible();
+    await expect(
+        drawer.getByRole("link", { name: "Tables", exact: true }),
+    ).toHaveAttribute("aria-current", "page");
     await expectAccessible(page);
     await drawer.getByRole("link", { name: "Jobs" }).click();
     await expect(drawer).toBeHidden();
     await expect(page).toHaveURL("/jobs");
+    await expect(page.locator("main")).toBeFocused();
 
     // The skip link is the first tab stop and reaches the main landmark.
     await page.goto("/tables");
@@ -453,6 +457,50 @@ test("stays accessible in the narrow layout", async ({ page, coordinator }) => {
     await expect(page.locator("main")).toBeFocused();
     await expectAccessible(page);
 });
+
+for (const width of [320, 768, 1440]) {
+    test(`keeps the shell usable at ${width} px`, async ({
+        page,
+        coordinator,
+    }) => {
+        signedIn(coordinator, "Administrator");
+        await page.setViewportSize({ width, height: 844 });
+        await page.goto("/");
+        await expect(
+            page.getByRole("heading", { name: "Overview" }),
+        ).toBeVisible();
+
+        const rail = page.getByRole("navigation", { name: "Main" });
+        const trigger = page.getByRole("button", { name: "Open navigation" });
+        if (width >= 768) {
+            await expect(rail).toBeVisible();
+            await expect(trigger).toBeHidden();
+            await expect(
+                rail.getByRole("link", { name: "Overview", exact: true }),
+            ).toHaveAttribute("aria-current", "page");
+        } else {
+            await expect(rail).toBeHidden();
+            await trigger.click();
+            const drawer = page.getByRole("dialog");
+            await expect(drawer).toBeVisible();
+            await expect(drawer).toHaveCSS("opacity", "1");
+            await expect(
+                drawer.getByRole("link", { name: "Overview", exact: true }),
+            ).toHaveAttribute("aria-current", "page");
+            await expectAccessible(page);
+            await page.keyboard.press("Escape");
+            await expect(drawer).toBeHidden();
+        }
+
+        const overflow = await page.evaluate(
+            () =>
+                document.documentElement.scrollWidth -
+                document.documentElement.clientWidth,
+        );
+        expect(overflow).toBeLessThanOrEqual(0);
+        await expectAccessible(page);
+    });
+}
 
 test("the policy blocks inline styles and string script sinks", async ({
     page,

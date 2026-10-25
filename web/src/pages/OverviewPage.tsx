@@ -53,7 +53,7 @@ const QUICK_LINKS: readonly QuickLink[] = [
     },
     {
         to: "/users",
-        label: "People",
+        label: "Users",
         description: "Users, service identities, and their access",
         icon: UsersIcon,
         allowed: (session) =>

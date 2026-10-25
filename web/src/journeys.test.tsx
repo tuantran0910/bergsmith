@@ -522,6 +522,9 @@ describe("overview and shell", () => {
         );
 
         const drawer = await screen.findByRole("dialog");
+        expect(
+            within(drawer).getByRole("link", { name: "Tables" }),
+        ).toHaveAttribute("aria-current", "page");
         await user.click(within(drawer).getByRole("link", { name: "Jobs" }));
 
         expect(
@@ -530,6 +533,8 @@ describe("overview and shell", () => {
         await waitFor(() => {
             expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
         });
+        // The new page owns focus instead of the drawer trigger.
+        expect(document.getElementById("main")).toHaveFocus();
     });
 
     it("names the skip link target", async () => {
