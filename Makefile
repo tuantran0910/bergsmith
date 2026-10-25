@@ -59,7 +59,7 @@ services-down: ## Stop the test services and discard their data
 test: services-up ## Run the test suite
 	$(CARGO) nextest run --workspace --locked
 
-test-changed: ## Run tests of packages affected since BASE (local loop; CI runs everything)
+test-changed: ## Run tests of packages affected since BASE (local loop; CI selects areas)
 	@packages="$$(scripts/affected-packages.sh $(BASE))"; \
 	if [ -z "$$packages" ]; then \
 		echo "no workspace package is affected since $(BASE)"; \

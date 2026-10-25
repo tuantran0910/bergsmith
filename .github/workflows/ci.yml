@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -19,9 +20,43 @@ env:
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
 
+# Pull requests run only the areas they change; pushes to main and manual
+# runs run every gate. A job skipped by `if` reports success, so selected jobs
+# can be skipped without blocking a pull request. The `ci` job is the single
+# gate to require in branch protection: it also fails when the selector itself
+# or a selected job fails. The selector fails closed (scripts/changed-areas.sh).
 jobs:
+  changes:
+    name: Changed areas
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.classify.outputs.rust }}
+      web: ${{ steps.classify.outputs.web }}
+      proto: ${{ steps.classify.outputs.proto }}
+      deps: ${{ steps.classify.outputs.deps }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The selector diffs the merge base, so it needs the base history.
+          fetch-depth: 0
+      - name: Test the changed-area selector
+        run: scripts/changed-areas.test.sh
+      - name: Classify the change
+        id: classify
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            scripts/changed-areas.sh --base "$BASE_SHA" >> "$GITHUB_OUTPUT"
+          else
+            scripts/changed-areas.sh --all >> "$GITHUB_OUTPUT"
+          fi
+
   fmt:
     name: Format
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,6 +67,8 @@ jobs:
 
   proto:
     name: Protobuf lint and breaking changes
+    needs: changes
+    if: needs.changes.outputs.proto == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,6 +79,8 @@ jobs:
 
   lint:
     name: Check, clippy, docs
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -54,6 +93,8 @@ jobs:
 
   test:
     name: Tests and coverage
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -83,6 +124,8 @@ jobs:
 
   web:
     name: Web UI
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -107,6 +150,8 @@ jobs:
 
   dependencies:
     name: Dependency policy
+    needs: changes
+    if: needs.changes.outputs.deps == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -120,3 +165,15 @@ jobs:
           tool: cargo-deny,cargo-machete
       - run: make deny
       - run: make machete
+
+  ci:
+    name: CI
+    # The single required check. Skipped jobs count as success; a failure or
+    # cancellation of the selector or any selected job fails this gate.
+    if: always()
+    needs: [changes, fmt, proto, lint, test, web, dependencies]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail when a selected job did not succeed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
