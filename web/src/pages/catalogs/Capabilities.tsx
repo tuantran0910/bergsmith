@@ -70,9 +70,9 @@ export function Capabilities({
                                     </dd>
                                 </div>
                             ))}
-                            <div className="grid gap-1 rounded-lg border px-3 py-2">
+                            <div className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2">
                                 <dt>Idempotency lifetime (optional)</dt>
-                                <dd className="m-0 text-muted-foreground">
+                                <dd className="m-0 font-medium tabular-nums text-muted-foreground">
                                     {capabilities.idempotency_key_lifetime_seconds ===
                                     null
                                         ? "Not advertised"
@@ -81,7 +81,7 @@ export function Capabilities({
                             </div>
                         </dl>
                         {checkedAt && (
-                            <p className="text-muted-foreground">
+                            <p className="m-0 mt-3 text-xs text-muted-foreground">
                                 Checked {timestamp(checkedAt)}
                             </p>
                         )}

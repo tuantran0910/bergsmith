@@ -104,9 +104,7 @@ test("browses to a table, previews it, and submits a job", async ({
     await expect(
         page.getByRole("heading", { name: "lake.sales.orders" }),
     ).toBeVisible();
-    await expect(
-        page.getByRole("heading", { name: "Technical details" }),
-    ).toBeVisible();
+    await page.getByText("Technical details").click();
     await expect(
         page.getByRole("button", { name: "Copy table UUID" }),
     ).toBeVisible();
@@ -176,6 +174,17 @@ test("follows a job's events to success, then closes the stream", async ({
 
     await page.goto(`/jobs/${JOB_ID}`);
 
+    await expect(
+        page.getByRole("heading", { name: "lake.sales.orders" }),
+    ).toBeVisible();
+    await expect(
+        page
+            .getByRole("navigation", { name: "Breadcrumb" })
+            .getByText(`Job ${JOB_ID.slice(-8)}`, { exact: true }),
+    ).toBeVisible();
+    await expect(
+        page.getByRole("button", { name: "Copy job ID" }),
+    ).toBeVisible();
     await expect(page.getByText("Confirmed", { exact: true })).toBeVisible();
     await expect(
         page.getByRole("heading", { name: "Maintenance statistics" }),
@@ -291,10 +300,9 @@ test("retries a failed job with a fresh plan and opens the new job", async ({
     await page.getByRole("button", { name: "Retry with a fresh plan" }).click();
 
     await expect(page).toHaveURL(`/jobs/${RETRY_JOB_ID}`);
-    await expect(page.getByRole("link", { name: JOB_ID })).toHaveAttribute(
-        "href",
-        `/jobs/${JOB_ID}`,
-    );
+    await expect(
+        page.getByRole("link", { name: `Job ${JOB_ID.slice(-8)}` }),
+    ).toHaveAttribute("href", `/jobs/${JOB_ID}`);
     const retry = coordinator.sent("POST", `/api/v1/jobs/${JOB_ID}/retry`);
     expect(retry).toHaveLength(1);
     expect(retry[0]?.headers["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/);
@@ -377,6 +385,9 @@ test("shows audit history and workers to an administrator", async ({
     await expect(
         page.getByRole("table").getByText("Alice", { exact: true }),
     ).toHaveAttribute("title", PRINCIPAL_ID);
+    await expect(
+        page.getByRole("link", { name: `Job ${JOB_ID.slice(-8)}` }),
+    ).toBeVisible();
     await expect(page.getByRole("link", { name: "Audit" })).toHaveAttribute(
         "aria-current",
         "page",

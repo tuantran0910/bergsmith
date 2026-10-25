@@ -10,6 +10,8 @@ import {
     LoadingRows,
     PageHeader,
 } from "../components/Page";
+import { ResourceLabel } from "../components/ResourceLabel";
+import { CopyButton } from "../components/ResourceId";
 import { StatusBadge } from "../components/StatusBadge";
 import { shortId, tableName, timestamp } from "../format";
 import { executionStatus, publicationStatus } from "../jobs/status";
@@ -58,11 +60,13 @@ export function JobsPage() {
                         <Table>
                             <TableHeader>
                                 <TableRow>
-                                    <TableHead className="pl-4">Job</TableHead>
-                                    <TableHead>Table</TableHead>
+                                    <TableHead className="min-w-52 pl-4">
+                                        Table
+                                    </TableHead>
                                     <TableHead>Execution</TableHead>
                                     <TableHead>Publication</TableHead>
                                     <TableHead>State</TableHead>
+                                    <TableHead>Requested by</TableHead>
                                     <TableHead className="pr-4">
                                         Created
                                     </TableHead>
@@ -71,36 +75,44 @@ export function JobsPage() {
                             <TableBody>
                                 {items.map((job) => (
                                     <TableRow key={job.id}>
-                                        <TableCell className="pl-4">
-                                            <Link
-                                                to="/jobs/$jobId"
-                                                params={{ jobId: job.id }}
-                                                title={job.id}
-                                                className="font-mono"
-                                            >
-                                                {shortId(job.id)}
-                                            </Link>
-                                        </TableCell>
-                                        <TableCell>
-                                            <Link
-                                                to="/tables/$tableId"
-                                                params={{
-                                                    tableId: job.table_id,
-                                                }}
-                                                title={job.table_id}
-                                                className={
-                                                    job.table_aliases.length ===
-                                                    0
-                                                        ? "font-mono"
-                                                        : undefined
+                                        <TableCell className="min-w-52 pl-4">
+                                            <ResourceLabel
+                                                name={
+                                                    <Link
+                                                        to="/tables/$tableId"
+                                                        params={{
+                                                            tableId:
+                                                                job.table_id,
+                                                        }}
+                                                        title={job.table_id}
+                                                    >
+                                                        {tableName(
+                                                            job.table_aliases,
+                                                            job.table_id,
+                                                            names,
+                                                        )}
+                                                    </Link>
                                                 }
-                                            >
-                                                {tableName(
-                                                    job.table_aliases,
-                                                    job.table_id,
-                                                    names,
-                                                )}
-                                            </Link>
+                                                context={
+                                                    <span className="inline-flex items-center gap-1">
+                                                        <Link
+                                                            to="/jobs/$jobId"
+                                                            params={{
+                                                                jobId: job.id,
+                                                            }}
+                                                            title={job.id}
+                                                            className="hover:text-foreground"
+                                                        >
+                                                            Job{" "}
+                                                            {shortId(job.id)}
+                                                        </Link>
+                                                        <CopyButton
+                                                            value={job.id}
+                                                            label="job ID"
+                                                        />
+                                                    </span>
+                                                }
+                                            />
                                         </TableCell>
                                         <TableCell>
                                             <StatusBadge
@@ -114,6 +126,9 @@ export function JobsPage() {
                                         </TableCell>
                                         <TableCell className="text-muted-foreground">
                                             {job.state}
+                                        </TableCell>
+                                        <TableCell className="text-muted-foreground">
+                                            {job.created_by_name}
                                         </TableCell>
                                         <TableCell className="pr-4 whitespace-nowrap text-muted-foreground">
                                             {timestamp(job.created_at)}

@@ -1,9 +1,17 @@
-// A breadcrumb trail derived from the current address (ADR 0056). The
-// leader is always the overview; each section and resource follows.
-// Resources display their short identifier until the names-first pass
-// reaches them; the full form is the hover text.
+// A breadcrumb trail derived from the current address (ADR 0056). The leader
+// is always the overview; each section and resource follows. Detail pages
+// publish their resource name so a UUID never becomes the visible crumb.
 
 import { Link, useRouterState } from "@tanstack/react-router";
+import {
+    createContext,
+    type ReactNode,
+    useCallback,
+    useContext,
+    useEffect,
+    useMemo,
+    useState,
+} from "react";
 
 import { shortId } from "../format";
 
@@ -29,8 +37,77 @@ interface Crumb {
     title?: string;
 }
 
+interface BreadcrumbLabels {
+    label: string | null;
+    setLabel: (owner: symbol, label: string | null) => void;
+    clearLabel: (owner: symbol) => void;
+}
+
+interface BreadcrumbEntry {
+    pathname: string;
+    owner: symbol | null;
+    label: string | null;
+}
+
+const BreadcrumbLabelContext = createContext<BreadcrumbLabels | null>(null);
+
+/**
+ * Keeps the current resource name beside the breadcrumb trail. It resets on
+ * navigation so a name from the previous page cannot leak into the next.
+ */
+export function BreadcrumbLabelProvider({ children }: { children: ReactNode }) {
+    const pathname = useRouterState({
+        select: (state) => state.location.pathname,
+    });
+    const [entry, setEntry] = useState<BreadcrumbEntry>({
+        pathname,
+        owner: null,
+        label: null,
+    });
+    // A label belongs to the pathname that published it. Comparing during
+    // render avoids a reset effect, so the page subtree is never remounted.
+    const label = entry.pathname === pathname ? entry.label : null;
+    const setLabel = useCallback(
+        (owner: symbol, next: string | null) => {
+            setEntry({ pathname, owner, label: next });
+        },
+        [pathname],
+    );
+    const clearLabel = useCallback((owner: symbol) => {
+        setEntry((current) =>
+            current.owner === owner
+                ? { ...current, owner: null, label: null }
+                : current,
+        );
+    }, []);
+    const value = useMemo(
+        () => ({ label, setLabel, clearLabel }),
+        [label, setLabel, clearLabel],
+    );
+    return (
+        <BreadcrumbLabelContext.Provider value={value}>
+            {children}
+        </BreadcrumbLabelContext.Provider>
+    );
+}
+
+/**
+ * Publishes the current resource's display name for the breadcrumb. Detail
+ * pages call it with the name already shown in their heading.
+ */
+export function useBreadcrumbLabel(label: string | undefined) {
+    const context = useContext(BreadcrumbLabelContext);
+    const [owner] = useState(() => Symbol("breadcrumb"));
+    const setLabel = context?.setLabel;
+    const clearLabel = context?.clearLabel;
+    useEffect(() => {
+        setLabel?.(owner, label ?? null);
+    }, [label, owner, setLabel]);
+    useEffect(() => () => clearLabel?.(owner), [clearLabel, owner]);
+}
+
 /** Crumbs for an address; unknown paths get none. */
-export function crumbsFor(pathname: string): Crumb[] {
+export function crumbsFor(pathname: string, resourceLabel?: string): Crumb[] {
     const [, first, second] = pathname.split("/");
     if (first === undefined) {
         return [];
@@ -55,14 +132,20 @@ export function crumbsFor(pathname: string): Crumb[] {
     return [
         overview,
         { to: `/${first}`, label: section.label },
-        { label: shortId(second), title: second },
+        {
+            label: resourceLabel ?? shortId(second),
+            title: second,
+        },
     ];
 }
 
 /** The page's location trail; hidden on the overview itself. */
 export function Breadcrumbs() {
-    const pathname = useRouterState({ select: (s) => s.location.pathname });
-    const crumbs = crumbsFor(pathname);
+    const pathname = useRouterState({
+        select: (state) => state.location.pathname,
+    });
+    const context = useContext(BreadcrumbLabelContext);
+    const crumbs = crumbsFor(pathname, context?.label ?? undefined);
     if (crumbs.length <= 1) {
         return null;
     }

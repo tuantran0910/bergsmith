@@ -106,13 +106,16 @@ export function aliasName(
     alias: Schemas["TableAlias"],
     catalogs: ReadonlyMap<string, string>,
 ): string {
-    const catalog = catalogs.get(alias.catalog_id) ?? alias.catalog_id;
-    return [catalog, ...alias.namespace, alias.name].join(".");
+    // Omit an unknown catalog rather than exposing its UUID in a name.
+    const catalog = catalogs.get(alias.catalog_id) ?? "";
+    return [catalog, ...alias.namespace, alias.name]
+        .filter((part) => part !== "")
+        .join(".");
 }
 
 /**
- * A table's name through the first alias the caller may see, or the table's
- * short ID when it sees none.
+ * A table's name through the first alias the caller may see, or a
+ * `Table <short ID>` fallback when it sees none.
  */
 export function tableName(
     aliases: readonly Schemas["TableAlias"][],
@@ -120,7 +123,9 @@ export function tableName(
     catalogs: ReadonlyMap<string, string>,
 ): string {
     const [alias] = aliases;
-    return alias === undefined ? shortId(tableId) : aliasName(alias, catalogs);
+    return alias === undefined
+        ? `Table ${shortId(tableId)}`
+        : aliasName(alias, catalogs);
 }
 
 /**

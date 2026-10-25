@@ -4,10 +4,12 @@ import { useState } from "react";
 import { usePrincipal, usePrincipals } from "../../api/access";
 import { hasOrganizationPermission } from "../../api/auth";
 import { api, call, csrfHeader, type Schemas } from "../../api/client";
+import { useBreadcrumbLabel } from "../../components/Breadcrumbs";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { GrantRequired } from "../../components/GrantRequired";
 import { LoadMore, LoadingDetail, PageHeader } from "../../components/Page";
 import { ResourceId } from "../../components/ResourceId";
+import { TechnicalDetails } from "../../components/TechnicalDetails";
 import { SESSION_KEY, useSession, useSessionMutation } from "../../queryClient";
 import { Badge } from "../../ui/Badge";
 import { Button } from "../../ui/Button";
@@ -285,6 +287,7 @@ export function PrincipalPage({
 function PrincipalDetail({ id, services }: { id: string; services: boolean }) {
     const query = usePrincipal(id, services);
     const session = useSession();
+    useBreadcrumbLabel(query.data?.display_name);
     const client = useQueryClient();
     const update = useSessionMutation({
         mutationFn: (active: boolean) =>
@@ -330,36 +333,36 @@ function PrincipalDetail({ id, services }: { id: string; services: boolean }) {
                     <CardTitle>Identity details</CardTitle>
                 </CardHeader>
                 <CardContent className="grid gap-4">
-                    <dl className="m-0 grid gap-4 sm:grid-cols-2">
-                        <div className="sm:col-span-2">
-                            <dt className="text-xs text-muted-foreground">
-                                Principal ID
-                            </dt>
-                            <dd className="m-0 mt-1">
-                                <ResourceId id={id} label="principal ID" />
-                            </dd>
-                        </div>
-                        {!services && (
-                            <>
-                                <div className="min-w-0">
-                                    <dt className="text-xs text-muted-foreground">
-                                        Issuer
-                                    </dt>
-                                    <dd className="m-0 mt-1 break-all">
-                                        {principal.issuer}
-                                    </dd>
-                                </div>
-                                <div className="min-w-0">
-                                    <dt className="text-xs text-muted-foreground">
-                                        Subject
-                                    </dt>
-                                    <dd className="m-0 mt-1 break-all">
-                                        {principal.subject}
-                                    </dd>
-                                </div>
-                            </>
-                        )}
-                    </dl>
+                    {!services && (
+                        <dl className="m-0 grid gap-4 sm:grid-cols-2">
+                            <div className="min-w-0">
+                                <dt className="text-xs text-muted-foreground">
+                                    Issuer
+                                </dt>
+                                <dd className="m-0 mt-1 break-all">
+                                    {principal.issuer}
+                                </dd>
+                            </div>
+                            <div className="min-w-0">
+                                <dt className="text-xs text-muted-foreground">
+                                    Subject
+                                </dt>
+                                <dd className="m-0 mt-1 break-all">
+                                    {principal.subject}
+                                </dd>
+                            </div>
+                        </dl>
+                    )}
+                    <TechnicalDetails
+                        items={[
+                            {
+                                term: "Principal ID",
+                                description: (
+                                    <ResourceId id={id} label="principal ID" />
+                                ),
+                            },
+                        ]}
+                    />
                     {manage && (
                         <div>
                             <Confirm

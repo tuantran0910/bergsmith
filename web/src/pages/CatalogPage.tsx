@@ -4,9 +4,11 @@ import { useState } from "react";
 import { canManageCatalog } from "../api/auth";
 import { useCatalog } from "../api/catalogs";
 import { api, call, csrfHeader } from "../api/client";
+import { useBreadcrumbLabel } from "../components/Breadcrumbs";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { LoadingDetail, PageHeader } from "../components/Page";
 import { ResourceId } from "../components/ResourceId";
+import { TechnicalDetails } from "../components/TechnicalDetails";
 import { duration, words } from "../format";
 import { useSession, useSessionMutation } from "../queryClient";
 import { Badge } from "../ui/Badge";
@@ -24,6 +26,7 @@ export function CatalogPage({ id }: { id: string }) {
     const query = useCatalog(id);
     const session = useSession();
     const manager = session !== null && canManageCatalog(session, id);
+    useBreadcrumbLabel(query.data?.name);
     const [discover, setDiscover] = useState(false);
     const check = useSessionMutation({
         mutationFn: () =>
@@ -104,18 +107,6 @@ export function CatalogPage({ id }: { id: string }) {
                                 </dd>
                             </div>
                         )}
-                        <div>
-                            <dt className="text-xs text-muted-foreground">
-                                Connection ID
-                            </dt>
-                            <dd className="m-0 mt-1">
-                                <ResourceId
-                                    id={catalog.id}
-                                    label="connection ID"
-                                    short
-                                />
-                            </dd>
-                        </div>
                         {!manager && (
                             <>
                                 <div>
@@ -142,6 +133,19 @@ export function CatalogPage({ id }: { id: string }) {
                             </>
                         )}
                     </dl>
+                    <TechnicalDetails
+                        items={[
+                            {
+                                term: "Connection ID",
+                                description: (
+                                    <ResourceId
+                                        id={catalog.id}
+                                        label="connection ID"
+                                    />
+                                ),
+                            },
+                        ]}
+                    />
                 </CardContent>
             </Card>
             {manager && <Settings key={catalog.revision} catalog={catalog} />}

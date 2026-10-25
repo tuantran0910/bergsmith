@@ -1,4 +1,5 @@
 import { ScrollTextIcon } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 
 import { ApiFailure, type Schemas } from "../api/client";
 import { useAudit } from "../api/queries";
@@ -33,8 +34,7 @@ const OUTCOME_TONES: Record<Schemas["AuditEvent"]["outcome"], Tone> = {
 const DESCRIPTION =
     "Who did what in this organization, including refused requests.";
 
-/**
- * The actor by display name and kind, with the principal ID in the title and
+/** The actor by display name and kind, with the principal ID in the title and
  * a copy button; events without a principal show only the kind.
  */
 function Actor({ event }: { event: Schemas["AuditEvent"] }) {
@@ -52,6 +52,63 @@ function Actor({ event }: { event: Schemas["AuditEvent"] }) {
             </span>
             <span className="text-xs text-muted-foreground">
                 {event.actor_kind}
+            </span>
+        </span>
+    );
+}
+
+/**
+ * The resource type leads; a short ID and copy button stay with it because
+ * audit events do not carry a resource display name. Known resources link to
+ * their detail pages.
+ */
+function Resource({ event }: { event: Schemas["AuditEvent"] }) {
+    const id = event.resource_id;
+    const type = words(event.resource_type);
+    if (id === null) {
+        return <span className="text-muted-foreground">{type}</span>;
+    }
+    const short = <code title={id}>{shortId(id)}</code>;
+    const linked =
+        event.resource_type === "job" ? (
+            <Link
+                to="/jobs/$jobId"
+                params={{ jobId: id }}
+                title={id}
+                aria-label={`${type} ${shortId(id)}`}
+            >
+                {short}
+            </Link>
+        ) : event.resource_type === "catalog" ? (
+            <Link
+                to="/catalogs/$catalogId"
+                params={{ catalogId: id }}
+                title={id}
+                aria-label={`${type} ${shortId(id)}`}
+            >
+                {short}
+            </Link>
+        ) : event.resource_type === "table" ? (
+            <Link
+                to="/tables/$tableId"
+                params={{ tableId: id }}
+                title={id}
+                aria-label={`${type} ${shortId(id)}`}
+            >
+                {short}
+            </Link>
+        ) : (
+            short
+        );
+    return (
+        <span className="inline-flex flex-col">
+            <span className="font-medium">{type}</span>
+            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                {linked}
+                <CopyButton value={id} label={`${type.toLowerCase()} ID`} />
+            </span>
+            <span className="sr-only">
+                {type} ID {id}
             </span>
         </span>
     );
@@ -121,15 +178,7 @@ export function AuditPage() {
                                             <code>{event.action}</code>
                                         </TableCell>
                                         <TableCell>
-                                            {event.resource_type}
-                                            {event.resource_id !== null && (
-                                                <>
-                                                    {" "}
-                                                    <code>
-                                                        {event.resource_id}
-                                                    </code>
-                                                </>
-                                            )}
+                                            <Resource event={event} />
                                         </TableCell>
                                         <TableCell>
                                             <StatusBadge

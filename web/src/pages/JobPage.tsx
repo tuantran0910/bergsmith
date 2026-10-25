@@ -12,11 +12,13 @@ import { type Job, api, call, csrfHeader } from "../api/client";
 import { hasTablePermission } from "../api/auth";
 import { useKeyedMutation } from "../api/keyed";
 import { useCatalogNames, useJob } from "../api/queries";
+import { useBreadcrumbLabel } from "../components/Breadcrumbs";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { LoadingDetail, PageHeader } from "../components/Page";
 import { ResourceId } from "../components/ResourceId";
 import { StatusBadge } from "../components/StatusBadge";
-import { aliasName, shortId, timestamp, words } from "../format";
+import { TechnicalDetails } from "../components/TechnicalDetails";
+import { shortId, tableName, timestamp, words } from "../format";
 import { type Connection, jobQueryKey, useJobEvents } from "../jobs/events";
 import {
     type StatusLine,
@@ -77,6 +79,10 @@ function JobDetail({ job }: { job: Job }) {
     const navigate = useNavigate();
     const terminal = isTerminal(job.state);
     const live = useJobEvents(job.id, terminal);
+    const catalogs = useCatalogNames();
+    const names = catalogs.data ?? new Map<string, string>();
+    const name = tableName(job.table_aliases, job.table_id, names);
+    useBreadcrumbLabel(`Job ${shortId(job.id)}`);
     const attention = notice(job.state);
     const session = useSession();
     const connections = job.table_aliases.map((alias) => alias.catalog_id);
@@ -109,8 +115,12 @@ function JobDetail({ job }: { job: Job }) {
     return (
         <section className="space-y-6">
             <PageHeader
-                title={`Job ${shortId(job.id)}`}
-                description={<ResourceId id={job.id} label="job ID" />}
+                title={name}
+                description={
+                    <span className="inline-flex items-center gap-1">
+                        Job <ResourceId id={job.id} label="job ID" short />
+                    </span>
+                }
                 actions={
                     <>
                         <CancelJob
@@ -161,7 +171,7 @@ function JobDetail({ job }: { job: Job }) {
             </div>
 
             <JobStatistics statistics={job.statistics} />
-            <JobFacts job={job} />
+            <JobFacts job={job} names={names} />
 
             <Card>
                 <CardHeader className="flex flex-wrap items-center justify-between gap-2">
@@ -242,18 +252,47 @@ function Lane({
     );
 }
 
-function JobFacts({ job }: { job: Job }) {
-    const catalogs = useCatalogNames();
-    const [alias] = job.table_aliases;
-    // Without a visible alias, the full ID stands in for the name.
-    const tableName =
-        alias === undefined
-            ? job.table_id
-            : aliasName(alias, catalogs.data ?? new Map<string, string>());
+function JobFacts({
+    job,
+    names,
+}: {
+    job: Job;
+    names: ReadonlyMap<string, string>;
+}) {
+    const name = tableName(job.table_aliases, job.table_id, names);
+    const technical = [
+        {
+            term: "Job ID",
+            description: <ResourceId id={job.id} label="full job ID" />,
+        },
+        {
+            term: "Table ID",
+            description: <ResourceId id={job.table_id} label="table ID" />,
+        },
+        {
+            term: "Requested by ID",
+            description: (
+                <ResourceId id={job.created_by} label="requester ID" />
+            ),
+        },
+        ...(job.retry_of_job_id === null
+            ? []
+            : [
+                  {
+                      term: "Retry of job ID",
+                      description: (
+                          <ResourceId
+                              id={job.retry_of_job_id}
+                              label="retrying job ID"
+                          />
+                      ),
+                  },
+              ]),
+    ];
 
     return (
         <Card>
-            <CardContent>
+            <CardContent className="grid gap-4">
                 <dl className="m-0 grid gap-x-6 gap-y-3 sm:grid-cols-[max-content_1fr]">
                     <dt className="text-muted-foreground">State</dt>
                     <dd className="m-0">
@@ -268,13 +307,11 @@ function JobFacts({ job }: { job: Job }) {
                             to="/tables/$tableId"
                             params={{ tableId: job.table_id }}
                         >
-                            {tableName}
+                            {name}
                         </Link>
                     </dd>
                     <dt className="text-muted-foreground">Requested by</dt>
-                    <dd className="m-0" title={job.created_by}>
-                        {job.created_by_name}
-                    </dd>
+                    <dd className="m-0">{job.created_by_name}</dd>
                     {job.retry_of_job_id !== null && (
                         <>
                             <dt className="text-muted-foreground">Retry of</dt>
@@ -282,9 +319,9 @@ function JobFacts({ job }: { job: Job }) {
                                 <Link
                                     to="/jobs/$jobId"
                                     params={{ jobId: job.retry_of_job_id }}
-                                    className="font-mono"
+                                    title={job.retry_of_job_id}
                                 >
-                                    {job.retry_of_job_id}
+                                    Job {shortId(job.retry_of_job_id)}
                                 </Link>
                             </dd>
                         </>
@@ -300,6 +337,7 @@ function JobFacts({ job }: { job: Job }) {
                     <dt className="text-muted-foreground">Updated</dt>
                     <dd className="m-0">{timestamp(job.updated_at)}</dd>
                 </dl>
+                <TechnicalDetails items={technical} />
             </CardContent>
         </Card>
     );

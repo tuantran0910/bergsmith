@@ -115,6 +115,11 @@ test("checks an unsaved connection, saves it, and registers a discovered table",
     await page.getByRole("button", { name: "Save connection" }).click();
     await expect(page).toHaveURL(`/catalogs/${CATALOG_ID}`);
     await expect(
+        page
+            .getByRole("navigation", { name: "Breadcrumb" })
+            .getByText("lake", { exact: true }),
+    ).toBeVisible();
+    await expect(
         page.getByRole("heading", { name: "Effective storage profile" }),
     ).toBeVisible();
     await expect(page.getByLabel("Connection enabled")).toHaveCSS(

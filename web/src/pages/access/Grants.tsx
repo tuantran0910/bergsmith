@@ -249,6 +249,9 @@ function GrantRow({
     const client = useQueryClient();
     const session = useSession();
     const name = grant.principal_name || principalName || "Principal";
+    // Display names are not unique; the confirmation carries a short
+    // identifier without putting the UUID back in the row.
+    const target = `${name} (${grant.principal_id.slice(-8)})`;
     const revoke = useSessionMutation({
         mutationFn: () =>
             call(
@@ -275,7 +278,7 @@ function GrantRow({
                     canManageScope(session, grant.scope, connections) && (
                         <Confirm
                             label="Revoke grant"
-                            description={`Revoke ${roleName(grant.role)} for ${name} (${grant.principal_id}) over ${scopeName(grant.scope, grant.scope_name)}? Future authorization stops using this grant; history is kept.`}
+                            description={`Revoke ${roleName(grant.role)} for ${target} over ${scopeName(grant.scope, grant.scope_name)}? Future authorization stops using this grant; history is kept.`}
                             pending={revoke.isPending}
                             error={revoke.error}
                             onConfirm={() => {

@@ -1,6 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 
 import { DefinitionList, Metric, MetricGrid } from "./Metric";
+import { TechnicalDetails } from "./TechnicalDetails";
 
 it("renders a summary strip as terms and definitions", () => {
     render(
@@ -31,4 +32,22 @@ it("renders definitions as a description list", () => {
     expect(screen.getByText("uuid").tagName).toBe("CODE");
     expect(screen.getByText("Revision").tagName).toBe("DT");
     expect(screen.getByText("7").tagName).toBe("DD");
+});
+
+it("keeps technical values behind a disclosure", () => {
+    render(
+        <TechnicalDetails
+            items={[{ term: "Job ID", description: <code>uuid</code> }]}
+        />,
+    );
+
+    const summary = screen.getByText("Technical details");
+    expect(summary.tagName).toBe("SUMMARY");
+    const details = summary.closest("details");
+    expect(details).not.toBeNull();
+    expect(details).not.toHaveAttribute("open");
+    if (details === null)
+        throw new Error("technical details is not a disclosure");
+    expect(within(details).getByText("Job ID")).toBeInTheDocument();
+    expect(within(details).getByText("uuid").tagName).toBe("CODE");
 });

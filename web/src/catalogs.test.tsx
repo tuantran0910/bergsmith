@@ -97,6 +97,12 @@ it("paginates connections and links to the detail", async () => {
     ).toBeVisible();
     expect(screen.getByText(/9007199254740993 s/)).toBeVisible();
     expect(screen.getByText(/exceeds this connection/)).toBeVisible();
+    // The connection ID is technical metadata, not part of the name-led header.
+    const technical = screen.getByText("Technical details").closest("details");
+    expect(technical).not.toBeNull();
+    if (technical !== null) {
+        expect(within(technical).getByText(CATALOG_ID)).toBeInTheDocument();
+    }
 });
 
 it("checks a draft before saving and invalidates the diagnostic after edits", async () => {

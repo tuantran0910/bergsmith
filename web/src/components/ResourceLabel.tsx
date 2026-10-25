@@ -1,11 +1,11 @@
 // The names-first identity of a resource (ADR 0056): a primary name, optional
 // context, a copy affordance, and technical details kept behind a disclosure.
 
-import { ChevronRightIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { cn } from "../ui/cn";
 import { CopyButton } from "./ResourceId";
+import { TechnicalDetails } from "./TechnicalDetails";
 
 /**
  * A resource's display name and its secondary identity. The name is a node so
@@ -42,16 +42,9 @@ export function ResourceLabel({
                 </span>
             )}
             {details !== undefined && (
-                <details className="group text-xs text-muted-foreground">
-                    <summary className="inline-flex min-h-6 w-fit cursor-pointer list-none items-center gap-0.5 rounded-sm outline-none select-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 [&::-webkit-details-marker]:hidden">
-                        <ChevronRightIcon
-                            aria-hidden="true"
-                            className="size-3 transition-transform group-open:rotate-90 motion-reduce:transition-none"
-                        />
-                        Technical details
-                    </summary>
-                    <div className="grid gap-1 pt-1">{details}</div>
-                </details>
+                <TechnicalDetails className="border-0 pt-0">
+                    {details}
+                </TechnicalDetails>
             )}
         </div>
     );
