@@ -23,6 +23,7 @@ pub mod plans;
 pub mod publications;
 pub mod schedules;
 pub mod scheduling;
+pub mod statistics;
 pub mod tables;
 pub mod tenancy;
 pub mod worker_tokens;
