@@ -233,6 +233,94 @@ it("keeps edits and blocks the save when the schedule changed meanwhile", async 
     );
 });
 
+it("says a paused schedule will not run instead of naming its next instant", async () => {
+    fake.on("GET", "/api/v1/schedules", () =>
+        json(
+            200,
+            schema("MaintenanceSchedulePage", {
+                items: [schedule({ enabled: false })],
+                next_cursor: null,
+            }),
+        ),
+    );
+    start();
+    const row = await screen.findByRole("row", { name: /lake\.sales\.orders/ });
+    expect(within(row).getByText("Disabled")).toBeVisible();
+    // The timing still names instants; the list must not imply they will run.
+    expect(within(row).getByText("Paused")).toBeVisible();
+});
+
+it("explains a dormant expression and a paused schedule", async () => {
+    fake.on("GET", "/api/v1/schedules/{id}", () =>
+        json(
+            200,
+            schedule({
+                enabled: false,
+                cron_expression: "0 0 30 2 *",
+                next_occurrences: [],
+            }),
+        ),
+    ).on("GET", "/api/v1/schedules/{id}/occurrences", () =>
+        json(
+            200,
+            schema("ScheduleOccurrencePage", { items: [], next_cursor: null }),
+        ),
+    );
+    start(`/schedules/${SCHEDULE_ID}`);
+    expect(await screen.findByText(/names no reachable instant/)).toBeVisible();
+    expect(
+        screen.queryByRole("list", { name: "Next instants" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("No evaluations yet.")).toBeVisible();
+});
+
+it("warns that a paused schedule admits none of its instants", async () => {
+    fake.on("GET", "/api/v1/schedules/{id}", () =>
+        json(200, schedule({ enabled: false })),
+    ).on("GET", "/api/v1/schedules/{id}/occurrences", () =>
+        json(
+            200,
+            schema("ScheduleOccurrencePage", { items: [], next_cursor: null }),
+        ),
+    );
+    start(`/schedules/${SCHEDULE_ID}`);
+    expect(
+        await screen.findByText(/none of these will be admitted/),
+    ).toBeVisible();
+    expect(screen.getByRole("list", { name: "Next instants" })).toBeVisible();
+});
+
+it("disables the schedule and clears the window in one revision-checked edit", async () => {
+    const updated = schedule({ revision: 3, enabled: false, window: null });
+    fake.on("PATCH", "/api/v1/schedules/{id}", () => json(200, updated))
+        .on(
+            "GET",
+            "/api/v1/schedules/{id}",
+            () => json(200, schedule()),
+            () => json(200, updated),
+        )
+        .on("GET", "/api/v1/schedules/{id}/occurrences", () =>
+            json(200, scheduleOccurrences),
+        );
+    const user = start(`/schedules/${SCHEDULE_ID}`);
+    await user.click(
+        await screen.findByRole("button", { name: "Edit schedule" }),
+    );
+    await user.click(screen.getByLabelText("Enabled for scheduled runs"));
+    await user.click(
+        screen.getByLabelText("Only start runs inside a daily window"),
+    );
+    await user.click(screen.getByRole("button", { name: "Save schedule" }));
+    await waitFor(() => {
+        expect(
+            screen.queryByRole("heading", { name: /Edit schedule for/ }),
+        ).not.toBeInTheDocument();
+    });
+    expect(
+        await fake.sent("PATCH", `/api/v1/schedules/${SCHEDULE_ID}`)[0]?.json(),
+    ).toEqual({ revision: 2, enabled: false, window: null });
+});
+
 it("does not offer schedules to a session without organization configuration", async () => {
     fake.on("GET", "/auth/session", () => json(200, session("Viewer")));
     start();

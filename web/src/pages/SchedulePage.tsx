@@ -18,7 +18,7 @@ import {
     LoadingRows,
     PageHeader,
 } from "../components/Page";
-import { number, shortId, timestamp } from "../format";
+import { number, shortId, timestamp, zonedTimestamp } from "../format";
 import { useSession } from "../queryClient";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
@@ -281,8 +281,14 @@ export function SchedulePage({ id }: { id: string }) {
                                     {schedule.data.next_occurrences.map(
                                         (instant) => (
                                             <li key={instant}>
-                                                <time dateTime={instant}>
-                                                    {timestamp(instant)}
+                                                <time
+                                                    dateTime={instant}
+                                                    title={instant}
+                                                >
+                                                    {zonedTimestamp(
+                                                        instant,
+                                                        schedule.data.time_zone,
+                                                    )}
                                                 </time>
                                             </li>
                                         ),
@@ -293,6 +299,8 @@ export function SchedulePage({ id }: { id: string }) {
                                 Computed by the coordinator in{" "}
                                 {schedule.data.time_zone}. The daily window can
                                 still skip one; the history records it.
+                                {!schedule.data.enabled &&
+                                    " This schedule is paused, so none of these will be admitted until it is enabled."}
                             </p>
                         </CardContent>
                     </Card>

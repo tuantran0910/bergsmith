@@ -23,7 +23,7 @@ import {
     PageHeader,
 } from "../components/Page";
 import { ResourceLabel } from "../components/ResourceLabel";
-import { number, timestamp } from "../format";
+import { number, zonedTimestamp } from "../format";
 import { useSession } from "../queryClient";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
@@ -47,10 +47,18 @@ export function SchedulesPage() {
     const [creating, setCreating] = useState(false);
     const [notice, setNotice] = useState<string | null>(null);
     const items = schedules.data?.pages.flatMap((page) => page.items) ?? [];
-    const canPick =
-        session !== null &&
-        hasOrganizationPermission(session, "inventory:read") &&
-        canManageWorkers(session);
+    const missingGrants =
+        session === null
+            ? []
+            : [
+                  hasOrganizationPermission(session, "inventory:read")
+                      ? null
+                      : "inventory:read to choose a table",
+                  canManageWorkers(session)
+                      ? null
+                      : "workers:manage to choose a service identity",
+              ].filter((grant): grant is string => grant !== null);
+    const canPick = canManage && missingGrants.length === 0;
 
     if (session !== null && !canManage) {
         return (
@@ -115,10 +123,19 @@ export function SchedulesPage() {
             header: "Next",
             className: "whitespace-nowrap",
             cell: (schedule) => {
+                // A paused schedule still has instants; saying so would imply
+                // it will run, which admission will refuse.
+                if (!schedule.enabled) {
+                    return (
+                        <span className="text-muted-foreground">Paused</span>
+                    );
+                }
                 const next = schedule.next_occurrences[0];
                 return (
-                    <span className="text-muted-foreground">
-                        {next === undefined ? "None" : timestamp(next)}
+                    <span className="text-muted-foreground" title={next}>
+                        {next === undefined
+                            ? "None"
+                            : zonedTimestamp(next, schedule.time_zone)}
                     </span>
                 );
             },
@@ -171,11 +188,10 @@ export function SchedulesPage() {
                     )
                 }
             />
-            {canManage && !canPick && (
+            {missingGrants.length > 0 && (
                 <p className="mb-3 text-sm text-muted-foreground">
                     Creating a schedule also needs organization-wide{" "}
-                    <code>inventory:read</code> to choose a table and{" "}
-                    <code>workers:manage</code> to choose a service identity.
+                    {missingGrants.join(" and ")}.
                 </p>
             )}
             {notice !== null && (

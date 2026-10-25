@@ -42,6 +42,27 @@ export function timestamp(value: string): string {
 }
 
 /**
+ * An instant as wall-clock time in `zone`. A schedule writes its cron and
+ * window in its own zone, so its next instants read best there; an
+ * unrecognized zone falls back to the viewer's time zone.
+ */
+export function zonedTimestamp(value: string, zone: string): string {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+        return value;
+    }
+    try {
+        return new Intl.DateTimeFormat(undefined, {
+            dateStyle: "medium",
+            timeStyle: "medium",
+            timeZone: zone,
+        }).format(date);
+    } catch {
+        return date.toLocaleString();
+    }
+}
+
+/**
  * A calendar date in the viewer's locale, without the time of day. Tests pass
  * a locale so their expectations do not depend on the machine's default.
  */
