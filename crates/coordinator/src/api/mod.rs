@@ -160,6 +160,10 @@ pub fn router(state: ApiState) -> Router {
             get(scheduling::schedules).post(scheduling::create_schedule),
         )
         .route(
+            "/api/v1/schedules/{id}/occurrences",
+            get(scheduling::schedule_occurrences),
+        )
+        .route(
             "/api/v1/schedules/{id}",
             get(scheduling::schedule).patch(scheduling::update_schedule),
         )

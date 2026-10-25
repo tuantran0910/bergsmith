@@ -1096,3 +1096,31 @@ async fn scoped_administrator_grants_do_not_replace_organization_administration(
         .unwrap();
     assert!(changed);
 }
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn referenced_principals_are_named_in_one_read(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let alpha = support::service_principal(&mut conn, tenant.organization, "alpha").await;
+    let beta = support::service_principal(&mut conn, tenant.organization, "beta").await;
+    let names = tenancy::principal_display_names(&mut conn, tenant.organization, &[alpha, beta])
+        .await
+        .unwrap();
+    assert_eq!(names.len(), 2);
+    assert_eq!(names.get(&alpha).map(String::as_str), Some("alpha"));
+    assert_eq!(names.get(&beta).map(String::as_str), Some("beta"));
+
+    // Another organization's principal is not named for this one, and an empty
+    // page costs no query.
+    let other = support::tenant(&mut conn, "other").await;
+    let foreign = tenancy::principal_display_names(&mut conn, other.organization, &[alpha])
+        .await
+        .unwrap();
+    assert!(foreign.is_empty());
+    assert!(
+        tenancy::principal_display_names(&mut conn, tenant.organization, &[])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

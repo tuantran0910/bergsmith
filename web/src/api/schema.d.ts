@@ -367,6 +367,23 @@ export interface paths {
         patch: operations["updateSchedule"];
         trace?: never;
     };
+    "/api/v1/schedules/{id}/occurrences": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description One schedule's evaluations, newest first. An admitted occurrence names the job it created, a coalesced one names the job that already owned the table, and a skipped one carries a stable reason such as OutsideWindow. Requires schedules:manage. */
+        get: operations["listScheduleOccurrences"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/catalogs/{id}/namespaces": {
         parameters: {
             query?: never;
@@ -904,7 +921,10 @@ export interface components {
             window: components["schemas"]["MaintenanceWindow"] | null;
             /** Format: uuid */
             service_principal_id: string;
+            service_identity_name: string;
             enabled: boolean;
+            /** @description The next cron instants strictly after this response was built, in UTC. A maintenance window can still skip one at admission. */
+            next_occurrences: string[];
             /** Format: int64 */
             revision: number;
             /** Format: date-time */
@@ -986,6 +1006,24 @@ export interface components {
             format: string | null;
             field_id: number | null;
             problem: ("floating_point" | "nested" | "not_in_schema") | null;
+        };
+        ScheduleOccurrence: {
+            /** Format: uuid */
+            id: string;
+            /** Format: date-time */
+            scheduled_for: string;
+            coalesced_until: string | null;
+            /** @enum {string} */
+            state: "Pending" | "Admitted" | "Coalesced" | "Skipped";
+            job_id: string | null;
+            /** @description Stable reason for a coalesced or skipped evaluation, such as OutsideWindow. Null for an admitted one. */
+            reason: string | null;
+            /** Format: date-time */
+            created_at: string;
+        };
+        ScheduleOccurrencePage: {
+            items: components["schemas"]["ScheduleOccurrence"][];
+            next_cursor: string | null;
         };
         Skipped: {
             /** @enum {string} */
@@ -3807,6 +3845,95 @@ export interface operations {
             };
             /** @description Request body too large */
             413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    listScheduleOccurrences: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque continuation bound to organization, principal, and resource. Current grants are rechecked. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Occurrence page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleOccurrencePage"];
+                };
+            };
+            /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Resource not found in this organization */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
                 headers: {
                     [name: string]: unknown;
                 };

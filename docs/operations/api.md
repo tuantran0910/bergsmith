@@ -440,6 +440,25 @@ replaces it. Changing the window recomputes a future next-due cursor so a skip
 under the old window cannot hide newly eligible runs; an overdue cursor is still
 evaluated under the new window. A schedule's policy and table cannot change.
 
+A schedule reads back with two derived fields. `service_identity_name` is the
+display name of the service principal it runs as, so a reader names the identity
+without a separate grant. `next_occurrences` lists the next five cron instants
+strictly after the response was built, computed in the schedule's time zone by
+the same DST rules as admission; the maintenance window still applies, so
+admission can skip one of them. The instants come from the timing alone, so a
+disabled schedule still lists them: disabling stops admission, not the
+arithmetic.
+
+`GET /api/v1/schedules/{id}/occurrences` returns the durable evaluations newest
+first. Each item carries `scheduled_for`, `coalesced_until` when downtime folded
+several instants into one evaluation, the state (`Pending`, `Admitted`,
+`Coalesced`, `Skipped`), the job that was created or already owned the table,
+and the stable reason for a coalesced or skipped row: `TableBusy` when a
+nonterminal job held the table, or `OutsideWindow`, `PolicyDisabled`,
+`ConnectionDisabled`, `MaintenancePaused`, or `ServiceIdentityIneligible` when
+admission refused. The page is keyed on `scheduled_for`, which is unique within a
+schedule, and an unknown schedule returns 404 rather than an empty page.
+
 Edits are optimistic. A request whose `revision` is stale returns 409
 `revision_conflict` and changes nothing. `POST` on an existing policy name or an
 existing policy/table pair returns 409 `resource_already_exists`. Every schedule
