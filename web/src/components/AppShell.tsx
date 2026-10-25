@@ -33,7 +33,7 @@ import { useDensityPreference, type Density } from "../density";
 import { useThemePreference, type ThemePreference } from "../theme";
 import { Button, buttonVariants } from "../ui/Button";
 import { DialogClose } from "../ui/Dialog";
-import { Breadcrumbs } from "./Breadcrumbs";
+import { BreadcrumbLabelProvider, Breadcrumbs } from "./Breadcrumbs";
 import { DensityToggle } from "./DensityToggle";
 import { ErrorNotice } from "./ErrorNotice";
 import { SessionExpiry } from "./SessionExpiry";
@@ -317,33 +317,35 @@ export function AppShell({
                     tabIndex={-1}
                     className="mx-auto w-full max-w-6xl px-4 py-6 outline-none md:px-8 md:py-8"
                 >
-                    <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-                        <Breadcrumbs />
-                        <div className="ml-auto flex items-center gap-2">
-                            <Button
-                                variant="ghost"
-                                size="sm"
-                                disabled
-                                title="Search is not yet available"
-                            >
-                                <SearchIcon aria-hidden="true" />
-                                Search
-                            </Button>
-                            {creates[0] && (
-                                <Link
-                                    to={creates[0].to}
-                                    className={buttonVariants({
-                                        variant: "outline",
-                                        size: "sm",
-                                    })}
+                    <BreadcrumbLabelProvider>
+                        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                            <Breadcrumbs />
+                            <div className="ml-auto flex items-center gap-2">
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    disabled
+                                    title="Search is not yet available"
                                 >
-                                    <PlusIcon aria-hidden="true" />
-                                    New
-                                </Link>
-                            )}
+                                    <SearchIcon aria-hidden="true" />
+                                    Search
+                                </Button>
+                                {creates[0] && (
+                                    <Link
+                                        to={creates[0].to}
+                                        className={buttonVariants({
+                                            variant: "outline",
+                                            size: "sm",
+                                        })}
+                                    >
+                                        <PlusIcon aria-hidden="true" />
+                                        New
+                                    </Link>
+                                )}
+                            </div>
                         </div>
-                    </div>
-                    {children}
+                        {children}
+                    </BreadcrumbLabelProvider>
                 </main>
             </div>
             <NavigationDrawer

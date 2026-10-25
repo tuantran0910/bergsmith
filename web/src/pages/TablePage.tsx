@@ -5,10 +5,12 @@ import { hasTablePermission } from "../api/auth";
 import { api, call, csrfHeader } from "../api/client";
 import { useKeyedMutation } from "../api/keyed";
 import { useCatalogNames, useTable } from "../api/queries";
+import { useBreadcrumbLabel } from "../components/Breadcrumbs";
 import { ErrorNotice } from "../components/ErrorNotice";
-import { DefinitionList, Metric, MetricGrid } from "../components/Metric";
+import { Metric, MetricGrid } from "../components/Metric";
 import { LoadingDetail, PageHeader } from "../components/Page";
 import { ResourceId } from "../components/ResourceId";
+import { TechnicalDetails } from "../components/TechnicalDetails";
 import {
     aliasName,
     count,
@@ -19,7 +21,7 @@ import {
 } from "../format";
 import { useSession, useSessionMutation } from "../queryClient";
 import { Button } from "../ui/Button";
-import { Card, CardContent, CardHeader, CardTitle } from "../ui/Card";
+import { Card, CardContent } from "../ui/Card";
 import { PreviewView } from "./PreviewView";
 import { Access } from "./access/Access";
 import { namespaceKey } from "./tables/search";
@@ -31,6 +33,14 @@ export function TablePage({ id }: { id: string }) {
     const catalogs = useCatalogNames();
     const names = catalogs.data ?? new Map<string, string>();
     const session = useSession();
+    const [primaryAlias] = table.data?.aliases ?? [];
+    useBreadcrumbLabel(
+        table.data === undefined
+            ? undefined
+            : primaryAlias === undefined
+              ? `Table ${shortId(table.data.id)}`
+              : aliasName(primaryAlias, names),
+    );
 
     const preview = useSessionMutation({
         mutationFn: () =>
@@ -172,11 +182,9 @@ export function TablePage({ id }: { id: string }) {
             </MetricGrid>
 
             <Card className="mb-6">
-                <CardHeader>
-                    <CardTitle>Technical details</CardTitle>
-                </CardHeader>
                 <CardContent>
-                    <DefinitionList
+                    <TechnicalDetails
+                        className="border-t-0 pt-0"
                         items={[
                             {
                                 term: "Table UUID",

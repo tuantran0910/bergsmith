@@ -204,7 +204,9 @@ test("issues and revokes a pool token", async ({ page, coordinator }) => {
     await page
         .getByRole("button", { name: "Revoke token", exact: true })
         .click();
-    await expect(page.getByRole("dialog")).toContainText(TOKEN_ID);
+    const revoke = page.getByRole("dialog");
+    await expect(revoke).toContainText("Worker fleet (pool default)");
+    await expect(revoke).not.toContainText(TOKEN_ID);
     await expectAccessible(page);
     await page.getByRole("button", { name: "Confirm revoke token" }).click();
     await expect(page.getByText("Revoked", { exact: true })).toBeVisible();

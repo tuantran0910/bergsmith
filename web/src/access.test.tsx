@@ -176,6 +176,13 @@ it("requires confirmation for deactivation and preserves the last-administrator 
         ),
     );
     const { user } = start(`/users/${USER_ID}`);
+    const technical = (await screen.findByText("Technical details")).closest(
+        "details",
+    );
+    expect(technical).not.toBeNull();
+    if (technical !== null) {
+        expect(within(technical).getByText(USER_ID)).toBeInTheDocument();
+    }
     await user.click(
         await screen.findByRole("button", { name: "Deactivate principal" }),
     );
@@ -385,9 +392,10 @@ it("rotates a token with confirmation and shows the replacement once", async () 
     await user.click(
         await screen.findByRole("button", { name: "Rotate token" }),
     );
-    expect(screen.getByRole("dialog")).toHaveTextContent(
-        "old token stops working immediately",
-    );
+    const rotate = screen.getByRole("dialog");
+    expect(rotate).toHaveTextContent("Worker fleet (pool default)");
+    expect(rotate).not.toHaveTextContent(TOKEN_ID);
+    expect(rotate).toHaveTextContent("old token stops working immediately");
     await user.click(
         screen.getByRole("button", { name: "Confirm rotate token" }),
     );
@@ -450,8 +458,11 @@ it("revokes a grant and refreshes the active list", async () => {
     await user.click(
         await screen.findByRole("button", { name: "Revoke grant" }),
     );
+    const revoke = screen.getByRole("dialog");
+    expect(revoke).toHaveTextContent("Bob");
+    expect(revoke).not.toHaveTextContent(USER_ID);
     await user.click(
-        within(screen.getByRole("dialog")).getByRole("button", {
+        within(revoke).getByRole("button", {
             name: "Confirm revoke grant",
         }),
     );

@@ -97,7 +97,7 @@ describe("format", () => {
         ).toBe("lake.a.b.t");
     });
 
-    it("names a table by its first visible alias, or its short ID", () => {
+    it("names a table by its first visible alias, or a Table fallback", () => {
         const id = "0190f3c4-0000-7000-8000-000000000001";
         const catalogs = new Map([["c", "lake"]]);
         expect(
@@ -120,7 +120,7 @@ describe("format", () => {
                 catalogs,
             ),
         ).toBe("lake.a.t");
-        expect(tableName([], id, catalogs)).toBe("00000001");
+        expect(tableName([], id, catalogs)).toBe("Table 00000001");
     });
 });
 

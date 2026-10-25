@@ -624,16 +624,14 @@ describe("browsing", () => {
         ).toBeInTheDocument();
     });
 
-    it("names a catalog by ID when its name is unknown", async () => {
+    it("omits an unknown catalog name instead of showing its ID", async () => {
         fake.on("GET", "/api/v1/catalogs", () =>
             json(200, { items: [], next_cursor: null }),
         ).on("GET", "/api/v1/tables/{id}", () => json(200, table));
         start(`/tables/${TABLE_ID}`);
 
         expect(
-            await screen.findByRole("heading", {
-                name: `${CATALOG_ID}.sales.orders`,
-            }),
+            await screen.findByRole("heading", { name: "sales.orders" }),
         ).toBeInTheDocument();
     });
 
@@ -801,10 +799,47 @@ describe("overview and shell", () => {
         expect(
             within(trail).getByRole("link", { name: "Tables" }),
         ).toHaveAttribute("href", "/tables");
-        expect(within(trail).getByText("00000001")).toHaveAttribute(
-            "title",
-            TABLE_ID,
+        expect(
+            await within(trail).findByText("lake.sales.orders"),
+        ).toHaveAttribute("title", TABLE_ID);
+        expect(within(trail).queryByText("00000001")).not.toBeInTheDocument();
+    });
+
+    it("replaces a detail breadcrumb after navigating to another resource", async () => {
+        fake.on("GET", "/api/v1/tables/{id}", () => json(200, table))
+            .on("GET", "/api/v1/jobs", () =>
+                json(
+                    200,
+                    schema("JobPage", {
+                        items: [job("Running")],
+                        next_cursor: null,
+                    }),
+                ),
+            )
+            .on("GET", "/api/v1/jobs/{id}", () => json(200, job("Running")));
+        const user = start(`/tables/${TABLE_ID}`);
+
+        let trail = await screen.findByRole("navigation", {
+            name: "Breadcrumb",
+        });
+        expect(
+            await within(trail).findByText("lake.sales.orders"),
+        ).toBeInTheDocument();
+
+        await user.click(screen.getByRole("link", { name: "Jobs" }));
+        await user.click(
+            await screen.findByRole("link", {
+                name: `Job ${JOB_ID.slice(-8)}`,
+            }),
         );
+
+        trail = await screen.findByRole("navigation", { name: "Breadcrumb" });
+        expect(
+            await within(trail).findByText(`Job ${JOB_ID.slice(-8)}`),
+        ).toBeInTheDocument();
+        expect(
+            within(trail).queryByText("lake.sales.orders"),
+        ).not.toBeInTheDocument();
     });
 });
 
@@ -1211,6 +1246,20 @@ describe("job progress", () => {
             await screen.findByRole("link", { name: "lake.sales.orders" }),
         ).toHaveAttribute("href", `/tables/${TABLE_ID}`);
         expect(
+            screen.getByRole("heading", { name: "lake.sales.orders" }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("button", { name: "Copy job ID" }),
+        ).toBeInTheDocument();
+        const technical = screen
+            .getByText("Technical details")
+            .closest("details");
+        expect(technical).not.toBeNull();
+        if (technical !== null) {
+            expect(technical).not.toHaveAttribute("open");
+            expect(within(technical).getByText(JOB_ID)).toBeInTheDocument();
+        }
+        expect(
             screen.getByText("Requested by").nextElementSibling,
         ).toHaveTextContent("Alice");
         cleanup();
@@ -1220,7 +1269,14 @@ describe("job progress", () => {
         );
         start(`/jobs/${JOB_ID}`);
         expect(
-            await screen.findByRole("link", { name: TABLE_ID }),
+            await screen.findByRole("heading", {
+                name: `Table ${TABLE_ID.slice(-8)}`,
+            }),
+        ).toBeInTheDocument();
+        expect(
+            await screen.findByRole("link", {
+                name: `Table ${TABLE_ID.slice(-8)}`,
+            }),
         ).toHaveAttribute("href", `/tables/${TABLE_ID}`);
     });
 
@@ -1605,10 +1661,9 @@ describe("job commands", () => {
 
         expect(await screen.findByText(RETRY_JOB_ID)).toBeInTheDocument();
         expect(window.location.pathname).toBe(`/jobs/${RETRY_JOB_ID}`);
-        expect(screen.getByRole("link", { name: JOB_ID })).toHaveAttribute(
-            "href",
-            `/jobs/${JOB_ID}`,
-        );
+        expect(
+            screen.getByRole("link", { name: `Job ${JOB_ID.slice(-8)}` }),
+        ).toHaveAttribute("href", `/jobs/${JOB_ID}`);
         const request = fake.sent("POST", `/api/v1/jobs/${JOB_ID}/retry`)[0];
         expect(request?.headers.get("Idempotency-Key")).toMatch(
             /^[0-9a-f-]{36}$/,
@@ -1702,9 +1757,27 @@ describe("jobs and audit", () => {
         ).toHaveAttribute("title", TABLE_ID);
         expect(
             within(rows[2] as HTMLElement).getByRole("link", {
-                name: TABLE_ID.slice(-8),
+                name: `Table ${TABLE_ID.slice(-8)}`,
             }),
         ).toHaveAttribute("href", `/tables/${TABLE_ID}`);
+        // The name leads; the job ID is a secondary link and a copy affordance.
+        expect(
+            within(rows[1] as HTMLElement).getByRole("link", {
+                name: `Job ${JOB_ID.slice(-8)}`,
+            }),
+        ).toHaveAttribute("href", `/jobs/${JOB_ID}`);
+        expect(
+            within(rows[1] as HTMLElement).getByRole("button", {
+                name: "Copy job ID",
+            }),
+        ).toBeInTheDocument();
+        expect(
+            within(rows[1] as HTMLElement).getByText("Alice"),
+        ).toBeInTheDocument();
+        expect(
+            screen.queryByRole("columnheader", { name: "Job" }),
+        ).not.toBeInTheDocument();
+        expect(screen.queryByText(JOB_ID)).not.toBeInTheDocument();
         expect(
             within(rows[1] as HTMLElement).getByText("Outputs ready"),
         ).toBeInTheDocument();
@@ -1796,6 +1869,18 @@ describe("jobs and audit", () => {
         ).toBeInTheDocument();
         expect(grid.getByText("Anonymous")).toBeInTheDocument();
         expect(grid.queryByText(PRINCIPAL_ID)).not.toBeInTheDocument();
+        // A resource with no name shows its type, then a short ID and copy
+        // affordance; known resources link to their detail page.
+        expect(
+            grid.getByRole("link", { name: `Job ${JOB_ID.slice(-8)}` }),
+        ).toHaveAttribute("href", `/jobs/${JOB_ID}`);
+        expect(
+            grid.getByRole("button", { name: "Copy job ID" }),
+        ).toBeInTheDocument();
+        expect(
+            grid.getByText(new RegExp(JOB_ID), { selector: ".sr-only" }),
+        ).toBeInTheDocument();
+        expect(grid.queryByText(JOB_ID)).not.toBeInTheDocument();
         expect(screen.getByRole("link", { name: "Audit" })).toHaveAttribute(
             "aria-current",
             "page",

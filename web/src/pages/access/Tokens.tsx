@@ -4,6 +4,7 @@ import { pageParams, useAccessPage } from "../../api/access";
 import { api, call, csrfHeader, type Schemas } from "../../api/client";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { LoadMore, LoadingRows } from "../../components/Page";
+import { shortId } from "../../format";
 import { ResourceId } from "../../components/ResourceId";
 import { forSession, useSessionMutation } from "../../queryClient";
 import { Button } from "../../ui/Button";
@@ -29,6 +30,10 @@ function TokenRow({
     onIssued: (secret: string) => void;
 }) {
     const client = useQueryClient();
+    const label =
+        token.label === null || token.label === undefined || token.label === ""
+            ? `the token for pool ${token.pool}`
+            : `${token.label} (pool ${token.pool})`;
     const invalidate = () => {
         void client.invalidateQueries({ queryKey: ["access", "tokens", id] });
     };
@@ -73,8 +78,13 @@ function TokenRow({
             </div>
             <ResourceId id={token.id} label="token ID" />
             {token.rotated_from && (
-                <p className="m-0 break-all text-sm">
-                    Replaces {token.rotated_from}
+                <p className="m-0 flex flex-wrap items-center gap-1 text-sm text-muted-foreground">
+                    Replaces{" "}
+                    <ResourceId
+                        id={token.rotated_from}
+                        label="replaced token ID"
+                        short
+                    />
                 </p>
             )}
             {token.active && (
@@ -82,7 +92,7 @@ function TokenRow({
                     {active && (
                         <Confirm
                             label="Rotate token"
-                            description={`Replace token ${token.id} for pool ${token.pool}? The old token stops working immediately. The replacement is shown once.`}
+                            description={`Replace ${label} (${shortId(token.id)})? The old token stops working immediately. The replacement is shown once.`}
                             pending={rotate.isPending}
                             error={rotate.error}
                             onConfirm={() => {
@@ -92,7 +102,7 @@ function TokenRow({
                     )}
                     <Confirm
                         label="Revoke token"
-                        description={`Revoke token ${token.id} for pool ${token.pool}? Workers using it lose access on their next call.`}
+                        description={`Revoke ${label} (${shortId(token.id)})? Workers using it lose access on their next call.`}
                         pending={revoke.isPending}
                         error={revoke.error}
                         onConfirm={() => {
