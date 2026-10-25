@@ -16,7 +16,7 @@ import {
     DialogTitle,
 } from "../../ui/Dialog";
 import { Input, Label } from "../../ui/Input";
-import { Confirm, uncertain, WriteError } from "./Controls";
+import { Confirm, uncertain, WriteError } from "../../components/Writes";
 
 function TokenRow({
     id,

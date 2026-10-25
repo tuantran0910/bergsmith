@@ -330,6 +330,12 @@ tracking task.
 
 ### Browser testing and Playwright MCP
 
+- Verify frontend work in a real browser with Playwright; jsdom tests alone do
+  not prove the page. Build the UI (`npm --prefix web run build`, which the gate
+  serves) and drive the changed page. Playwright is the preferred instrument for
+  a frontend change: it shows layout, focus order, the console, network, and CSP
+  behavior that unit tests cannot, so use it to inspect the actual surface as
+  you work rather than only at the end.
 - Add or extend browser journeys in `web/e2e/` for changed user workflows.
   Reuse `web/e2e/coordinator.ts` and contract-typed fixtures. The acceptance gate
   runs the production build in the repository-pinned Chromium, under the

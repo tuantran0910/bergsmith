@@ -63,6 +63,10 @@ const CatalogPage = lazyPage(
 );
 const JobsPage = lazyPage(() => import("./pages/JobsPage"), "JobsPage");
 const JobPage = lazyPage(() => import("./pages/JobPage"), "JobPage");
+const PoliciesPage = lazyPage(
+    () => import("./pages/PoliciesPage"),
+    "PoliciesPage",
+);
 const AuditPage = lazyPage(() => import("./pages/AuditPage"), "AuditPage");
 const WorkersPage = lazyPage(
     () => import("./pages/WorkersPage"),
@@ -195,6 +199,12 @@ const auditRoute = createRoute({
     component: AuditPage,
 });
 
+const policiesRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/policies",
+    component: PoliciesPage,
+});
+
 const workersRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/workers",
@@ -247,6 +257,7 @@ const routeTree = rootRoute.addChildren([
     tableRoute,
     jobsRoute,
     jobRoute,
+    policiesRoute,
     auditRoute,
     workersRoute,
 ]);

@@ -13,6 +13,7 @@ import {
     ScrollTextIcon,
     SearchIcon,
     ServerIcon,
+    SlidersHorizontalIcon,
     Table2Icon,
     UsersIcon,
     XIcon,
@@ -23,6 +24,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
     type SessionInfo,
     canManageCatalog,
+    canManageSchedules,
     canManageWorkers,
     canReadAudit,
     hasOrganizationPermission,
@@ -46,6 +48,7 @@ interface Destination {
         | "/catalogs"
         | "/tables"
         | "/jobs"
+        | "/policies"
         | "/workers"
         | "/audit"
         | "/users"
@@ -88,6 +91,12 @@ const GROUPS: readonly { label: string; items: Destination[] }[] = [
                 label: "Jobs",
                 icon: ListChecksIcon,
                 allowed: () => true,
+            },
+            {
+                to: "/policies",
+                label: "Policies",
+                icon: SlidersHorizontalIcon,
+                allowed: canManageSchedules,
             },
             {
                 to: "/workers",

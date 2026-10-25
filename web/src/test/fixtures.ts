@@ -15,6 +15,7 @@ export const CATALOG_ID = "0190f3c4-0000-7000-8000-0000000000c1";
 export const JOB_ID = "0190f3c4-0000-7000-8000-00000000000a";
 export const RETRY_JOB_ID = "0190f3c4-0000-7000-8000-00000000000b";
 export const PRINCIPAL_ID = "0190f3c4-0000-7000-8000-0000000000aa";
+export const POLICY_ID = "0190f3c4-0000-7000-8000-0000000000b1";
 
 const ORGANIZATION: GrantScope = { catalog_connection: null, table: null };
 
@@ -324,4 +325,28 @@ export const rejectedPreview = schema("Preview", {
     bins_total: 0,
     bins_truncated: false,
     skipped: [],
+});
+
+/** A policy at the planner defaults, with a revision to edit against. */
+export function policy(
+    overrides: Partial<Schemas["MaintenancePolicy"]> = {},
+): Schemas["MaintenancePolicy"] {
+    return schema("MaintenancePolicy", {
+        id: POLICY_ID,
+        name: "nightly-compact",
+        operation: "Compact",
+        target_file_size_bytes: 268_435_456,
+        min_input_files: 5,
+        max_input_bytes: 107_374_182_400,
+        enabled: true,
+        revision: 3,
+        created_at: "2026-10-01T00:00:00Z",
+        updated_at: "2026-10-20T00:00:00Z",
+        ...overrides,
+    });
+}
+
+export const policies = schema("MaintenancePolicyPage", {
+    items: [policy()],
+    next_cursor: null,
 });

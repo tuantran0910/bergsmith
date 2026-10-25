@@ -163,6 +163,16 @@ export function canManageWorkers(session: SessionInfo): boolean {
 }
 
 /**
+ * Whether the session can administer organization maintenance configuration
+ * (policies and schedules). Only an organization-wide grant carries
+ * `schedules:manage`; a grant narrowed to a table or connection never
+ * administers organization configuration.
+ */
+export function canManageSchedules(session: SessionInfo): boolean {
+    return hasOrganizationPermission(session, "schedules:manage");
+}
+
+/**
  * Whether the session can manage one connection's settings, or create a
  * connection when `id` is omitted. Creation needs an organization-wide grant;
  * editing a connection accepts a grant over that connection.
