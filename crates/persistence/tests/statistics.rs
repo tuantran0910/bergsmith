@@ -144,7 +144,9 @@ async fn retention_prunes_only_samples_older_than_the_bound(pool: PgPool) {
 async fn due_tables_are_oldest_first_and_stop_when_sampled(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let tenant = support::tenant(&mut conn, "due").await;
-    let now = Utc::now();
+    // PostgreSQL keeps microseconds, so a recorded instant must already be
+    // truncated to survive the round trip unchanged.
+    let now = DateTime::from_timestamp_micros(Utc::now().timestamp_micros()).unwrap();
     // The caller passes the instant samples older than the interval must beat.
     let cutoff = now - TimeDelta::minutes(5);
 
