@@ -126,8 +126,8 @@ validated search parameters so links, back/forward, and saved views work.
 
 ### 5. Owned primitives, not bespoke one-offs
 
-Base UI already supplies Select, Dialog, Drawer, Menu, Popover, Tabs, Tooltip,
-and Toast. The repository keeps thin styled wrappers around those primitives
+Base UI already supplies Dialog, Drawer, Menu, Popover, Tabs, Tooltip, and
+Toast. The repository keeps thin styled wrappers around those primitives
 instead of reimplementing behavior.
 
 - The custom `web/src/ui/Select.tsx` remains in place. Base UI's floating

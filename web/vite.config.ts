@@ -6,7 +6,7 @@ import { defineConfig } from "vite";
 // Vite loads its configuration natively, which needs the file extension.
 import { bundleBudget } from "./tooling/bundleBudget.ts";
 
-/** Gzipped JavaScript the browser downloads: 152 kB when the budget was set. */
+/** Gzipped first-load JavaScript: the entry graph only; lazy page chunks are excluded. */
 const JAVASCRIPT_BUDGET_BYTES = 175_000;
 
 // The development server proxies the coordinator so the session and CSRF

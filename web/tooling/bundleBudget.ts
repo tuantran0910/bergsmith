@@ -18,11 +18,16 @@ export interface EmittedChunk {
     imports: readonly string[];
 }
 
-/** Why the first load failed, largest chunk first, or `null` within budget. */
-export function firstLoadFailure(
-    chunks: readonly EmittedChunk[],
-    budgetBytes: number,
-): string | null {
+/** The first-load bytes: entry chunks and their static import closure. */
+export function firstLoadBytes(chunks: readonly EmittedChunk[]): number {
+    return measured(chunks).total;
+}
+
+/** Entry-reachable chunks and their gzipped total. */
+function measured(chunks: readonly EmittedChunk[]): {
+    total: number;
+    counted: readonly EmittedChunk[];
+} {
     const byName = new Map(chunks.map((chunk) => [chunk.fileName, chunk]));
     const firstLoad = new Set<string>();
     const queue = chunks
@@ -40,7 +45,18 @@ export function firstLoadFailure(
         }
     }
     const counted = chunks.filter((chunk) => firstLoad.has(chunk.fileName));
-    const total = counted.reduce((sum, chunk) => sum + chunk.gzipBytes, 0);
+    return {
+        total: counted.reduce((sum, chunk) => sum + chunk.gzipBytes, 0),
+        counted,
+    };
+}
+
+/** Why the first load failed, largest chunk first, or `null` within budget. */
+export function firstLoadFailure(
+    chunks: readonly EmittedChunk[],
+    budgetBytes: number,
+): string | null {
+    const { total, counted } = measured(chunks);
     if (total <= budgetBytes) {
         return null;
     }
@@ -72,6 +88,10 @@ export function bundleBudget(budgetBytes: number): Plugin {
                           },
                       ]
                     : [],
+            );
+            const firstLoad = firstLoadBytes(chunks);
+            this.info(
+                `First-load JavaScript: ${kilobytes(firstLoad)} gzipped (budget ${kilobytes(budgetBytes)})`,
             );
             const failure = firstLoadFailure(chunks, budgetBytes);
             if (failure !== null) {

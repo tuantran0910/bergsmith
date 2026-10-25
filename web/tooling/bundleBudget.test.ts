@@ -1,4 +1,4 @@
-import { firstLoadFailure } from "./bundleBudget";
+import { firstLoadBytes, firstLoadFailure } from "./bundleBudget";
 
 function chunk(
     fileName: string,
@@ -61,5 +61,33 @@ describe("firstLoadFailure", () => {
 
     it("treats an empty bundle as free", () => {
         expect(firstLoadFailure([], 0)).toBeNull();
+    });
+});
+
+describe("firstLoadBytes", () => {
+    it("sums the entry and its transitive static imports", () => {
+        expect(
+            firstLoadBytes([
+                chunk("entry.js", 100, {
+                    isEntry: true,
+                    imports: ["shared.js"],
+                }),
+                chunk("shared.js", 80, { imports: ["vendor.js"] }),
+                chunk("vendor.js", 40),
+            ]),
+        ).toBe(220);
+    });
+
+    it("leaves lazy chunks out of the first load", () => {
+        expect(
+            firstLoadBytes([
+                chunk("entry.js", 100, { isEntry: true }),
+                chunk("lazy-page.js", 500),
+            ]),
+        ).toBe(100);
+    });
+
+    it("counts nothing without an entry chunk", () => {
+        expect(firstLoadBytes([chunk("orphan.js", 500)])).toBe(0);
     });
 });

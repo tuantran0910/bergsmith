@@ -458,6 +458,36 @@ test("stays accessible in the narrow layout", async ({ page, coordinator }) => {
     await expectAccessible(page);
 });
 
+test("shows a status while a page chunk loads", async ({
+    page,
+    coordinator,
+}) => {
+    signedIn(coordinator);
+    coordinator
+        .on("GET", "/api/v1/tables", () =>
+            json(
+                200,
+                schema("TablePage", { items: [table], next_cursor: null }),
+            ),
+        )
+        .on("GET", "/api/v1/jobs", () =>
+            json(200, schema("JobPage", { items: [], next_cursor: null })),
+        );
+    await page.route("**/assets/JobsPage-*.js", async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        // The coordinator fixture owns the response for this fake origin.
+        await route.fallback();
+    });
+
+    await page.goto("/tables");
+    await expect(
+        page.getByRole("link", { name: "lake.sales.orders" }),
+    ).toBeVisible();
+    await page.getByRole("link", { name: "Jobs", exact: true }).click();
+    await expect(page.getByRole("status")).toContainText("Loading page…");
+    await expect(page.getByRole("heading", { name: "Jobs" })).toBeVisible();
+});
+
 for (const width of [320, 768, 1440]) {
     test(`keeps the shell usable at ${width} px`, async ({
         page,
