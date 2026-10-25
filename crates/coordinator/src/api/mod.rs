@@ -16,6 +16,7 @@ mod principals;
 mod resources;
 mod scheduling;
 mod service_identities;
+mod statistics;
 mod submission;
 
 use axum::body::{Body, Bytes};
@@ -102,6 +103,9 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/api/v1/tables", get(resources::tables))
         .route("/api/v1/tables/{id}", get(resources::table))
+        .route("/api/v1/tables/{id}/statistics", get(statistics::table))
+        .route("/api/v1/catalogs/{id}/statistics", get(statistics::catalog))
+        .route("/api/v1/statistics", get(statistics::organization))
         .route(
             "/api/v1/jobs",
             get(resources::jobs).post(submission::submit),

@@ -100,6 +100,7 @@ The JSON document is validated before any listener starts. A minimal document:
 | `task` | The single pool, capability, and resource envelope for this release |
 | `leadership` | Lease and renewal durations; renewal must be shorter than the lease |
 | `loops` | Planning and publication scan intervals |
+| `statistics` | Metadata-only sampling: interval, retention, page and connection bounds, and the sample's manifest-entry and histogram limits ([ADR 0057](../adr/0057-metadata-only-table-statistics.md)) |
 | `observability` | Optional metrics listener and ledger snapshot bounds ([observability](observability.md)) |
 
 The OIDC issuer is used for discovery from the coordinator and must be the

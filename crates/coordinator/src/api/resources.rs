@@ -69,7 +69,16 @@ macro_rules! table_summary {
             "jsonb_build_object('id', r.id, 'table_uuid', r.table_uuid, 'created_at', r.created_at,
           'aliases', ",
             visible_aliases!("r.id"),
-            ")"
+            ", 'statistics', (SELECT jsonb_build_object(
+                'sampled_at', s.sampled_at,
+                'record_count', s.record_count::text,
+                'data_files', s.data_files::text,
+                'data_bytes', s.data_bytes::text,
+                'delete_files', s.delete_files::text,
+                'small_files', s.small_files::text)
+              FROM table_statistics s
+              WHERE s.organization_id = r.organization_id AND s.table_identity_id = r.id
+              ORDER BY s.sampled_at DESC LIMIT 1))"
         )
     };
 }
@@ -141,7 +150,7 @@ enum Selection {
 }
 
 #[derive(Clone, Copy)]
-enum Resource {
+pub(super) enum Resource {
     Catalog,
     Table,
     Job,
@@ -227,7 +236,7 @@ impl Resource {
     }
 }
 
-async fn read(
+pub(super) async fn read(
     state: &ApiState,
     caller: &bergsmith_persistence::auth::Session,
     resource: Resource,

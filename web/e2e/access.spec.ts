@@ -3,6 +3,7 @@ import {
     CATALOG_ID,
     TABLE_ID,
     catalogs,
+    catalogTotals,
     managedCatalog,
     session,
     table,
@@ -233,6 +234,9 @@ test("connection and table Access keep grants scoped on narrow screens", async (
         )
         .on("GET", "/api/v1/catalogs", () => json(200, catalogs))
         .on("GET", "/api/v1/catalogs/{id}", () => json(200, managedCatalog))
+        .on("GET", "/api/v1/catalogs/{id}/statistics", () =>
+            json(200, catalogTotals),
+        )
         .on("GET", "/api/v1/tables", () =>
             json(
                 200,

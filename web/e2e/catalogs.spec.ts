@@ -3,6 +3,7 @@ import {
     CATALOG_ID,
     TABLE_ID,
     catalogCapabilities,
+    catalogTotals,
     catalogs,
     managedCatalog,
     session,
@@ -41,6 +42,9 @@ test("checks an unsaved connection, saves it, and registers a discovered table",
             return json(201, managedCatalog);
         })
         .on("GET", "/api/v1/catalogs/{id}", () => json(200, managedCatalog))
+        .on("GET", "/api/v1/catalogs/{id}/statistics", () =>
+            json(200, catalogTotals),
+        )
         .on("GET", "/api/v1/tables", () =>
             json(
                 200,
@@ -165,6 +169,9 @@ test("pauses maintenance and removes a registration with its revision", async ({
         .on("GET", "/auth/session", () => json(200, session("Administrator")))
         .on("GET", "/api/v1/catalogs", () => json(200, catalogs))
         .on("GET", "/api/v1/catalogs/{id}", () => json(200, current))
+        .on("GET", "/api/v1/catalogs/{id}/statistics", () =>
+            json(200, catalogTotals),
+        )
         .on("GET", "/api/v1/tables", () =>
             json(
                 200,

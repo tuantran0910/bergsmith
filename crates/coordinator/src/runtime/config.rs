@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use bergsmith_common::ids::CatalogConnectionId;
-use bergsmith_maintenance::PlannerConfig;
+use bergsmith_maintenance::{PlannerConfig, StatisticsConfig};
 use bergsmith_persistence::scheduling::{AdmissionLimits, RetryPolicy};
 use bergsmith_storage::{AzureProfile, GcsProfile, S3Profile, StorageProfile, StorageProfiles};
 use serde::Deserialize;
@@ -27,6 +27,7 @@ use url::Url;
 use crate::durable_publication::PublicationConfig;
 use crate::identity::oidc::{OidcConfig, TokenEndpointAuth};
 use crate::identity::session::SessionConfig;
+use crate::runtime::statistics::SamplingSettings;
 use crate::scheduling::SchedulerConfig;
 
 /// The complete `serve` configuration document.
@@ -64,6 +65,9 @@ pub struct CoordinatorConfig {
     /// How often the planning and publication loops run.
     #[serde(default)]
     pub loops: LoopSettings,
+    /// Metadata-only table statistics sampling.
+    #[serde(default)]
+    pub statistics: StatisticsSettings,
     /// Metrics listener and ledger snapshot bounds.
     #[serde(default)]
     pub observability: ObservabilitySettings,
@@ -637,6 +641,96 @@ impl Default for LoopSettings {
     }
 }
 
+/// Metadata-only statistics sampling (BS-025.T1).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StatisticsSettings {
+    /// How often a sampling pass runs.
+    #[serde(default = "default_statistics_interval_millis")]
+    pub interval_millis: u64,
+    /// How long a sample is kept.
+    #[serde(default = "default_statistics_retention_days")]
+    pub retention_days: u64,
+    /// How many due tables one pass examines.
+    #[serde(default = "default_statistics_page")]
+    pub page_size: i64,
+    /// How many catalog connections one pass samples concurrently.
+    #[serde(default = "default_statistics_concurrency")]
+    pub max_concurrent_connections: usize,
+    /// The bounds of one sample.
+    #[serde(default)]
+    pub sample: StatisticsConfig,
+}
+
+impl Default for StatisticsSettings {
+    fn default() -> Self {
+        Self {
+            interval_millis: default_statistics_interval_millis(),
+            retention_days: default_statistics_retention_days(),
+            page_size: default_statistics_page(),
+            max_concurrent_connections: default_statistics_concurrency(),
+            sample: StatisticsConfig::default(),
+        }
+    }
+}
+
+impl StatisticsSettings {
+    /// The validated sampling settings.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError`] when an interval, retention, page, or concurrency bound
+    /// is outside its range, or the sample bounds are unusable.
+    pub fn sampling(&self) -> Result<SamplingSettings, ConfigError> {
+        if !(1..=86_400_000).contains(&self.interval_millis) {
+            return Err(ConfigError::Invalid(
+                "statistics.interval_millis must be between 1 and 86400000".into(),
+            ));
+        }
+        if !(1..=3_650).contains(&self.retention_days) {
+            return Err(ConfigError::Invalid(
+                "statistics.retention_days must be between 1 and 3650".into(),
+            ));
+        }
+        if !(1..=1_000).contains(&self.page_size) {
+            return Err(ConfigError::Invalid(
+                "statistics.page_size must be between 1 and 1000".into(),
+            ));
+        }
+        if !(1..=32).contains(&self.max_concurrent_connections) {
+            return Err(ConfigError::Invalid(
+                "statistics.max_concurrent_connections must be between 1 and 32".into(),
+            ));
+        }
+        self.sample
+            .validate()
+            .map_err(|error| ConfigError::Invalid(format!("statistics.sample: {error}")))?;
+        Ok(SamplingSettings {
+            interval_millis: self.interval_millis,
+            retention_days: self.retention_days,
+            page_size: self.page_size,
+            max_concurrent_connections: self.max_concurrent_connections,
+            sample: self.sample.clone(),
+        })
+    }
+}
+
+fn default_statistics_interval_millis() -> u64 {
+    300_000
+}
+
+fn default_statistics_retention_days() -> u64 {
+    90
+}
+
+fn default_statistics_page() -> i64 {
+    64
+}
+
+fn default_statistics_concurrency() -> usize {
+    4
+}
+
 /// Metrics settings (BS-020.T2).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -842,6 +936,7 @@ impl CoordinatorConfig {
             ));
         }
         self.observability.metrics()?;
+        self.statistics.sampling()?;
         Ok(())
     }
 

@@ -640,6 +640,7 @@ dependencies = [
  "bergsmith-protocol",
  "bergsmith-storage",
  "bytes",
+ "chrono",
  "clap",
  "futures",
  "iceberg",

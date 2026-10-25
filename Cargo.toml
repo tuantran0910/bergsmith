@@ -67,7 +67,7 @@ tempfile = "3.27.0"
 tonic = { version = "0.14.6", default-features = false, features = ["codegen"] }
 tonic-prost = "0.14.6"
 tonic-prost-build = { version = "0.14.6", default-features = false }
-chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde", "std"] }
 chrono-tz = "0.10.4"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 sqlx = { version = "0.9.0", default-features = false, features = ["chrono", "json", "macros", "migrate", "postgres", "runtime-tokio", "tls-rustls-aws-lc-rs", "uuid"] }

@@ -95,6 +95,31 @@ export function number(value: number, locale?: string): string {
     return new Intl.NumberFormat(locale).format(value);
 }
 
+/**
+ * An exact count from a decimal string, so a value above 2^53 keeps every
+ * digit instead of passing through a double.
+ */
+export function exactCount(value: string, locale?: string): string {
+    return BigInt(value).toLocaleString(locale);
+}
+
+/**
+ * An exact byte total in binary units with one decimal, from a decimal
+ * string, so a large table keeps its precision.
+ */
+export function exactBytes(value: string): string {
+    const amount = BigInt(value);
+    const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
+    let divisor = 1n;
+    let unit = 0;
+    while (amount >= divisor * 1024n && unit < units.length - 1) {
+        divisor *= 1024n;
+        unit++;
+    }
+    const tenths = (amount * 10n) / divisor;
+    return `${(tenths / 10n).toLocaleString()}${unit === 0 ? "" : `.${tenths % 10n}`} ${units[unit]}`;
+}
+
 /** A stable machine code such as `retry_same_request` as words. */
 export function words(code: string): string {
     const text = code.replace(/_/g, " ");

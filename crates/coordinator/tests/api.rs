@@ -22,6 +22,9 @@ mod principals;
 #[path = "api/service_identities.rs"]
 mod service_identities;
 
+#[path = "api/table_statistics.rs"]
+mod table_statistics;
+
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, Request, StatusCode};
@@ -1118,6 +1121,9 @@ fn openapi_documents_every_route() {
         ("/api/v1/catalogs/{id}/check", "post"),
         ("/api/v1/tables", "get"),
         ("/api/v1/tables/{id}", "get"),
+        ("/api/v1/tables/{id}/statistics", "get"),
+        ("/api/v1/catalogs/{id}/statistics", "get"),
+        ("/api/v1/statistics", "get"),
         ("/api/v1/jobs", "get"),
         ("/api/v1/jobs", "post"),
         ("/api/v1/jobs/{id}", "get"),

@@ -24,6 +24,7 @@ use uuid::Uuid;
 use crate::durable_publication::{self, DurablePublicationError, PublicationConfig};
 use crate::runtime::catalogs::RuntimeCatalogs;
 use crate::runtime::planning::DEFAULT_PLANNING_PAGE;
+use crate::runtime::statistics::StatisticsCollector;
 
 /// What one publication pass did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -63,6 +64,7 @@ pub struct PublicationService {
     retry_after: tokio::sync::Mutex<BTreeMap<JobId, RetryEntry>>,
     cursor: std::sync::Mutex<Uuid>,
     intent_cursor: std::sync::Mutex<Uuid>,
+    statistics: Option<Arc<StatisticsCollector>>,
 }
 
 #[derive(Clone, Copy)]
@@ -91,6 +93,21 @@ impl PublicationService {
             retry_after: tokio::sync::Mutex::new(BTreeMap::new()),
             cursor: std::sync::Mutex::new(Uuid::nil()),
             intent_cursor: std::sync::Mutex::new(Uuid::nil()),
+            statistics: None,
+        }
+    }
+
+    /// Samples a table right after it publishes, in addition to the interval.
+    #[must_use]
+    pub fn with_statistics(mut self, statistics: Arc<StatisticsCollector>) -> Self {
+        self.statistics = Some(statistics);
+        self
+    }
+
+    /// Asks for a post-publication sample without blocking the pass.
+    fn refresh_statistics(&self, job: &jobs::Job) {
+        if let Some(statistics) = &self.statistics {
+            statistics.request_refresh(job);
         }
     }
 
@@ -156,7 +173,10 @@ impl PublicationService {
                 Ok(outcome) => {
                     self.clear_retry(job.id).await;
                     match outcome {
-                        Outcome::Published => summary.published += 1,
+                        Outcome::Published => {
+                            summary.published += 1;
+                            self.refresh_statistics(&job);
+                        }
                         Outcome::Replanned => summary.replanned += 1,
                         Outcome::Failed => summary.failed += 1,
                         Outcome::Unresolved => summary.unresolved += 1,
@@ -215,6 +235,9 @@ impl PublicationService {
             match self.resume_intent(&job).await {
                 Ok(outcome) => {
                     self.clear_retry(job.id).await;
+                    if outcome == Outcome::Published {
+                        self.refresh_statistics(&job);
+                    }
                     summary.record(outcome);
                 }
                 Err(error) if error.is_transient() => {

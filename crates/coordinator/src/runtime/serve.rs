@@ -27,6 +27,7 @@ use crate::runtime::config::CoordinatorConfig;
 use crate::runtime::http;
 use crate::runtime::planning::PlannerService;
 use crate::runtime::publication::PublicationService;
+use crate::runtime::statistics::StatisticsCollector;
 use crate::scheduling::Scheduler;
 use crate::workers::{WorkerConfig, WorkerService, worker_tls_config};
 
@@ -148,6 +149,7 @@ pub async fn serve(config: CoordinatorConfig) -> Result<(), ServeError> {
         scheduler,
         planner,
         publication,
+        statistics,
     } = started;
     let listener = events.listen(&database);
     let http_shutdown = shutdown.clone();
@@ -205,6 +207,14 @@ pub async fn serve(config: CoordinatorConfig) -> Result<(), ServeError> {
         tasks.spawn(async move {
             publication.run(interval, shutdown.wait()).await;
             ("publication", Ok(()))
+        });
+    }
+    {
+        let shutdown = shutdown.clone();
+        let interval = Duration::from_millis(config.statistics.interval_millis);
+        tasks.spawn(async move {
+            statistics.run(interval, shutdown.wait()).await;
+            ("statistics", Ok(()))
         });
     }
     let first = tokio::select! {
@@ -282,6 +292,7 @@ struct Started {
     scheduler: Arc<Scheduler>,
     planner: PlannerService,
     publication: PublicationService,
+    statistics: Arc<StatisticsCollector>,
 }
 
 #[expect(
@@ -378,7 +389,7 @@ async fn start(
     })?;
     let publication = PublicationService::new(
         database.pool().clone(),
-        catalogs,
+        catalogs.clone(),
         epoch,
         config.publication.config().map_err(|error| {
             ServeError::Database(PersistenceError::InvalidValue {
@@ -388,6 +399,17 @@ async fn start(
         })?,
         scheduler_config.retry,
     );
+    let statistics = Arc::new(StatisticsCollector::new(
+        database.pool().clone(),
+        catalogs,
+        config.statistics.sampling().map_err(|error| {
+            ServeError::Database(PersistenceError::InvalidValue {
+                entity: "statistics",
+                constraint: error.to_string(),
+            })
+        })?,
+    ));
+    let publication = publication.with_statistics(statistics.clone());
 
     let observability = Observability::new(
         database.clone(),
@@ -416,6 +438,7 @@ async fn start(
         scheduler,
         planner,
         publication,
+        statistics,
     })
 }
 

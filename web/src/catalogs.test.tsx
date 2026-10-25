@@ -11,6 +11,7 @@ import {
     TABLE_ID,
     catalogs,
     catalogCapabilities,
+    catalogTotals,
     managedCatalog,
     session,
     table,
@@ -24,6 +25,9 @@ beforeEach(() => {
     fake.on("GET", "/auth/session", () => json(200, session("Administrator")))
         .on("GET", "/api/v1/catalogs", () => json(200, catalogs))
         .on("GET", "/api/v1/catalogs/{id}", () => json(200, managedCatalog))
+        .on("GET", "/api/v1/catalogs/{id}/statistics", () =>
+            json(200, catalogTotals),
+        )
         .on("GET", "/api/v1/tables", () =>
             json(
                 200,
@@ -607,6 +611,14 @@ it("requires an organization grant on the direct create route", async () => {
     expect(
         await screen.findByText(/Adding a connection requires/),
     ).toBeVisible();
+});
+
+it("shows the sampled totals of the connection tables", async () => {
+    start();
+    expect(await screen.findByText("Tables sampled")).toBeInTheDocument();
+    expect(screen.getByText("1,200")).toBeInTheDocument();
+    expect(screen.getByText("1.0 MiB")).toBeInTheDocument();
+    expect(screen.getByText("3 small")).toBeInTheDocument();
 });
 
 it("checks connection scope and rejects secret-bearing or invalid URIs", () => {
