@@ -36,7 +36,7 @@ metadata authority.
 | `crates/worker` | Worker supervisor and task subprocess |
 | `bin/coordinator`, `bin/worker` | Thin binaries: startup wiring only |
 | `web/` | Browser UI (React, TypeScript, Vite) and its client generated from the OpenAPI contract |
-| `scripts/` | Developer tooling, such as affected-package selection for `make test-changed` |
+| `scripts/` | Developer tooling, such as changed-area and affected-package selection |
 | `deploy/` | Container, Compose, and Kubernetes assets (see below) |
 | `docs/` | ADRs, support matrix, operator documentation |
 
@@ -114,18 +114,24 @@ memory, CPU, and PID controllers enabled for child cgroups; see
 ### Local development loop
 
 Run the narrowest check that answers the question, and widen only when it
-passes. GitHub Actions runs full CI when a pull request is opened or updated.
-Do not run `make ci`, or reproduce its full sequence of gates locally, unless
-the user explicitly requests a local full CI run. Opening a PR or asking to
-wait for CI and merge does not imply that request; run focused local checks
-and delegate the full gates to Actions.
+passes. GitHub Actions selects the affected areas when a pull request is
+opened or updated and runs every gate on `main`. `scripts/changed-areas.sh`
+is the selector: Rust changes run the Rust gates, web changes run the web
+gates, and changes to shared inputs or the workflow run everything. It fails
+closed on an unknown path, and `scripts/changed-areas.test.sh` checks the
+mapping. When branch protection is enabled, require the `CI` gate rather than
+the individual jobs; the gate also fails if the selector itself fails. Do not
+run `make ci`, or reproduce its full sequence of gates locally, unless the
+user explicitly requests a local full CI run. Opening a PR or asking to wait
+for CI and merge does not imply that request; run focused local checks and
+delegate the selected gates to Actions.
 
 | When | Run |
 |---|---|
 | While editing | `cargo check -p <crate> --all-targets` |
 | After a logical change | `cargo nextest run -p <crate>` (add `--lib` for unit tests only) |
 | Before each commit | Clippy and tests for affected Rust packages, or the relevant web checks |
-| Before opening or updating a pull request | Focused local checks for the change; GitHub Actions runs full CI |
+| Before opening or updating a pull request | Focused local checks for the change; GitHub Actions runs the affected areas |
 | Before merging a pull request | All GitHub Actions checks pass on the latest PR head (§4) |
 
 For UI work, use `npm --prefix web run typecheck` and
@@ -135,8 +141,8 @@ dependencies are installed, a focused browser rerun is
 `npm --prefix web run e2e -- <affected>.spec.ts`. Rebuild after every UI source
 change: the browser gate serves `web/dist/`, not the Vite development server.
 Use `make web` and `make web-e2e` when the complete web gates are useful locally;
-Actions also runs them as part of full CI. Do not repeat unchanged checks
-without a new failure or unresolved concern.
+Actions runs them for web changes. Do not repeat unchanged checks without a
+new failure or unresolved concern.
 
 - Use cargo-nextest, never `cargo test --workspace`. Nextest reports every
   failure in one run (`fail-fast = false`), so fix them all before re-running.
@@ -174,7 +180,7 @@ A change is done only when all of these hold:
 
 1. Focused local checks appropriate to the change pass, and all GitHub Actions
    checks pass on the latest pull-request head before merge. Actions owns the
-   full CI gates; a local `make ci` run requires an explicit user request.
+   selected CI gates; a local `make ci` run requires an explicit user request.
 2. New or changed behavior has tests, and every bug fix has a regression test.
 3. Public items have doc comments explaining behavior and errors.
 4. The plan, an ADR, or the support matrix is updated when behavior, a
@@ -314,9 +320,10 @@ tracking task.
 - Coverage: the workspace stays at or above 80% line coverage. State
   transitions, planning, commit classification, and delete application aim for
   full branch coverage.
-- CI always runs the full suite; the coverage gate depends on it. Affected-only
-  selection is a local convenience and never a gate. No nextest profile used
-  in CI may set `default-filter`, because that silently skips tests.
+- CI runs the full Rust suite for Rust changes and the full web gate for web
+  changes; `main` runs everything. Changed-area selection narrows the PR
+  matrix, never the suite within an area. No nextest profile used in CI may
+  set `default-filter`, because that silently skips tests.
 - A test may include another crate's test support by `#[path]` only when its
   crate already depends on that crate, so change selection by dependency still
   re-runs it.

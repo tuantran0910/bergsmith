@@ -10,8 +10,9 @@
 # The change is everything since the merge base with BASE (default
 # origin/main), plus staged, unstaged, and untracked files.
 #
-# This is a local convenience. CI always runs the full suite, which the
-# coverage gate requires.
+# This is a local convenience. CI selects whole areas
+# (scripts/changed-areas.sh); when Rust is selected it runs the full suite,
+# which the coverage gate requires.
 set -euo pipefail
 
 base="${1:-origin/main}"
