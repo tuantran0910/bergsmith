@@ -8,6 +8,7 @@ import {
     createRootRoute,
     createRoute,
     createRouter,
+    lazyRouteComponent,
     notFound,
 } from "@tanstack/react-router";
 
@@ -15,17 +16,54 @@ import { CompassIcon } from "lucide-react";
 
 import { Root } from "./Root";
 import { EmptyState } from "./components/Page";
-import { AuditPage } from "./pages/AuditPage";
-import { JobPage } from "./pages/JobPage";
-import { JobsPage } from "./pages/JobsPage";
-import { OverviewPage } from "./pages/OverviewPage";
-import { TablePage } from "./pages/TablePage";
-import { TablesPage } from "./pages/TablesPage";
-import { WorkersPage } from "./pages/WorkersPage";
-import { CatalogsPage } from "./pages/CatalogsPage";
-import { CatalogPage } from "./pages/CatalogPage";
-import { NewCatalogPage } from "./pages/NewCatalogPage";
-import { PrincipalPage, PrincipalsPage } from "./pages/access/Principals";
+
+// Pages load as their own chunks so the shell and first paint stay within
+// the first-load budget (ADR 0056, BS-032.T2).
+const OverviewPage = lazyRouteComponent(
+    () => import("./pages/OverviewPage"),
+    "OverviewPage",
+);
+const TablesPage = lazyRouteComponent(
+    () => import("./pages/TablesPage"),
+    "TablesPage",
+);
+const TablePage = lazyRouteComponent(
+    () => import("./pages/TablePage"),
+    "TablePage",
+);
+const CatalogsPage = lazyRouteComponent(
+    () => import("./pages/CatalogsPage"),
+    "CatalogsPage",
+);
+const NewCatalogPage = lazyRouteComponent(
+    () => import("./pages/NewCatalogPage"),
+    "NewCatalogPage",
+);
+const CatalogPage = lazyRouteComponent(
+    () => import("./pages/CatalogPage"),
+    "CatalogPage",
+);
+const JobsPage = lazyRouteComponent(
+    () => import("./pages/JobsPage"),
+    "JobsPage",
+);
+const JobPage = lazyRouteComponent(() => import("./pages/JobPage"), "JobPage");
+const AuditPage = lazyRouteComponent(
+    () => import("./pages/AuditPage"),
+    "AuditPage",
+);
+const WorkersPage = lazyRouteComponent(
+    () => import("./pages/WorkersPage"),
+    "WorkersPage",
+);
+const PrincipalsPage = lazyRouteComponent(
+    () => import("./pages/access/Principals"),
+    "PrincipalsPage",
+);
+const PrincipalPage = lazyRouteComponent(
+    () => import("./pages/access/Principals"),
+    "PrincipalPage",
+);
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

@@ -130,7 +130,12 @@ Base UI already supplies Select, Dialog, Drawer, Menu, Popover, Tabs, Tooltip,
 and Toast. The repository keeps thin styled wrappers around those primitives
 instead of reimplementing behavior.
 
-- The custom `web/src/ui/Select.tsx` is replaced by a Base UI `Select` wrapper.
+- The custom `web/src/ui/Select.tsx` remains in place. Base UI's floating
+  `Select` positioner writes inline `style` attributes, which the coordinator's
+  CSP (`style-src 'self'`, no `'unsafe-inline'`) blocks; the browser gate's
+  policy test caught it. It is replaced only when a CSP-safe primitive exists
+  or the deployment serves a style nonce. The in-repo select stays thin and
+  fully tested until then.
 - Shared additions: `ResourceLabel`, `DataTable`, `FilterBar`, `Breadcrumbs`,
   `CommandPalette`, `StatusBadge` variants, `Metric`, `DefinitionList`, and
   small SVG chart primitives.

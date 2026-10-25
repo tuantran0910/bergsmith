@@ -170,7 +170,7 @@ test("follows a job's events to success, then closes the stream", async ({
 
     await page.goto(`/jobs/${JOB_ID}`);
 
-    await expect(page.getByText("Confirmed")).toBeVisible();
+    await expect(page.getByText("Confirmed", { exact: true })).toBeVisible();
     await expect(
         page.getByRole("heading", { name: "Maintenance statistics" }),
     ).toBeVisible();

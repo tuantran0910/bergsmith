@@ -1,30 +1,65 @@
-import { budgetFailure } from "./bundleBudget";
+import { firstLoadFailure } from "./bundleBudget";
 
-describe("budgetFailure", () => {
-    it("passes at or under the budget", () => {
+function chunk(
+    fileName: string,
+    gzipBytes: number,
+    options: { isEntry?: boolean; imports?: string[] } = {},
+) {
+    return {
+        fileName,
+        gzipBytes,
+        isEntry: options.isEntry ?? false,
+        imports: options.imports ?? [],
+    };
+}
+
+describe("firstLoadFailure", () => {
+    it("accepts a total within the budget", () => {
         expect(
-            budgetFailure(
+            firstLoadFailure(
                 [
-                    { fileName: "a.js", gzipBytes: 600 },
-                    { fileName: "b.js", gzipBytes: 400 },
+                    chunk("entry.js", 100, {
+                        isEntry: true,
+                        imports: ["shared.js"],
+                    }),
+                    chunk("shared.js", 50),
                 ],
-                1000,
+                150,
             ),
         ).toBeNull();
-        expect(budgetFailure([], 0)).toBeNull();
     });
 
-    it("names the total, the budget, and the chunks largest first", () => {
-        expect(
-            budgetFailure(
-                [
-                    { fileName: "small.js", gzipBytes: 1_000 },
-                    { fileName: "large.js", gzipBytes: 175_500 },
-                ],
-                175_000,
-            ),
-        ).toBe(
-            "JavaScript is 176.5 kB gzipped, over the 175.0 kB budget: large.js 175.5 kB, small.js 1.0 kB",
+    it("follows static imports transitively and names the largest", () => {
+        const failure = firstLoadFailure(
+            [
+                chunk("entry.js", 100_000, {
+                    isEntry: true,
+                    imports: ["shared.js"],
+                }),
+                chunk("shared.js", 80_000, { imports: ["vendor.js"] }),
+                chunk("vendor.js", 40_000),
+            ],
+            200_000,
         );
+        expect(failure).toContain("First-load JavaScript is 220.0 kB");
+        expect(failure).toContain("entry.js 100.0 kB");
+        expect(failure).toContain("shared.js 80.0 kB");
+        expect(failure).toContain("vendor.js 40.0 kB");
+    });
+
+    it("ignores lazy chunks that the entry does not import", () => {
+        expect(
+            firstLoadFailure(
+                [
+                    chunk("entry.js", 100, { isEntry: true }),
+                    chunk("lazy-page.js", 500),
+                ],
+                150,
+            ),
+        ).toBeNull();
+    });
+
+    it("treats an empty bundle as free", () => {
+        expect(firstLoadFailure([], 0)).toBeNull();
     });
 });
