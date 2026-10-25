@@ -1,8 +1,8 @@
 # 0056. UI platform, navigation, and names-first operation
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-25
-- Plan reference: `.private/BERGSMITH_PROJECT_PLAN.md` §4, proposed BS-032;
+- Plan reference: `.private/BERGSMITH_PROJECT_PLAN.md` §4, BS-032;
   BS-024–BS-029 adopt these rules as they land
 
 ## Context
@@ -174,8 +174,8 @@ The UI must remain fast on a mid-tier laptop and must not grow by accident.
 
 ### 8. Delivery
 
-The work is a platform workstream, proposed as **BS-032**, delivered in phases
-rather than one branch:
+The work is a platform workstream, delivered as **BS-032**, in phases rather
+than one branch:
 
 1. Stabilize existing pages and split mixed-scope PRs.
 2. Build the shell, templates, primitives, names-first pass, and route split.
