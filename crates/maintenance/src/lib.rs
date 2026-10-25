@@ -25,6 +25,7 @@ mod plan;
 mod planner;
 mod rewrite;
 mod selection;
+mod statistics;
 
 pub use align::{
     AlignedStart, Alignment, AlignmentConfig, HeadObserver, ObservedHead, align_start,
@@ -41,3 +42,4 @@ pub use plan::{PlanDocument, PlanIds, PlannedDelete, PlannedFile, PlannedTask};
 pub use planner::{BinPreview, FileTally, NoOpReason, PlanInput, PlanOutcome, Planner, Preview};
 pub use rewrite::{AttemptContext, ExecutionRequest, ExecutionResult};
 pub use selection::PartitionPredicate;
+pub use statistics::{PartitionFiles, SizeBucket, StatisticsConfig, StatisticsError, TableSample};

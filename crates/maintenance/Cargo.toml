@@ -12,6 +12,7 @@ bergsmith-common.workspace = true
 bergsmith-protocol.workspace = true
 bergsmith-storage.workspace = true
 bytes.workspace = true
+chrono.workspace = true
 futures.workspace = true
 iceberg.workspace = true
 parquet.workspace = true
