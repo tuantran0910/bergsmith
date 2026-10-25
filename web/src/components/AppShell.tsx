@@ -29,12 +29,15 @@ import {
     signOut,
 } from "../api/auth";
 import { setSession, useSessionMutation } from "../queryClient";
+import { useDensityPreference, type Density } from "../density";
+import { useThemePreference, type ThemePreference } from "../theme";
 import { Button, buttonVariants } from "../ui/Button";
 import { DialogClose } from "../ui/Dialog";
+import { Breadcrumbs } from "./Breadcrumbs";
+import { DensityToggle } from "./DensityToggle";
 import { ErrorNotice } from "./ErrorNotice";
 import { SessionExpiry } from "./SessionExpiry";
 import { ThemeToggle } from "./ThemeToggle";
-import { Breadcrumbs } from "./Breadcrumbs";
 
 /** A principal destination of the rail. */
 interface Destination {
@@ -207,6 +210,8 @@ export function AppShell({
     children: ReactNode;
 }) {
     const queryClient = useQueryClient();
+    const [theme, chooseTheme] = useThemePreference();
+    const [density, chooseDensity] = useDensityPreference();
     const href = useRouterState({ select: (state) => state.location.href });
     const [open, setOpen] = useState(false);
     const mainRef = useRef<HTMLElement>(null);
@@ -275,20 +280,28 @@ export function AppShell({
                     <span className="truncate px-2 text-sm text-muted-foreground">
                         {session.display_name}
                     </span>
-                    <div className="flex items-center gap-2">
-                        <ThemeToggle />
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            disabled={logout.isPending}
-                            onClick={() => {
-                                logout.mutate();
-                            }}
-                        >
-                            <LogOutIcon aria-hidden="true" />
-                            Sign out
-                        </Button>
+                    <div className="flex flex-wrap items-center gap-2 px-2">
+                        <ThemeToggle
+                            preference={theme}
+                            onChange={chooseTheme}
+                        />
+                        <DensityToggle
+                            density={density}
+                            onChange={chooseDensity}
+                        />
                     </div>
+                    <Button
+                        variant="ghost"
+                        size="sm"
+                        className="mx-2 justify-start"
+                        disabled={logout.isPending}
+                        onClick={() => {
+                            logout.mutate();
+                        }}
+                    >
+                        <LogOutIcon aria-hidden="true" />
+                        Sign out
+                    </Button>
                 </section>
             </header>
             <div className="min-w-0">
@@ -337,6 +350,10 @@ export function AppShell({
                 open={open}
                 onOpenChange={setOpen}
                 session={session}
+                theme={theme}
+                onThemeChange={chooseTheme}
+                density={density}
+                onDensityChange={chooseDensity}
                 logout={logout}
                 onNavigate={() => {
                     focusMainNext.current = true;
@@ -356,12 +373,20 @@ function NavigationDrawer({
     open,
     onOpenChange,
     session,
+    theme,
+    onThemeChange,
+    density,
+    onDensityChange,
     logout,
     onNavigate,
 }: {
     open: boolean;
     onOpenChange: (value: boolean) => void;
     session: SessionInfo;
+    theme: ThemePreference;
+    onThemeChange: (preference: ThemePreference) => void;
+    density: Density;
+    onDensityChange: (density: Density) => void;
     logout: { isPending: boolean; mutate: () => void };
     onNavigate: () => void;
 }) {
@@ -388,19 +413,26 @@ function NavigationDrawer({
                         aria-label="Account"
                         className="flex flex-col items-stretch gap-2 border-t pt-3"
                     >
-                        <div className="flex items-center gap-2">
-                            <ThemeToggle />
-                            <Button
-                                variant="ghost"
-                                disabled={logout.isPending}
-                                onClick={() => {
-                                    logout.mutate();
-                                }}
-                            >
-                                <LogOutIcon aria-hidden="true" />
-                                Sign out
-                            </Button>
+                        <div className="flex flex-wrap items-center gap-2">
+                            <ThemeToggle
+                                preference={theme}
+                                onChange={onThemeChange}
+                            />
+                            <DensityToggle
+                                density={density}
+                                onChange={onDensityChange}
+                            />
                         </div>
+                        <Button
+                            variant="ghost"
+                            disabled={logout.isPending}
+                            onClick={() => {
+                                logout.mutate();
+                            }}
+                        >
+                            <LogOutIcon aria-hidden="true" />
+                            Sign out
+                        </Button>
                     </section>
                 </DialogPrimitive.Popup>
             </DialogPrimitive.Portal>

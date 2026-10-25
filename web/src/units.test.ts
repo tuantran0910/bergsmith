@@ -11,7 +11,10 @@ import {
     aliasName,
     bytes,
     count,
+    date,
     duration,
+    number,
+    relativeTime,
     shortId,
     tableName,
     timestamp,
@@ -45,6 +48,25 @@ describe("format", () => {
         expect(timestamp("2026-10-21T10:00:00Z")).not.toBe(
             "2026-10-21T10:00:00Z",
         );
+    });
+
+    it("formats a calendar date and a relative age", () => {
+        expect(date("not a time")).toBe("not a time");
+        expect(date("2026-10-21T10:00:00Z", "en-US")).toMatch(
+            /^Oct \d{1,2}, 2026$/,
+        );
+        const now = Date.parse("2026-10-25T12:00:00Z");
+        expect(relativeTime("2026-10-22T12:00:00Z", now, "en-US")).toBe(
+            "3 days ago",
+        );
+        expect(relativeTime("2026-10-25T12:00:30Z", now, "en-US")).toBe(
+            "in 30 seconds",
+        );
+        expect(relativeTime("not a time", now, "en-US")).toBe("not a time");
+    });
+
+    it("groups large numbers in the viewer's locale", () => {
+        expect(number(1_234_567, "en-US")).toBe("1,234,567");
     });
 
     it("counts in the singular and the plural", () => {

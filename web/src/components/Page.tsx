@@ -1,7 +1,7 @@
 // Page building blocks shared by every page: the header, loading
 // placeholders, empty states, and the "load more" footer of a list.
 
-import type { LucideIcon } from "lucide-react";
+import { SearchXIcon, type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { Button } from "../ui/Button";
@@ -20,7 +20,7 @@ export function PageHeader({
 }) {
     return (
         <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
-            <div className="grid min-w-0 gap-1">
+            <div className="grid min-w-0 flex-1 basis-72 gap-1">
                 <h1 className="m-0 text-2xl font-semibold tracking-tight break-words">
                     {title}
                 </h1>
@@ -31,7 +31,7 @@ export function PageHeader({
                 )}
             </div>
             {actions !== undefined && (
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex shrink-0 flex-wrap items-center gap-2">
                     {actions}
                 </div>
             )}
@@ -81,11 +81,14 @@ export function EmptyState({
     icon: Icon,
     title,
     children,
+    action,
     className,
 }: {
     icon: LucideIcon;
     title: string;
     children?: ReactNode;
+    /** The next step, shown under the explanation. */
+    action?: ReactNode;
     className?: string;
 }) {
     return (
@@ -104,7 +107,34 @@ export function EmptyState({
                     {children}
                 </div>
             )}
+            {action !== undefined && <div className="mt-1">{action}</div>}
         </div>
+    );
+}
+
+/** The empty result of filters, with the way back to the full list. */
+export function NoResults({
+    onClear,
+    children,
+}: {
+    onClear?: (() => void) | undefined;
+    children?: ReactNode;
+}) {
+    return (
+        <EmptyState
+            icon={SearchXIcon}
+            title="No matches."
+            className="py-8"
+            action={
+                onClear === undefined ? undefined : (
+                    <Button variant="outline" size="sm" onClick={onClear}>
+                        Clear filters
+                    </Button>
+                )
+            }
+        >
+            {children}
+        </EmptyState>
     );
 }
 

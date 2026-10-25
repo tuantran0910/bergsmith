@@ -27,13 +27,21 @@
     --secondary-foreground: var(--foreground);
     --muted: light-dark(oklch(0.96 0.004 250), oklch(0.26 0.008 250));
     --muted-foreground: light-dark(oklch(0.49 0.012 250), oklch(0.73 0.01 250));
-    --destructive: light-dark(oklch(0.5 0.2 25), oklch(0.72 0.16 22));
+    --destructive: light-dark(oklch(0.48 0.2 25), oklch(0.72 0.16 22));
     --success: light-dark(oklch(0.5 0.12 150), oklch(0.76 0.13 150));
     --warning: light-dark(oklch(0.52 0.11 70), oklch(0.81 0.12 75));
     --border: light-dark(oklch(0.91 0.005 250), oklch(1 0 0 / 0.1));
     --input: light-dark(oklch(0.87 0.006 250), oklch(1 0 0 / 0.16));
     --ring: light-dark(oklch(0.6 0.12 245), oklch(0.66 0.1 240));
     --radius: 0.625rem;
+
+    /* Table density (ADR 0056): compact rows stay readable at ~34 px. */
+    --density-cell-x: 0.75rem;
+    --density-cell-y: 0.65rem;
+}
+
+:root[data-density="compact"] {
+    --density-cell-y: 0.3rem;
 }
 
 :root[data-theme="light"] {

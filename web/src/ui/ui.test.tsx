@@ -193,6 +193,11 @@ describe("Table", () => {
             screen.getByRole("columnheader", { name: "Table" }),
         ).toHaveAttribute("scope", "col");
         expect(table).toHaveTextContent("sales.orders");
+        // The horizontal scroll container is reachable by keyboard and named.
+        expect(screen.getByRole("region", { name: "Table" })).toHaveAttribute(
+            "tabindex",
+            "0",
+        );
     });
 });
 
@@ -366,6 +371,22 @@ describe("Toaster", () => {
 });
 
 describe("ThemeToggle", () => {
+    it("reports a controlled choice without changing itself", async () => {
+        const user = userEvent.setup();
+        const onChange = vi.fn();
+        render(<ThemeToggle preference="dark" onChange={onChange} />);
+
+        expect(
+            screen.getByRole("button", { name: "Dark theme" }),
+        ).toHaveAttribute("aria-pressed", "true");
+        await user.click(screen.getByRole("button", { name: "Light theme" }));
+
+        expect(onChange).toHaveBeenCalledWith("light");
+        expect(
+            screen.getByRole("button", { name: "Dark theme" }),
+        ).toHaveAttribute("aria-pressed", "true");
+    });
+
     it("marks the current choice and switches the theme", async () => {
         const user = userEvent.setup();
         render(<ThemeToggle />);

@@ -4,12 +4,26 @@ import type { ComponentProps } from "react";
 
 import { cn } from "./cn";
 
-/** A data table that scrolls horizontally inside its container when narrow. */
-export function Table({ className, ...props }: ComponentProps<"table">) {
+/**
+ * A data table that scrolls horizontally inside its container when narrow.
+ * The scroll region is keyboard reachable and named by `containerLabel`.
+ */
+export function Table({
+    className,
+    containerLabel = "Table",
+    ...props
+}: ComponentProps<"table"> & { containerLabel?: string }) {
     return (
         <div
             data-slot="table-container"
-            className="relative w-full overflow-x-auto"
+            role="region"
+            aria-label={containerLabel}
+            // A horizontally scrollable data table must be reachable by
+            // keyboard (WCAG 2.2 AA); the inset outline stays visible inside
+            // the frame's overflow clipping.
+            // eslint-disable-next-line jsx-a11y-x/no-noninteractive-tabindex
+            tabIndex={0}
+            className="relative w-full overflow-x-auto focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring"
         >
             <table
                 data-slot="table"
@@ -67,7 +81,7 @@ export function TableHead({
             data-slot="table-head"
             scope={scope}
             className={cn(
-                "h-10 px-2 text-left align-middle font-medium whitespace-nowrap text-muted-foreground",
+                "h-10 px-[var(--density-cell-x)] py-2 text-left align-middle font-medium whitespace-nowrap text-muted-foreground",
                 className,
             )}
             {...props}
@@ -79,7 +93,10 @@ export function TableCell({ className, ...props }: ComponentProps<"td">) {
     return (
         <td
             data-slot="table-cell"
-            className={cn("p-2 align-middle", className)}
+            className={cn(
+                "px-[var(--density-cell-x)] py-[var(--density-cell-y)] align-middle",
+                className,
+            )}
             {...props}
         />
     );

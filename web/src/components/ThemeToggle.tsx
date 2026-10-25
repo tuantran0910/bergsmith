@@ -13,9 +13,18 @@ const OPTIONS: Record<ThemePreference, { label: string; icon: LucideIcon }> = {
     dark: { label: "Dark theme", icon: MoonIcon },
 };
 
+type ThemeToggleProps =
+    | {
+          preference: ThemePreference;
+          onChange: (preference: ThemePreference) => void;
+      }
+    | { preference?: undefined; onChange?: undefined };
+
 /** Chooses the system, light, or dark theme; the current choice is pressed. */
-export function ThemeToggle() {
-    const [preference, choose] = useThemePreference();
+export function ThemeToggle(props: ThemeToggleProps = {}) {
+    const [stored, chooseStored] = useThemePreference();
+    const preference = props.preference ?? stored;
+    const choose = props.onChange ?? chooseStored;
     return (
         <div
             role="group"
@@ -31,6 +40,7 @@ export function ThemeToggle() {
                         size="icon-sm"
                         aria-label={label}
                         aria-pressed={preference === option}
+                        title={label}
                         onClick={() => {
                             choose(option);
                         }}

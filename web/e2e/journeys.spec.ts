@@ -100,9 +100,15 @@ test("browses to a table, previews it, and submits a job", async ({
 
     await page.goto("/tables");
     await expectAccessible(page);
-    await page.getByRole("link", { name: "lake.sales.orders" }).click();
+    await page.getByRole("link", { name: /^orders/ }).click();
     await expect(
         page.getByRole("heading", { name: "lake.sales.orders" }),
+    ).toBeVisible();
+    await expect(
+        page.getByRole("heading", { name: "Technical details" }),
+    ).toBeVisible();
+    await expect(
+        page.getByRole("button", { name: "Copy table UUID" }),
     ).toBeVisible();
     await expectAccessible(page);
 
@@ -224,6 +230,8 @@ test("cancels a job through the confirmation dialog", async ({
     await page.getByRole("button", { name: "Cancel job" }).click();
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
+    // Let the opening transition finish before axe measures controls.
+    await expect(dialog).toHaveCSS("opacity", "1");
     await expectAccessible(page);
     await dialog
         .getByLabel("Cancellation reason (optional)")
@@ -403,10 +411,140 @@ test("lands on the overview and opens the tables", async ({
             .getByRole("navigation", { name: "Breadcrumb" })
             .getByRole("link", { name: "Overview" }),
     ).toBeVisible();
-    await expect(
-        page.getByRole("link", { name: "lake.sales.orders" }),
-    ).toBeVisible();
+    await expect(page.getByRole("link", { name: /^orders/ })).toBeVisible();
     await expectAccessible(page);
+});
+
+test("filters the table list and keeps the filter in the address", async ({
+    page,
+    coordinator,
+}) => {
+    signedIn(coordinator);
+    const other = schema("Table", {
+        ...table,
+        id: "0190f3c4-0000-7000-8000-000000000002",
+        table_uuid: "6f1c0d0e-1111-4222-8333-444455556667",
+        created_at: "2026-10-05T00:00:00Z",
+        aliases: [
+            {
+                catalog_id: CATALOG_ID,
+                namespace: ["marketing"],
+                name: "events",
+                revision: 1,
+            },
+        ],
+    });
+    coordinator.on("GET", "/api/v1/tables", () =>
+        json(
+            200,
+            schema("TablePage", {
+                items: [table, other],
+                next_cursor: null,
+            }),
+        ),
+    );
+
+    await page.goto("/tables");
+    await expect(page.getByRole("link", { name: /^orders/ })).toBeVisible();
+    await page.getByRole("searchbox", { name: "Search tables" }).fill("events");
+
+    await expect(page.getByRole("link", { name: /^orders/ })).toBeHidden();
+    await expect(page.getByRole("link", { name: /^events/ })).toBeVisible();
+    await expect(page).toHaveURL(/q=events/);
+    await expect(page.getByText("1 of 2 tables")).toBeVisible();
+    await expectAccessible(page);
+
+    await page.getByRole("button", { name: "Clear filters" }).click();
+    await expect(page.getByRole("link", { name: /^orders/ })).toBeVisible();
+    await expect(page).not.toHaveURL(/q=/);
+});
+
+test("switches and remembers table density", async ({ page, coordinator }) => {
+    signedIn(coordinator);
+    coordinator.on("GET", "/api/v1/tables", () =>
+        json(200, schema("TablePage", { items: [table], next_cursor: null })),
+    );
+
+    await page.goto("/tables");
+    await expect(page.getByRole("link", { name: /^orders/ })).toBeVisible();
+    const comfortable = await page.getByRole("row").nth(1).boundingBox();
+
+    await page.getByRole("button", { name: "Compact density" }).click();
+    await expect(page.locator("html")).toHaveAttribute(
+        "data-density",
+        "compact",
+    );
+    const compact = await page.getByRole("row").nth(1).boundingBox();
+    if (compact === null || comfortable === null) {
+        throw new Error("the table row has no bounding box");
+    }
+    expect(compact.height).toBeLessThan(comfortable.height);
+
+    await page.reload();
+    await expect(page.getByRole("link", { name: /^orders/ })).toBeVisible();
+    await expect(page.locator("html")).toHaveAttribute(
+        "data-density",
+        "compact",
+    );
+
+    // The drawer and the rail share one preference, not two copies.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole("button", { name: "Open navigation" }).click();
+    const drawer = page.getByRole("dialog");
+    await expect(
+        drawer.getByRole("button", { name: "Compact density" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await drawer.getByRole("button", { name: "Comfortable density" }).click();
+    await expect(page.locator("html")).not.toHaveAttribute("data-density");
+    await drawer.getByRole("button", { name: "Close navigation" }).click();
+    await expect(drawer).toBeHidden();
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await expect(
+        page.getByRole("button", { name: "Comfortable density" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await expectAccessible(page);
+});
+
+test("shows the scroll hint only when the table overflows", async ({
+    page,
+    coordinator,
+}) => {
+    signedIn(coordinator);
+    coordinator.on("GET", "/api/v1/tables", () =>
+        json(200, schema("TablePage", { items: [table], next_cursor: null })),
+    );
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/tables");
+    await expect(page.getByRole("link", { name: /^orders/ })).toBeVisible();
+    const hint = page.getByText("Scroll horizontally for more columns.");
+    await expect(hint).toBeHidden();
+
+    await page.setViewportSize({ width: 768, height: 900 });
+    await expect(hint).toBeVisible();
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await expect(hint).toBeHidden();
+});
+
+test("preloads the tables chunk on intent", async ({ page, coordinator }) => {
+    signedIn(coordinator);
+    coordinator
+        .on("GET", "/api/v1/jobs", () =>
+            json(200, schema("JobPage", { items: [], next_cursor: null })),
+        )
+        .on("GET", "/api/v1/tables", () =>
+            json(
+                200,
+                schema("TablePage", { items: [table], next_cursor: null }),
+            ),
+        );
+
+    await page.goto("/jobs");
+    await expect(page.getByText("No jobs are visible to you.")).toBeVisible();
+    const preloaded = page.waitForRequest(/TablesPage-.*\.js/);
+    await page.getByRole("link", { name: "Tables", exact: true }).hover();
+    await preloaded;
 });
 
 test("stays accessible in the narrow layout", async ({ page, coordinator }) => {
@@ -424,9 +562,7 @@ test("stays accessible in the narrow layout", async ({ page, coordinator }) => {
     await page.setViewportSize({ width: 390, height: 844 });
 
     await page.goto("/tables");
-    await expect(
-        page.getByRole("link", { name: "lake.sales.orders" }),
-    ).toBeVisible();
+    await expect(page.getByRole("link", { name: /^orders/ })).toBeVisible();
     // The rail is out of the way; the drawer carries the same groups.
     await expect(page.getByRole("navigation", { name: "Main" })).toBeHidden();
     await page.getByRole("button", { name: "Open navigation" }).click();
@@ -447,9 +583,7 @@ test("stays accessible in the narrow layout", async ({ page, coordinator }) => {
 
     // The skip link is the first tab stop and reaches the main landmark.
     await page.goto("/tables");
-    await expect(
-        page.getByRole("link", { name: "lake.sales.orders" }),
-    ).toBeVisible();
+    await expect(page.getByRole("link", { name: /^orders/ })).toBeVisible();
     await page.keyboard.press("Tab");
     const skip = page.getByRole("link", { name: "Skip to main content" });
     await expect(skip).toBeFocused();
@@ -480,9 +614,7 @@ test("shows a status while a page chunk loads", async ({
     });
 
     await page.goto("/tables");
-    await expect(
-        page.getByRole("link", { name: "lake.sales.orders" }),
-    ).toBeVisible();
+    await expect(page.getByRole("link", { name: /^orders/ })).toBeVisible();
     await page.getByRole("link", { name: "Jobs", exact: true }).click();
     await expect(page.getByRole("status")).toContainText("Loading page…");
     await expect(page.getByRole("heading", { name: "Jobs" })).toBeVisible();
