@@ -418,6 +418,13 @@ Breaking one of these is a correctness bug, whatever the tests say.
   affect and get confirmation.
 - Never stage files you didn't change. Review `git status` and `git diff
   --staged` before committing.
+- After finishing a task in a git worktree, clean it up: remove the worktree
+  (`git worktree remove <path>`, or `worktree_remove` from the agent harness)
+  and delete its branch once merged. Worktrees are task-local scratch
+  checkouts, not permanent ones; do not leave stale ones behind. A worktree
+  may only be removed after confirming its changes are committed or merged,
+  and removing one with uncommitted changes needs the same confirmation as
+  any destructive command.
 
 ## 9. Documentation
 
