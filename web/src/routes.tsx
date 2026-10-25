@@ -67,6 +67,14 @@ const PoliciesPage = lazyPage(
     () => import("./pages/PoliciesPage"),
     "PoliciesPage",
 );
+const SchedulesPage = lazyPage(
+    () => import("./pages/SchedulesPage"),
+    "SchedulesPage",
+);
+const SchedulePage = lazyPage(
+    () => import("./pages/SchedulePage"),
+    "SchedulePage",
+);
 const AuditPage = lazyPage(() => import("./pages/AuditPage"), "AuditPage");
 const WorkersPage = lazyPage(
     () => import("./pages/WorkersPage"),
@@ -205,6 +213,24 @@ const policiesRoute = createRoute({
     component: PoliciesPage,
 });
 
+const schedulesRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/schedules",
+    component: SchedulesPage,
+});
+
+const scheduleRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/schedules/$scheduleId",
+    beforeLoad: ({ params }) => {
+        if (!isResourceId(params.scheduleId)) throw notFound();
+    },
+    component: function ScheduleRoute() {
+        const { scheduleId } = scheduleRoute.useParams();
+        return <SchedulePage key={scheduleId} id={scheduleId} />;
+    },
+});
+
 const workersRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/workers",
@@ -258,6 +284,8 @@ const routeTree = rootRoute.addChildren([
     jobsRoute,
     jobRoute,
     policiesRoute,
+    schedulesRoute,
+    scheduleRoute,
     auditRoute,
     workersRoute,
 ]);

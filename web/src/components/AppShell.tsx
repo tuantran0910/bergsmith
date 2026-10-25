@@ -3,6 +3,7 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import {
     AnvilIcon,
+    CalendarClockIcon,
     DatabaseIcon,
     GaugeIcon,
     KeyRoundIcon,
@@ -49,6 +50,7 @@ interface Destination {
         | "/tables"
         | "/jobs"
         | "/policies"
+        | "/schedules"
         | "/workers"
         | "/audit"
         | "/users"
@@ -96,6 +98,12 @@ const GROUPS: readonly { label: string; items: Destination[] }[] = [
                 to: "/policies",
                 label: "Policies",
                 icon: SlidersHorizontalIcon,
+                allowed: canManageSchedules,
+            },
+            {
+                to: "/schedules",
+                label: "Schedules",
+                icon: CalendarClockIcon,
                 allowed: canManageSchedules,
             },
             {
