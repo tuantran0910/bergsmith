@@ -16,6 +16,9 @@ export const JOB_ID = "0190f3c4-0000-7000-8000-00000000000a";
 export const RETRY_JOB_ID = "0190f3c4-0000-7000-8000-00000000000b";
 export const PRINCIPAL_ID = "0190f3c4-0000-7000-8000-0000000000aa";
 export const POLICY_ID = "0190f3c4-0000-7000-8000-0000000000b1";
+export const SCHEDULE_ID = "0190f3c4-0000-7000-8000-0000000000d1";
+export const OCCURRENCE_ID = "0190f3c4-0000-7000-8000-0000000000d2";
+export const SERVICE_ID = "0190f3c4-0000-7000-8000-0000000000d3";
 
 const ORGANIZATION: GrantScope = { catalog_connection: null, table: null };
 
@@ -348,5 +351,82 @@ export function policy(
 
 export const policies = schema("MaintenancePolicyPage", {
     items: [policy()],
+    next_cursor: null,
+});
+
+/** A service identity, as the schedule picker lists it. */
+export function serviceIdentity(
+    overrides: Partial<Schemas["Principal"]> = {},
+): Schemas["Principal"] {
+    return schema("Principal", {
+        id: SERVICE_ID,
+        kind: "Service",
+        issuer: "bergsmith:test",
+        subject: "scheduler",
+        display_name: "scheduler",
+        active: true,
+        created_at: "2026-10-01T00:00:00Z",
+        deactivated_at: null,
+        ...overrides,
+    });
+}
+
+/** An hourly schedule with a daily window and two computed instants. */
+export function schedule(
+    overrides: Partial<Schemas["MaintenanceSchedule"]> = {},
+): Schemas["MaintenanceSchedule"] {
+    return schema("MaintenanceSchedule", {
+        id: SCHEDULE_ID,
+        policy_id: POLICY_ID,
+        table_id: TABLE_ID,
+        cron_expression: "0 2 * * *",
+        time_zone: "Europe/Berlin",
+        window: { start_minute: 120, end_minute: 300 },
+        service_principal_id: SERVICE_ID,
+        service_identity_name: "scheduler",
+        enabled: true,
+        next_occurrences: [
+            "2026-10-26T01:00:00.000Z",
+            "2026-10-27T01:00:00.000Z",
+        ],
+        revision: 2,
+        created_at: "2026-10-01T00:00:00Z",
+        updated_at: "2026-10-20T00:00:00Z",
+        ...overrides,
+    });
+}
+
+export const schedules = schema("MaintenanceSchedulePage", {
+    items: [schedule()],
+    next_cursor: null,
+});
+
+/** One recorded evaluation; the default admitted run points at the job. */
+export function occurrence(
+    overrides: Partial<Schemas["ScheduleOccurrence"]> = {},
+): Schemas["ScheduleOccurrence"] {
+    return schema("ScheduleOccurrence", {
+        id: OCCURRENCE_ID,
+        scheduled_for: "2026-10-26T01:00:00Z",
+        coalesced_until: null,
+        state: "Admitted",
+        job_id: JOB_ID,
+        reason: null,
+        created_at: "2026-10-26T01:00:01Z",
+        ...overrides,
+    });
+}
+
+export const scheduleOccurrences = schema("ScheduleOccurrencePage", {
+    items: [
+        occurrence(),
+        occurrence({
+            id: "0190f3c4-0000-7000-8000-0000000000d4",
+            scheduled_for: "2026-10-25T01:00:00Z",
+            state: "Skipped",
+            job_id: null,
+            reason: "OutsideWindow",
+        }),
+    ],
     next_cursor: null,
 });

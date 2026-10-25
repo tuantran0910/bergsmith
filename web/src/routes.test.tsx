@@ -67,7 +67,7 @@ describe("routes", () => {
     it.each([
         "/jobs/not-a-uuid",
         "/catalogs/not-a-uuid",
-        "/schedules",
+        "/schedulez",
         "/tables/x",
         "/users/not-a-uuid",
         "/service-identities/not-a-uuid",

@@ -16,16 +16,21 @@ The browser application in `web/` covers manual maintenance over the
 | Jobs | Lists jobs with execution and publication status side by side |
 | Job | Shows execution and publication separately, streams events live, requests cancellation, and retries with a fresh plan |
 | Policies | Lists maintenance policies and creates or edits one, sending the revision it read; a conflict stops the save until the current revision is reloaded |
+| Schedules | Lists schedules by the table they maintain, with their policy, cron, time zone, window, service identity, state, and next instant; creating one needs a policy, a table, and an eligible service identity |
+| Schedule | Shows the configuration, the next five instants the coordinator computed, and the evaluation history with the job each admitted run created and the reason a run was coalesced or skipped; timing and the enabled flag are editable, the bound policy, table, and identity are not |
 | Workers | Current worker sessions with status, running attempt, and capacity; shown only to organization-wide administrators |
 | Audit | Organization audit history; shown only to organization-wide administrators |
 
 Connection setup and registration are described in
 [Connecting a catalog](catalog-connections.md) and
 [ADR 0051](../adr/0051-catalog-connection-pages-and-draft-checks.md).
-Maintenance policies are configured on the Policies page (BS-024.T1, ADR 0038);
-shown only to organization-wide administrators, because a table or connection
-grant does not administer organization configuration. Schedules still have only
-a configuration API (BS-019.T2); their page is BS-024.T2.
+Maintenance policies and schedules are configured on the Policies and Schedules
+pages (BS-024.T1 and BS-024.T2, ADR 0038); both are shown only to
+organization-wide administrators, because a table or connection grant does not
+administer organization configuration. Creating a schedule also needs
+`inventory:read` to choose a table and `workers:manage` to choose a service
+identity; the page names the missing grants rather than offer a control that
+cannot work.
 
 ## Reading job status
 
