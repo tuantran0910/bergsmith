@@ -6,12 +6,11 @@
 //! state: everything it needs was validated and persisted by BS-019.T1, and the
 //! occurrence row it writes is what makes admission idempotent.
 
-use bergsmith_common::health::HealthVerdict;
 use bergsmith_maintenance::ThresholdSource;
 use bergsmith_maintenance::evaluate;
 use bergsmith_persistence::PersistenceError;
 use bergsmith_persistence::occurrences::{
-    self, HEALTH_TRIGGER_REASON, OUTSIDE_WINDOW_REASON, OccurrenceState,
+    self, HEALTH_TRIGGER_REASON, HealthEvaluation, OUTSIDE_WINDOW_REASON, OccurrenceState,
 };
 use bergsmith_persistence::statistics::{self, SAMPLE_VERSION};
 use chrono::{DateTime, Utc};
@@ -115,7 +114,20 @@ impl ScheduleRunner {
         let mut summary = AdmissionSummary::default();
         for schedule in schedules {
             let mut conn = self.pool.acquire().await?;
-            let verdict = self.verdict_for(&mut conn, schedule, scan_now).await?;
+            let verdict = match self.verdict_for(&mut conn, schedule, scan_now).await {
+                Ok(verdict) => verdict,
+                Err(error) if is_infrastructure(&error) => return Err(error),
+                Err(error) => {
+                    // A corrupt policy or sample is scoped to its schedule:
+                    // log it and let admission treat the trigger as unmet.
+                    tracing::warn!(
+                        schedule_id = %schedule,
+                        reason = %error,
+                        "schedule health configuration could not be read"
+                    );
+                    None
+                }
+            };
             match occurrences::admit_with_health(
                 &mut conn,
                 schedule,
@@ -195,7 +207,7 @@ impl ScheduleRunner {
         conn: &mut PgConnection,
         schedule: bergsmith_common::ids::ScheduleId,
         now: DateTime<Utc>,
-    ) -> Result<Option<HealthVerdict>, PersistenceError> {
+    ) -> Result<Option<HealthEvaluation>, PersistenceError> {
         let Some(route) = occurrences::schedule_trigger(conn, schedule).await? else {
             return Ok(None);
         };
@@ -237,7 +249,10 @@ impl ScheduleRunner {
                 return Ok(None);
             }
         };
-        Ok(Some(crate::health::verdict(&health)))
+        Ok(Some(HealthEvaluation {
+            verdict: crate::health::verdict(&health),
+            policy_revision: route.revision,
+        }))
     }
 }
 

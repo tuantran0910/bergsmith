@@ -198,6 +198,7 @@ struct DueSchedule {
     service_principal_id: Uuid,
     enabled: bool,
     policy_enabled: bool,
+    policy_revision: i64,
     health_trigger: Option<Value>,
 }
 
@@ -464,11 +465,27 @@ where
     admit_with_health(conn, schedule_id, epoch, clock, None).await
 }
 
-/// Admits with a health verdict for the policy's trigger.
+/// A table verdict and the policy revision that produced it.
 ///
-/// `verdict` is the table's evaluated findings, or `None` when the table has
-/// no complete sample. A policy without a trigger ignores it; a policy with
-/// one admits only when a finding of the trigger's kind reaches its severity.
+/// The revision binds the verdict to the thresholds it was evaluated with: a
+/// policy edit between evaluation and admission changes the revision, and the
+/// stale verdict is refused instead of admitting under bounds that no longer
+/// apply.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HealthEvaluation {
+    /// The table's evaluated findings.
+    pub verdict: HealthVerdict,
+    /// The policy revision whose thresholds produced the verdict.
+    pub policy_revision: i64,
+}
+
+/// Admits with a health evaluation for the policy's trigger.
+///
+/// `health` is the table's evaluated findings with the policy revision they
+/// used, or `None` when the table has no complete sample. A policy without a
+/// trigger ignores it; a policy with one admits only when the evaluation
+/// matches the stored policy revision and a finding of the trigger's kind
+/// reaches its severity.
 ///
 /// # Errors
 ///
@@ -478,7 +495,7 @@ pub async fn admit_with_health<F>(
     schedule_id: ScheduleId,
     epoch: i64,
     clock: F,
-    verdict: Option<&HealthVerdict>,
+    health: Option<&HealthEvaluation>,
 ) -> Result<Option<Occurrence>, PersistenceError>
 where
     F: FnOnce() -> DateTime<Utc> + Send,
@@ -516,10 +533,7 @@ where
         })?;
     let until = coalesced_until(&timing, first, now);
     let next = timing.next_occurrence(now);
-    let occurrence = decide(
-        &mut tx, &schedule, &timing, first, until, next, now, verdict,
-    )
-    .await?;
+    let occurrence = decide(&mut tx, &schedule, &timing, first, until, next, now, health).await?;
     // Recheck the epoch before committing the job and its occurrence, so a
     // coordinator that lost leadership mid-decision cannot add work.
     crate::leadership::ensure_leadership(&mut tx, epoch).await?;
@@ -536,7 +550,8 @@ async fn lock_due(
         "SELECT s.id, s.organization_id, s.policy_id, s.table_identity_id,
                 s.cron_expression, s.time_zone, s.window_start_minute,
                 s.window_end_minute, s.service_principal_id, s.enabled,
-                p.enabled AS policy_enabled, p.health_trigger
+                p.enabled AS policy_enabled, p.revision AS policy_revision,
+                p.health_trigger
          FROM maintenance_schedules s
          JOIN maintenance_policies p
            ON p.organization_id = s.organization_id AND p.id = s.policy_id
@@ -584,7 +599,7 @@ async fn decide(
     until: Option<DateTime<Utc>>,
     next: Option<DateTime<Utc>>,
     now: DateTime<Utc>,
-    verdict: Option<&HealthVerdict>,
+    health: Option<&HealthEvaluation>,
 ) -> Result<Occurrence, PersistenceError> {
     if !schedule.policy_enabled {
         return skip(
@@ -667,7 +682,7 @@ async fn decide(
         )
         .await;
     }
-    match trigger_gate(schedule, verdict)? {
+    match trigger_gate(schedule, health)? {
         TriggerGate::Unmet => {
             skip(
                 conn,
@@ -708,10 +723,14 @@ enum TriggerGate {
     Unmet,
 }
 
-/// Checks the policy's health condition against the table's verdict.
+/// Checks the policy's health condition against the table's evaluation.
+///
+/// A verdict computed with an older policy revision is refused: the policy was
+/// edited after the evaluation, so its thresholds or trigger no longer match
+/// what was evaluated. The next pass evaluates the current policy.
 fn trigger_gate(
     schedule: &DueSchedule,
-    verdict: Option<&HealthVerdict>,
+    health: Option<&HealthEvaluation>,
 ) -> Result<TriggerGate, PersistenceError> {
     let trigger: Option<HealthTrigger> = schedule
         .health_trigger
@@ -724,7 +743,12 @@ fn trigger_gate(
         })?;
     match trigger {
         None => Ok(TriggerGate::Proceed(None)),
-        Some(trigger) if verdict.is_some_and(|verdict| verdict.reaches(&trigger)) => {
+        Some(trigger)
+            if health.is_some_and(|health| {
+                health.policy_revision == schedule.policy_revision
+                    && health.verdict.reaches(&trigger)
+            }) =>
+        {
             Ok(TriggerGate::Proceed(Some(trigger)))
         }
         Some(_) => Ok(TriggerGate::Unmet),
@@ -795,6 +819,8 @@ pub struct ScheduleTrigger {
     pub organization_id: OrganizationId,
     /// The policy that declares the trigger.
     pub policy_id: PolicyId,
+    /// The policy revision the thresholds and trigger were read at.
+    pub revision: i64,
     /// The table the schedule maintains.
     pub table_id: TableId,
     /// The thresholds the trigger evaluates with.
@@ -814,8 +840,8 @@ pub async fn schedule_trigger(
     conn: &mut PgConnection,
     schedule_id: ScheduleId,
 ) -> Result<Option<ScheduleTrigger>, PersistenceError> {
-    let row: Option<(Uuid, Uuid, Uuid, Value, Value)> = sqlx::query_as(
-        "SELECT s.organization_id, s.policy_id, s.table_identity_id, \
+    let row: Option<(Uuid, Uuid, Uuid, i64, Value, Value)> = sqlx::query_as(
+        "SELECT s.organization_id, s.policy_id, s.table_identity_id, p.revision, \
                 p.health_thresholds, p.health_trigger \
          FROM maintenance_schedules s \
          JOIN maintenance_policies p \
@@ -825,7 +851,7 @@ pub async fn schedule_trigger(
     .bind(schedule_id.as_uuid())
     .fetch_optional(conn)
     .await?;
-    let Some((organization_id, policy_id, table_id, thresholds, trigger)) = row else {
+    let Some((organization_id, policy_id, table_id, revision, thresholds, trigger)) = row else {
         return Ok(None);
     };
     let thresholds: HealthThresholds =
@@ -847,6 +873,7 @@ pub async fn schedule_trigger(
     Ok(Some(ScheduleTrigger {
         organization_id: OrganizationId::from_uuid(organization_id),
         policy_id: PolicyId::from_uuid(policy_id),
+        revision,
         table_id: TableId::from_uuid(table_id),
         thresholds,
         trigger,

@@ -29,6 +29,47 @@ struct Fixture {
     epoch: i64,
 }
 
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn an_invalid_health_configuration_does_not_starve_later_schedules(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let fixture = fixture(&mut conn, "acme").await;
+    // Stored configuration is not constrained by the schema; a zero warning
+    // bound is invalid and the trigger cannot be evaluated.
+    sqlx::query(
+        "UPDATE maintenance_policies
+         SET health_thresholds = '{\"small_files\":{\"warning\":0,\"critical\":1}}'::jsonb,
+             health_trigger = '{\"kind\":\"small_files\",\"severity\":\"warning\"}'::jsonb
+         WHERE id = $1",
+    )
+    .bind(fixture.policy.as_uuid())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    let healthy = second_schedule(&mut conn, &fixture).await;
+    set_due(&mut conn, &fixture, at(10)).await;
+    set_schedule_due(&mut conn, fixture.tenant.organization, healthy, at(10)).await;
+    drop(conn);
+
+    // One slot per pass. The corrupt schedule is attempted first; the pass must
+    // stay successful and the next pass must admit the later schedule.
+    let runner = ScheduleRunner::new(pool.clone(), fixture.epoch, 1);
+    let first = runner.admit_due_at(at(10)).await.unwrap();
+    assert_eq!(first.admitted, 0);
+    let second = runner.admit_due_at(at(10)).await.unwrap();
+    assert_eq!(second.admitted, 1);
+
+    let mut conn = pool.acquire().await.unwrap();
+    let jobs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM jobs WHERE organization_id = $1 AND table_identity_id = $2",
+    )
+    .bind(fixture.tenant.organization.as_uuid())
+    .bind(fixture.tenant.table.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(jobs, 1);
+}
+
 /// A sample of `files` data files of `bytes_each` bytes, plus its confirmation.
 async fn record_sample(
     conn: &mut PgConnection,
