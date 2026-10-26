@@ -6038,6 +6038,64 @@
           }
         ]
       }
+    },
+    "/api/v1/overview": {
+      "get": {
+        "operationId": "getOverview",
+        "description": "What needs attention in the organization, from the execution ledger: terminal jobs whose terminal transition falls in the last day, by outcome and conflict rate; unresolved publications in full and a bounded list of jobs that need attention; visible tables without a sample or with a decision pending by terminal transition; schedule cursors that are overdue plus occurrences folded or skipped in the last day; and registered worker capacity. Job and table figures follow the caller's grants; the schedule and worker sections are null when the caller may not read them.",
+        "responses": {
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The organization's overview",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Overview"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -9958,6 +10016,299 @@
           },
           "totals": {
             "$ref": "#/components/schemas/MaintenanceTotals"
+          }
+        }
+      },
+      "OverviewJobs": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "window_hours",
+          "ended",
+          "by_state",
+          "conflict_rate_percent"
+        ],
+        "properties": {
+          "window_hours": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "ended": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Terminal jobs in the window."
+          },
+          "by_state": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "Succeeded",
+              "NoOp",
+              "Cancelled",
+              "ReplanRequired",
+              "Failed"
+            ],
+            "properties": {
+              "Succeeded": {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              },
+              "NoOp": {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              },
+              "Cancelled": {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              },
+              "ReplanRequired": {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              },
+              "Failed": {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              }
+            }
+          },
+          "conflict_rate_percent": {
+            "type": "string",
+            "description": "Replanned jobs as a percentage of terminal jobs in the window, one decimal."
+          }
+        }
+      },
+      "OverviewTables": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "window_days",
+          "total",
+          "never_sampled",
+          "latest_job_attention"
+        ],
+        "properties": {
+          "window_days": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "total": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Visible tables."
+          },
+          "never_sampled": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Visible tables without a statistics sample."
+          },
+          "latest_job_attention": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Visible tables whose newest terminal job in the window replanned or failed."
+          }
+        }
+      },
+      "OverviewSchedules": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "total",
+          "enabled",
+          "overdue",
+          "oldest_overdue_age_seconds",
+          "coalesced_last_day",
+          "skipped_last_day"
+        ],
+        "properties": {
+          "total": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "enabled": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "coalesced_last_day": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Occurrences folded into a later evaluation in the last day."
+          },
+          "skipped_last_day": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Occurrences refused in the last day."
+          },
+          "overdue": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Enabled schedules whose next due instant has passed."
+          },
+          "oldest_overdue_age_seconds": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Seconds the oldest overdue schedule has waited."
+          }
+        }
+      },
+      "OverviewWorkers": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sessions",
+          "live_sessions",
+          "memory_bytes",
+          "cpu_millis",
+          "running_attempts"
+        ],
+        "properties": {
+          "sessions": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Sessions that are not superseded."
+          },
+          "live_sessions": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Sessions whose lease is current and which are not draining."
+          },
+          "memory_bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Memory the live sessions registered, in bytes."
+          },
+          "cpu_millis": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "CPU millicores the live sessions registered."
+          },
+          "running_attempts": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          }
+        }
+      },
+      "Overview": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "jobs",
+          "attention",
+          "tables",
+          "schedules",
+          "workers"
+        ],
+        "properties": {
+          "jobs": {
+            "$ref": "#/components/schemas/OverviewJobs"
+          },
+          "attention": {
+            "$ref": "#/components/schemas/OverviewAttention"
+          },
+          "tables": {
+            "$ref": "#/components/schemas/OverviewTables"
+          },
+          "schedules": {
+            "description": "Present only for callers allowed to manage schedules.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OverviewSchedules"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workers": {
+            "description": "Present only for callers allowed to manage workers.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OverviewWorkers"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "OverviewAttentionItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "job_id",
+          "table_id",
+          "state",
+          "reason",
+          "age_seconds"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "table_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "Committing",
+              "CommitOutcomeUnknown",
+              "ReplanRequired",
+              "Failed"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "unresolved_publication",
+              "replan_required",
+              "failed"
+            ]
+          },
+          "age_seconds": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Seconds since the publication was authorized, or since the job ended."
+          }
+        }
+      },
+      "OverviewAttention": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "unresolved_publications",
+          "oldest_unresolved_age_seconds",
+          "terminal_jobs",
+          "truncated",
+          "items"
+        ],
+        "properties": {
+          "unresolved_publications": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Unresolved publications without a bound."
+          },
+          "oldest_unresolved_age_seconds": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Seconds since the oldest unresolved publication was authorized."
+          },
+          "terminal_jobs": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Replanned or failed jobs inside the window, by terminal transition."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether more jobs need attention than the bounded list shows."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OverviewAttentionItem"
+            }
           }
         }
       }

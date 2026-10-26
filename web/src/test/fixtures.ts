@@ -217,6 +217,65 @@ export function tableSample(
 }
 
 /** A table definition with an old spec, a default spec, and one property. */
+/** The landing overview: one unresolved publication and one conflict. */
+export const overview = schema("Overview", {
+    jobs: {
+        window_hours: 24,
+        ended: "3",
+        by_state: {
+            Succeeded: "2",
+            NoOp: "0",
+            Cancelled: "0",
+            ReplanRequired: "1",
+            Failed: "0",
+        },
+        conflict_rate_percent: "33.3",
+    },
+    attention: {
+        unresolved_publications: "1",
+        oldest_unresolved_age_seconds: "7200",
+        terminal_jobs: "1",
+        truncated: false,
+        items: [
+            {
+                job_id: JOB_ID,
+                table_id: TABLE_ID,
+                state: "CommitOutcomeUnknown",
+                reason: "unresolved_publication",
+                age_seconds: "7200",
+            },
+            {
+                job_id: RETRY_JOB_ID,
+                table_id: TABLE_ID,
+                state: "ReplanRequired",
+                reason: "replan_required",
+                age_seconds: "120",
+            },
+        ],
+    },
+    tables: {
+        window_days: 30,
+        total: "2",
+        never_sampled: "1",
+        latest_job_attention: "1",
+    },
+    schedules: {
+        total: "1",
+        enabled: "1",
+        overdue: "1",
+        oldest_overdue_age_seconds: "600",
+        coalesced_last_day: "0",
+        skipped_last_day: "0",
+    },
+    workers: {
+        sessions: "2",
+        live_sessions: "2",
+        memory_bytes: "17179869184",
+        cpu_millis: "8000",
+        running_attempts: "1",
+    },
+});
+
 export const tableDefinition = schema("TableDefinition", {
     table_id: TABLE_ID,
     format_version: "v2",

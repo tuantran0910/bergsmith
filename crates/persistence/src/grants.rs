@@ -14,6 +14,26 @@ use uuid::Uuid;
 
 use crate::PersistenceError;
 
+/// SQL predicate: the table aliased `t` is visible to the caller.
+///
+/// Bind the organization, the principal, and the role names in positions
+/// `$1`, `$2`, and `$3`. It is the same predicate every job and inventory read
+/// applies, so an aggregate can never count a table its caller may not read.
+macro_rules! table_visible {
+    () => {
+        "EXISTS ( \
+             SELECT 1 FROM principal_role_grants g \
+             WHERE g.organization_id = $1 AND g.principal_id = $2 \
+               AND g.revoked_at IS NULL AND g.role = ANY($3::text[]) \
+               AND ((g.catalog_connection_id IS NULL AND g.table_identity_id IS NULL) \
+                 OR g.table_identity_id = t.id \
+                 OR EXISTS (SELECT 1 FROM table_aliases a \
+                            WHERE a.organization_id = $1 AND a.table_identity_id = t.id \
+                              AND a.catalog_connection_id = g.catalog_connection_id)))"
+    };
+}
+pub(crate) use table_visible;
+
 /// A role granted to one principal within one scope.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoleGrant {

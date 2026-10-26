@@ -16,6 +16,9 @@ mod grants_api;
 #[path = "api/job_statistics.rs"]
 mod job_statistics;
 
+#[path = "api/overview.rs"]
+mod overview;
+
 #[path = "api/principals.rs"]
 mod principals;
 
@@ -1137,6 +1140,7 @@ fn openapi_documents_every_route() {
         ("/api/v1/tables/{id}/definition", "get"),
         ("/api/v1/tables/{id}/maintenance", "get"),
         ("/api/v1/statistics/maintenance", "get"),
+        ("/api/v1/overview", "get"),
         ("/api/v1/tables/{id}/statistics", "get"),
         ("/api/v1/catalogs/{id}/statistics", "get"),
         ("/api/v1/statistics", "get"),

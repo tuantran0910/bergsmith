@@ -35,6 +35,7 @@ import {
     tableSnapshots,
     tableSnapshotsQuiet,
     tableDefinition,
+    overview,
     tableMaintenance,
     tableStatistics,
 } from "./test/fixtures";
@@ -49,7 +50,10 @@ beforeEach(() => {
     fake.on("GET", "/auth/session", () => json(200, session()))
         .on("GET", "/api/v1/catalogs", () => json(200, catalogs))
         // The job page names its table.
-        .on("GET", "/api/v1/tables/{id}", () => json(200, table));
+        .on("GET", "/api/v1/tables/{id}", () => json(200, table))
+        // The landing page reads the overview; tests that visit it assert its
+        // sections, and the others only need the request routed.
+        .on("GET", "/api/v1/overview", () => json(200, overview));
 });
 
 afterEach(() => {
@@ -819,7 +823,7 @@ describe("browsing", () => {
 });
 
 describe("overview and shell", () => {
-    it("lands on the overview with quick links and honest placeholders", async () => {
+    it("lands on the overview with attention and quick links", async () => {
         start("/");
 
         expect(
@@ -832,10 +836,20 @@ describe("overview and shell", () => {
             screen.getByRole("link", { name: /Watch maintenance run/ }),
         ).toHaveAttribute("href", "/jobs");
         expect(
-            screen.getByText("Attention overview is not yet available"),
+            await screen.findByRole("heading", { name: "Needs attention" }),
+        ).toBeInTheDocument();
+        expect(screen.getByText("Publication unresolved")).toBeInTheDocument();
+        expect(
+            screen.getByRole("link", { name: /^Replan required/ }),
         ).toBeInTheDocument();
         expect(
-            screen.queryByRole("link", { name: /Browse tables/ }),
+            screen.getByRole("img", { name: /Jobs in the last day/ }),
+        ).toBeInTheDocument();
+        expect(
+            screen.getByRole("table", { name: /Jobs in the last day/ }),
+        ).toBeInTheDocument();
+        expect(
+            screen.queryByRole("link", { name: /Browse tables and start/ }),
         ).not.toHaveAttribute("aria-current", "page");
         expect(screen.getByRole("link", { name: "Overview" })).toHaveAttribute(
             "aria-current",

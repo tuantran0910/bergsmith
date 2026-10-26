@@ -680,6 +680,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/overview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description What needs attention in the organization, from the execution ledger: terminal jobs whose terminal transition falls in the last day, by outcome and conflict rate; unresolved publications in full and a bounded list of jobs that need attention; visible tables without a sample or with a decision pending by terminal transition; schedule cursors that are overdue plus occurrences folded or skipped in the last day; and registered worker capacity. Job and table figures follow the caller's grants; the schedule and worker sections are null when the caller may not read them. */
+        get: operations["getOverview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1600,6 +1617,86 @@ export interface components {
             /** Format: date-time */
             since: string;
             totals: components["schemas"]["MaintenanceTotals"];
+        };
+        OverviewJobs: {
+            /** Format: int32 */
+            window_hours: number;
+            /** @description Terminal jobs in the window. */
+            ended: string;
+            by_state: {
+                Succeeded: string;
+                NoOp: string;
+                Cancelled: string;
+                ReplanRequired: string;
+                Failed: string;
+            };
+            /** @description Replanned jobs as a percentage of terminal jobs in the window, one decimal. */
+            conflict_rate_percent: string;
+        };
+        OverviewTables: {
+            /** Format: int32 */
+            window_days: number;
+            /** @description Visible tables. */
+            total: string;
+            /** @description Visible tables without a statistics sample. */
+            never_sampled: string;
+            /** @description Visible tables whose newest terminal job in the window replanned or failed. */
+            latest_job_attention: string;
+        };
+        OverviewSchedules: {
+            total: string;
+            enabled: string;
+            /** @description Occurrences folded into a later evaluation in the last day. */
+            coalesced_last_day: string;
+            /** @description Occurrences refused in the last day. */
+            skipped_last_day: string;
+            /** @description Enabled schedules whose next due instant has passed. */
+            overdue: string;
+            /** @description Seconds the oldest overdue schedule has waited. */
+            oldest_overdue_age_seconds: string;
+        };
+        OverviewWorkers: {
+            /** @description Sessions that are not superseded. */
+            sessions: string;
+            /** @description Sessions whose lease is current and which are not draining. */
+            live_sessions: string;
+            /** @description Memory the live sessions registered, in bytes. */
+            memory_bytes: string;
+            /** @description CPU millicores the live sessions registered. */
+            cpu_millis: string;
+            running_attempts: string;
+        };
+        Overview: {
+            jobs: components["schemas"]["OverviewJobs"];
+            attention: components["schemas"]["OverviewAttention"];
+            tables: components["schemas"]["OverviewTables"];
+            /** @description Present only for callers allowed to manage schedules. */
+            schedules: components["schemas"]["OverviewSchedules"] | null;
+            /** @description Present only for callers allowed to manage workers. */
+            workers: components["schemas"]["OverviewWorkers"] | null;
+        };
+        OverviewAttentionItem: {
+            /** Format: uuid */
+            job_id: string;
+            /** Format: uuid */
+            table_id: string;
+            /** @enum {string} */
+            state: "Committing" | "CommitOutcomeUnknown" | "ReplanRequired" | "Failed";
+            /** @enum {string} */
+            reason: "unresolved_publication" | "replan_required" | "failed";
+            /** @description Seconds since the publication was authorized, or since the job ended. */
+            age_seconds: string;
+        };
+        OverviewAttention: {
+            /** @description Unresolved publications without a bound. */
+            unresolved_publications: string;
+            /** @description Seconds since the oldest unresolved publication was authorized. */
+            oldest_unresolved_age_seconds: string;
+            /** @description Replanned or failed jobs inside the window, by terminal transition. */
+            terminal_jobs: string;
+            /** @description Whether more jobs need attention than the bounded list shows. */
+            truncated: boolean;
+            items: components["schemas"]["OverviewAttentionItem"][];
         };
     };
     responses: never;
@@ -6372,6 +6469,62 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    getOverview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The organization's overview */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Overview"];
                 };
             };
             /** @description Sign in required */
