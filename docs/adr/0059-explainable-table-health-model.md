@@ -47,6 +47,15 @@ before confirmations existed. There is no health column, no health
 job, and no background recomputation: staleness ages with time, and storing a
 verdict would let it disagree with the sample it describes.
 
+**A sample declares which counters it carries.** `table_statistics.sample_version`
+is 0 for a sample written before the health counters existed and 1 once
+`data_manifest_count` and `max_partition_files` are present. Because samples
+are immutable, an old row is never updated: the collector's unchanged shortcut
+requires the newest sample to be at the current version, so a legacy sample is
+replaced by a new observation of the same metadata. That costs one collection
+per table after an upgrade and lets retention remove the old row on its own
+schedule.
+
 **Findings are typed and reported only at warning or worse.** A `Finding` holds
 the `FindingKind`, a `Severity` (`Warning` or `Critical`), the measured value
 and the threshold it crossed in the finding's own unit, the threshold's
