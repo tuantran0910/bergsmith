@@ -9,7 +9,7 @@ use super::*;
 
 use bergsmith_common::ids::{PlanId, TaskId};
 use bergsmith_persistence::plans::{self, NewPlan};
-use chrono::{SecondsFormat, TimeDelta, Utc};
+use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 
 /// Persists `content` as `job`'s plan, accepts the first `accepted` tasks with
 /// one output object each of `output_bytes`, and leaves the job running.
@@ -77,7 +77,7 @@ fn task(task: TaskId, source_bytes: u64, delete: Option<&str>) -> Value {
 }
 
 /// An RFC 3339 instant with a `Z` suffix, so it needs no query escaping.
-fn instant(at: chrono::DateTime<Utc>) -> String {
+fn instant(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
@@ -240,6 +240,61 @@ async fn history_and_totals_count_accepted_work_and_discarded_output(pool: PgPoo
     assert_eq!(empty["items"].as_array().unwrap().len(), 0);
     assert_eq!(empty["totals"]["jobs"], "0");
     assert_eq!(empty["totals"]["input_bytes"], "0");
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_cursor_keeps_the_sub_millisecond_range_start(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "impact-precision").await;
+    let base = DateTime::from_timestamp_millis(1_767_225_600_000).unwrap();
+    let jobs = [
+        support::job(&mut conn, &tenant).await,
+        support::job(&mut conn, &tenant).await,
+        support::job(&mut conn, &tenant).await,
+    ];
+    // One job sits just below the cutoff, one exactly on it, and one above.
+    for (job, offset) in jobs.iter().zip([0_i64, 500, 600]) {
+        let at = base + TimeDelta::microseconds(offset);
+        sqlx::query("UPDATE jobs SET created_at = $2, updated_at = $2 WHERE id = $1")
+            .bind(job.as_uuid())
+            .bind(at)
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        support::force_job_state(&mut conn, *job, JobState::Succeeded).await;
+    }
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+    let since = (base + TimeDelta::microseconds(500)).to_rfc3339_opts(SecondsFormat::Micros, true);
+    let uri = format!(
+        "/api/v1/tables/{}/maintenance?since={since}&limit=1",
+        tenant.table
+    );
+
+    let (status, first) = browser.request("GET", &uri, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    // The cutoff at .000500Z includes the two later jobs only.
+    assert_eq!(first["totals"]["jobs"], "2");
+    let cursor = first["next_cursor"].as_str().unwrap();
+    let (status, next) = browser
+        .request(
+            "GET",
+            &format!(
+                "/api/v1/tables/{}/maintenance?limit=1&cursor={cursor}",
+                tenant.table
+            ),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{next}");
+    // The cursor keeps the microsecond start, so the job below it stays out
+    // and the totals do not change between pages.
+    assert_eq!(next["since"], first["since"]);
+    assert_eq!(next["totals"]["jobs"], "2", "first {first} next {next}");
+    assert_eq!(next["items"][0]["job_id"], jobs[1].to_string());
+    assert_ne!(next["items"][0]["job_id"], jobs[0].to_string());
+    assert!(next["next_cursor"].is_null());
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]

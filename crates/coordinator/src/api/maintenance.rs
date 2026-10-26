@@ -146,16 +146,19 @@ fn since(raw: Option<&str>) -> Result<DateTime<Utc>, ApiError> {
 /// The cursor key: the range start and the last job of the page.
 ///
 /// [`Page`] treats the key as opaque and returns it as the next cursor, so the
-/// range travels with the page without widening the shared cursor format.
+/// range travels with the page without widening the shared cursor format. The
+/// start keeps microsecond precision, the precision PostgreSQL stores for a
+/// `timestamptz`: rounding it to milliseconds would widen the range on the
+/// next page and pull in a job the first page excluded.
 fn encode_after(since: DateTime<Utc>, job: JobId) -> String {
-    format!("{}:{job}", since.timestamp_millis())
+    format!("{}|{job}", since.timestamp_micros())
 }
 
 /// Reads a cursor key written by [`encode_after`].
 fn parse_after(raw: &str) -> Result<(DateTime<Utc>, JobId), ApiError> {
-    let (millis, job) = raw.split_once(':').ok_or_else(ApiError::invalid)?;
-    let millis: i64 = millis.parse().map_err(|_| ApiError::invalid())?;
-    let since = DateTime::from_timestamp_millis(millis).ok_or_else(ApiError::invalid)?;
+    let (micros, job) = raw.split_once('|').ok_or_else(ApiError::invalid)?;
+    let micros: i64 = micros.parse().map_err(|_| ApiError::invalid())?;
+    let since = DateTime::from_timestamp_micros(micros).ok_or_else(ApiError::invalid)?;
     let job = JobId::from_str(job).map_err(|_| ApiError::invalid())?;
     Ok((since, job))
 }
