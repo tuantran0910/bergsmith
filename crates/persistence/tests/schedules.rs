@@ -3,6 +3,9 @@
 
 mod support;
 
+use bergsmith_common::health::{
+    FindingKind, HealthThresholds, HealthTrigger, Severity, Thresholds,
+};
 use bergsmith_common::ids::{OrganizationId, PolicyId, PrincipalId, ScheduleId};
 use bergsmith_common::permission::{GrantScope, Role};
 use bergsmith_common::policy::{MaintenanceOperation, PolicySpec};
@@ -81,6 +84,101 @@ async fn policy(
     .await
     .unwrap();
     id
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn policies_carry_health_thresholds_and_a_trigger(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let thresholds = HealthThresholds {
+        small_files: Thresholds {
+            warning: 64 * 1024 * 1024,
+            critical: 16 * 1024 * 1024,
+        },
+        ..HealthThresholds::default()
+    };
+    let trigger = HealthTrigger::new(FindingKind::SmallFiles, Severity::Critical);
+    let id = PolicyId::generate();
+    let created = schedules::create_policy_with_health(
+        &mut conn,
+        &NewMaintenancePolicy {
+            id,
+            organization_id: tenant.organization,
+            name: "health".to_owned(),
+            specification: PolicySpec::default(),
+            created_by: tenant.user,
+        },
+        &thresholds,
+        Some(trigger),
+    )
+    .await
+    .unwrap();
+    assert_eq!(created.health_thresholds, thresholds);
+    assert_eq!(created.health_trigger, Some(trigger));
+
+    // A provided threshold set replaces the stored one, and a provided null
+    // trigger clears it; absent values would leave both unchanged.
+    let replacement = HealthThresholds::default();
+    let updated = schedules::update_policy_with_health(
+        &mut conn,
+        tenant.organization,
+        id,
+        &PolicyUpdate {
+            name: None,
+            specification: None,
+            enabled: None,
+            expected_revision: created.revision,
+        },
+        Some(replacement),
+        Some(None),
+    )
+    .await
+    .unwrap();
+    assert_eq!(updated.health_thresholds, replacement);
+    assert_eq!(updated.health_trigger, None);
+    assert_eq!(updated.revision, created.revision + 1);
+
+    // An inverted ladder is refused on create and on update.
+    let inverted = HealthThresholds {
+        small_files: Thresholds {
+            warning: 16 * 1024 * 1024,
+            critical: 64 * 1024 * 1024,
+        },
+        ..HealthThresholds::default()
+    };
+    assert!(matches!(
+        schedules::create_policy_with_health(
+            &mut conn,
+            &NewMaintenancePolicy {
+                id: PolicyId::generate(),
+                organization_id: tenant.organization,
+                name: "inverted".to_owned(),
+                specification: PolicySpec::default(),
+                created_by: tenant.user,
+            },
+            &inverted,
+            None,
+        )
+        .await,
+        Err(PersistenceError::InvalidValue { .. })
+    ));
+    assert!(matches!(
+        schedules::update_policy_with_health(
+            &mut conn,
+            tenant.organization,
+            id,
+            &PolicyUpdate {
+                name: None,
+                specification: None,
+                enabled: None,
+                expected_revision: updated.revision,
+            },
+            Some(inverted),
+            None,
+        )
+        .await,
+        Err(PersistenceError::InvalidValue { .. })
+    ));
 }
 
 async fn schedule(

@@ -3,6 +3,9 @@
 
 mod support;
 
+use bergsmith_common::health::{
+    FindingKind, HealthFinding, HealthThresholds, HealthTrigger, HealthVerdict, Severity,
+};
 use bergsmith_common::ids::{OrganizationId, PolicyId, PrincipalId, RoleGrantId, ScheduleId};
 use bergsmith_common::job::JobState;
 use bergsmith_common::permission::{GrantScope, Role};
@@ -101,6 +104,146 @@ async fn disabled_connections_skip_due_occurrences_and_resume_after_enable(pool:
     .unwrap()
     .unwrap();
     assert_eq!(occurrence.state, OccurrenceState::Admitted);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_met_health_trigger_admits_and_the_job_names_its_cause(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let fixture = fixture(&mut conn, "acme", "0 * * * *", "UTC").await;
+    let trigger = HealthTrigger::new(FindingKind::SmallFiles, Severity::Warning);
+    arm_trigger(&mut conn, &fixture, trigger, HealthThresholds::default()).await;
+    let now = at(2026, 5, 1, 10, 0);
+    set_due(&mut conn, &fixture, now).await;
+    let verdict = HealthVerdict::new(vec![small_files(Severity::Critical)]);
+
+    let occurrence = occurrences::admit_with_health(
+        &mut conn,
+        fixture.schedule,
+        fixture.epoch,
+        || now,
+        Some(&verdict),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(occurrence.state, OccurrenceState::Admitted);
+    let job = jobs::job_by_id(&mut conn, occurrence.job_id.expect("an admitted job"))
+        .await
+        .unwrap();
+    assert_eq!(job.trigger, Some(trigger));
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn an_unmet_health_trigger_skips_without_creating_work(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let fixture = fixture(&mut conn, "acme", "0 * * * *", "UTC").await;
+    let trigger = HealthTrigger::new(FindingKind::SmallFiles, Severity::Critical);
+    arm_trigger(&mut conn, &fixture, trigger, HealthThresholds::default()).await;
+    let now = at(2026, 5, 1, 10, 0);
+    set_due(&mut conn, &fixture, now).await;
+    // A warning does not reach a critical condition.
+    let verdict = HealthVerdict::new(vec![small_files(Severity::Warning)]);
+
+    let occurrence = occurrences::admit_with_health(
+        &mut conn,
+        fixture.schedule,
+        fixture.epoch,
+        || now,
+        Some(&verdict),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(occurrence.state, OccurrenceState::Skipped);
+    assert_eq!(occurrence.reason.as_deref(), Some("HealthTriggerNotMet"));
+    assert_eq!(jobs_on_table(&mut conn, &fixture.tenant).await, 0);
+
+    // An unassessed table (no verdict) does not meet the trigger either.
+    let next = at(2026, 5, 1, 11, 0);
+    set_due(&mut conn, &fixture, next).await;
+    let occurrence =
+        occurrences::admit_with_health(&mut conn, fixture.schedule, fixture.epoch, || next, None)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(occurrence.state, OccurrenceState::Skipped);
+    assert_eq!(occurrence.reason.as_deref(), Some("HealthTriggerNotMet"));
+    assert_eq!(jobs_on_table(&mut conn, &fixture.tenant).await, 0);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_triggered_evaluation_still_coalesces_into_an_active_job(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let fixture = fixture(&mut conn, "acme", "0 * * * *", "UTC").await;
+    let trigger = HealthTrigger::new(FindingKind::SmallFiles, Severity::Warning);
+    arm_trigger(&mut conn, &fixture, trigger, HealthThresholds::default()).await;
+    let now = at(2026, 5, 1, 10, 0);
+    set_due(&mut conn, &fixture, now).await;
+    let verdict = HealthVerdict::new(vec![small_files(Severity::Critical)]);
+
+    let first = occurrences::admit_with_health(
+        &mut conn,
+        fixture.schedule,
+        fixture.epoch,
+        || now,
+        Some(&verdict),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(first.state, OccurrenceState::Admitted);
+
+    let next = at(2026, 5, 1, 11, 0);
+    set_due(&mut conn, &fixture, next).await;
+    let second = occurrences::admit_with_health(
+        &mut conn,
+        fixture.schedule,
+        fixture.epoch,
+        || next,
+        Some(&verdict),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(second.state, OccurrenceState::Coalesced);
+    assert_eq!(second.job_id, first.job_id);
+    assert_eq!(jobs_on_table(&mut conn, &fixture.tenant).await, 1);
+}
+
+/// Sets the fixture policy's trigger and thresholds.
+async fn arm_trigger(
+    conn: &mut PgConnection,
+    fixture: &Fixture,
+    trigger: HealthTrigger,
+    thresholds: HealthThresholds,
+) {
+    let policy = schedules::policy(conn, fixture.tenant.organization, fixture.policy)
+        .await
+        .unwrap();
+    schedules::update_policy_with_health(
+        conn,
+        fixture.tenant.organization,
+        fixture.policy,
+        &PolicyUpdate {
+            name: None,
+            specification: None,
+            enabled: None,
+            expected_revision: policy.revision,
+        },
+        Some(thresholds),
+        Some(Some(trigger)),
+    )
+    .await
+    .unwrap();
+}
+
+fn small_files(severity: Severity) -> HealthFinding {
+    HealthFinding {
+        kind: FindingKind::SmallFiles,
+        severity,
+    }
 }
 
 async fn fixture(conn: &mut PgConnection, slug: &str, cron: &str, zone: &str) -> Fixture {

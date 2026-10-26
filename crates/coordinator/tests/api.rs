@@ -3595,6 +3595,110 @@ async fn policies_and_schedules_are_audited_configuration_with_revisions(pool: P
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_policy_carries_health_thresholds_and_a_trigger(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+
+    let (status, created) = browser
+        .request(
+            "POST",
+            "/api/v1/policies",
+            Some(json!({
+                "name": "health",
+                "health_thresholds": {
+                    "small_files": {"warning": 67_108_864_u64, "critical": 16_777_216_u64}
+                },
+                "health_trigger": {"kind": "small_files", "severity": "critical"},
+            })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(
+        created["health_thresholds"]["small_files"]["warning"],
+        json!(67_108_864_u64)
+    );
+    // The absent findings keep their documented defaults.
+    assert_eq!(
+        created["health_thresholds"]["delete_pressure"]["warning"],
+        100
+    );
+    assert_eq!(created["health_trigger"]["kind"], "small_files");
+    assert_eq!(created["health_trigger"]["severity"], "critical");
+    let policy_id = created["id"].as_str().unwrap().to_owned();
+
+    // A PATCH replaces the provided threshold set and clears the trigger.
+    let (status, updated) = browser
+        .request(
+            "PATCH",
+            &format!("/api/v1/policies/{policy_id}"),
+            Some(json!({
+                "revision": 1,
+                "health_thresholds": {
+                    "snapshot_backlog": {"warning": 10, "critical": 50}
+                },
+                "health_trigger": null,
+            })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["health_trigger"], Value::Null);
+    assert_eq!(
+        updated["health_thresholds"]["snapshot_backlog"]["warning"],
+        10
+    );
+    assert_eq!(
+        updated["health_thresholds"]["small_files"]["warning"],
+        json!(134_217_728_u64),
+        "a replacement resets the findings it does not name"
+    );
+    assert_eq!(updated["revision"], 2);
+
+    // An inverted ladder is a typed client error and changes nothing.
+    let (status, error) = browser
+        .request(
+            "PATCH",
+            &format!("/api/v1/policies/{policy_id}"),
+            Some(json!({
+                "revision": 2,
+                "health_thresholds": {
+                    "small_files": {"warning": 16_777_216_u64, "critical": 67_108_864_u64}
+                },
+            })),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(error["reason"], "invalid_health_thresholds");
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_job_reports_the_health_trigger_that_admitted_it(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let job = support::job(&mut conn, &tenant).await;
+    sqlx::query(
+        "UPDATE jobs SET trigger_finding = 'small_files', trigger_severity = 'warning' \
+         WHERE id = $1",
+    )
+    .bind(job.as_uuid())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+    let (status, body) = browser
+        .request("GET", &format!("/api/v1/jobs/{job}"), None, None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["trigger"]["kind"], "small_files");
+    assert_eq!(body["trigger"]["severity"], "warning");
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
 async fn scheduling_rejects_invalid_timing_and_ineligible_identities(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let tenant = support::tenant(&mut conn, "acme").await;

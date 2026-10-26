@@ -6311,6 +6311,7 @@
               "invalid_time_zone",
               "invalid_maintenance_window",
               "run_budget_below_target_file_size",
+              "invalid_health_thresholds",
               "revision_conflict",
               "service_identity_not_eligible",
               "resource_already_exists",
@@ -7010,7 +7011,8 @@
           "created_at",
           "updated_at",
           "cancellation_requested",
-          "publication_started"
+          "publication_started",
+          "trigger"
         ],
         "properties": {
           "id": {
@@ -7093,6 +7095,16 @@
           },
           "statistics": {
             "$ref": "#/components/schemas/JobStatistics"
+          },
+          "trigger": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HealthTrigger"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -7237,7 +7249,9 @@
           "enabled",
           "revision",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "health_thresholds",
+          "health_trigger"
         ],
         "properties": {
           "id": {
@@ -7288,6 +7302,19 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "health_thresholds": {
+            "$ref": "#/components/schemas/HealthThresholds"
+          },
+          "health_trigger": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HealthTrigger"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -7326,6 +7353,12 @@
             "format": "int64",
             "minimum": 1048576,
             "maximum": 107374182400
+          },
+          "health_thresholds": {
+            "$ref": "#/components/schemas/HealthThresholds"
+          },
+          "health_trigger": {
+            "$ref": "#/components/schemas/HealthTrigger"
           }
         }
       },
@@ -7398,6 +7431,20 @@
           },
           "enabled": {
             "type": "boolean"
+          },
+          "health_thresholds": {
+            "$ref": "#/components/schemas/HealthThresholds"
+          },
+          "health_trigger": {
+            "description": "Absent leaves the trigger alone; null clears it.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HealthTrigger"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -10689,6 +10736,81 @@
             "items": {
               "$ref": "#/components/schemas/TableHealthRecommendation"
             }
+          }
+        }
+      },
+      "HealthThreshold": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "A finding's warning and critical bounds, in the finding's unit. Critical must be strictly more severe than warning.",
+        "required": [
+          "warning",
+          "critical"
+        ],
+        "properties": {
+          "warning": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "critical": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          }
+        }
+      },
+      "HealthThresholds": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Per-finding bounds. An absent finding keeps the documented default, so a partial object is a valid override.",
+        "properties": {
+          "small_files": {
+            "$ref": "#/components/schemas/HealthThreshold"
+          },
+          "delete_pressure": {
+            "$ref": "#/components/schemas/HealthThreshold"
+          },
+          "snapshot_backlog": {
+            "$ref": "#/components/schemas/HealthThreshold"
+          },
+          "manifest_fragmentation": {
+            "$ref": "#/components/schemas/HealthThreshold"
+          },
+          "partition_skew": {
+            "$ref": "#/components/schemas/HealthThreshold"
+          },
+          "stale_statistics": {
+            "$ref": "#/components/schemas/HealthThreshold"
+          }
+        }
+      },
+      "HealthTrigger": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "A health condition that allows a schedule to admit maintenance.",
+        "required": [
+          "kind",
+          "severity"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "small_files",
+              "delete_pressure",
+              "snapshot_backlog",
+              "manifest_fragmentation",
+              "partition_skew",
+              "stale_statistics"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "warning",
+              "critical"
+            ]
           }
         }
       }

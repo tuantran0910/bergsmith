@@ -14,12 +14,14 @@
 //! that is not a service account or that holds no grant covering
 //! `jobs:submit` for the table.
 
+use bergsmith_common::health::{HealthThresholds, HealthTrigger};
 use bergsmith_common::ids::{JobId, OrganizationId, PolicyId, PrincipalId, ScheduleId, TableId};
 use bergsmith_common::permission::{Permission, ResourceScope};
 use bergsmith_common::policy::{MaintenanceOperation, PolicySpec};
 use bergsmith_common::schedule::CronSchedule;
 use bergsmith_common::window::MaintenanceWindow;
 use chrono::{DateTime, Utc};
+use serde_json::Value;
 use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 
@@ -37,6 +39,10 @@ pub struct MaintenancePolicy {
     pub name: String,
     /// Operation and bounded parameters.
     pub specification: PolicySpec,
+    /// Thresholds this policy's health trigger evaluates with.
+    pub health_thresholds: HealthThresholds,
+    /// The health condition that admits maintenance, if any.
+    pub health_trigger: Option<HealthTrigger>,
     /// Whether schedules may use it and admission may run it.
     pub enabled: bool,
     /// Optimistic concurrency revision.
@@ -150,6 +156,8 @@ struct PolicyRow {
     target_file_size_bytes: i64,
     min_input_files: i32,
     max_input_bytes: i64,
+    health_thresholds: Value,
+    health_trigger: Option<Value>,
     enabled: bool,
     revision: i64,
     created_by: Uuid,
@@ -193,11 +201,32 @@ impl TryFrom<PolicyRow> for MaintenancePolicy {
             entity: "policy specification",
             value: error.to_string(),
         })?;
+        let health_thresholds: HealthThresholds = serde_json::from_value(row.health_thresholds)
+            .map_err(|error| PersistenceError::CorruptValue {
+                entity: "policy health thresholds",
+                value: error.to_string(),
+            })?;
+        health_thresholds
+            .validate()
+            .map_err(|error| PersistenceError::CorruptValue {
+                entity: "policy health thresholds",
+                value: error.to_string(),
+            })?;
+        let health_trigger: Option<HealthTrigger> = row
+            .health_trigger
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| PersistenceError::CorruptValue {
+                entity: "policy health trigger",
+                value: error.to_string(),
+            })?;
         Ok(Self {
             id: PolicyId::from_uuid(row.id),
             organization_id: OrganizationId::from_uuid(row.organization_id),
             name: row.name,
             specification,
+            health_thresholds,
+            health_trigger,
             enabled: row.enabled,
             revision: row.revision,
             created_by: PrincipalId::from_uuid(row.created_by),
@@ -258,8 +287,8 @@ impl TryFrom<ScheduleRow> for MaintenanceSchedule {
 macro_rules! policy_columns {
     () => {
         "id, organization_id, name, operation, target_file_size_bytes, \
-         min_input_files, max_input_bytes, enabled, revision, created_by, \
-         created_at, updated_at"
+         min_input_files, max_input_bytes, health_thresholds, health_trigger, \
+         enabled, revision, created_by, created_at, updated_at"
     };
 }
 
@@ -299,11 +328,46 @@ pub async fn create_policy(
     conn: &mut PgConnection,
     new: &NewMaintenancePolicy,
 ) -> Result<MaintenancePolicy, PersistenceError> {
+    create_policy_with_health(conn, new, &HealthThresholds::default(), None).await
+}
+
+/// Creates a policy with its health thresholds and trigger.
+///
+/// # Errors
+///
+/// As [`create_policy`], plus [`PersistenceError::InvalidValue`] when the
+/// thresholds are invalid.
+pub async fn create_policy_with_health(
+    conn: &mut PgConnection,
+    new: &NewMaintenancePolicy,
+    health_thresholds: &HealthThresholds,
+    health_trigger: Option<HealthTrigger>,
+) -> Result<MaintenancePolicy, PersistenceError> {
+    health_thresholds
+        .validate()
+        .map_err(|error| PersistenceError::InvalidValue {
+            entity: "maintenance policy",
+            constraint: error.to_string(),
+        })?;
+    let thresholds = serde_json::to_value(health_thresholds).map_err(|error| {
+        PersistenceError::InvalidValue {
+            entity: "maintenance policy",
+            constraint: error.to_string(),
+        }
+    })?;
+    let trigger = health_trigger
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|error| PersistenceError::InvalidValue {
+            entity: "maintenance policy",
+            constraint: error.to_string(),
+        })?;
     let row = sqlx::query_as::<_, PolicyRow>(concat!(
         "INSERT INTO maintenance_policies
              (id, organization_id, name, operation, target_file_size_bytes,
-              min_input_files, max_input_bytes, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+              min_input_files, max_input_bytes, health_thresholds, health_trigger,
+              created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          RETURNING ",
         policy_columns!()
     ))
@@ -335,6 +399,8 @@ pub async fn create_policy(
             }
         })?,
     )
+    .bind(thresholds)
+    .bind(trigger)
     .bind(new.created_by.as_uuid())
     .fetch_one(conn)
     .await
@@ -459,6 +525,51 @@ pub async fn update_policy(
     id: PolicyId,
     update: &PolicyUpdate,
 ) -> Result<MaintenancePolicy, PersistenceError> {
+    update_policy_with_health(conn, organization_id, id, update, None, None).await
+}
+
+/// Applies a policy update with optional health configuration.
+///
+/// `health_thresholds` replaces the stored set when present.
+/// `health_trigger` distinguishes three states: `None` leaves it unchanged,
+/// `Some(None)` clears it, and `Some(Some(trigger))` sets it.
+///
+/// # Errors
+///
+/// As [`update_policy`], plus [`PersistenceError::InvalidValue`] when the
+/// thresholds are invalid.
+pub async fn update_policy_with_health(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    id: PolicyId,
+    update: &PolicyUpdate,
+    health_thresholds: Option<HealthThresholds>,
+    health_trigger: Option<Option<HealthTrigger>>,
+) -> Result<MaintenancePolicy, PersistenceError> {
+    if let Some(thresholds) = health_thresholds {
+        thresholds
+            .validate()
+            .map_err(|error| PersistenceError::InvalidValue {
+                entity: "maintenance policy",
+                constraint: error.to_string(),
+            })?;
+    }
+    let thresholds = health_thresholds
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|error| PersistenceError::InvalidValue {
+            entity: "maintenance policy",
+            constraint: error.to_string(),
+        })?;
+    let trigger_provided = health_trigger.is_some();
+    let trigger = health_trigger
+        .flatten()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|error| PersistenceError::InvalidValue {
+            entity: "maintenance policy",
+            constraint: error.to_string(),
+        })?;
     let spec = update.specification;
     let row = sqlx::query_as::<_, PolicyRow>(concat!(
         "UPDATE maintenance_policies
@@ -468,9 +579,11 @@ pub async fn update_policy(
              min_input_files = COALESCE($6, min_input_files),
              max_input_bytes = COALESCE($7, max_input_bytes),
              enabled = COALESCE($8, enabled),
+             health_thresholds = COALESCE($9, health_thresholds),
+             health_trigger = CASE WHEN $10 THEN $11 ELSE health_trigger END,
              revision = revision + 1,
              updated_at = clock_timestamp()
-         WHERE organization_id = $1 AND id = $2 AND revision = $9
+         WHERE organization_id = $1 AND id = $2 AND revision = $12
          RETURNING ",
         policy_columns!()
     ))
@@ -506,6 +619,9 @@ pub async fn update_policy(
         .transpose()?,
     )
     .bind(update.enabled)
+    .bind(thresholds)
+    .bind(trigger_provided)
+    .bind(trigger)
     .bind(update.expected_revision)
     .fetch_optional(&mut *conn)
     .await

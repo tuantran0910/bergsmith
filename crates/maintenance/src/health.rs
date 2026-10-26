@@ -15,28 +15,7 @@ use crate::statistics::TableSample;
 /// One thousandth of a whole, the scale of every per-mille threshold.
 const PER_MILLE: u128 = 1_000;
 
-/// How serious a finding is.
-///
-/// Ordered so the worst finding determines the table's state.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Severity {
-    /// The table is outside a healthy bound but still usable.
-    Warning,
-    /// The table needs attention soon.
-    Critical,
-}
-
-impl Severity {
-    /// The stable name used in the API.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Warning => "warning",
-            Self::Critical => "critical",
-        }
-    }
-}
+pub use bergsmith_common::health::Severity;
 
 /// The evaluated state of one table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

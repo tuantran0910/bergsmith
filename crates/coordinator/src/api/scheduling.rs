@@ -15,6 +15,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use bergsmith_common::audit::{ActorKind, AuditAction, AuditOutcome};
+use bergsmith_common::health::{HealthThresholds, HealthTrigger, ThresholdError};
 use bergsmith_common::ids::{OrganizationId, PolicyId, PrincipalId, ScheduleId, TableId};
 use bergsmith_common::permission::{Permission, ResourceScope};
 use bergsmith_common::policy::{MaintenanceOperation, PolicyError, PolicySpec};
@@ -43,6 +44,11 @@ pub(super) struct CreatePolicyRequest {
     target_file_size_bytes: Option<u64>,
     min_input_files: Option<u32>,
     max_input_bytes: Option<u64>,
+    /// Absent keeps every documented health default; a partial object
+    /// overrides the findings it names.
+    health_thresholds: Option<HealthThresholds>,
+    /// Absent keeps admission unconditional.
+    health_trigger: Option<HealthTrigger>,
 }
 
 #[derive(Deserialize)]
@@ -54,6 +60,15 @@ pub(super) struct UpdatePolicyRequest {
     target_file_size_bytes: Option<u64>,
     min_input_files: Option<u32>,
     max_input_bytes: Option<u64>,
+    /// Absent leaves the stored thresholds alone; an object replaces them.
+    health_thresholds: Option<HealthThresholds>,
+    /// Absent leaves the trigger alone, `null` clears it, and an object sets it.
+    #[serde(default, deserialize_with = "double_option")]
+    #[expect(
+        clippy::option_option,
+        reason = "absent, null, and an object are three distinct PATCH states"
+    )]
+    health_trigger: Option<Option<HealthTrigger>>,
     enabled: Option<bool>,
 }
 
@@ -181,9 +196,11 @@ pub(super) async fn create_policy(
         request.min_input_files,
         request.max_input_bytes,
     )?;
+    let health_thresholds = request.health_thresholds.unwrap_or_default();
+    validate_thresholds(&health_thresholds)?;
     let id = PolicyId::generate();
     let mut tx = state.database.pool().begin().await?;
-    let created = schedules::create_policy(
+    let created = schedules::create_policy_with_health(
         &mut tx,
         &NewMaintenancePolicy {
             id,
@@ -192,6 +209,8 @@ pub(super) async fn create_policy(
             specification,
             created_by: caller.principal_id,
         },
+        &health_thresholds,
+        request.health_trigger,
     )
     .await?;
     record(
@@ -206,6 +225,8 @@ pub(super) async fn create_policy(
             "target_file_size_bytes": created.specification.target_file_size_bytes,
             "min_input_files": created.specification.min_input_files,
             "max_input_bytes": created.specification.max_input_bytes,
+            "health_thresholds": created.health_thresholds,
+            "health_trigger": created.health_trigger,
             "revision": created.revision,
         }),
     )
@@ -230,8 +251,16 @@ pub(super) async fn update_policy(
         || request.target_file_size_bytes.is_some()
         || request.min_input_files.is_some()
         || request.max_input_bytes.is_some();
-    if request.name.is_none() && !changes_specification && request.enabled.is_none() {
+    let changes_health = request.health_thresholds.is_some() || request.health_trigger.is_some();
+    if request.name.is_none()
+        && !changes_specification
+        && !changes_health
+        && request.enabled.is_none()
+    {
         return Err(ApiError::invalid());
+    }
+    if let Some(thresholds) = &request.health_thresholds {
+        validate_thresholds(thresholds)?;
     }
     authorize(&state, &caller, ResourceScope::Organization).await?;
     let mut tx = state.database.pool().begin().await?;
@@ -259,7 +288,7 @@ pub(super) async fn update_policy(
     } else {
         None
     };
-    let updated = schedules::update_policy(
+    let updated = schedules::update_policy_with_health(
         &mut tx,
         caller.organization_id,
         id,
@@ -269,6 +298,8 @@ pub(super) async fn update_policy(
             enabled: request.enabled,
             expected_revision: request.revision,
         },
+        request.health_thresholds,
+        request.health_trigger,
     )
     .await?;
     record(
@@ -283,6 +314,8 @@ pub(super) async fn update_policy(
             "target_file_size_bytes": updated.specification.target_file_size_bytes,
             "min_input_files": updated.specification.min_input_files,
             "max_input_bytes": updated.specification.max_input_bytes,
+            "health_thresholds": updated.health_thresholds,
+            "health_trigger": updated.health_trigger,
             "revision": updated.revision,
             "enabled": updated.enabled,
         }),
@@ -594,6 +627,17 @@ fn policy_error(error: &PolicyError) -> ApiError {
     }
 }
 
+/// Reports an invalid threshold ladder as a client error.
+fn validate_thresholds(thresholds: &HealthThresholds) -> Result<(), ApiError> {
+    thresholds.validate().map_err(|error| match error {
+        ThresholdError::Zero { .. } | ThresholdError::Inverted { .. } => ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_health_thresholds",
+            "correct_health_thresholds",
+        ),
+    })
+}
+
 /// Parses a timing contract, reporting which part was rejected.
 fn timing(expression: &str, time_zone: &str) -> Result<CronSchedule, ApiError> {
     CronSchedule::parse(expression, time_zone).map_err(|error| match error {
@@ -619,6 +663,8 @@ fn policy_json(policy: &MaintenancePolicy) -> Value {
         "target_file_size_bytes": policy.specification.target_file_size_bytes,
         "min_input_files": policy.specification.min_input_files,
         "max_input_bytes": policy.specification.max_input_bytes,
+        "health_thresholds": policy.health_thresholds,
+        "health_trigger": policy.health_trigger,
         "enabled": policy.enabled,
         "revision": policy.revision,
         "created_at": policy.created_at.to_rfc3339_opts(SecondsFormat::Millis, true),

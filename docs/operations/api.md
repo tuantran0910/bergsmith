@@ -40,7 +40,7 @@ as `x-csrf-token`. All responses use `Cache-Control: no-store`.
 | `GET /api/v1/overview` | The landing overview: terminal jobs whose transition falls in the last day, by outcome and conflict rate; the unresolved-publication count and oldest age in full plus a bounded list of jobs that need attention (unresolved publications first, aged from send authorization, then `ReplanRequired` and failed jobs, aged from their terminal transition); visible tables that were never sampled or whose newest job needs a decision; enabled schedules whose next due instant has passed, plus occurrences folded or skipped in the last day; and registered worker capacity. Job and table figures follow the caller's grants, and the schedule and worker sections are `null` when the caller may not manage them; counters are decimal strings |
 | `GET /api/v1/catalogs/{id}/statistics` | Totals over the newest sample of every visible table on one connection; 404 when the connection is not visible |
 | `GET /api/v1/statistics` | The same totals over every table the caller may view in the organization |
-| `GET /api/v1/jobs`, `GET /api/v1/jobs/{id}` | Authorized job state, revision, requester and their display name, the table's caller-visible aliases, cancellation/publication boundary, retry link |
+| `GET /api/v1/jobs`, `GET /api/v1/jobs/{id}` | Authorized job state, revision, requester and their display name, the table's caller-visible aliases, cancellation/publication boundary, retry link, and the `trigger` (finding kind and severity) that admitted it, or null |
 | `POST /api/v1/jobs` | Idempotent durable submission; returns 202 with job and operation IDs and Location |
 | `POST /api/v1/jobs/{id}/cancel` | Record a cancellation request and report what it achieved |
 | `POST /api/v1/jobs/{id}/retry` | Create a fresh-plan retry of a terminal job; 202 with the new job |
@@ -48,8 +48,8 @@ as `x-csrf-token`. All responses use `Cache-Control: no-store`.
 | `GET /api/v1/audit` | Organization audit history with each actor's current display name; requires organization-wide `audit:read` |
 | `GET /api/v1/workers` | Current worker sessions and their lease status; requires organization-wide `workers:manage` |
 | `GET /api/v1/policies`, `GET /api/v1/policies/{id}` | Maintenance policies; requires organization-wide `schedules:manage` |
-| `POST /api/v1/policies` | Create a policy; 201 with the stored row |
-| `PATCH /api/v1/policies/{id}` | Edit or disable a policy using the revision read; 409 when it is stale |
+| `POST /api/v1/policies` | Create a policy; 201 with the stored row. `health_thresholds` overrides per-finding bounds (absent findings keep the documented defaults) and `health_trigger` names the finding and severity that admit maintenance; both are optional |
+| `PATCH /api/v1/policies/{id}` | Edit or disable a policy using the revision read; 409 when it is stale. A provided `health_thresholds` replaces the stored set; `health_trigger` is left alone when absent and cleared by null |
 | `GET /api/v1/schedules`, `GET /api/v1/schedules/{id}` | Maintenance schedules; requires organization-wide `schedules:manage` |
 | `POST /api/v1/schedules` | Bind a policy to one table with a cron expression, time zone, and service identity; 201; requires organization-wide `schedules:manage` |
 | `PATCH /api/v1/schedules/{id}` | Edit a schedule's timing or enabled state using the revision read; requires organization-wide `schedules:manage` |

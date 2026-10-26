@@ -6,10 +6,16 @@
 //! state: everything it needs was validated and persisted by BS-019.T1, and the
 //! occurrence row it writes is what makes admission idempotent.
 
+use bergsmith_common::health::HealthVerdict;
+use bergsmith_maintenance::ThresholdSource;
+use bergsmith_maintenance::evaluate;
 use bergsmith_persistence::PersistenceError;
-use bergsmith_persistence::occurrences::{self, OUTSIDE_WINDOW_REASON, OccurrenceState};
+use bergsmith_persistence::occurrences::{
+    self, HEALTH_TRIGGER_REASON, OUTSIDE_WINDOW_REASON, OccurrenceState,
+};
+use bergsmith_persistence::statistics::{self, SAMPLE_VERSION};
 use chrono::{DateTime, Utc};
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 /// How many due schedules one pass examines. A busy organization is drained
@@ -109,7 +115,16 @@ impl ScheduleRunner {
         let mut summary = AdmissionSummary::default();
         for schedule in schedules {
             let mut conn = self.pool.acquire().await?;
-            match occurrences::admit_with_clock(&mut conn, schedule, self.epoch, &clock).await {
+            let verdict = self.verdict_for(&mut conn, schedule, scan_now).await?;
+            match occurrences::admit_with_health(
+                &mut conn,
+                schedule,
+                self.epoch,
+                &clock,
+                verdict.as_ref(),
+            )
+            .await
+            {
                 Ok(Some(occurrence)) => match occurrence.state {
                     OccurrenceState::Admitted => {
                         summary.admitted += 1;
@@ -140,6 +155,11 @@ impl ScheduleRunner {
                                 schedule_id = %schedule,
                                 "schedule occurrence skipped outside its maintenance window"
                             );
+                        } else if occurrence.reason.as_deref() == Some(HEALTH_TRIGGER_REASON) {
+                            tracing::debug!(
+                                schedule_id = %schedule,
+                                "schedule occurrence skipped because its health trigger is unmet"
+                            );
                         } else {
                             tracing::warn!(
                                 schedule_id = %schedule,
@@ -162,6 +182,62 @@ impl ScheduleRunner {
             }
         }
         Ok(summary)
+    }
+
+    /// The health verdict a schedule's policy trigger evaluates.
+    ///
+    /// Returns `None` when the policy has no trigger, the table has no sample,
+    /// the sample predates the health counters, or the sample cannot be
+    /// presented. A missing verdict never satisfies a trigger, so admission
+    /// skips the occurrence instead of guessing.
+    async fn verdict_for(
+        &self,
+        conn: &mut PgConnection,
+        schedule: bergsmith_common::ids::ScheduleId,
+        now: DateTime<Utc>,
+    ) -> Result<Option<HealthVerdict>, PersistenceError> {
+        let Some(route) = occurrences::schedule_trigger(conn, schedule).await? else {
+            return Ok(None);
+        };
+        let Some(stored) = statistics::latest(conn, route.organization_id, route.table_id).await?
+        else {
+            return Ok(None);
+        };
+        if stored.sample_version < SAMPLE_VERSION {
+            return Ok(None);
+        }
+        let confirmed = statistics::last_confirmed_at(conn, route.organization_id, route.table_id)
+            .await?
+            .unwrap_or(stored.sampled_at);
+        let sample = match crate::health::sample_model(&stored) {
+            Ok(sample) => sample,
+            Err(error) => {
+                tracing::warn!(
+                    schedule_id = %schedule,
+                    error = %error,
+                    "health sample cannot be presented; treating the trigger as unmet"
+                );
+                return Ok(None);
+            }
+        };
+        let health = match evaluate(
+            &sample,
+            confirmed,
+            &route.thresholds,
+            ThresholdSource::Policy(route.policy_id),
+            now,
+        ) {
+            Ok(health) => health,
+            Err(error) => {
+                tracing::warn!(
+                    schedule_id = %schedule,
+                    error = %error,
+                    "health evaluation failed; treating the trigger as unmet"
+                );
+                return Ok(None);
+            }
+        };
+        Ok(Some(crate::health::verdict(&health)))
     }
 }
 
