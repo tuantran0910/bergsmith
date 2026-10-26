@@ -5833,6 +5833,211 @@
           }
         }
       }
+    },
+    "/api/v1/tables/{id}/maintenance": {
+      "get": {
+        "operationId": "getTableMaintenance",
+        "description": "Terminal jobs of one table, newest first, each with the work its accepted tasks rewrote, plus totals over the requested range. Work that a conflict discarded is reported as discarded_files and discarded_bytes. Requires jobs:read on the table; unknown and invisible tables both return 404. Counts and byte totals are decimal strings.",
+        "responses": {
+          "400": {
+            "description": "Invalid request, cursor, or instant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or inaccessible table",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Maintenance history page with range totals",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TableMaintenancePage"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque continuation bound to organization, principal, and resource. Current grants are rechecked.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Inclusive RFC 3339 lower bound. Defaults to thirty days ago.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/statistics/maintenance": {
+      "get": {
+        "operationId": "getOrganizationMaintenanceTotals",
+        "description": "Maintenance impact over the terminal jobs of every table the caller may read jobs on, over the requested range. Work that a conflict discarded is reported as discarded_files and discarded_bytes. Counts and byte totals are decimal strings.",
+        "responses": {
+          "400": {
+            "description": "Invalid instant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Maintenance totals over the range",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaintenanceOrganizationTotals"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Inclusive RFC 3339 lower bound. Defaults to thirty days ago.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -8795,7 +9000,10 @@
       "TableDefinitionSchema": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["schema_id", "fields"],
+        "required": [
+          "schema_id",
+          "fields"
+        ],
         "properties": {
           "schema_id": {
             "type": "integer",
@@ -8813,7 +9021,13 @@
       "TableDefinitionField": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "name", "type", "required", "doc"],
+        "required": [
+          "id",
+          "name",
+          "type",
+          "required",
+          "doc"
+        ],
         "properties": {
           "id": {
             "type": "integer",
@@ -8844,7 +9058,11 @@
       "TableDefinitionPartitionSpec": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["spec_id", "default", "fields"],
+        "required": [
+          "spec_id",
+          "default",
+          "fields"
+        ],
         "properties": {
           "spec_id": {
             "type": "integer",
@@ -8866,7 +9084,12 @@
       "TableDefinitionPartitionField": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["source_id", "field_id", "name", "transform"],
+        "required": [
+          "source_id",
+          "field_id",
+          "name",
+          "transform"
+        ],
         "properties": {
           "source_id": {
             "type": "integer",
@@ -8888,7 +9111,10 @@
       "TableDefinitionSortOrder": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["order_id", "fields"],
+        "required": [
+          "order_id",
+          "fields"
+        ],
         "properties": {
           "order_id": {
             "description": "The order ID. Zero is the unsorted order.",
@@ -8907,7 +9133,12 @@
       "TableDefinitionSortField": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["source_id", "transform", "direction", "null_order"],
+        "required": [
+          "source_id",
+          "transform",
+          "direction",
+          "null_order"
+        ],
         "properties": {
           "source_id": {
             "type": "integer",
@@ -8918,11 +9149,17 @@
           },
           "direction": {
             "type": "string",
-            "enum": ["asc", "desc"]
+            "enum": [
+              "asc",
+              "desc"
+            ]
           },
           "null_order": {
             "type": "string",
-            "enum": ["nulls-first", "nulls-last"]
+            "enum": [
+              "nulls-first",
+              "nulls-last"
+            ]
           }
         }
       },
@@ -9509,6 +9746,208 @@
           "commits": {
             "type": "string",
             "pattern": "^[0-9]+$"
+          }
+        }
+      },
+      "MaintenanceTotals": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "jobs",
+          "succeeded",
+          "no_op",
+          "cancelled",
+          "replanned",
+          "failed",
+          "input_files",
+          "input_bytes",
+          "output_files",
+          "output_bytes",
+          "delete_files_applied",
+          "discarded_files",
+          "discarded_bytes"
+        ],
+        "properties": {
+          "jobs": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "succeeded": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "no_op": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "cancelled": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "replanned": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "failed": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "input_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "input_bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "output_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "output_bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "delete_files_applied": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "discarded_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "discarded_bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          }
+        }
+      },
+      "MaintenanceEntry": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "job_id",
+          "state",
+          "created_at",
+          "updated_at",
+          "elapsed_millis",
+          "input_files",
+          "input_bytes",
+          "output_files",
+          "output_bytes",
+          "delete_files_applied"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "Succeeded",
+              "NoOp",
+              "Cancelled",
+              "ReplanRequired",
+              "Failed"
+            ],
+            "description": "The job's terminal state."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "elapsed_millis": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "End-to-end time from creation to the terminal state."
+          },
+          "input_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Source files of accepted tasks."
+          },
+          "input_bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Bytes of those source files."
+          },
+          "output_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Output objects accepted with the tasks' receipts."
+          },
+          "output_bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Bytes of those output objects."
+          },
+          "delete_files_applied": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Distinct delete files the accepted tasks applied."
+          }
+        }
+      },
+      "TableMaintenancePage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "table_id",
+          "since",
+          "totals",
+          "items",
+          "next_cursor"
+        ],
+        "properties": {
+          "table_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Inclusive lower bound of the range."
+          },
+          "totals": {
+            "$ref": "#/components/schemas/MaintenanceTotals"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MaintenanceEntry"
+            }
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "MaintenanceOrganizationTotals": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "since",
+          "totals"
+        ],
+        "properties": {
+          "since": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/MaintenanceTotals"
           }
         }
       }

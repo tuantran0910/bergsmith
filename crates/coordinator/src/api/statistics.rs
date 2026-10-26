@@ -244,7 +244,7 @@ fn key(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(SecondsFormat::Micros, true)
 }
 
-fn instant(raw: &str) -> Result<DateTime<Utc>, ApiError> {
+pub(super) fn instant(raw: &str) -> Result<DateTime<Utc>, ApiError> {
     DateTime::parse_from_rfc3339(raw)
         .map(|at| at.with_timezone(&Utc))
         .map_err(|_| ApiError::invalid())

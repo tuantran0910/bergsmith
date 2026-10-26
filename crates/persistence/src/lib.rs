@@ -17,6 +17,7 @@ pub mod grants;
 pub mod idempotency;
 pub mod jobs;
 pub mod leadership;
+pub mod maintenance;
 pub mod metrics;
 pub mod occurrences;
 pub mod plans;

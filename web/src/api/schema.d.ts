@@ -646,6 +646,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tables/{id}/maintenance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Terminal jobs of one table, newest first, each with the work its accepted tasks rewrote, plus totals over the requested range. Work that a conflict discarded is reported as discarded_files and discarded_bytes. Requires jobs:read on the table; unknown and invisible tables both return 404. Counts and byte totals are decimal strings. */
+        get: operations["getTableMaintenance"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/statistics/maintenance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Maintenance impact over the terminal jobs of every table the caller may read jobs on, over the requested range. Work that a conflict discarded is reported as discarded_files and discarded_bytes. Counts and byte totals are decimal strings. */
+        get: operations["getOrganizationMaintenanceTotals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1507,6 +1541,63 @@ export interface components {
             /** Format: date-time */
             start: string;
             commits: string;
+        };
+        MaintenanceTotals: {
+            jobs: string;
+            succeeded: string;
+            no_op: string;
+            cancelled: string;
+            replanned: string;
+            failed: string;
+            input_files: string;
+            input_bytes: string;
+            output_files: string;
+            output_bytes: string;
+            delete_files_applied: string;
+            discarded_files: string;
+            discarded_bytes: string;
+        };
+        MaintenanceEntry: {
+            /** Format: uuid */
+            job_id: string;
+            /**
+             * @description The job's terminal state.
+             * @enum {string}
+             */
+            state: "Succeeded" | "NoOp" | "Cancelled" | "ReplanRequired" | "Failed";
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            /** @description End-to-end time from creation to the terminal state. */
+            elapsed_millis: string;
+            /** @description Source files of accepted tasks. */
+            input_files: string;
+            /** @description Bytes of those source files. */
+            input_bytes: string;
+            /** @description Output objects accepted with the tasks' receipts. */
+            output_files: string;
+            /** @description Bytes of those output objects. */
+            output_bytes: string;
+            /** @description Distinct delete files the accepted tasks applied. */
+            delete_files_applied: string;
+        };
+        TableMaintenancePage: {
+            /** Format: uuid */
+            table_id: string;
+            /**
+             * Format: date-time
+             * @description Inclusive lower bound of the range.
+             */
+            since: string;
+            totals: components["schemas"]["MaintenanceTotals"];
+            items: components["schemas"]["MaintenanceEntry"][];
+            next_cursor: string | null;
+        };
+        MaintenanceOrganizationTotals: {
+            /** Format: date-time */
+            since: string;
+            totals: components["schemas"]["MaintenanceTotals"];
         };
     };
     responses: never;
@@ -6124,6 +6215,165 @@ export interface operations {
             };
             /** @description Resource not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    getTableMaintenance: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque continuation bound to organization, principal, and resource. Current grants are rechecked. */
+                cursor?: string;
+                /** @description Inclusive RFC 3339 lower bound. Defaults to thirty days ago. */
+                since?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Maintenance history page with range totals */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TableMaintenancePage"];
+                };
+            };
+            /** @description Invalid request, cursor, or instant */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unknown or inaccessible table */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    getOrganizationMaintenanceTotals: {
+        parameters: {
+            query?: {
+                /** @description Inclusive RFC 3339 lower bound. Defaults to thirty days ago. */
+                since?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Maintenance totals over the range */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaintenanceOrganizationTotals"];
+                };
+            };
+            /** @description Invalid instant */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };
