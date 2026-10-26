@@ -25,7 +25,9 @@ use uuid::Uuid;
 
 use crate::preview::AssessedPreview;
 
+use super::pagination::PageQuery;
 use super::preview::{MissingTable, failed, outcome, resolve};
+use super::resources::{self, Resource};
 use super::{ApiError, ApiState, Caller};
 
 /// The health of `id` and the recommended action for each finding.
@@ -40,6 +42,17 @@ pub(super) async fn table(
     id: Result<Path<Uuid>, axum::extract::rejection::PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = TableId::from_uuid(id.map_err(|_| ApiError::invalid())?.0);
+    // Visibility comes first: a table outside the caller's inventory reads as
+    // unknown, so a missing grant cannot confirm that the table exists. Only
+    // a visible table without `jobs:submit` is a 403.
+    let _ = resources::read(
+        &state,
+        &caller.0,
+        Resource::Table,
+        PageQuery::default(),
+        Some(*id.as_uuid()),
+    )
+    .await?;
     let target = resolve(
         &state,
         &caller,
@@ -56,15 +69,18 @@ pub(super) async fn table(
         (latest, confirmed)
     };
     let Some(stored) = latest else {
-        return Ok(Json(json!({
-            "table_id": id.to_string(),
-            "state": Value::Null,
-            "sampled_at": Value::Null,
-            "confirmed_at": Value::Null,
-            "findings": [],
-            "recommendations": [],
-        })));
+        return Ok(Json(unassessed(id, None, None)));
     };
+    // A sample written before the health counters existed carries zeros the
+    // model cannot tell from measurements, so it is not assessed; the
+    // collector replaces it with a complete observation on its next pass.
+    if stored.sample_version < statistics::SAMPLE_VERSION {
+        return Ok(Json(unassessed(
+            id,
+            Some(stored.sampled_at),
+            Some(confirmed.unwrap_or(stored.sampled_at)),
+        )));
+    }
     let sample = sample_model(&stored)?;
     let confirmed_at = confirmed.unwrap_or(stored.sampled_at);
     let health = evaluate(
@@ -102,6 +118,23 @@ pub(super) async fn table(
         &recommendations,
         assessed.as_ref(),
     )))
+}
+
+/// A table with no health: unknown, never sampled, or sampled before the
+/// current counter version. The instants stay visible when a sample exists.
+fn unassessed(
+    id: TableId,
+    sampled_at: Option<DateTime<Utc>>,
+    confirmed_at: Option<DateTime<Utc>>,
+) -> Value {
+    json!({
+        "table_id": id.to_string(),
+        "state": Value::Null,
+        "sampled_at": sampled_at.map(stamp),
+        "confirmed_at": confirmed_at.map(stamp),
+        "findings": [],
+        "recommendations": [],
+    })
 }
 
 /// The health wire form: state, sample instants, findings, recommendations.

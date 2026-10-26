@@ -133,10 +133,13 @@ before T3 exists and land with it, using the same typed threshold set.
 
 ## Consequences
 
-- T2 maps the actionable findings onto a prefilled preview (`small_files` and
-  `delete_pressure` to compaction, `partition_skew` advisory until the planner
-  can target a partition) with the planner's estimate; findings that only M7
-  operations address stay advisory.
+- T2 maps `small_files` onto a prefilled whole-table compaction preview with
+  the planner's estimate. `delete_pressure` stays advisory: compaction applies
+  applicable deletes but retains their descriptors (ADR 0020), so removing
+  retained delete files belongs to BS-031. `partition_skew` is advisory until
+  the planner can target a partition, and findings that only M7 operations
+  address stay advisory. An incomplete sample, written before a counter
+  version, is unassessed rather than healthy.
 - T3 evaluates the same function at occurrence admission with the policy's
   thresholds and records the triggering kind and severity on the job, so every
   triggered run explains its cause (the M6 gate). Windows, budgets, and

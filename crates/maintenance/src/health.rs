@@ -118,8 +118,10 @@ pub struct TableHealth {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecommendationAction {
-    /// Rewrite small data files, or remove the deletes that pressure them.
+    /// Rewrite small data files.
     Compaction,
+    /// Remove delete files that no longer serve a data file (BS-031).
+    DeleteCleanup,
     /// Expire retained snapshots (BS-031).
     SnapshotExpiration,
     /// Rewrite manifests (BS-031).
@@ -134,6 +136,7 @@ impl RecommendationAction {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Compaction => "compaction",
+            Self::DeleteCleanup => "delete_cleanup",
             Self::SnapshotExpiration => "snapshot_expiration",
             Self::ManifestRewrite => "manifest_rewrite",
             Self::Resample => "resample",
@@ -154,16 +157,22 @@ pub struct Recommendation {
 
 /// Maps one finding to the maintenance action that resolves it.
 ///
-/// Only a whole-table compaction can run today. Partition-targeted
-/// compaction, snapshot expiration, and manifest rewrite are advisory until
-/// the planner or BS-031 provides them; a stale sample resolves itself on the
-/// collector's interval.
+/// Only a whole-table compaction can run today. Delete pressure counts the
+/// physical bytes of retained delete files, and compaction applies applicable
+/// deletes but retains their descriptors (ADR 0020), so removing them needs
+/// BS-031's delete cleanup. Partition-targeted compaction, snapshot
+/// expiration, and manifest rewrite are advisory for the same reason; a stale
+/// sample resolves itself on the collector's interval.
 #[must_use]
 pub const fn recommend(kind: FindingKind) -> Recommendation {
     let (action, advisory) = match kind {
-        FindingKind::SmallFiles | FindingKind::DeletePressure => {
-            (RecommendationAction::Compaction, None)
-        }
+        FindingKind::SmallFiles => (RecommendationAction::Compaction, None),
+        FindingKind::DeletePressure => (
+            RecommendationAction::DeleteCleanup,
+            Some(
+                "compaction applies applicable deletes but retains their files; removing retained delete files lands in BS-031",
+            ),
+        ),
         FindingKind::PartitionSkew => (
             RecommendationAction::Compaction,
             Some("compaction cannot target one partition yet; a preview assesses the whole table"),
@@ -855,8 +864,8 @@ mod tests {
             ),
             (
                 FindingKind::DeletePressure,
-                RecommendationAction::Compaction,
-                false,
+                RecommendationAction::DeleteCleanup,
+                true,
             ),
             (
                 FindingKind::PartitionSkew,

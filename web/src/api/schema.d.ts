@@ -704,7 +704,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Health findings for one table from its newest metadata-only sample, and the action each finding recommends. An actionable finding carries the prefilled preview that assesses it and the planner's estimate from the current table; an advisory finding says why it cannot run yet. Requires jobs:submit on the table because an actionable recommendation reads the catalog. A table without a sample has null state, no findings, and no recommendation, and the response performs no catalog request. Counters are decimal strings. */
+        /** @description Health findings for one table from its newest metadata-only sample, and the action each finding recommends. An actionable finding carries the prefilled preview that assesses it and the planner's estimate from the current table; an advisory finding says why it cannot run yet. Visibility is checked first: a table outside the caller's inventory returns 404, and 403 is reserved for a visible table without jobs:submit. A table without a sample, or with a sample written before the current health counters, returns a null state with no findings or recommendations and performs no catalog request. Counters are decimal strings. */
         get: operations["getTableRecommendations"];
         put?: never;
         post?: never;
@@ -1745,7 +1745,7 @@ export interface components {
             /** @enum {string} */
             kind: "small_files" | "delete_pressure" | "snapshot_backlog" | "manifest_fragmentation" | "partition_skew" | "stale_statistics";
             /** @enum {string} */
-            action: "compaction" | "snapshot_expiration" | "manifest_rewrite" | "resample";
+            action: "compaction" | "delete_cleanup" | "snapshot_expiration" | "manifest_rewrite" | "resample";
             advisory: boolean;
             reason: string | null;
             preview: components["schemas"]["TableRecommendationPreview"] | null;
@@ -1757,6 +1757,7 @@ export interface components {
         TableRecommendations: {
             /** Format: uuid */
             table_id: string;
+            /** @description Null when the table has no sample or its sample predates the current health counters. */
             state: ("healthy" | "warning" | "critical") | null;
             sampled_at: string | null;
             confirmed_at: string | null;
