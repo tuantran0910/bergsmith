@@ -125,7 +125,7 @@ async fn a_met_health_trigger_admits_and_the_job_names_its_cause(pool: PgPool) {
         fixture.schedule,
         fixture.epoch,
         || now,
-        Some(&health),
+        async move |_, _, _| Ok(Some(health.clone())),
     )
     .await
     .unwrap()
@@ -157,7 +157,7 @@ async fn an_unmet_health_trigger_skips_without_creating_work(pool: PgPool) {
         fixture.schedule,
         fixture.epoch,
         || now,
-        Some(&health),
+        async move |_, _, _| Ok(Some(health.clone())),
     )
     .await
     .unwrap()
@@ -167,14 +167,19 @@ async fn an_unmet_health_trigger_skips_without_creating_work(pool: PgPool) {
     assert_eq!(occurrence.reason.as_deref(), Some("HealthTriggerNotMet"));
     assert_eq!(jobs_on_table(&mut conn, &fixture.tenant).await, 0);
 
-    // An unassessed table (no verdict) does not meet the trigger either.
+    // An unassessed table (no evaluation) does not meet the trigger either.
     let next = at(2026, 5, 1, 11, 0);
     set_due(&mut conn, &fixture, next).await;
-    let occurrence =
-        occurrences::admit_with_health(&mut conn, fixture.schedule, fixture.epoch, || next, None)
-            .await
-            .unwrap()
-            .unwrap();
+    let occurrence = occurrences::admit_with_health(
+        &mut conn,
+        fixture.schedule,
+        fixture.epoch,
+        || next,
+        async |_, _, _| Ok(None),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(occurrence.state, OccurrenceState::Skipped);
     assert_eq!(occurrence.reason.as_deref(), Some("HealthTriggerNotMet"));
     assert_eq!(jobs_on_table(&mut conn, &fixture.tenant).await, 0);
@@ -193,12 +198,13 @@ async fn a_triggered_evaluation_still_coalesces_into_an_active_job(pool: PgPool)
         &policy,
     );
 
+    let first_health = health.clone();
     let first = occurrences::admit_with_health(
         &mut conn,
         fixture.schedule,
         fixture.epoch,
         || now,
-        Some(&health),
+        async move |_, _, _| Ok(Some(first_health.clone())),
     )
     .await
     .unwrap()
@@ -207,12 +213,13 @@ async fn a_triggered_evaluation_still_coalesces_into_an_active_job(pool: PgPool)
 
     let next = at(2026, 5, 1, 11, 0);
     set_due(&mut conn, &fixture, next).await;
+    let second_health = health.clone();
     let second = occurrences::admit_with_health(
         &mut conn,
         fixture.schedule,
         fixture.epoch,
         || next,
-        Some(&health),
+        async move |_, _, _| Ok(Some(second_health.clone())),
     )
     .await
     .unwrap()
@@ -257,7 +264,7 @@ async fn a_verdict_from_an_older_policy_revision_does_not_admit(pool: PgPool) {
         fixture.schedule,
         fixture.epoch,
         || now,
-        Some(&stale),
+        async move |_, _, _| Ok(Some(stale.clone())),
     )
     .await
     .unwrap()
@@ -278,12 +285,42 @@ async fn a_verdict_from_an_older_policy_revision_does_not_admit(pool: PgPool) {
         fixture.schedule,
         fixture.epoch,
         || next,
-        Some(&fresh),
+        async move |_, _, _| Ok(Some(fresh.clone())),
     )
     .await
     .unwrap()
     .unwrap();
     assert_eq!(occurrence.state, OccurrenceState::Admitted);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn the_evaluator_receives_the_admission_clock_not_the_scan_clock(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let fixture = fixture(&mut conn, "acme", "0 * * * *", "UTC").await;
+    let trigger = HealthTrigger::new(FindingKind::SmallFiles, Severity::Warning);
+    arm_trigger(&mut conn, &fixture, trigger, HealthThresholds::default()).await;
+    let scan = at(2026, 5, 1, 10, 0);
+    let decision = scan + chrono::TimeDelta::seconds(2);
+    set_due(&mut conn, &fixture, scan).await;
+
+    let seen = Arc::new(Mutex::new(None));
+    let recorder = Arc::clone(&seen);
+    let occurrence = occurrences::admit_with_health(
+        &mut conn,
+        fixture.schedule,
+        fixture.epoch,
+        || decision,
+        async move |_, _, now| {
+            *recorder.lock().unwrap() = Some(now);
+            Ok(None)
+        },
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(seen.lock().unwrap().as_ref(), Some(&decision));
+    assert_eq!(occurrence.state, OccurrenceState::Skipped);
 }
 
 /// Sets the fixture policy's trigger and thresholds.

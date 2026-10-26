@@ -11,6 +11,7 @@ use bergsmith_maintenance::evaluate;
 use bergsmith_persistence::PersistenceError;
 use bergsmith_persistence::occurrences::{
     self, HEALTH_TRIGGER_REASON, HealthEvaluation, OUTSIDE_WINDOW_REASON, OccurrenceState,
+    ScheduleHealth,
 };
 use bergsmith_persistence::statistics::{self, SAMPLE_VERSION};
 use chrono::{DateTime, Utc};
@@ -82,12 +83,14 @@ impl ScheduleRunner {
     ///
     /// The scan clock selects due schedules; the admission clock is sampled per
     /// schedule after its row locks, so a pass that blocked cannot admit a run
-    /// after its window closed. Production passes `Utc::now` for both.
+    /// after its window closed and time-dependent health is judged at the
+    /// decision. Production passes `Utc::now` for both; tests use distinct
+    /// instants to pin the behavior.
     ///
     /// # Errors
     ///
     /// As [`Self::admit_due`].
-    async fn admit_due_with<F>(
+    pub async fn admit_due_with<F>(
         &self,
         scan_now: DateTime<Utc>,
         clock: F,
@@ -114,28 +117,12 @@ impl ScheduleRunner {
         let mut summary = AdmissionSummary::default();
         for schedule in schedules {
             let mut conn = self.pool.acquire().await?;
-            let verdict = match self.verdict_for(&mut conn, schedule, scan_now).await {
-                Ok(verdict) => verdict,
-                Err(error) if is_infrastructure(&error) => return Err(error),
-                Err(error) => {
-                    // A corrupt policy or sample is scoped to its schedule:
-                    // log it and let admission treat the trigger as unmet.
-                    tracing::warn!(
-                        schedule_id = %schedule,
-                        reason = %error,
-                        "schedule health configuration could not be read"
-                    );
-                    None
-                }
-            };
-            match occurrences::admit_with_health(
-                &mut conn,
-                schedule,
-                self.epoch,
-                &clock,
-                verdict.as_ref(),
-            )
-            .await
+            let evaluate =
+                async |conn: &mut PgConnection, health: &ScheduleHealth, now: DateTime<Utc>| {
+                    health_evaluation(conn, health, now).await
+                };
+            match occurrences::admit_with_health(&mut conn, schedule, self.epoch, &clock, evaluate)
+                .await
             {
                 Ok(Some(occurrence)) => match occurrence.state {
                     OccurrenceState::Admitted => {
@@ -195,65 +182,58 @@ impl ScheduleRunner {
         }
         Ok(summary)
     }
+}
 
-    /// The health verdict a schedule's policy trigger evaluates.
-    ///
-    /// Returns `None` when the policy has no trigger, the table has no sample,
-    /// the sample predates the health counters, or the sample cannot be
-    /// presented. A missing verdict never satisfies a trigger, so admission
-    /// skips the occurrence instead of guessing.
-    async fn verdict_for(
-        &self,
-        conn: &mut PgConnection,
-        schedule: bergsmith_common::ids::ScheduleId,
-        now: DateTime<Utc>,
-    ) -> Result<Option<HealthEvaluation>, PersistenceError> {
-        let Some(route) = occurrences::schedule_trigger(conn, schedule).await? else {
-            return Ok(None);
-        };
-        let Some(stored) = statistics::latest(conn, route.organization_id, route.table_id).await?
-        else {
-            return Ok(None);
-        };
-        if stored.sample_version < SAMPLE_VERSION {
+/// The table's health evaluation for the locked policy configuration.
+///
+/// Runs inside the admission transaction, after the schedule and state locks,
+/// with the admission instant. A missing or incomplete sample, or one that
+/// cannot be presented, is logged and treated as an unmet trigger.
+async fn health_evaluation(
+    conn: &mut PgConnection,
+    health: &ScheduleHealth,
+    now: DateTime<Utc>,
+) -> Result<Option<HealthEvaluation>, PersistenceError> {
+    let Some(stored) = statistics::latest(conn, health.organization_id, health.table_id).await?
+    else {
+        return Ok(None);
+    };
+    if stored.sample_version < SAMPLE_VERSION {
+        return Ok(None);
+    }
+    let confirmed = statistics::last_confirmed_at(conn, health.organization_id, health.table_id)
+        .await?
+        .unwrap_or(stored.sampled_at);
+    let sample = match crate::health::sample_model(&stored) {
+        Ok(sample) => sample,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "health sample cannot be presented; treating the trigger as unmet"
+            );
             return Ok(None);
         }
-        let confirmed = statistics::last_confirmed_at(conn, route.organization_id, route.table_id)
-            .await?
-            .unwrap_or(stored.sampled_at);
-        let sample = match crate::health::sample_model(&stored) {
-            Ok(sample) => sample,
-            Err(error) => {
-                tracing::warn!(
-                    schedule_id = %schedule,
-                    error = %error,
-                    "health sample cannot be presented; treating the trigger as unmet"
-                );
-                return Ok(None);
-            }
-        };
-        let health = match evaluate(
-            &sample,
-            confirmed,
-            &route.thresholds,
-            ThresholdSource::Policy(route.policy_id),
-            now,
-        ) {
-            Ok(health) => health,
-            Err(error) => {
-                tracing::warn!(
-                    schedule_id = %schedule,
-                    error = %error,
-                    "health evaluation failed; treating the trigger as unmet"
-                );
-                return Ok(None);
-            }
-        };
-        Ok(Some(HealthEvaluation {
-            verdict: crate::health::verdict(&health),
-            policy_revision: route.revision,
-        }))
-    }
+    };
+    let evaluation = match evaluate(
+        &sample,
+        confirmed,
+        &health.thresholds,
+        ThresholdSource::Policy(health.policy_id),
+        now,
+    ) {
+        Ok(evaluation) => evaluation,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "health evaluation failed; treating the trigger as unmet"
+            );
+            return Ok(None);
+        }
+    };
+    Ok(Some(HealthEvaluation {
+        verdict: crate::health::verdict(&evaluation),
+        policy_revision: health.policy_revision,
+    }))
 }
 
 /// Whether the failure concerns the coordinator's ledger, not one schedule.

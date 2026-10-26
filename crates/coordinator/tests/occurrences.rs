@@ -70,6 +70,26 @@ async fn an_invalid_health_configuration_does_not_starve_later_schedules(pool: P
     assert_eq!(jobs, 1);
 }
 
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn the_runner_evaluates_staleness_with_the_admission_clock(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let fixture = fixture(&mut conn, "acme").await;
+    let trigger = HealthTrigger::new(FindingKind::StaleStatistics, Severity::Warning);
+    arm_trigger(&mut conn, &fixture, trigger).await;
+    let scan = at(10);
+    let decision = scan + chrono::TimeDelta::seconds(2);
+    // The confirmation is 3,599 seconds old at the scan and 3,601 at the
+    // decision, so only the admission clock crosses the warning threshold.
+    let confirmed = scan - chrono::TimeDelta::seconds(3_599);
+    record_sample(&mut conn, &fixture.tenant, confirmed, 2, 512 * 1024 * 1024).await;
+    set_due(&mut conn, &fixture, scan).await;
+    drop(conn);
+
+    let runner = ScheduleRunner::new(pool.clone(), fixture.epoch, 16);
+    let summary = runner.admit_due_with(scan, || decision).await.unwrap();
+    assert_eq!(summary.admitted, 1);
+}
+
 /// A sample of `files` data files of `bytes_each` bytes, plus its confirmation.
 async fn record_sample(
     conn: &mut PgConnection,

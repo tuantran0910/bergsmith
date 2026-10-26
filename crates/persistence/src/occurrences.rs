@@ -199,6 +199,7 @@ struct DueSchedule {
     enabled: bool,
     policy_enabled: bool,
     policy_revision: i64,
+    health_thresholds: Value,
     health_trigger: Option<Value>,
 }
 
@@ -462,15 +463,23 @@ pub async fn admit_with_clock<F>(
 where
     F: FnOnce() -> DateTime<Utc> + Send,
 {
-    admit_with_health(conn, schedule_id, epoch, clock, None).await
+    admit_with_health(conn, schedule_id, epoch, clock, no_health_evaluation).await
+}
+
+/// An evaluator for callers that do not use health triggers.
+async fn no_health_evaluation(
+    _: &mut PgConnection,
+    _: &ScheduleHealth,
+    _: DateTime<Utc>,
+) -> Result<Option<HealthEvaluation>, PersistenceError> {
+    Ok(None)
 }
 
 /// A table verdict and the policy revision that produced it.
 ///
-/// The revision binds the verdict to the thresholds it was evaluated with: a
-/// policy edit between evaluation and admission changes the revision, and the
-/// stale verdict is refused instead of admitting under bounds that no longer
-/// apply.
+/// The revision binds the verdict to the thresholds it was evaluated with. The
+/// evaluator receives the locked policy configuration, so the revision it
+/// returns is the one admission is applying.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HealthEvaluation {
     /// The table's evaluated findings.
@@ -479,26 +488,53 @@ pub struct HealthEvaluation {
     pub policy_revision: i64,
 }
 
-/// Admits with a health evaluation for the policy's trigger.
+/// The locked policy configuration a health trigger evaluates with.
 ///
-/// `health` is the table's evaluated findings with the policy revision they
-/// used, or `None` when the table has no complete sample. A policy without a
-/// trigger ignores it; a policy with one admits only when the evaluation
-/// matches the stored policy revision and a finding of the trigger's kind
-/// reaches its severity.
+/// Admission reads it under the schedule and state locks, so a concurrent
+/// policy edit cannot change the thresholds between the evaluation and the
+/// decision.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScheduleHealth {
+    /// The owning organization.
+    pub organization_id: OrganizationId,
+    /// The policy that declares the trigger.
+    pub policy_id: PolicyId,
+    /// The table the schedule maintains.
+    pub table_id: TableId,
+    /// The policy revision the configuration was read at.
+    pub policy_revision: i64,
+    /// The thresholds the trigger evaluates with.
+    pub thresholds: HealthThresholds,
+    /// The condition admission must satisfy.
+    pub trigger: HealthTrigger,
+}
+
+/// Admits with a health evaluator for the policy's trigger.
+///
+/// `evaluate` is called after the schedule and state locks with the admission
+/// instant, so a time-dependent finding is judged at the moment the decision
+/// is made rather than when the pass began. A policy without a trigger never
+/// calls it; a policy with one admits only when the evaluation matches the
+/// locked policy revision and a finding of the trigger's kind reaches its
+/// severity.
 ///
 /// # Errors
 ///
-/// As [`admit_with_clock`].
-pub async fn admit_with_health<F>(
+/// As [`admit_with_clock`], plus whatever `evaluate` returns.
+pub async fn admit_with_health<F, E>(
     conn: &mut PgConnection,
     schedule_id: ScheduleId,
     epoch: i64,
     clock: F,
-    health: Option<&HealthEvaluation>,
+    evaluate: E,
 ) -> Result<Option<Occurrence>, PersistenceError>
 where
     F: FnOnce() -> DateTime<Utc> + Send,
+    E: AsyncFnOnce(
+        &mut PgConnection,
+        &ScheduleHealth,
+        DateTime<Utc>,
+    ) -> Result<Option<HealthEvaluation>, PersistenceError>,
 {
     let mut tx = conn.begin().await?;
     crate::leadership::ensure_leadership(&mut tx, epoch).await?;
@@ -533,7 +569,10 @@ where
         })?;
     let until = coalesced_until(&timing, first, now);
     let next = timing.next_occurrence(now);
-    let occurrence = decide(&mut tx, &schedule, &timing, first, until, next, now, health).await?;
+    let occurrence = decide(
+        &mut tx, &schedule, &timing, first, until, next, now, evaluate,
+    )
+    .await?;
     // Recheck the epoch before committing the job and its occurrence, so a
     // coordinator that lost leadership mid-decision cannot add work.
     crate::leadership::ensure_leadership(&mut tx, epoch).await?;
@@ -551,7 +590,7 @@ async fn lock_due(
                 s.cron_expression, s.time_zone, s.window_start_minute,
                 s.window_end_minute, s.service_principal_id, s.enabled,
                 p.enabled AS policy_enabled, p.revision AS policy_revision,
-                p.health_trigger
+                p.health_thresholds, p.health_trigger
          FROM maintenance_schedules s
          JOIN maintenance_policies p
            ON p.organization_id = s.organization_id AND p.id = s.policy_id
@@ -591,7 +630,7 @@ async fn lock_due(
     clippy::too_many_arguments,
     reason = "one decision already carries the locked schedule, timing, and span"
 )]
-async fn decide(
+async fn decide<E>(
     conn: &mut PgConnection,
     schedule: &DueSchedule,
     timing: &CronSchedule,
@@ -599,8 +638,15 @@ async fn decide(
     until: Option<DateTime<Utc>>,
     next: Option<DateTime<Utc>>,
     now: DateTime<Utc>,
-    health: Option<&HealthEvaluation>,
-) -> Result<Occurrence, PersistenceError> {
+    evaluate: E,
+) -> Result<Occurrence, PersistenceError>
+where
+    E: AsyncFnOnce(
+        &mut PgConnection,
+        &ScheduleHealth,
+        DateTime<Utc>,
+    ) -> Result<Option<HealthEvaluation>, PersistenceError>,
+{
     if !schedule.policy_enabled {
         return skip(
             conn,
@@ -682,8 +728,8 @@ async fn decide(
         )
         .await;
     }
-    match trigger_gate(schedule, health)? {
-        TriggerGate::Unmet => {
+    match health_gate(conn, schedule, now, evaluate).await? {
+        HealthGate::Unmet => {
             skip(
                 conn,
                 schedule,
@@ -694,10 +740,82 @@ async fn decide(
             )
             .await
         }
-        TriggerGate::Proceed(trigger) => {
+        HealthGate::Proceed(trigger) => {
             admit_or_coalesce(conn, schedule, first, until, next, trigger).await
         }
     }
+}
+
+/// Whether admission proceeds, and the condition that admits it.
+enum HealthGate {
+    /// Proceed, naming the admitting condition when a trigger caused it.
+    Proceed(Option<HealthTrigger>),
+    /// The policy's condition is not satisfied.
+    Unmet,
+}
+
+/// Evaluates the policy's condition with the admission instant.
+async fn health_gate<E>(
+    conn: &mut PgConnection,
+    schedule: &DueSchedule,
+    now: DateTime<Utc>,
+    evaluate: E,
+) -> Result<HealthGate, PersistenceError>
+where
+    E: AsyncFnOnce(
+        &mut PgConnection,
+        &ScheduleHealth,
+        DateTime<Utc>,
+    ) -> Result<Option<HealthEvaluation>, PersistenceError>,
+{
+    let Some(health) = schedule_health(schedule)? else {
+        return Ok(HealthGate::Proceed(None));
+    };
+    let evaluation = evaluate(conn, &health, now).await?;
+    let met = evaluation.is_some_and(|evaluation| {
+        evaluation.policy_revision == schedule.policy_revision
+            && evaluation.verdict.reaches(&health.trigger)
+    });
+    if met {
+        Ok(HealthGate::Proceed(Some(health.trigger)))
+    } else {
+        Ok(HealthGate::Unmet)
+    }
+}
+
+/// The policy health configuration, when the policy declares a trigger.
+fn schedule_health(schedule: &DueSchedule) -> Result<Option<ScheduleHealth>, PersistenceError> {
+    let trigger: Option<HealthTrigger> = schedule
+        .health_trigger
+        .clone()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| PersistenceError::CorruptValue {
+            entity: "policy health trigger",
+            value: error.to_string(),
+        })?;
+    let Some(trigger) = trigger else {
+        return Ok(None);
+    };
+    let thresholds: HealthThresholds = serde_json::from_value(schedule.health_thresholds.clone())
+        .map_err(|error| PersistenceError::CorruptValue {
+        entity: "policy health thresholds",
+        value: error.to_string(),
+    })?;
+    thresholds
+        .validate()
+        .map_err(|error| PersistenceError::CorruptValue {
+            entity: "policy health thresholds",
+            value: error.to_string(),
+        })?;
+    Ok(Some(ScheduleHealth {
+        organization_id: OrganizationId::from_uuid(schedule.organization_id),
+        policy_id: PolicyId::from_uuid(schedule.policy_id),
+        table_id: TableId::from_uuid(schedule.table_identity_id),
+        policy_revision: schedule.policy_revision,
+        thresholds,
+        trigger,
+    }))
 }
 
 /// The first occurrence at or after the window's next opening.
@@ -713,46 +831,6 @@ fn next_in_window(
     window
         .next_opening(now, timing.time_zone.zone())
         .and_then(|opening| timing.next_occurrence(opening - chrono::Duration::seconds(1)))
-}
-
-/// Whether admission proceeds, and the condition that admits it.
-enum TriggerGate {
-    /// Proceed, naming the admitting condition when a trigger caused it.
-    Proceed(Option<HealthTrigger>),
-    /// The policy's condition is not satisfied.
-    Unmet,
-}
-
-/// Checks the policy's health condition against the table's evaluation.
-///
-/// A verdict computed with an older policy revision is refused: the policy was
-/// edited after the evaluation, so its thresholds or trigger no longer match
-/// what was evaluated. The next pass evaluates the current policy.
-fn trigger_gate(
-    schedule: &DueSchedule,
-    health: Option<&HealthEvaluation>,
-) -> Result<TriggerGate, PersistenceError> {
-    let trigger: Option<HealthTrigger> = schedule
-        .health_trigger
-        .clone()
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(|error| PersistenceError::CorruptValue {
-            entity: "policy health trigger",
-            value: error.to_string(),
-        })?;
-    match trigger {
-        None => Ok(TriggerGate::Proceed(None)),
-        Some(trigger)
-            if health.is_some_and(|health| {
-                health.policy_revision == schedule.policy_revision
-                    && health.verdict.reaches(&trigger)
-            }) =>
-        {
-            Ok(TriggerGate::Proceed(Some(trigger)))
-        }
-        Some(_) => Ok(TriggerGate::Unmet),
-    }
 }
 
 /// Records a permitted evaluation and its job or existing table owner.
@@ -810,74 +888,6 @@ async fn admit_or_coalesce(
     };
     advance(conn, schedule, next).await?;
     Ok(occurrence)
-}
-
-/// The health condition a schedule's policy declares, with its thresholds.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ScheduleTrigger {
-    /// The owning organization.
-    pub organization_id: OrganizationId,
-    /// The policy that declares the trigger.
-    pub policy_id: PolicyId,
-    /// The policy revision the thresholds and trigger were read at.
-    pub revision: i64,
-    /// The table the schedule maintains.
-    pub table_id: TableId,
-    /// The thresholds the trigger evaluates with.
-    pub thresholds: HealthThresholds,
-    /// The condition admission must satisfy.
-    pub trigger: HealthTrigger,
-}
-
-/// Reads the health condition of `schedule_id`, when its policy declares one.
-///
-/// # Errors
-///
-/// [`PersistenceError::Database`] when the read fails, and
-/// [`PersistenceError::CorruptValue`] when a stored threshold or trigger
-/// cannot be parsed.
-pub async fn schedule_trigger(
-    conn: &mut PgConnection,
-    schedule_id: ScheduleId,
-) -> Result<Option<ScheduleTrigger>, PersistenceError> {
-    let row: Option<(Uuid, Uuid, Uuid, i64, Value, Value)> = sqlx::query_as(
-        "SELECT s.organization_id, s.policy_id, s.table_identity_id, p.revision, \
-                p.health_thresholds, p.health_trigger \
-         FROM maintenance_schedules s \
-         JOIN maintenance_policies p \
-           ON p.organization_id = s.organization_id AND p.id = s.policy_id \
-         WHERE s.id = $1 AND p.health_trigger IS NOT NULL",
-    )
-    .bind(schedule_id.as_uuid())
-    .fetch_optional(conn)
-    .await?;
-    let Some((organization_id, policy_id, table_id, revision, thresholds, trigger)) = row else {
-        return Ok(None);
-    };
-    let thresholds: HealthThresholds =
-        serde_json::from_value(thresholds).map_err(|error| PersistenceError::CorruptValue {
-            entity: "policy health thresholds",
-            value: error.to_string(),
-        })?;
-    thresholds
-        .validate()
-        .map_err(|error| PersistenceError::CorruptValue {
-            entity: "policy health thresholds",
-            value: error.to_string(),
-        })?;
-    let trigger: HealthTrigger =
-        serde_json::from_value(trigger).map_err(|error| PersistenceError::CorruptValue {
-            entity: "policy health trigger",
-            value: error.to_string(),
-        })?;
-    Ok(Some(ScheduleTrigger {
-        organization_id: OrganizationId::from_uuid(organization_id),
-        policy_id: PolicyId::from_uuid(policy_id),
-        revision,
-        table_id: TableId::from_uuid(table_id),
-        thresholds,
-        trigger,
-    }))
 }
 
 /// Whether an admitted occurrence for `job` belongs to a disabled policy.
