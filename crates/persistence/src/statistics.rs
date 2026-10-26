@@ -23,11 +23,17 @@ macro_rules! counters {
     };
 }
 
+/// The counters a sample written by this build carries.
+///
+/// A sample below this version predates some counter columns, which are zero
+/// for it; the collector replaces it before taking the unchanged shortcut.
+pub const SAMPLE_VERSION: i16 = 1;
+
 /// The columns of one stored sample, in row order.
 macro_rules! sample_columns {
     () => {
         concat!(
-            "metadata_location, snapshot_id, last_operation, ",
+            "metadata_location, snapshot_id, last_operation, sample_version, ",
             counters!(),
             ", oldest_snapshot_at, newest_snapshot_at, size_histogram, top_partitions"
         )
@@ -102,6 +108,8 @@ pub struct NewTableSample {
 pub struct StoredTableSample {
     /// When the sample was taken.
     pub sampled_at: DateTime<Utc>,
+    /// Which counters the sample carries; [`SAMPLE_VERSION`] when current.
+    pub sample_version: i16,
     /// The connection the table was read through.
     pub catalog_connection_id: CatalogConnectionId,
     /// The `metadata.json` the sample describes.
@@ -205,6 +213,7 @@ pub struct StatisticsTotals {
 #[derive(sqlx::FromRow)]
 struct SampleRow {
     sampled_at: DateTime<Utc>,
+    sample_version: i16,
     catalog_connection_id: Uuid,
     metadata_location: String,
     snapshot_id: Option<i64>,
@@ -236,6 +245,7 @@ impl From<SampleRow> for StoredTableSample {
     fn from(row: SampleRow) -> Self {
         Self {
             sampled_at: row.sampled_at,
+            sample_version: row.sample_version,
             catalog_connection_id: CatalogConnectionId::from_uuid(row.catalog_connection_id),
             metadata_location: row.metadata_location,
             snapshot_id: row.snapshot_id,
@@ -295,7 +305,7 @@ pub async fn record(
          catalog_connection_id, sampled_at, ",
         sample_columns!(),
         ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, \
-         $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28) \
+         $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29) \
          ON CONFLICT (organization_id, table_identity_id, sampled_at) DO NOTHING"
     ))
     .bind(organization_id.as_uuid())
@@ -305,6 +315,7 @@ pub async fn record(
     .bind(&sample.metadata_location)
     .bind(sample.snapshot_id)
     .bind(sample.last_operation.as_deref())
+    .bind(SAMPLE_VERSION)
     .bind(counter(ENTITY, sample.record_count)?)
     .bind(counter(ENTITY, sample.data_files)?)
     .bind(counter(ENTITY, sample.data_bytes)?)

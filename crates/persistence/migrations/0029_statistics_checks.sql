@@ -13,7 +13,14 @@
 -- successfully. The sample itself is append-only and unchanged metadata
 -- records nothing (ADR 0057), so the sample's age is not the table's freshness:
 -- an unchanged table is confirmed fresh on every pass without a new sample.
+--
+-- `sample_version` names which counters a sample carries. Version 1 adds the
+-- two columns below; 0 is a sample written before them. A legacy sample cannot
+-- be upgraded in place (samples are immutable), so the collector replaces an
+-- incomplete sample with a new observation instead of taking the unchanged
+-- shortcut, which would otherwise leave the missing counters at zero forever.
 ALTER TABLE table_statistics
+    ADD COLUMN sample_version smallint NOT NULL DEFAULT 0,
     ADD COLUMN data_manifest_count bigint NOT NULL DEFAULT 0,
     ADD COLUMN max_partition_files bigint NOT NULL DEFAULT 0;
 

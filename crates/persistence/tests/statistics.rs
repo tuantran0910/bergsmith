@@ -180,6 +180,38 @@ async fn due_tables_are_oldest_first_and_stop_when_sampled(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn samples_record_the_counter_version_they_carry(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "version").await;
+    statistics::record(
+        &mut conn,
+        tenant.organization,
+        tenant.table,
+        &sample(tenant.connection),
+    )
+    .await
+    .unwrap();
+    let latest = statistics::latest(&mut conn, tenant.organization, tenant.table)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.sample_version, statistics::SAMPLE_VERSION);
+    assert!(latest.data_manifest_count > 0);
+    assert!(latest.max_partition_files > 0);
+
+    // A sample written before the counters existed reads back as version 0.
+    sqlx::query("UPDATE table_statistics SET sample_version = 0")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    let latest = statistics::latest(&mut conn, tenant.organization, tenant.table)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.sample_version, 0);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
 async fn confirmations_keep_an_unchanged_table_fresh_and_move_forward_only(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let tenant = support::tenant(&mut conn, "confirmed").await;

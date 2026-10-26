@@ -269,6 +269,60 @@ async fn a_pass_samples_a_table_and_records_nothing_unchanged(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn an_unchanged_table_replaces_a_sample_without_the_health_counters(pool: PgPool) {
+    let fixture = fixture().await;
+    let mut server = mockito::Server::new_async().await;
+    serve_table(&mut server, &fixture).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = tenant(&mut conn, &server.url(), &fixture).await;
+    drop(conn);
+    let collector = collector(&pool).await;
+    let first = chrono::Utc::now();
+
+    let summary = collector.pass_at(first).await.unwrap();
+    assert_eq!(summary.sampled, 1);
+
+    // A sample written before the health counters existed is immutable: it
+    // keeps version 0 and zeros, and retention eventually removes it.
+    let mut conn = pool.acquire().await.unwrap();
+    sqlx::query(
+        "UPDATE table_statistics SET sample_version = 0, data_manifest_count = 0, \
+         max_partition_files = 0 WHERE organization_id = $1 AND table_identity_id = $2",
+    )
+    .bind(tenant.organization.as_uuid())
+    .bind(tenant.table.as_uuid())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+
+    // The metadata is unchanged, but the incomplete sample is replaced rather
+    // than taken as unchanged, so the health counters are filled.
+    let second = first + TimeDelta::hours(1);
+    let summary = collector.pass_at(second).await.unwrap();
+    assert_eq!(
+        summary,
+        SampleSummary {
+            sampled: 1,
+            unchanged: 0,
+            skipped: 0
+        }
+    );
+
+    let history = statistics::history(&mut conn, tenant.organization, tenant.table, None, None, 10)
+        .await
+        .unwrap();
+    assert_eq!(history.len(), 2, "the legacy sample stays as history");
+    assert_eq!(history[1].sample_version, 0);
+    assert_eq!(history[1].data_manifest_count, 0);
+    assert_eq!(history[1].max_partition_files, 0);
+    assert_eq!(history[0].sample_version, statistics::SAMPLE_VERSION);
+    assert!(history[0].data_manifest_count >= 1);
+    assert!(history[0].max_partition_files >= 1);
+    assert_eq!(history[0].metadata_location, history[1].metadata_location);
+    assert_eq!(history[0].sampled_at, second);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
 async fn an_unchanged_table_backfills_an_empty_snapshot_ledger(pool: PgPool) {
     let fixture = fixture().await;
     let mut server = mockito::Server::new_async().await;

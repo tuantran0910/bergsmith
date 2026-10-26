@@ -358,7 +358,14 @@ impl StatisticsCollector {
             // Never hold this connection across the catalog and storage reads.
             let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
             let latest = statistics::latest(&mut conn, organization_id, table_id).await?;
-            if latest.is_some_and(|sample| sample.metadata_location == metadata_location) {
+            // A sample written before the health counters existed cannot be
+            // upgraded in place, so it is replaced below rather than taken as
+            // unchanged; otherwise its missing counters would stay zero until
+            // the metadata moved or retention pruned it.
+            if latest.as_ref().is_some_and(|sample| {
+                sample.metadata_location == metadata_location
+                    && sample.sample_version >= statistics::SAMPLE_VERSION
+            }) {
                 // The counters are unchanged, so there is no new sample. The
                 // snapshot ledger can still be behind — a table sampled before
                 // this ledger existed, or rows removed with retention — and
