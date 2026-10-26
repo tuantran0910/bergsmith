@@ -260,6 +260,12 @@ async fn a_pass_samples_a_table_and_records_nothing_unchanged(pool: PgPool) {
             .await
             .unwrap();
     assert_eq!(repeated.len(), 1);
+    // The pass that recorded nothing still confirmed the metadata, so the
+    // table is fresh even though its sample is an hour old.
+    let confirmed = statistics::last_confirmed_at(&mut conn, tenant.organization, tenant.table)
+        .await
+        .unwrap();
+    assert_eq!(confirmed, Some(now + TimeDelta::hours(1)));
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]

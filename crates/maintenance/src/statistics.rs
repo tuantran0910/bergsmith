@@ -19,7 +19,8 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 use iceberg::io::FileIO;
 use iceberg::spec::{
-    DataContentType, Datum, FormatVersion, ManifestList, PrimitiveLiteral, Snapshot, TableMetadata,
+    DataContentType, Datum, FormatVersion, ManifestContentType, ManifestList, PrimitiveLiteral,
+    Snapshot, TableMetadata,
 };
 use serde::{Deserialize, Serialize};
 
@@ -336,8 +337,13 @@ pub struct TableSample {
     pub position_delete_records: u64,
     /// Rows recorded by live equality delete files.
     pub equality_delete_records: u64,
-    /// Manifests in the current snapshot's manifest list.
+    /// Manifests in the current snapshot's manifest list, of either kind.
     pub manifest_count: u64,
+    /// Manifests that carry data files, the denominator of fragmentation.
+    ///
+    /// Delete manifests count toward [`Self::manifest_count`] but not here:
+    /// a table's data files cannot be spread over a delete manifest.
+    pub data_manifest_count: u64,
     /// Bytes of those manifests.
     pub manifest_bytes: u64,
     /// Distinct partitions among live data files, across every spec.
@@ -351,6 +357,9 @@ pub struct TableSample {
     /// The busiest partitions by data-file count, each with the delete files
     /// recorded in it, bounded by [`StatisticsConfig::top_partitions`].
     pub top_partitions: Vec<PartitionFiles>,
+    /// The busiest partition's data-file count, independent of the display
+    /// bound, so a zero [`StatisticsConfig::top_partitions`] cannot hide skew.
+    pub max_partition_files: u64,
     /// Snapshots the table retains.
     pub snapshot_count: u64,
     /// The oldest entry in the snapshot log.
@@ -397,12 +406,14 @@ impl TableSample {
             position_delete_records: 0,
             equality_delete_records: 0,
             manifest_count: 0,
+            data_manifest_count: 0,
             manifest_bytes: 0,
             partition_count: 0,
             small_files: 0,
             target_file_size_bytes,
             size_histogram: empty_histogram(&config.size_buckets_bytes),
             top_partitions: Vec::new(),
+            max_partition_files: 0,
             snapshot_count: u64::try_from(metadata.snapshots().len()).unwrap_or(u64::MAX),
             oldest_snapshot_at,
             newest_snapshot_at,
@@ -432,6 +443,9 @@ impl TableSample {
         let mut live: u64 = 0;
         for manifest_file in list.entries() {
             self.manifest_count += 1;
+            if manifest_file.content == ManifestContentType::Data {
+                self.data_manifest_count += 1;
+            }
             self.manifest_bytes = self
                 .manifest_bytes
                 .saturating_add(u64::try_from(manifest_file.manifest_length).unwrap_or(0));
@@ -485,6 +499,11 @@ impl TableSample {
         self.partition_count =
             u64::try_from(partitions.values().filter(|tally| tally.files > 0).count())
                 .unwrap_or(u64::MAX);
+        self.max_partition_files = partitions
+            .values()
+            .map(|tally| tally.files)
+            .max()
+            .unwrap_or(0);
         let mut top: Vec<PartitionFiles> = partitions
             .into_iter()
             .filter(|(_, tally)| tally.files > 0)

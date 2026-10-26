@@ -32,10 +32,18 @@ cannot say the statistics are six hours old.
 
 **Health is a pure function of one sample, a threshold set, and the current
 time.** `bergsmith_maintenance::health::evaluate` takes the newest
-`TableSample`, when it was sampled, the effective `HealthThresholds`, and
-`now`. It performs no I/O, reads no catalog or storage, and never writes. The
-coordinator evaluates it when answering an API request and passes its clock,
-so tests fix `now` instead of sleeping. There is no health column, no health
+`TableSample`, when the table's metadata was last confirmed, the effective
+`HealthThresholds`, and `now`. It performs no I/O, reads no catalog or
+storage, and never writes. The coordinator evaluates it when answering an API
+request and passes its clock, so tests fix `now` instead of sleeping.
+
+**Freshness is a confirmation, not the sample's age.** The sample is
+append-only and unchanged metadata records nothing (ADR 0057), so a table whose
+metadata has not moved can keep an old sample while every pass still reads it
+successfully. The collector therefore records a per-table confirmation
+timestamp on each successful read, and staleness measures the age of that
+confirmation; the newest sample's time is only the fallback for tables sampled
+before confirmations existed. There is no health column, no health
 job, and no background recomputation: staleness ages with time, and storing a
 verdict would let it disagree with the sample it describes.
 
@@ -47,9 +55,9 @@ from those parts. A table's `HealthState` is the worst finding's severity;
 `Healthy` means a sample exists and no finding fired. A table without a sample
 is **not** healthy: the API reports no health and pages show "Not assessed",
 because missing evidence is not evidence of health. This matches the overview's
-never-sampled attention. Every finding names the sample it was measured from,
-so a table whose metadata advanced after the sample is described as the sampled
-snapshot rather than the current one.
+never-sampled attention. Every finding names the sample it was measured from
+and the confirmation it relies on, so a table whose metadata advanced after the
+sample is described as the sampled snapshot rather than the current one.
 
 **Six findings, each with one fixed measurement and documented defaults.**
 
@@ -58,18 +66,20 @@ snapshot rather than the current one.
 | `small_files` | Average live data-file size, bytes | below 128 MiB | below 32 MiB | at least 2 data files |
 | `delete_pressure` | Live delete bytes in per-mille of live data bytes | above 100‰ | above 500‰ | delete bytes and data bytes are both nonzero |
 | `snapshot_backlog` | Snapshots retained in the table's metadata | 1,000 or more | 5,000 or more | always, given a sample |
-| `manifest_fragmentation` | Live data files per manifest, rounded down | below 1,000 | below 100 | at least 2 manifests and 100 data files |
+| `manifest_fragmentation` | Live data files per data manifest, rounded down | below 1,000 | below 100 | at least 2 data manifests and 100 data files |
 | `partition_skew` | Busiest partition's share of live data files, per-mille | 500‰ or more | 800‰ or more | at least 2 partitions and 100 data files |
-| `stale_statistics` | Age of the newest sample | 1 hour or more | 6 hours or more | a sample exists |
+| `stale_statistics` | Age of the last successful metadata confirmation | 1 hour or more | 6 hours or more | a confirmation exists (the sample's time falls back) |
 
 The file-size and delete-ratio defaults are the researched vendor heuristics.
 The snapshot critical bound is five times the researched warning, because
 1,000 retained snapshots is already unusual and 5,000 threatens metadata
-handling. Manifest fragmentation uses files per manifest: Iceberg's default
-manifest target is 8 MiB, which holds thousands of entries, so a manifest with
-fewer than 1,000 entries is small and one with fewer than 100 is severe. The
-skew defaults flag a table where one partition holds half (warning) or four
-fifths (critical) of the data files. Staleness defaults to 12 and 72 times the
+handling. Manifest fragmentation uses data files per data manifest, excluding delete
+manifests, which cannot hold data files: Iceberg's default manifest target is
+8 MiB, which holds thousands of entries, so a data manifest with fewer than
+1,000 entries is small and one with fewer than 100 is severe. The skew defaults
+flag a table where one partition holds half (warning) or four fifths (critical)
+of the data files; the sample stores the busiest partition's file count itself,
+so a display bound that hides the partition list cannot hide the skew. Staleness defaults to 12 and 72 times the
 default five-minute sampling interval. The "evaluated when" guards keep a
 seeding or single-file table from being reported as unhealthy for being small;
 they are part of the model, not policy, and their boundaries are tested.
@@ -130,6 +140,9 @@ before T3 exists and land with it, using the same typed threshold set.
 - Delete pressure uses bytes of both delete kinds. Row counts do not feed it:
   the plan records that descriptor counts do not establish deleted-row ratios,
   and a small delete file can carry many rows.
+- Freshness lives in its own ledger row per table, upserted forward-only, so a
+  retried pass cannot make a table look older and the sample history stays a
+  history of changes rather than of checks.
 - Health never triggers a job on its own. Admission stays behind the schedule,
   window, budget, and grant checks in BS-019 and BS-020.
 

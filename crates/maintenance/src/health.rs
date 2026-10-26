@@ -124,10 +124,12 @@ pub enum HealthError {
 
 /// Evaluates one table's health.
 ///
-/// The sample must be the newest stored sample for the table, and `sampled_at`
-/// is when it was taken. `now` is the caller's clock; a sample stamped in the
-/// future (clock skew across hosts) is treated as fresh rather than making the
-/// evaluation fail.
+/// The sample must be the newest stored sample for the table. `confirmed_at`
+/// is when a sampling pass last read the table's metadata successfully, which
+/// is not the sample's creation time: an unchanged table records no new sample
+/// but is still confirmed fresh. `now` is the caller's clock; a confirmation
+/// stamped in the future (clock skew across hosts) is treated as fresh rather
+/// than making the evaluation fail.
 ///
 /// # Errors
 ///
@@ -135,7 +137,7 @@ pub enum HealthError {
 #[must_use = "the evaluation is the point; discarding it computes nothing useful"]
 pub fn evaluate(
     sample: &TableSample,
-    sampled_at: DateTime<Utc>,
+    confirmed_at: DateTime<Utc>,
     thresholds: &HealthThresholds,
     source: ThresholdSource,
     now: DateTime<Utc>,
@@ -154,7 +156,7 @@ pub fn evaluate(
     ));
     findings.extend(partition_skew(sample, thresholds.partition_skew));
     findings.extend(stale_statistics(
-        sample_age(sampled_at, now),
+        sample_age(confirmed_at, now),
         thresholds.stale_statistics,
     ));
 
@@ -222,12 +224,14 @@ fn snapshot_backlog(snapshots: u64, thresholds: Thresholds) -> Option<Finding> {
     })
 }
 
-/// Live data files per manifest, for tables large enough to have a layout.
+/// Live data files per data manifest, for tables large enough to have a
+/// layout. Delete manifests are excluded: data files cannot be spread over
+/// them, and counting them would overstate fragmentation.
 fn manifest_fragmentation(sample: &TableSample, thresholds: Thresholds) -> Option<Finding> {
-    if sample.manifest_count < 2 || sample.data_files < 100 {
+    if sample.data_manifest_count < 2 || sample.data_files < 100 {
         return None;
     }
-    let measured = sample.data_files / sample.manifest_count;
+    let measured = sample.data_files / sample.data_manifest_count;
     let (severity, threshold) = below(measured, thresholds)?;
     Some(Finding {
         kind: FindingKind::ManifestFragmentation,
@@ -235,8 +239,8 @@ fn manifest_fragmentation(sample: &TableSample, thresholds: Thresholds) -> Optio
         measured,
         threshold,
         reason: format!(
-            "{} data files are spread over {} manifests",
-            sample.data_files, sample.manifest_count
+            "{} data files are spread over {} data manifests",
+            sample.data_files, sample.data_manifest_count
         ),
     })
 }
@@ -246,12 +250,16 @@ fn partition_skew(sample: &TableSample, thresholds: Thresholds) -> Option<Findin
     if sample.partition_count < 2 || sample.data_files < 100 {
         return None;
     }
-    let busiest = sample
-        .top_partitions
-        .iter()
-        .map(|partition| partition.files)
-        .max()
-        .unwrap_or(0);
+    // The sample's count survives a zero display bound, and older samples
+    // recorded before the count existed fall back to the bounded list.
+    let busiest = sample.max_partition_files.max(
+        sample
+            .top_partitions
+            .iter()
+            .map(|partition| partition.files)
+            .max()
+            .unwrap_or(0),
+    );
     let (severity, threshold) = at_or_above_ratio(busiest, sample.data_files, thresholds)?;
     let measured = per_mille(busiest, sample.data_files);
     Some(Finding {
@@ -266,7 +274,7 @@ fn partition_skew(sample: &TableSample, thresholds: Thresholds) -> Option<Findin
     })
 }
 
-/// The age of the newest sample; a future stamp counts as fresh.
+/// The age of the last successful confirmation; a future stamp counts fresh.
 fn stale_statistics(age: u64, thresholds: Thresholds) -> Option<Finding> {
     let (severity, threshold) = at_or_above(age, thresholds)?;
     Some(Finding {
@@ -274,13 +282,13 @@ fn stale_statistics(age: u64, thresholds: Thresholds) -> Option<Finding> {
         severity,
         measured: age,
         threshold,
-        reason: format!("the newest sample is {age} seconds old"),
+        reason: format!("the table metadata was last confirmed {age} seconds ago"),
     })
 }
 
-/// Whole seconds between the sample and now, clamped at zero for clock skew.
-fn sample_age(sampled_at: DateTime<Utc>, now: DateTime<Utc>) -> u64 {
-    let seconds = now.signed_duration_since(sampled_at).num_seconds().max(0);
+/// Whole seconds between the confirmation and now, clamped at zero for skew.
+fn sample_age(confirmed_at: DateTime<Utc>, now: DateTime<Utc>) -> u64 {
+    let seconds = now.signed_duration_since(confirmed_at).num_seconds().max(0);
     u64::try_from(seconds).unwrap_or(u64::MAX)
 }
 
@@ -379,12 +387,14 @@ mod tests {
             position_delete_records: 0,
             equality_delete_records: 0,
             manifest_count: 0,
+            data_manifest_count: 0,
             manifest_bytes: 0,
             partition_count: 0,
             small_files: 0,
             target_file_size_bytes: 512 * MIB,
             size_histogram: Vec::new(),
             top_partitions: Vec::new(),
+            max_partition_files: 0,
             snapshot_count: 0,
             oldest_snapshot_at: None,
             newest_snapshot_at: None,
@@ -402,9 +412,13 @@ mod tests {
     }
 
     fn health(sample: &TableSample) -> TableHealth {
+        evaluated_at(sample, now())
+    }
+
+    fn evaluated_at(sample: &TableSample, confirmed_at: DateTime<Utc>) -> TableHealth {
         evaluate(
             sample,
-            now(),
+            confirmed_at,
             &HealthThresholds::default(),
             ThresholdSource::Defaults,
             now(),
@@ -553,20 +567,22 @@ mod tests {
         let mut sample = sample();
         sample.data_files = 10_000;
         sample.manifest_count = 1;
+        sample.data_manifest_count = 1;
         assert!(
             kind(&health(&sample), FindingKind::ManifestFragmentation).is_none(),
-            "one manifest is a normal seeding shape"
+            "one data manifest is a normal seeding shape"
         );
 
         sample.data_files = 99;
         sample.manifest_count = 2;
+        sample.data_manifest_count = 2;
         assert!(
             kind(&health(&sample), FindingKind::ManifestFragmentation).is_none(),
             "a small table is not judged for manifest layout"
         );
 
         sample.data_files = 2_000;
-        sample.manifest_count = 2;
+        sample.data_manifest_count = 2;
         assert!(kind(&health(&sample), FindingKind::ManifestFragmentation).is_none());
 
         sample.data_files = 1_999;
@@ -587,6 +603,26 @@ mod tests {
             .expect("99 files per manifest is critical");
         assert_eq!(found.severity, Severity::Critical);
         assert_eq!(found.measured, 99);
+        assert_eq!(found.threshold, 100);
+    }
+
+    #[test]
+    fn delete_manifests_do_not_dilute_fragmentation() {
+        let mut sample = sample();
+        sample.data_files = 100;
+        sample.manifest_count = 2;
+        sample.data_manifest_count = 1;
+        assert!(
+            kind(&health(&sample), FindingKind::ManifestFragmentation).is_none(),
+            "one data manifest plus one delete manifest is not fragmentation"
+        );
+
+        sample.manifest_count = 3;
+        sample.data_manifest_count = 2;
+        let found = kind(&health(&sample), FindingKind::ManifestFragmentation)
+            .expect("two data manifests hold 50 files each");
+        assert_eq!(found.severity, Severity::Critical);
+        assert_eq!(found.measured, 50);
         assert_eq!(found.threshold, 100);
     }
 
@@ -613,6 +649,32 @@ mod tests {
         );
 
         sample.top_partitions = vec![partition(80), partition(20)];
+        assert_eq!(
+            kind(&health(&sample), FindingKind::PartitionSkew).map(|finding| finding.severity),
+            Some(Severity::Critical)
+        );
+    }
+
+    #[test]
+    fn skew_survives_an_empty_display_list() {
+        let mut sample = sample();
+        sample.partition_count = 2;
+        sample.data_files = 100;
+        sample.top_partitions = Vec::new();
+        sample.max_partition_files = 80;
+        let found = kind(&health(&sample), FindingKind::PartitionSkew)
+            .expect("the stored busiest count does not depend on the display bound");
+        assert_eq!(found.severity, Severity::Critical);
+        assert_eq!(found.measured, 800);
+    }
+
+    #[test]
+    fn skew_uses_the_larger_of_the_stored_count_and_the_list() {
+        let mut sample = sample();
+        sample.partition_count = 2;
+        sample.data_files = 100;
+        sample.top_partitions = vec![partition(20)];
+        sample.max_partition_files = 90;
         assert_eq!(
             kind(&health(&sample), FindingKind::PartitionSkew).map(|finding| finding.severity),
             Some(Severity::Critical)
@@ -670,16 +732,25 @@ mod tests {
     }
 
     #[test]
-    fn a_sample_stamped_in_the_future_is_treated_as_fresh() {
+    fn staleness_measures_the_last_confirmation_not_the_sample() {
+        // The sample is ten hours old, but a pass confirmed the metadata ten
+        // minutes ago: an unchanged table is fresh.
         let sample = sample();
-        let health = evaluate(
-            &sample,
-            now() + TimeDelta::hours(1),
-            &HealthThresholds::default(),
-            ThresholdSource::Defaults,
-            now(),
-        )
-        .expect("valid thresholds");
+        let health = evaluated_at(&sample, now() - TimeDelta::minutes(10));
+        assert!(kind(&health, FindingKind::StaleStatistics).is_none());
+
+        // No pass has succeeded for seven hours, so the table is stale even
+        // though a sample may have been written later by the publication path.
+        let health = evaluated_at(&sample, now() - TimeDelta::hours(7));
+        let found = kind(&health, FindingKind::StaleStatistics).expect("seven hours is stale");
+        assert_eq!(found.severity, Severity::Critical);
+        assert_eq!(found.measured, 7 * 3_600);
+    }
+
+    #[test]
+    fn a_confirmation_stamped_in_the_future_is_treated_as_fresh() {
+        let sample = sample();
+        let health = evaluated_at(&sample, now() + TimeDelta::hours(1));
         assert!(kind(&health, FindingKind::StaleStatistics).is_none());
     }
 

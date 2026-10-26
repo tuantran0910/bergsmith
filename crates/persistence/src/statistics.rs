@@ -17,8 +17,9 @@ macro_rules! counters {
     () => {
         "record_count, data_files, data_bytes, delete_files, delete_bytes, \
          position_delete_files, equality_delete_files, position_delete_records, \
-         equality_delete_records, manifest_count, manifest_bytes, partition_count, \
-         small_files, target_file_size_bytes, snapshot_count"
+         equality_delete_records, manifest_count, data_manifest_count, manifest_bytes, \
+         partition_count, max_partition_files, small_files, target_file_size_bytes, \
+         snapshot_count"
     };
 }
 
@@ -69,12 +70,17 @@ pub struct NewTableSample {
     pub position_delete_records: u64,
     /// Rows recorded by live equality delete files.
     pub equality_delete_records: u64,
-    /// Manifests in the current snapshot's manifest list.
+    /// Manifests in the current snapshot's manifest list, of either kind.
     pub manifest_count: u64,
+    /// Manifests that carry data files, the fragmentation denominator.
+    pub data_manifest_count: u64,
     /// Bytes of those manifests.
     pub manifest_bytes: u64,
     /// Distinct partitions among live data files.
     pub partition_count: u64,
+    /// The busiest partition's data-file count, independent of the display
+    /// bound.
+    pub max_partition_files: u64,
     /// Data files below the target size.
     pub small_files: u64,
     /// The target size small files are measured against.
@@ -122,12 +128,16 @@ pub struct StoredTableSample {
     pub position_delete_records: i64,
     /// Rows recorded by live equality delete files.
     pub equality_delete_records: i64,
-    /// Manifests in the current snapshot's manifest list.
+    /// Manifests in the current snapshot's manifest list, of either kind.
     pub manifest_count: i64,
+    /// Manifests that carry data files.
+    pub data_manifest_count: i64,
     /// Bytes of those manifests.
     pub manifest_bytes: i64,
     /// Distinct partitions among live data files.
     pub partition_count: i64,
+    /// The busiest partition's data-file count.
+    pub max_partition_files: i64,
     /// Data files below the target size.
     pub small_files: i64,
     /// The target size small files are measured against.
@@ -144,7 +154,7 @@ pub struct StoredTableSample {
     pub top_partitions: Value,
 }
 
-/// A table whose latest sample is older than the sampling interval.
+/// A table whose latest confirmation is older than the sampling interval.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DueTable {
     /// The owning organization.
@@ -153,8 +163,9 @@ pub struct DueTable {
     pub table_id: TableId,
     /// The table's Iceberg `table-uuid`, checked against the loaded table.
     pub table_uuid: Uuid,
-    /// When the latest sample was taken, or `None` if never.
-    pub last_sampled_at: Option<DateTime<Utc>>,
+    /// When metadata was last confirmed, or `None` if never checked. An
+    /// unchanged table is confirmed on every pass without a new sample.
+    pub last_confirmed_at: Option<DateTime<Utc>>,
 }
 
 /// One enabled alias of a table that may run maintenance.
@@ -208,8 +219,10 @@ struct SampleRow {
     position_delete_records: i64,
     equality_delete_records: i64,
     manifest_count: i64,
+    data_manifest_count: i64,
     manifest_bytes: i64,
     partition_count: i64,
+    max_partition_files: i64,
     small_files: i64,
     target_file_size_bytes: i64,
     snapshot_count: i64,
@@ -237,8 +250,10 @@ impl From<SampleRow> for StoredTableSample {
             position_delete_records: row.position_delete_records,
             equality_delete_records: row.equality_delete_records,
             manifest_count: row.manifest_count,
+            data_manifest_count: row.data_manifest_count,
             manifest_bytes: row.manifest_bytes,
             partition_count: row.partition_count,
+            max_partition_files: row.max_partition_files,
             small_files: row.small_files,
             target_file_size_bytes: row.target_file_size_bytes,
             snapshot_count: row.snapshot_count,
@@ -280,7 +295,7 @@ pub async fn record(
          catalog_connection_id, sampled_at, ",
         sample_columns!(),
         ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, \
-         $17, $18, $19, $20, $21, $22, $23, $24, $25, $26) \
+         $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28) \
          ON CONFLICT (organization_id, table_identity_id, sampled_at) DO NOTHING"
     ))
     .bind(organization_id.as_uuid())
@@ -300,8 +315,10 @@ pub async fn record(
     .bind(counter(ENTITY, sample.position_delete_records)?)
     .bind(counter(ENTITY, sample.equality_delete_records)?)
     .bind(counter(ENTITY, sample.manifest_count)?)
+    .bind(counter(ENTITY, sample.data_manifest_count)?)
     .bind(counter(ENTITY, sample.manifest_bytes)?)
     .bind(counter(ENTITY, sample.partition_count)?)
+    .bind(counter(ENTITY, sample.max_partition_files)?)
     .bind(counter(ENTITY, sample.small_files)?)
     .bind(counter(ENTITY, sample.target_file_size_bytes)?)
     .bind(counter(ENTITY, sample.snapshot_count)?)
@@ -313,6 +330,63 @@ pub async fn record(
     .await
     .map_err(|error| PersistenceError::from_write(ENTITY, error))?;
     Ok(result.rows_affected() == 1)
+}
+
+/// Records a successful metadata read, even when it produced no new sample.
+///
+/// The newest confirmation wins: a late or retried call never moves it back.
+///
+/// # Errors
+///
+/// [`PersistenceError::MissingReference`] when the table is not in the
+/// organization, and [`PersistenceError::Database`] when the write fails.
+pub async fn record_check(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    table_id: TableId,
+    checked_at: DateTime<Utc>,
+) -> Result<(), PersistenceError> {
+    sqlx::query(
+        "INSERT INTO table_statistics_checks (organization_id, table_identity_id, checked_at) \
+         VALUES ($1, $2, $3) \
+         ON CONFLICT (organization_id, table_identity_id) DO UPDATE \
+         SET checked_at = GREATEST(table_statistics_checks.checked_at, EXCLUDED.checked_at)",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(table_id.as_uuid())
+    .bind(checked_at)
+    .execute(conn)
+    .await
+    .map_err(|error| PersistenceError::from_write("table statistics check", error))?;
+    Ok(())
+}
+
+/// When a pass last confirmed the table's metadata, for freshness.
+///
+/// The confirmation is the newer of the recorded check and the newest sample,
+/// so tables sampled before confirmations were recorded still have a defensible
+/// instant.
+///
+/// # Errors
+///
+/// [`PersistenceError::Database`] when the query fails.
+pub async fn last_confirmed_at(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    table_id: TableId,
+) -> Result<Option<DateTime<Utc>>, PersistenceError> {
+    let confirmed: Option<DateTime<Utc>> = sqlx::query_scalar(
+        "SELECT GREATEST( \
+             (SELECT checked_at FROM table_statistics_checks \
+              WHERE organization_id = $1 AND table_identity_id = $2), \
+             (SELECT max(sampled_at) FROM table_statistics \
+              WHERE organization_id = $1 AND table_identity_id = $2))",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(table_id.as_uuid())
+    .fetch_one(conn)
+    .await?;
+    Ok(confirmed)
 }
 
 /// The newest sample of `table_id`, if it has been sampled.
@@ -370,14 +444,14 @@ pub async fn history(
     Ok(rows.into_iter().map(StoredTableSample::from).collect())
 }
 
-/// Tables whose latest sample is at or before `cutoff`, oldest first.
+/// Tables whose latest confirmation is at or before `cutoff`, oldest first.
 ///
 #[derive(sqlx::FromRow)]
 struct DueRow {
     organization_id: Uuid,
     table_id: Uuid,
     table_uuid: Uuid,
-    last_sampled_at: Option<DateTime<Utc>>,
+    last_confirmed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -400,7 +474,7 @@ pub async fn due_tables(
 ) -> Result<Vec<DueTable>, PersistenceError> {
     let rows: Vec<DueRow> = sqlx::query_as(
         "SELECT t.organization_id, t.id AS table_id, t.table_uuid, \
-                    latest.sampled_at AS last_sampled_at \
+                    COALESCE(checks.checked_at, latest.sampled_at) AS last_confirmed_at \
              FROM table_identities t \
              JOIN LATERAL ( \
                  SELECT 1 FROM table_aliases a \
@@ -415,8 +489,12 @@ pub async fn due_tables(
                  WHERE s.organization_id = t.organization_id AND s.table_identity_id = t.id \
                  ORDER BY s.sampled_at DESC LIMIT 1 \
              ) latest ON true \
-             WHERE latest.sampled_at IS NULL OR latest.sampled_at <= $1 \
-             ORDER BY latest.sampled_at ASC NULLS FIRST, t.id \
+             LEFT JOIN table_statistics_checks checks \
+               ON checks.organization_id = t.organization_id \
+              AND checks.table_identity_id = t.id \
+             WHERE COALESCE(checks.checked_at, latest.sampled_at) IS NULL \
+                OR COALESCE(checks.checked_at, latest.sampled_at) <= $1 \
+             ORDER BY COALESCE(checks.checked_at, latest.sampled_at) ASC NULLS FIRST, t.id \
              LIMIT $2",
     )
     .bind(cutoff)
@@ -429,7 +507,7 @@ pub async fn due_tables(
             organization_id: OrganizationId::from_uuid(row.organization_id),
             table_id: TableId::from_uuid(row.table_id),
             table_uuid: row.table_uuid,
-            last_sampled_at: row.last_sampled_at,
+            last_confirmed_at: row.last_confirmed_at,
         })
         .collect())
 }

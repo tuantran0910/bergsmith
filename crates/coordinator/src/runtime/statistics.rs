@@ -1,9 +1,10 @@
 //! Metadata-only statistics sampling (BS-025.T1).
 //!
-//! [`StatisticsCollector`] samples every registered table whose latest sample
-//! is older than the interval, plus the table behind each publication. A
-//! sample is read from table metadata and manifests only; the collector never
-//! reads a data file.
+//! [`StatisticsCollector`] samples every registered table whose latest
+//! confirmation is older than the interval, plus the table behind each
+//! publication. A sample is read from table metadata and manifests only; the
+//! collector never reads a data file. Every successful read records a
+//! confirmation, so an unchanged table stays fresh without a new sample.
 //!
 //! One pass walks due tables grouped by catalog connection and samples each
 //! connection's tables in turn, so a slow catalog sees one request at a time
@@ -239,7 +240,7 @@ impl StatisticsCollector {
             organization_id: job.organization_id,
             table_id: job.table_id,
             table_uuid: identity.table_uuid,
-            last_sampled_at: None,
+            last_confirmed_at: None,
         };
         // The publication path has no other request in flight for this table
         // beyond a concurrent pass, and the ledger keys samples by instant.
@@ -388,6 +389,9 @@ impl StatisticsCollector {
                         .await?;
                     }
                 }
+                // The counters are unchanged, but the table's freshness is
+                // not: this pass read the metadata successfully.
+                statistics::record_check(&mut conn, organization_id, table_id, at).await?;
                 return Ok(SampleOutcome::Unchanged);
             }
         }
@@ -414,8 +418,10 @@ impl StatisticsCollector {
             position_delete_records: sample.position_delete_records,
             equality_delete_records: sample.equality_delete_records,
             manifest_count: sample.manifest_count,
+            data_manifest_count: sample.data_manifest_count,
             manifest_bytes: sample.manifest_bytes,
             partition_count: sample.partition_count,
+            max_partition_files: sample.max_partition_files,
             small_files: sample.small_files,
             target_file_size_bytes: sample.target_file_size_bytes,
             snapshot_count: sample.snapshot_count,
@@ -430,6 +436,7 @@ impl StatisticsCollector {
         let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
         let mut tx = conn.begin().await.map_err(PersistenceError::from)?;
         statistics::record(&mut tx, organization_id, table_id, &new).await?;
+        statistics::record_check(&mut tx, organization_id, table_id, at).await?;
         statistics::record_snapshots(&mut tx, organization_id, table_id, &rows, at).await?;
         tx.commit().await.map_err(PersistenceError::from)?;
         Ok(SampleOutcome::Sampled)

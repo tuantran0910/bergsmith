@@ -92,6 +92,13 @@ async fn counts_live_files_and_delete_kinds_across_specs() {
         size_of(&fixture, "p0") + size_of(&fixture, "e0")
     );
     assert!(sample.manifest_count >= 1);
+    // Delete files live in delete manifests, which never count as data
+    // manifests; this fixture committed data twice and deletes once.
+    assert!(sample.data_manifest_count >= 2);
+    assert!(
+        sample.data_manifest_count < sample.manifest_count,
+        "a delete manifest is not a data manifest"
+    );
     assert!(sample.manifest_bytes > 0);
     assert_eq!(sample.snapshot_count, 3);
     // The fixture builds every commit into one metadata file, and iceberg-rust
@@ -124,6 +131,24 @@ async fn partitions_are_grouped_by_spec_and_ordered_by_file_count() {
     assert_eq!(unpartitioned.partition, "");
     assert_eq!(unpartitioned.files, 1);
     assert_eq!(unpartitioned.delete_files, 0);
+    assert_eq!(sample.max_partition_files, 2);
+}
+
+#[tokio::test]
+async fn a_hidden_partition_list_still_records_the_busiest_count() {
+    let fixture = mixed().await;
+    let config = StatisticsConfig {
+        top_partitions: 0,
+        ..StatisticsConfig::default()
+    };
+    let sample = sample(&fixture, &config).await;
+
+    assert!(sample.top_partitions.is_empty());
+    assert_eq!(sample.partition_count, 2);
+    assert_eq!(
+        sample.max_partition_files, 2,
+        "the busiest count survives a zero display bound"
+    );
 }
 
 #[tokio::test]
