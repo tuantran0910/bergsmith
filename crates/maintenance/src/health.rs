@@ -134,6 +134,44 @@ pub struct Recommendation {
     pub advisory: Option<&'static str>,
 }
 
+/// Whether the catalog assessment that would size a recommendation exists for
+/// this caller.
+///
+/// The assessment is a catalog read, so an actionable recommendation carries
+/// one only for a caller who may submit jobs; an advisory action has nothing
+/// to assess whatever the caller may do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AssessmentState {
+    /// The caller may assess the actionable recommendation.
+    Included,
+    /// The action is runnable, but the caller lacks `jobs:submit`.
+    RequiresSubmitGrant,
+    /// The action is advisory, so no assessment applies.
+    NotApplicable,
+}
+
+impl AssessmentState {
+    /// The state of `recommendation` for a caller who may or may not assess it.
+    #[must_use]
+    pub const fn of(recommendation: &Recommendation, may_assess: bool) -> Self {
+        match (recommendation.advisory, may_assess) {
+            (Some(_), _) => Self::NotApplicable,
+            (None, true) => Self::Included,
+            (None, false) => Self::RequiresSubmitGrant,
+        }
+    }
+
+    /// The stable name used in the API.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Included => "included",
+            Self::RequiresSubmitGrant => "requires_jobs_submit",
+            Self::NotApplicable => "not_applicable",
+        }
+    }
+}
+
 /// Maps one finding to the maintenance action that resolves it.
 ///
 /// Only a whole-table compaction can run today. Delete pressure counts the
@@ -429,6 +467,34 @@ mod tests {
     use crate::statistics::PartitionFiles;
 
     const MIB: u64 = 1024 * 1024;
+
+    #[test]
+    fn the_assessment_state_names_who_may_size_the_recommendation() {
+        let runnable = Recommendation {
+            kind: FindingKind::SmallFiles,
+            action: RecommendationAction::Compaction,
+            advisory: None,
+        };
+        let advisory = Recommendation {
+            kind: FindingKind::DeletePressure,
+            action: RecommendationAction::DeleteCleanup,
+            advisory: Some("delete cleanup lands in a later task"),
+        };
+        assert_eq!(AssessmentState::of(&runnable, true).as_str(), "included");
+        assert_eq!(
+            AssessmentState::of(&runnable, false).as_str(),
+            "requires_jobs_submit"
+        );
+        // An advisory action has no assessment to include either way.
+        assert_eq!(
+            AssessmentState::of(&advisory, true).as_str(),
+            "not_applicable"
+        );
+        assert_eq!(
+            AssessmentState::of(&advisory, false).as_str(),
+            "not_applicable"
+        );
+    }
 
     fn now() -> DateTime<Utc> {
         DateTime::from_timestamp(1_800_000_000, 0).expect("a fixed instant")

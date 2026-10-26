@@ -81,7 +81,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Authorized summaries in ascending UUID order; authorization filters before pagination. */
+        /** @description Authorized summaries in ascending UUID order; authorization filters before pagination. Every row carries the table's health, evaluated from its newest sample and the thresholds of its enabled policies (ADR 0059). `health` keeps one exact state, and `sort=health` orders the worst state first (critical, warning, healthy, unassessed) with ties by id; either parameter evaluates every visible table, so the cost grows with the inventory, and a filtered cursor resumes after the health sort key. A cursor is only valid for the query shape that produced it. */
         get: operations["listTables"];
         put?: never;
         post?: never;
@@ -704,7 +704,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Health findings for one table from its newest metadata-only sample, and the action each finding recommends. An actionable finding carries the prefilled preview that assesses it and the planner's estimate from the current table; an advisory finding says why it cannot run yet. Visibility is checked first: a table outside the caller's inventory returns 404, and 403 is reserved for a visible table without jobs:submit. A table without a sample, or with a sample written before the current health counters, returns a null state with no findings or recommendations and performs no catalog request. Counters are decimal strings. */
+        /** @description Health findings for one table from its newest metadata-only sample, and the action each finding recommends. A table's state is the worst evaluation across its enabled policies' threshold sets, and every finding names the source of its thresholds (ADR 0059). An actionable finding carries the prefilled preview that assesses it and the planner's estimate from the current table; an advisory finding says why it cannot run yet. Visibility is checked first: a table outside the caller's inventory returns 404. Findings need inventory visibility only; the catalog assessment needs `jobs:submit`, and `assessment` says whether it is included. A table without a sample, or with a sample written before the current health counters, returns a null state with no findings or recommendations and performs no catalog request. Counters are decimal strings. */
         get: operations["getTableRecommendations"];
         put?: never;
         post?: never;
@@ -1157,6 +1157,8 @@ export interface components {
             aliases: components["schemas"]["TableAlias"][];
             /** @description Newest metadata-only sample, or null when the table has never been sampled. */
             statistics?: components["schemas"]["TableStatisticsSummary"] | null;
+            /** @description Evaluated health of the table; `state` is null when unassessed. */
+            health: components["schemas"]["TableHealthSummary"];
         };
         /** @description One catalog name of a table, with the revision a removal names. */
         TableAlias: {
@@ -1723,6 +1725,24 @@ export interface components {
             truncated: boolean;
             items: components["schemas"]["OverviewAttentionItem"][];
         };
+        /** @description One table's health as the list carries it, evaluated from the newest sample and the thresholds of its enabled policies (ADR 0059). A null state means the table has no complete sample. */
+        TableHealthSummary: {
+            /** @description Null when the table is unassessed. */
+            state: ("healthy" | "warning" | "critical") | null;
+            sampled_at: string | null;
+            confirmed_at: string | null;
+        };
+        /** @description Where the finding's thresholds came from: the documented defaults, or the policy that supplied them. */
+        HealthThresholdSource: {
+            /** @enum {string} */
+            kind: "defaults";
+        } | {
+            /** @enum {string} */
+            kind: "policy";
+            /** Format: uuid */
+            policy_id: string;
+            policy_name: string;
+        };
         /** @description One finding at warning or worse, with the measurement and the bound it crossed. */
         TableHealthFinding: {
             /** @enum {string} */
@@ -1734,6 +1754,7 @@ export interface components {
             /** @enum {string} */
             unit: "bytes" | "per_mille" | "snapshots" | "files_per_manifest" | "seconds";
             reason: string;
+            source: components["schemas"]["HealthThresholdSource"];
         };
         /** @description The prefilled preview request that assesses the recommended action. */
         TableRecommendationPreview: {
@@ -1748,7 +1769,7 @@ export interface components {
             files_removed: string;
             duration_millis: string;
         };
-        /** @description The action that resolves one finding. An advisory recommendation carries only the reason; an actionable one carries the preview and the planner's estimate. */
+        /** @description The action that resolves one finding. An advisory recommendation carries only the reason; an actionable one carries the preview and the planner's estimate when the caller may submit jobs and says so when it may not. */
         TableHealthRecommendation: {
             /** @enum {string} */
             kind: "small_files" | "delete_pressure" | "snapshot_backlog" | "manifest_fragmentation" | "partition_skew" | "stale_statistics";
@@ -1760,6 +1781,11 @@ export interface components {
             outcome: ("planned" | "no_op" | "rejected") | null;
             no_op_reason: ("no_snapshot" | "no_beneficial_work") | null;
             estimate: components["schemas"]["TableRecommendationEstimate"] | null;
+            /**
+             * @description Whether the catalog assessment (preview, outcome, estimate) is included: `included` for an actionable recommendation the caller may assess, `requires_jobs_submit` when it is actionable but the caller lacks `jobs:submit`, and `not_applicable` for an advisory recommendation that has no assessment to include.
+             * @enum {string}
+             */
+            assessment: "included" | "requires_jobs_submit" | "not_applicable";
         };
         /** @description One table's health and the action each finding recommends. Null state means the table has no statistics sample. */
         TableRecommendations: {
@@ -2374,6 +2400,10 @@ export interface operations {
                 limit?: number;
                 /** @description Opaque continuation bound to organization, principal, and resource. Current grants are rechecked. */
                 cursor?: string;
+                /** @description Keep only tables whose evaluated state is exactly this one. An unassessed table has no complete sample. */
+                health?: "healthy" | "warning" | "critical" | "unassessed";
+                /** @description Order by evaluated state, worst first, ties by id. Applying `health` implies this order. */
+                sort?: "health";
             };
             header?: never;
             path?: never;

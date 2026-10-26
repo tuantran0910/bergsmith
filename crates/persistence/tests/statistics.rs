@@ -13,6 +13,7 @@ use bergsmith_persistence::{PersistenceError, tables, tenancy};
 use chrono::{DateTime, TimeDelta, Utc};
 use serde_json::json;
 use sqlx::{Connection, PgPool};
+use uuid::Uuid;
 
 fn sample(connection: bergsmith_common::ids::CatalogConnectionId) -> NewTableSample {
     NewTableSample {
@@ -109,6 +110,72 @@ async fn samples_are_append_only_and_read_newest_first(pool: PgPool) {
         .await
         .unwrap();
     assert!(missing.is_some());
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn batch_reads_take_the_newest_sample_and_check_per_table(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "statistics").await;
+    let unsampled = tables::resolve_table(
+        &mut conn,
+        tenant.organization,
+        &support::alias(tenant.connection, "archive"),
+        Uuid::now_v7(),
+    )
+    .await
+    .unwrap()
+    .id;
+    let other = support::tenant(&mut conn, "other").await;
+    let first = sample(tenant.connection);
+    let mut second = first.clone();
+    second.sampled_at += TimeDelta::minutes(5);
+    second.record_count = 200;
+    assert!(
+        statistics::record(&mut conn, tenant.organization, tenant.table, &first)
+            .await
+            .unwrap()
+    );
+    assert!(
+        statistics::record(&mut conn, tenant.organization, tenant.table, &second)
+            .await
+            .unwrap()
+    );
+    let checked_at = second.sampled_at + TimeDelta::minutes(1);
+    statistics::record_check(&mut conn, tenant.organization, tenant.table, checked_at)
+        .await
+        .unwrap();
+
+    // The newest sample of each sampled table, and nothing for an unsampled
+    // one or a table outside the organization.
+    let latest =
+        statistics::latest_for_tables(&mut conn, tenant.organization, &[tenant.table, unsampled])
+            .await
+            .unwrap();
+    assert_eq!(latest.len(), 1);
+    assert_eq!(latest[0].0, tenant.table);
+    assert_eq!(latest[0].1.record_count, 200);
+    assert_eq!(latest[0].1.sampled_at, second.sampled_at);
+    assert!(
+        statistics::latest_for_tables(&mut conn, other.organization, &[tenant.table])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // Confirmations are read for the same set, and an unchecked table is
+    // absent rather than reported as stale.
+    assert_eq!(
+        statistics::checks_for_tables(&mut conn, tenant.organization, &[tenant.table, unsampled])
+            .await
+            .unwrap(),
+        vec![(tenant.table, checked_at)]
+    );
+    assert!(
+        statistics::checks_for_tables(&mut conn, tenant.organization, &[])
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
@@ -383,7 +450,7 @@ async fn totals_cover_the_newest_sample_of_visible_tables(pool: PgPool) {
         &mut conn,
         tenant.organization,
         &support::alias(other_connection, "other_events"),
-        uuid::Uuid::now_v7(),
+        Uuid::now_v7(),
     )
     .await
     .unwrap()

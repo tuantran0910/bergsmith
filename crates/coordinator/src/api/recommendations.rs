@@ -1,28 +1,37 @@
-//! Table health findings and their recommendations (BS-028.T2).
+//! Table health findings and their recommendations (BS-028.T4, BS-028.T2).
 //!
-//! The newest metadata-only sample is evaluated with ADR 0059's model. Each
-//! finding carries the action that resolves it. Actions the planner can run
-//! today get the prefilled preview that would assess them and its estimate;
+//! The newest metadata-only sample is evaluated with ADR 0059's model through
+//! [`crate::health::assess`], so the page, the list filter, and schedule
+//! admission share one evaluation and one threshold source. A table's state is
+//! the worst evaluation across its enabled policies' threshold sets, and each
+//! finding names the policy that supplied its thresholds.
+//!
+//! Each finding carries the action that resolves it. Actions the planner can
+//! run today get the prefilled preview that would assess them and its estimate;
 //! the rest say why they cannot run yet. The response is derived from the
 //! ledger, except the estimate, which loads the table through the same preview
 //! path a submission uses.
+//!
+//! Findings are metadata a viewer may already read, so they need inventory
+//! visibility only. The catalog assessment a runnable recommendation carries
+//! needs `jobs:submit`, and a recommendation without that grant says so instead
+//! of omitting itself.
 //!
 //! Counters cross the API as decimal strings, as every other counter does.
 
 use axum::Json;
 use axum::extract::{Path, State};
-use bergsmith_common::health::HealthThresholds;
 use bergsmith_common::ids::TableId;
-use bergsmith_common::permission::Permission;
+use bergsmith_common::permission::{Permission, ResourceScope};
 use bergsmith_maintenance::{
-    Estimate, Finding, Recommendation, TableHealth, ThresholdSource, evaluate, recommend,
+    AssessmentState, Estimate, Finding, Recommendation, TableHealth, recommend,
 };
-use bergsmith_persistence::statistics::{self, StoredTableSample};
+use bergsmith_persistence::grants;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::health::sample_model;
+use crate::health::ThresholdProvenance;
 use crate::preview::AssessedPreview;
 
 use super::pagination::PageQuery;
@@ -32,10 +41,9 @@ use super::{ApiError, ApiState, Caller};
 
 /// The health of `id` and the recommended action for each finding.
 ///
-/// Requires `jobs:submit`, because an actionable recommendation carries a
-/// catalog assessment: the caller learns what a job would touch. A table
-/// without a sample has no state and no recommendation, and the response is
-/// served without a catalog request.
+/// A table without a sample has no state and no recommendation, and the
+/// response is served without a catalog request. A runnable recommendation's
+/// estimate is loaded only when the caller may submit jobs.
 pub(super) async fn table(
     State(state): State<ApiState>,
     caller: Caller,
@@ -43,8 +51,7 @@ pub(super) async fn table(
 ) -> Result<Json<Value>, ApiError> {
     let id = TableId::from_uuid(id.map_err(|_| ApiError::invalid())?.0);
     // Visibility comes first: a table outside the caller's inventory reads as
-    // unknown, so a missing grant cannot confirm that the table exists. Only
-    // a visible table without `jobs:submit` is a 403.
+    // unknown, so a missing grant cannot confirm that the table exists.
     let _ = resources::read(
         &state,
         &caller.0,
@@ -53,53 +60,50 @@ pub(super) async fn table(
         Some(*id.as_uuid()),
     )
     .await?;
-    let target = resolve(
-        &state,
-        &caller,
-        id,
-        Permission::SubmitJobs,
-        MissingTable::Forbidden,
-    )
-    .await?;
-    let (latest, confirmed) = {
+    let (assessment, can_submit) = {
         let mut conn = state.database.pool().acquire().await?;
-        let latest = statistics::latest(&mut conn, caller.organization_id, id).await?;
-        let confirmed =
-            statistics::last_confirmed_at(&mut conn, caller.organization_id, id).await?;
-        (latest, confirmed)
+        let can_submit = grants::has_permission(
+            &mut conn,
+            caller.organization_id,
+            caller.principal_id,
+            Permission::SubmitJobs,
+            ResourceScope::Table(id),
+        )
+        .await?;
+        let mut assessments = crate::health::assess(
+            &mut conn,
+            caller.organization_id,
+            std::slice::from_ref(&id),
+            Utc::now(),
+        )
+        .await?;
+        (assessments.remove(&id), can_submit)
     };
-    let Some(stored) = latest else {
+    let Some(assessment) = assessment else {
         return Ok(Json(unassessed(id, None, None)));
     };
-    // A sample written before the health counters existed carries zeros the
-    // model cannot tell from measurements, so it is not assessed; the
-    // collector replaces it with a complete observation on its next pass.
-    if stored.sample_version < statistics::SAMPLE_VERSION {
-        return Ok(Json(unassessed(
-            id,
-            Some(stored.sampled_at),
-            Some(confirmed.unwrap_or(stored.sampled_at)),
-        )));
-    }
-    let sample = sample_model(&stored)?;
-    let confirmed_at = confirmed.unwrap_or(stored.sampled_at);
-    let health = evaluate(
-        &sample,
-        confirmed_at,
-        &HealthThresholds::default(),
-        ThresholdSource::Defaults,
-        Utc::now(),
-    )
-    .map_err(|_| ApiError::internal())?;
+    let (sampled_at, confirmed_at) = (assessment.sampled_at, assessment.confirmed_at);
+    let (Some(health), Some(source)) = (assessment.health, assessment.source) else {
+        return Ok(Json(unassessed(id, sampled_at, confirmed_at)));
+    };
     let recommendations: Vec<Recommendation> = health
         .findings
         .iter()
         .map(|finding| recommend(finding.kind))
         .collect();
-    let assessed = if recommendations
-        .iter()
-        .any(|recommendation| recommendation.advisory.is_none())
-    {
+    let needs_estimate = can_submit
+        && recommendations
+            .iter()
+            .any(|recommendation| recommendation.advisory.is_none());
+    let assessed = if needs_estimate {
+        let target = resolve(
+            &state,
+            &caller,
+            id,
+            Permission::SubmitJobs,
+            MissingTable::Forbidden,
+        )
+        .await?;
         Some(
             state
                 .previews
@@ -112,11 +116,12 @@ pub(super) async fn table(
     };
     Ok(Json(document(
         id,
-        &stored,
-        confirmed_at,
+        (sampled_at, confirmed_at),
         &health,
+        &source,
         &recommendations,
         assessed.as_ref(),
+        can_submit,
     )))
 }
 
@@ -140,26 +145,29 @@ fn unassessed(
 /// The health wire form: state, sample instants, findings, recommendations.
 fn document(
     id: TableId,
-    stored: &StoredTableSample,
-    confirmed_at: DateTime<Utc>,
+    instants: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
     health: &TableHealth,
+    source: &ThresholdProvenance,
     recommendations: &[Recommendation],
     assessed: Option<&AssessedPreview>,
+    can_submit: bool,
 ) -> Value {
     json!({
         "table_id": id.to_string(),
         "state": health.state.as_str(),
-        "sampled_at": stamp(stored.sampled_at),
-        "confirmed_at": stamp(confirmed_at),
-        "findings": health.findings.iter().map(finding).collect::<Vec<_>>(),
+        "sampled_at": instants.0.map(stamp),
+        "confirmed_at": instants.1.map(stamp),
+        "findings": health.findings.iter()
+            .map(|finding| self::finding(finding, source))
+            .collect::<Vec<_>>(),
         "recommendations": recommendations
             .iter()
-            .map(|recommendation| recommendation_document(id, recommendation, assessed))
+            .map(|recommendation| recommendation_document(id, recommendation, assessed, can_submit))
             .collect::<Vec<_>>(),
     })
 }
 
-fn finding(finding: &Finding) -> Value {
+fn finding(finding: &Finding, source: &ThresholdProvenance) -> Value {
     json!({
         "kind": finding.kind,
         "severity": finding.severity,
@@ -167,20 +175,35 @@ fn finding(finding: &Finding) -> Value {
         "threshold": finding.threshold.to_string(),
         "unit": finding.unit(),
         "reason": finding.reason,
+        "source": source_document(source),
     })
 }
 
-/// One recommendation; an actionable one carries the preview and its estimate.
+/// Where a finding's thresholds came from, named so the reason is checkable.
+fn source_document(source: &ThresholdProvenance) -> Value {
+    match source {
+        ThresholdProvenance::Defaults => json!({"kind": "defaults"}),
+        ThresholdProvenance::Policy { id, name } => {
+            json!({"kind": "policy", "policy_id": id.to_string(), "policy_name": name})
+        }
+    }
+}
+
+/// One recommendation; an actionable one carries the preview and its estimate
+/// when the caller may submit jobs.
 fn recommendation_document(
     table: TableId,
     recommendation: &Recommendation,
     assessed: Option<&AssessedPreview>,
+    can_submit: bool,
 ) -> Value {
+    let assessment = AssessmentState::of(recommendation, can_submit);
     let mut value = json!({
         "kind": recommendation.kind,
         "action": recommendation.action.as_str(),
         "advisory": recommendation.advisory.is_some(),
         "reason": recommendation.advisory,
+        "assessment": assessment.as_str(),
         "preview": Value::Null,
         "outcome": Value::Null,
         "no_op_reason": Value::Null,

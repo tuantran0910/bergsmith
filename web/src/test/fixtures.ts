@@ -158,6 +158,7 @@ export const table = schema("Table", {
         },
     ],
     statistics: null,
+    health: { state: null, sampled_at: null, confirmed_at: null },
 });
 
 /** One metadata-only sample; `rows` and `bytes` are decimal strings. */

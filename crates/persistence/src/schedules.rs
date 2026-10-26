@@ -949,6 +949,111 @@ async fn update_schedule_with_clock(
     Ok(schedule)
 }
 
+/// One enabled policy's threshold set for a table, as a page reads it.
+///
+/// The stored overrides are decoded on demand: a page evaluates many tables,
+/// so one malformed set must be skippable by the caller rather than failing
+/// the whole read.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TableThresholds {
+    /// The table the schedule maintains.
+    pub table_id: TableId,
+    /// The policy that supplies the thresholds.
+    pub policy_id: PolicyId,
+    /// The policy's display name, so a finding can name its source.
+    pub policy_name: String,
+    stored: Value,
+}
+
+impl TableThresholds {
+    /// A set over `thresholds`, for callers that do not read it from storage.
+    #[must_use]
+    pub fn new(
+        table_id: TableId,
+        policy_id: PolicyId,
+        policy_name: String,
+        thresholds: &HealthThresholds,
+    ) -> Self {
+        Self {
+            table_id,
+            policy_id,
+            policy_name,
+            stored: serde_json::to_value(thresholds).unwrap_or(Value::Null),
+        }
+    }
+
+    /// The thresholds the policy's health trigger evaluates with.
+    ///
+    /// # Errors
+    ///
+    /// [`PersistenceError::CorruptValue`] when the stored set cannot be
+    /// decoded or does not validate.
+    pub fn thresholds(&self) -> Result<HealthThresholds, PersistenceError> {
+        let thresholds: HealthThresholds =
+            serde_json::from_value(self.stored.clone()).map_err(|error| {
+                PersistenceError::CorruptValue {
+                    entity: "policy health thresholds",
+                    value: error.to_string(),
+                }
+            })?;
+        thresholds
+            .validate()
+            .map_err(|error| PersistenceError::CorruptValue {
+                entity: "policy health thresholds",
+                value: error.to_string(),
+            })?;
+        Ok(thresholds)
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct TableThresholdsRow {
+    table_identity_id: Uuid,
+    id: Uuid,
+    name: String,
+    health_thresholds: Value,
+}
+
+/// The threshold sets of the enabled policies scheduled on each of `table_ids`.
+///
+/// A table's page state is the worst evaluation across these sets, so the
+/// caller needs them all. A disabled schedule and a disabled policy both admit
+/// nothing and contribute no set. The order is table, then policy, so a caller
+/// that keeps one evaluation per table picks deterministically.
+///
+/// # Errors
+///
+/// [`PersistenceError::Database`] when the query fails.
+pub async fn enabled_thresholds_for_tables(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    table_ids: &[TableId],
+) -> Result<Vec<TableThresholds>, PersistenceError> {
+    let ids: Vec<Uuid> = table_ids.iter().map(|table| *table.as_uuid()).collect();
+    let rows: Vec<TableThresholdsRow> = sqlx::query_as(
+        "SELECT s.table_identity_id, p.id, p.name, p.health_thresholds \
+         FROM maintenance_schedules s \
+         JOIN maintenance_policies p \
+           ON p.organization_id = s.organization_id AND p.id = s.policy_id \
+         WHERE s.organization_id = $1 AND s.table_identity_id = ANY($2) \
+           AND s.enabled AND p.enabled \
+         ORDER BY s.table_identity_id, p.id",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(&ids)
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| TableThresholds {
+            table_id: TableId::from_uuid(row.table_identity_id),
+            policy_id: PolicyId::from_uuid(row.id),
+            policy_name: row.name,
+            stored: row.health_thresholds,
+        })
+        .collect())
+}
+
 /// Recomputes a future cursor after a window change.
 ///
 /// An outside-window skip may have advanced `next_due_at` to the next opening,
