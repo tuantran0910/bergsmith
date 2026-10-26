@@ -16,6 +16,7 @@ import {
     table,
     tableSnapshots,
     tableDefinition,
+    tableMaintenance,
     tableStatistics,
 } from "../src/test/fixtures";
 import {
@@ -201,6 +202,32 @@ test("shows a table's definition on an addressable tab", async ({
         page.getByRole("region", { name: "Spec 0 fields" }),
     ).toBeVisible();
     await expect(page.getByText("write.format.default")).toBeVisible();
+    await expectAccessible(page);
+});
+
+test("shows a table's maintenance history on an addressable tab", async ({
+    page,
+    coordinator,
+}) => {
+    signedIn(coordinator);
+    coordinator.on("GET", "/api/v1/tables/{id}/maintenance", () =>
+        json(200, tableMaintenance),
+    );
+
+    await page.goto(`/tables/${TABLE_ID}`);
+    await page.getByRole("tab", { name: "Maintenance" }).click();
+
+    await expect(page).toHaveURL(
+        new RegExp(`/tables/${TABLE_ID}\\?tab=maintenance$`),
+    );
+    await expect(page.getByRole("heading", { name: "Impact" })).toBeVisible();
+    const history = page.getByRole("region", { name: "Maintenance history" });
+    await expect(
+        history.getByRole("columnheader", { name: "Bytes rewritten" }),
+    ).toBeVisible();
+    await expect(history.getByText("1 min 5 s")).toBeVisible();
+    await expect(history.getByText("100 B")).toBeVisible();
+    await expect(history.getByText("Stopped: replan required")).toBeVisible();
     await expectAccessible(page);
 });
 

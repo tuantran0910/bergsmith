@@ -264,6 +264,56 @@ export const tableDefinition = schema("TableDefinition", {
     },
 });
 
+/** Two terminal jobs: one published, one discarded after a conflict. */
+export const tableMaintenance = schema("TableMaintenancePage", {
+    table_id: TABLE_ID,
+    since: "2026-09-26T00:00:00Z",
+    totals: {
+        jobs: "2",
+        succeeded: "1",
+        no_op: "0",
+        cancelled: "0",
+        replanned: "1",
+        failed: "0",
+        input_files: "3",
+        input_bytes: "127",
+        output_files: "2",
+        output_bytes: "2000",
+        delete_files_applied: "2",
+        discarded_files: "1",
+        discarded_bytes: "4000",
+        abandoned_files: "1",
+        abandoned_bytes: "800",
+    },
+    items: [
+        {
+            job_id: JOB_ID,
+            state: "ReplanRequired",
+            created_at: "2026-10-02T00:00:00Z",
+            updated_at: "2026-10-02T00:01:05Z",
+            elapsed_millis: "65000",
+            input_files: "1",
+            input_bytes: "100",
+            output_files: "1",
+            output_bytes: "4000",
+            delete_files_applied: "0",
+        },
+        {
+            job_id: RETRY_JOB_ID,
+            state: "Succeeded",
+            created_at: "2026-10-01T00:00:00Z",
+            updated_at: "2026-10-01T00:02:30Z",
+            elapsed_millis: "150000",
+            input_files: "2",
+            input_bytes: "27",
+            output_files: "2",
+            output_bytes: "2000",
+            delete_files_applied: "1",
+        },
+    ],
+    next_cursor: null,
+});
+
 export const tableStatistics = schema("TableStatisticsPage", {
     items: [
         tableSample("2026-10-02T00:00:00Z", "200", "4096"),

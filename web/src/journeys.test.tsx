@@ -35,6 +35,7 @@ import {
     tableSnapshots,
     tableSnapshotsQuiet,
     tableDefinition,
+    tableMaintenance,
     tableStatistics,
 } from "./test/fixtures";
 
@@ -350,6 +351,36 @@ describe("browsing", () => {
         expect(
             screen.getByText(/one partition holds every row/),
         ).toBeInTheDocument();
+    });
+
+    it("opens a table's maintenance history and keeps it in the URL", async () => {
+        fake.on("GET", "/api/v1/tables/{id}/maintenance", () =>
+            json(200, tableMaintenance),
+        );
+        const user = start(`/tables/${TABLE_ID}`);
+
+        await user.click(
+            await screen.findByRole("tab", { name: "Maintenance" }),
+        );
+
+        expect(window.location.search).toBe("?tab=maintenance");
+        expect(
+            await screen.findByRole("heading", { name: "Impact" }),
+        ).toBeInTheDocument();
+        const history = screen.getByRole("region", {
+            name: "Maintenance history",
+        });
+        expect(
+            within(history).getByRole("columnheader", {
+                name: "Bytes rewritten",
+            }),
+        ).toBeInTheDocument();
+        expect(within(history).getByText("1 min 5 s")).toBeInTheDocument();
+        expect(within(history).getByText("100 B")).toBeInTheDocument();
+        expect(
+            within(history).getByText("Stopped: replan required"),
+        ).toBeInTheDocument();
+        expect(within(history).getByText("Confirmed")).toBeInTheDocument();
     });
 
     it("opens a table's snapshot timeline and links its publications", async () => {

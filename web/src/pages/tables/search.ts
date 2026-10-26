@@ -14,7 +14,13 @@ const SORTS = [
 
 export type TableSort = (typeof SORTS)[number];
 
-const TABS = ["overview", "definition", "snapshots", "statistics"] as const;
+const TABS = [
+    "overview",
+    "definition",
+    "snapshots",
+    "statistics",
+    "maintenance",
+] as const;
 
 /** The table detail's addressable tab. */
 export type TableTab = (typeof TABS)[number];

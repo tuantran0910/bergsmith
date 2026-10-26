@@ -97,6 +97,29 @@ export function useTableDefinition(id: string) {
 }
 
 /**
+ * The table's terminal jobs, newest first, each with the work its accepted
+ * tasks rewrote, plus totals over the last thirty days. Totals are returned
+ * with every page, so the summary does not wait for the history.
+ */
+export function useTableMaintenance(id: string) {
+    const client = useQueryClient();
+    return useInfiniteQuery({
+        queryKey: ["table", id, "maintenance"],
+        initialPageParam: null as string | null,
+        queryFn: ({ pageParam, signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/tables/{id}/maintenance", {
+                        params: { path: { id }, query: page(pageParam) },
+                        signal,
+                    }),
+                ),
+            ),
+        getNextPageParam: (last) => last.next_cursor,
+    });
+}
+
+/**
  * The table's newest sample and its history, newest first. The newest sample
  * is returned with every page, so the summary does not wait for the history.
  */

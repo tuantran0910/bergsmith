@@ -27,6 +27,7 @@ import { PreviewView } from "./PreviewView";
 import { Access } from "./access/Access";
 import { namespaceKey, tab, type TableTab } from "./tables/search";
 import { TableDefinition } from "./tables/Definition";
+import { TableMaintenance } from "./tables/Maintenance";
 import { TableStatistics } from "./tables/Statistics";
 import { TableSnapshots } from "./tables/Snapshots";
 
@@ -175,6 +176,7 @@ export function TablePage({ id }: { id: string }) {
                     <TabsTrigger value="definition">Definition</TabsTrigger>
                     <TabsTrigger value="snapshots">Snapshots</TabsTrigger>
                     <TabsTrigger value="statistics">Statistics</TabsTrigger>
+                    <TabsTrigger value="maintenance">Maintenance</TabsTrigger>
                 </TabsList>
                 <TabsContent value="overview">
                     <MetricGrid className="mb-6">
@@ -330,6 +332,9 @@ export function TablePage({ id }: { id: string }) {
                 </TabsContent>
                 <TabsContent value="statistics">
                     <TableStatistics id={id} />
+                </TabsContent>
+                <TabsContent value="maintenance">
+                    <TableMaintenance id={id} />
                 </TabsContent>
             </Tabs>
             <Access
