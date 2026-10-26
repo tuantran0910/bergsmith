@@ -6,10 +6,12 @@
 //! a retried task counts once, through the attempt that was accepted.
 //!
 //! History and totals share one definition of impact. Input files and bytes
-//! are the sources of accepted tasks, which is the work actually rewritten;
-//! outputs are the objects accepted with those receipts. `discarded_*` is the
-//! output of jobs that ended `ReplanRequired`: work that was done and then
-//! never published.
+//! are the sources of accepted tasks, which is the work actually rewritten.
+//! Accepted output is partitioned by the job's outcome so a byte is counted
+//! once: `output_*` is published work (`Succeeded`, `NoOp`), `discarded_*` is
+//! work a conflict threw away (`ReplanRequired`), and `abandoned_*` is work of
+//! jobs that ended `Cancelled` or `Failed`. Delete files are counted once per
+//! job, because a retained delete file can apply in several jobs.
 
 use bergsmith_common::ids::{JobId, OrganizationId, PrincipalId, TableId};
 use bergsmith_common::job::JobState;
@@ -63,7 +65,7 @@ pub struct MaintenanceTotals {
     pub input_files: i64,
     /// Bytes of those source files.
     pub input_bytes: i64,
-    /// Output objects of accepted tasks.
+    /// Output objects of published jobs (`Succeeded`, `NoOp`).
     pub output_files: i64,
     /// Bytes of those output objects.
     pub output_bytes: i64,
@@ -73,6 +75,11 @@ pub struct MaintenanceTotals {
     pub discarded_files: i64,
     /// Bytes of those discarded output files.
     pub discarded_bytes: i64,
+    /// Output files of jobs that ended `Cancelled` or `Failed`, which were
+    /// never published either.
+    pub abandoned_files: i64,
+    /// Bytes of those abandoned output files.
+    pub abandoned_bytes: i64,
 }
 
 /// The accepted-impact CTEs shared by history and totals.
@@ -88,12 +95,16 @@ macro_rules! impact {
              FROM jobs_in j \
              JOIN tasks t ON t.job_id = j.id \
              JOIN receipts rc ON rc.task_id = t.id \
-         ), rewritten AS ( \
-             SELECT a.job_id, task \
-             FROM accepted a \
-             JOIN plans p ON p.job_id = a.job_id \
+         ), plan_tasks AS MATERIALIZED ( \
+             SELECT p.job_id, task \
+             FROM jobs_in j \
+             JOIN plans p ON p.job_id = j.id \
              CROSS JOIN LATERAL jsonb_array_elements(COALESCE(p.content->'tasks', '[]'::jsonb)) task \
-             WHERE task->>'task_id' = a.task_id::text \
+         ), rewritten AS ( \
+             SELECT a.job_id, pt.task \
+             FROM accepted a \
+             JOIN plan_tasks pt \
+               ON pt.job_id = a.job_id AND pt.task->>'task_id' = a.task_id::text \
          ), sources AS ( \
              SELECT job_id, jsonb_array_elements(COALESCE(task->'sources', '[]'::jsonb)) source \
              FROM rewritten \
@@ -122,15 +133,25 @@ macro_rules! totals {
                     (SELECT count(*) FROM sources)::bigint AS input_files, \
                     (SELECT COALESCE(sum((source->>'file_size_bytes')::numeric), 0)::bigint \
                      FROM sources) AS input_bytes, \
-                    (SELECT count(*) FROM outputs)::bigint AS output_files, \
-                    (SELECT COALESCE(sum(size_bytes), 0)::bigint FROM outputs) AS output_bytes, \
-                    (SELECT count(DISTINCT entry->>'path') FROM deletes)::bigint \
-                        AS delete_files_applied, \
+                    (SELECT count(*) FROM outputs o JOIN jobs_in j \
+                        ON j.id = o.job_id AND j.state IN ('Succeeded', 'NoOp'))::bigint \
+                        AS output_files, \
+                    (SELECT COALESCE(sum(o.size_bytes), 0)::bigint FROM outputs o JOIN jobs_in j \
+                        ON j.id = o.job_id AND j.state IN ('Succeeded', 'NoOp')) AS output_bytes, \
+                    (SELECT count(*) FROM ( \
+                        SELECT DISTINCT job_id, entry->>'path' FROM deletes \
+                     ) applications)::bigint AS delete_files_applied, \
                     (SELECT count(*) FROM outputs o JOIN jobs_in j \
                         ON j.id = o.job_id AND j.state = 'ReplanRequired')::bigint \
                         AS discarded_files, \
                     (SELECT COALESCE(sum(o.size_bytes), 0)::bigint FROM outputs o JOIN jobs_in j \
-                        ON j.id = o.job_id AND j.state = 'ReplanRequired') AS discarded_bytes \
+                        ON j.id = o.job_id AND j.state = 'ReplanRequired') AS discarded_bytes, \
+                    (SELECT count(*) FROM outputs o JOIN jobs_in j \
+                        ON j.id = o.job_id AND j.state IN ('Cancelled', 'Failed'))::bigint \
+                        AS abandoned_files, \
+                    (SELECT COALESCE(sum(o.size_bytes), 0)::bigint FROM outputs o JOIN jobs_in j \
+                        ON j.id = o.job_id AND j.state IN ('Cancelled', 'Failed')) \
+                        AS abandoned_bytes \
          )"
     };
 }
@@ -321,6 +342,8 @@ struct TotalsRow {
     delete_files_applied: i64,
     discarded_files: i64,
     discarded_bytes: i64,
+    abandoned_files: i64,
+    abandoned_bytes: i64,
 }
 
 impl From<TotalsRow> for MaintenanceTotals {
@@ -339,6 +362,8 @@ impl From<TotalsRow> for MaintenanceTotals {
             delete_files_applied: row.delete_files_applied,
             discarded_files: row.discarded_files,
             discarded_bytes: row.discarded_bytes,
+            abandoned_files: row.abandoned_files,
+            abandoned_bytes: row.abandoned_bytes,
         }
     }
 }

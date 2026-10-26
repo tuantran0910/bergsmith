@@ -81,8 +81,9 @@ fn instant(at: chrono::DateTime<Utc>) -> String {
     at.to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-/// Two terminal jobs, one published and one discarded after a conflict.
-async fn ledger(conn: &mut PgConnection, tenant: &support::Tenant) -> (JobId, JobId) {
+/// Three terminal jobs: one published, one discarded after a conflict, and
+/// one stopped by cancellation.
+async fn ledger(conn: &mut PgConnection, tenant: &support::Tenant) -> (JobId, JobId, JobId) {
     let published = support::job(conn, tenant).await;
     let accepted = [TaskId::generate(), TaskId::generate()];
     record_plan(
@@ -97,28 +98,39 @@ async fn ledger(conn: &mut PgConnection, tenant: &support::Tenant) -> (JobId, Jo
         1_000,
     )
     .await;
-    // Two objects per accepted task would need two inserts; the helper writes
-    // one each, so the totals below are the sum of those objects.
     support::force_job_state(conn, published, JobState::Succeeded).await;
 
+    // The retained delete file applies again here, so the range total must
+    // count two applications, not one distinct path.
     let discarded = support::job(conn, tenant).await;
     record_plan(
         conn,
         discarded,
-        json!({"tasks": [task(TaskId::generate(), 100, None)]}),
+        json!({"tasks": [task(TaskId::generate(), 100, Some("shared-delete"))]}),
         1,
         4_000,
     )
     .await;
     support::force_job_state(conn, discarded, JobState::ReplanRequired).await;
-    (published, discarded)
+
+    let stopped = support::job(conn, tenant).await;
+    record_plan(
+        conn,
+        stopped,
+        json!({"tasks": [task(TaskId::generate(), 50, None)]}),
+        1,
+        800,
+    )
+    .await;
+    support::force_job_state(conn, stopped, JobState::Cancelled).await;
+    (published, discarded, stopped)
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
 async fn history_and_totals_count_accepted_work_and_discarded_output(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let tenant = support::tenant(&mut conn, "impact").await;
-    let (published, discarded) = ledger(&mut conn, &tenant).await;
+    let (published, discarded, stopped) = ledger(&mut conn, &tenant).await;
     drop(conn);
     let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
     let since = instant(Utc::now() - TimeDelta::hours(1));
@@ -129,40 +141,50 @@ async fn history_and_totals_count_accepted_work_and_discarded_output(pool: PgPoo
     assert_eq!(body["table_id"], tenant.table.to_string());
     let totals = &body["totals"];
     for (field, value) in [
-        ("jobs", "2"),
+        ("jobs", "3"),
         ("succeeded", "1"),
         ("no_op", "0"),
-        ("cancelled", "0"),
+        ("cancelled", "1"),
         ("replanned", "1"),
         ("failed", "0"),
-        ("input_files", "3"),
-        ("input_bytes", "127"),
-        ("output_files", "3"),
-        ("output_bytes", "6000"),
-        ("delete_files_applied", "1"),
+        ("input_files", "4"),
+        ("input_bytes", "177"),
+        // Published output only: the discarded and stopped jobs' outputs are
+        // reported in their own buckets, so no byte is counted twice.
+        ("output_files", "2"),
+        ("output_bytes", "2000"),
+        ("delete_files_applied", "2"),
         ("discarded_files", "1"),
         ("discarded_bytes", "4000"),
+        ("abandoned_files", "1"),
+        ("abandoned_bytes", "800"),
     ] {
         assert_eq!(totals[field], value, "{field}: {totals}");
     }
 
-    // Newest first: the discarded job was created after the published one.
+    // Newest first: cancellation came last, the conflict in the middle.
     let items = body["items"].as_array().unwrap();
-    assert_eq!(items.len(), 2);
-    assert_eq!(items[0]["job_id"], discarded.to_string());
-    assert_eq!(items[0]["state"], "ReplanRequired");
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[0]["job_id"], stopped.to_string());
+    assert_eq!(items[0]["state"], "Cancelled");
     assert_eq!(items[0]["input_files"], "1");
-    assert_eq!(items[0]["input_bytes"], "100");
-    assert_eq!(items[0]["output_files"], "1");
-    assert_eq!(items[0]["output_bytes"], "4000");
+    assert_eq!(items[0]["input_bytes"], "50");
+    assert_eq!(items[0]["output_bytes"], "800");
     assert_eq!(items[0]["delete_files_applied"], "0");
-    assert_eq!(items[1]["job_id"], published.to_string());
-    assert_eq!(items[1]["state"], "Succeeded");
-    assert_eq!(items[1]["input_files"], "2");
-    assert_eq!(items[1]["input_bytes"], "27");
-    assert_eq!(items[1]["output_files"], "2");
-    assert_eq!(items[1]["output_bytes"], "2000");
+    assert_eq!(items[1]["job_id"], discarded.to_string());
+    assert_eq!(items[1]["state"], "ReplanRequired");
+    assert_eq!(items[1]["input_files"], "1");
+    assert_eq!(items[1]["input_bytes"], "100");
+    assert_eq!(items[1]["output_files"], "1");
+    assert_eq!(items[1]["output_bytes"], "4000");
     assert_eq!(items[1]["delete_files_applied"], "1");
+    assert_eq!(items[2]["job_id"], published.to_string());
+    assert_eq!(items[2]["state"], "Succeeded");
+    assert_eq!(items[2]["input_files"], "2");
+    assert_eq!(items[2]["input_bytes"], "27");
+    assert_eq!(items[2]["output_files"], "2");
+    assert_eq!(items[2]["output_bytes"], "2000");
+    assert_eq!(items[2]["delete_files_applied"], "1");
     assert!(body["next_cursor"].is_null());
 
     // The organization aggregate reads the same ledger.
@@ -177,18 +199,30 @@ async fn history_and_totals_count_accepted_work_and_discarded_output(pool: PgPoo
     assert_eq!(status, StatusCode::OK, "{org}");
     assert_eq!(org["totals"], *totals);
 
-    // A page of one item continues with the older job.
+    // A page of two items continues with the older job, and the cursor keeps
+    // the range even when the caller sends a later `since`.
     let (status, first) = browser
-        .request("GET", &format!("{uri}&limit=1"), None, None)
+        .request("GET", &format!("{uri}&limit=2"), None, None)
         .await;
     assert_eq!(status, StatusCode::OK, "{first}");
-    assert_eq!(first["items"].as_array().unwrap().len(), 1);
-    assert_eq!(first["items"][0]["job_id"], discarded.to_string());
+    assert_eq!(first["items"].as_array().unwrap().len(), 2);
+    assert_eq!(first["items"][0]["job_id"], stopped.to_string());
+    assert_eq!(first["items"][1]["job_id"], discarded.to_string());
     let cursor = first["next_cursor"].as_str().unwrap();
+    let future = instant(Utc::now() + TimeDelta::hours(1));
     let (status, next) = browser
-        .request("GET", &format!("{uri}&limit=1&cursor={cursor}"), None, None)
+        .request(
+            "GET",
+            &format!(
+                "/api/v1/tables/{}/maintenance?limit=2&cursor={cursor}&since={future}",
+                tenant.table
+            ),
+            None,
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{next}");
+    assert_eq!(next["since"], first["since"]);
     assert_eq!(next["items"][0]["job_id"], published.to_string());
     assert!(next["next_cursor"].is_null());
 
@@ -244,7 +278,7 @@ async fn history_and_organization_totals_respect_grants(pool: PgPool) {
     .await;
     let (status, body) = viewer.request("GET", &uri, None, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["totals"]["jobs"], "2");
+    assert_eq!(body["totals"]["jobs"], "3");
 
     // The organization aggregate covers the granted table only.
     let (status, org) = viewer
@@ -256,8 +290,8 @@ async fn history_and_organization_totals_respect_grants(pool: PgPool) {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{org}");
-    assert_eq!(org["totals"]["jobs"], "2");
-    assert_eq!(org["totals"]["input_bytes"], "127");
+    assert_eq!(org["totals"]["jobs"], "3");
+    assert_eq!(org["totals"]["input_bytes"], "177");
 
     // A principal without a grant cannot tell the table exists.
     let browser = Browser::new(&pool, &tenant, outsider, "bob").await;
@@ -289,7 +323,7 @@ async fn history_and_organization_totals_respect_grants(pool: PgPool) {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{org}");
-    assert_eq!(org["totals"]["jobs"], "4");
+    assert_eq!(org["totals"]["jobs"], "6");
     assert_eq!(org["totals"]["discarded_files"], "2");
 
     // Another organization never sees these jobs.

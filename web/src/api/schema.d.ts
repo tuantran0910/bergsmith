@@ -1556,6 +1556,8 @@ export interface components {
             delete_files_applied: string;
             discarded_files: string;
             discarded_bytes: string;
+            abandoned_files: string;
+            abandoned_bytes: string;
         };
         MaintenanceEntry: {
             /** Format: uuid */
@@ -6255,9 +6257,9 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: number;
-                /** @description Opaque continuation bound to organization, principal, and resource. Current grants are rechecked. */
+                /** @description Opaque continuation bound to organization, principal, and resource. It also carries the range start, so a later page keeps the first page's range. Current grants are rechecked. */
                 cursor?: string;
-                /** @description Inclusive RFC 3339 lower bound. Defaults to thirty days ago. */
+                /** @description Inclusive RFC 3339 lower bound. Defaults to thirty days ago on the first page; later pages take the range from the cursor. */
                 since?: string;
             };
             header?: never;

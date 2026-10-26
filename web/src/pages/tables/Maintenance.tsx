@@ -119,7 +119,7 @@ export function TableMaintenance({ id }: { id: string }) {
                             <Metric
                                 label="Output size"
                                 value={exactBytes(totals.output_bytes)}
-                                detail={`${exactCount(totals.output_files)} files`}
+                                detail={`${exactCount(totals.output_files)} published files`}
                             />
                             <Metric
                                 label="Delete files applied"
@@ -129,6 +129,11 @@ export function TableMaintenance({ id }: { id: string }) {
                                 label="Work discarded"
                                 value={exactBytes(totals.discarded_bytes)}
                                 detail={`${exactCount(totals.discarded_files)} files, after conflicts`}
+                            />
+                            <Metric
+                                label="Stopped output"
+                                value={exactBytes(totals.abandoned_bytes)}
+                                detail={`${exactCount(totals.abandoned_files)} files from stopped jobs`}
                             />
                         </MetricGrid>
                     </CardContent>

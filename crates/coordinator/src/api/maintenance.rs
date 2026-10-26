@@ -4,7 +4,9 @@
 //! accepted tasks rewrote, and totals over the requested range. The
 //! organization reports the same totals over every table the caller may read
 //! jobs on. Counts and byte totals are decimal strings so a large rewrite never
-//! loses precision in a browser, and every timestamp is RFC 3339 in UTC.
+//! loses precision in a browser, and every timestamp is RFC 3339 in UTC. A
+//! cursor carries the range start, so a later page keeps the range the first
+//! page's totals describe.
 //!
 //! Work that a conflict discarded is counted, not hidden: the accepted output
 //! of jobs that ended `ReplanRequired` is reported as `discarded_*`, which is
@@ -64,13 +66,16 @@ pub(super) async fn table(
         caller.principal_id,
         TABLE_MAINTENANCE,
     )?;
-    let since = since(query.since.as_deref())?;
-    let after = page
-        .after
-        .as_deref()
-        .map(JobId::from_str)
-        .transpose()
-        .map_err(|_| ApiError::invalid())?;
+    // The cursor carries the range start, so a page loaded later cannot move
+    // the lower bound as "now" advances and silently drop jobs that the
+    // first page's totals still include.
+    let (since, after) = match page.after.as_deref() {
+        Some(raw) => {
+            let (since, after) = parse_after(raw)?;
+            (since, Some(after))
+        }
+        None => (since(query.since.as_deref())?, None),
+    };
     // An unknown or unreadable table is 404, as every table resource is; a
     // table the caller may see but not read jobs on is hidden the same way,
     // because this document is job data rather than inventory.
@@ -93,7 +98,7 @@ pub(super) async fn table(
     let totals = maintenance::table_totals(&mut conn, caller.organization_id, id, since).await?;
     let items = entries
         .iter()
-        .map(|entry| (entry.job_id.to_string(), entry_document(entry)))
+        .map(|entry| (encode_after(since, entry.job_id), entry_document(entry)))
         .collect();
     let mut body = page.finish(items)?;
     body["table_id"] = json!(id);
@@ -138,6 +143,23 @@ fn since(raw: Option<&str>) -> Result<DateTime<Utc>, ApiError> {
     }
 }
 
+/// The cursor key: the range start and the last job of the page.
+///
+/// [`Page`] treats the key as opaque and returns it as the next cursor, so the
+/// range travels with the page without widening the shared cursor format.
+fn encode_after(since: DateTime<Utc>, job: JobId) -> String {
+    format!("{}:{job}", since.timestamp_millis())
+}
+
+/// Reads a cursor key written by [`encode_after`].
+fn parse_after(raw: &str) -> Result<(DateTime<Utc>, JobId), ApiError> {
+    let (millis, job) = raw.split_once(':').ok_or_else(ApiError::invalid)?;
+    let millis: i64 = millis.parse().map_err(|_| ApiError::invalid())?;
+    let since = DateTime::from_timestamp_millis(millis).ok_or_else(ApiError::invalid)?;
+    let job = JobId::from_str(job).map_err(|_| ApiError::invalid())?;
+    Ok((since, job))
+}
+
 /// An instant as RFC 3339 with millisecond precision.
 fn stamp(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(SecondsFormat::Millis, true)
@@ -180,5 +202,7 @@ fn totals_document(totals: MaintenanceTotals) -> Value {
         "delete_files_applied": counter(totals.delete_files_applied),
         "discarded_files": counter(totals.discarded_files),
         "discarded_bytes": counter(totals.discarded_bytes),
+        "abandoned_files": counter(totals.abandoned_files),
+        "abandoned_bytes": counter(totals.abandoned_bytes),
     })
 }

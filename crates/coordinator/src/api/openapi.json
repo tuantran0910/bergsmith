@@ -5943,7 +5943,7 @@
           {
             "name": "cursor",
             "in": "query",
-            "description": "Opaque continuation bound to organization, principal, and resource. Current grants are rechecked.",
+            "description": "Opaque continuation bound to organization, principal, and resource. It also carries the range start, so a later page keeps the first page's range. Current grants are rechecked.",
             "schema": {
               "type": "string"
             }
@@ -5951,7 +5951,7 @@
           {
             "name": "since",
             "in": "query",
-            "description": "Inclusive RFC 3339 lower bound. Defaults to thirty days ago.",
+            "description": "Inclusive RFC 3339 lower bound. Defaults to thirty days ago on the first page; later pages take the range from the cursor.",
             "schema": {
               "type": "string",
               "format": "date-time"
@@ -9765,7 +9765,9 @@
           "output_bytes",
           "delete_files_applied",
           "discarded_files",
-          "discarded_bytes"
+          "discarded_bytes",
+          "abandoned_files",
+          "abandoned_bytes"
         ],
         "properties": {
           "jobs": {
@@ -9817,6 +9819,14 @@
             "pattern": "^[0-9]+$"
           },
           "discarded_bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "abandoned_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "abandoned_bytes": {
             "type": "string",
             "pattern": "^[0-9]+$"
           }

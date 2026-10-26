@@ -277,11 +277,13 @@ export const tableMaintenance = schema("TableMaintenancePage", {
         failed: "0",
         input_files: "3",
         input_bytes: "127",
-        output_files: "3",
-        output_bytes: "6000",
-        delete_files_applied: "1",
+        output_files: "2",
+        output_bytes: "2000",
+        delete_files_applied: "2",
         discarded_files: "1",
         discarded_bytes: "4000",
+        abandoned_files: "1",
+        abandoned_bytes: "800",
     },
     items: [
         {
