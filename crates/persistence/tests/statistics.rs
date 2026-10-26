@@ -12,7 +12,7 @@ use bergsmith_persistence::statistics::{self, NewTableSample};
 use bergsmith_persistence::{PersistenceError, tables, tenancy};
 use chrono::{DateTime, TimeDelta, Utc};
 use serde_json::json;
-use sqlx::PgPool;
+use sqlx::{Connection, PgPool};
 
 fn sample(connection: bergsmith_common::ids::CatalogConnectionId) -> NewTableSample {
     NewTableSample {
@@ -320,4 +320,300 @@ async fn totals_cover_the_newest_sample_of_visible_tables(pool: PgPool) {
             .await
             .is_ok()
     );
+}
+
+const HOUR_MS: i64 = 3_600_000;
+const LEDGER_BASE_MS: i64 = 1_767_225_600_000;
+
+fn snapshot(
+    connection: bergsmith_common::ids::CatalogConnectionId,
+    id: i64,
+    at_ms: i64,
+) -> statistics::NewTableSnapshot {
+    statistics::NewTableSnapshot {
+        catalog_connection_id: connection,
+        snapshot_id: id,
+        parent_snapshot_id: (id > 1).then_some(id - 1),
+        sequence_number: id,
+        committed_at: DateTime::from_timestamp_millis(at_ms).unwrap(),
+        operation: "append".to_owned(),
+        summary: json!({"added-data-files": "1", "bergsmith.job-id": "job"}),
+    }
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn snapshots_are_recorded_once_and_read_newest_first(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "snapshots").await;
+    let observed = DateTime::from_timestamp_millis(LEDGER_BASE_MS).unwrap();
+    let first = snapshot(tenant.connection, 1, LEDGER_BASE_MS);
+    let second = snapshot(tenant.connection, 2, LEDGER_BASE_MS + 60_000);
+    let third = snapshot(tenant.connection, 3, LEDGER_BASE_MS + 120_000);
+
+    assert!(
+        !statistics::has_snapshot(&mut conn, tenant.organization, tenant.table, 1)
+            .await
+            .unwrap()
+    );
+    let inserted = statistics::record_snapshots(
+        &mut conn,
+        tenant.organization,
+        tenant.table,
+        &[first.clone(), second.clone()],
+        observed,
+    )
+    .await
+    .unwrap();
+    assert_eq!(inserted, 2);
+    // A snapshot is never rewritten: a repeated pass inserts nothing.
+    let repeated = statistics::record_snapshots(
+        &mut conn,
+        tenant.organization,
+        tenant.table,
+        &[first.clone(), second.clone()],
+        observed,
+    )
+    .await
+    .unwrap();
+    assert_eq!(repeated, 0);
+    assert!(
+        statistics::has_snapshot(&mut conn, tenant.organization, tenant.table, 2)
+            .await
+            .unwrap()
+    );
+    statistics::record_snapshots(
+        &mut conn,
+        tenant.organization,
+        tenant.table,
+        std::slice::from_ref(&third),
+        observed,
+    )
+    .await
+    .unwrap();
+
+    let timeline =
+        statistics::snapshots(&mut conn, tenant.organization, tenant.table, None, None, 10)
+            .await
+            .unwrap();
+    assert_eq!(timeline.len(), 3);
+    assert_eq!(timeline[0].snapshot_id, 3);
+    assert_eq!(timeline[0].parent_snapshot_id, Some(2));
+    assert_eq!(timeline[0].operation, "append");
+    assert_eq!(timeline[0].summary["added-data-files"], "1");
+    assert_eq!(timeline[2].parent_snapshot_id, None);
+
+    let after = statistics::snapshots(
+        &mut conn,
+        tenant.organization,
+        tenant.table,
+        Some((third.committed_at, third.snapshot_id)),
+        None,
+        10,
+    )
+    .await
+    .unwrap();
+    assert_eq!(after.len(), 2);
+    assert_eq!(after[0].snapshot_id, 2);
+
+    let since = statistics::snapshots(
+        &mut conn,
+        tenant.organization,
+        tenant.table,
+        None,
+        Some(second.committed_at),
+        10,
+    )
+    .await
+    .unwrap();
+    assert_eq!(since.len(), 2);
+    assert_eq!(since[1].snapshot_id, 2);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn snapshot_retention_prunes_by_observation(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "snapshot-retention").await;
+    let observed = DateTime::from_timestamp_millis(LEDGER_BASE_MS).unwrap();
+    statistics::record_snapshots(
+        &mut conn,
+        tenant.organization,
+        tenant.table,
+        &[snapshot(tenant.connection, 1, LEDGER_BASE_MS)],
+        observed,
+    )
+    .await
+    .unwrap();
+    statistics::record_snapshots(
+        &mut conn,
+        tenant.organization,
+        tenant.table,
+        &[snapshot(tenant.connection, 2, LEDGER_BASE_MS + 60_000)],
+        observed + TimeDelta::days(100),
+    )
+    .await
+    .unwrap();
+
+    let pruned = statistics::prune_snapshots(&mut conn, observed + TimeDelta::days(100), 10)
+        .await
+        .unwrap();
+    assert_eq!(pruned, 1);
+    let remaining =
+        statistics::snapshots(&mut conn, tenant.organization, tenant.table, None, None, 10)
+            .await
+            .unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].snapshot_id, 2);
+
+    assert!(matches!(
+        statistics::prune_snapshots(&mut conn, observed, 0).await,
+        Err(PersistenceError::InvalidValue { .. })
+    ));
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn commit_hours_bucket_commits_in_utc(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "commit-hours").await;
+    let observed = DateTime::from_timestamp_millis(LEDGER_BASE_MS).unwrap();
+    let entries = [
+        snapshot(tenant.connection, 1, LEDGER_BASE_MS - 60_000),
+        snapshot(tenant.connection, 2, LEDGER_BASE_MS + 5 * 60_000),
+        snapshot(tenant.connection, 3, LEDGER_BASE_MS + 45 * 60_000),
+        snapshot(tenant.connection, 4, LEDGER_BASE_MS + HOUR_MS),
+    ];
+    statistics::record_snapshots(
+        &mut conn,
+        tenant.organization,
+        tenant.table,
+        &entries,
+        observed,
+    )
+    .await
+    .unwrap();
+
+    let hours = statistics::commit_hours(
+        &mut conn,
+        tenant.organization,
+        tenant.table,
+        observed - TimeDelta::hours(1),
+        observed + TimeDelta::hours(2),
+    )
+    .await
+    .unwrap();
+    assert_eq!(hours.len(), 3);
+    assert_eq!(hours[0].hour, observed - TimeDelta::hours(1));
+    assert_eq!(hours[0].commits, 1);
+    assert_eq!(hours[1].hour, observed);
+    assert_eq!(hours[1].commits, 2);
+    assert_eq!(hours[2].hour, observed + TimeDelta::hours(1));
+    assert_eq!(hours[2].commits, 1);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_shared_transaction_rolls_back_a_sample_with_its_snapshots(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "atomic").await;
+    let foreign = support::tenant(&mut conn, "atomic-other").await;
+    let observed = DateTime::from_timestamp_millis(LEDGER_BASE_MS).unwrap();
+    // The collector writes both rows in one transaction; a failed ledger
+    // insert must leave no sample behind for the next pass to mistake for
+    // current.
+    let mut tx = conn.begin().await.unwrap();
+    statistics::record(
+        &mut tx,
+        tenant.organization,
+        tenant.table,
+        &sample(tenant.connection),
+    )
+    .await
+    .unwrap();
+    let mut refused = snapshot(tenant.connection, 1, LEDGER_BASE_MS);
+    refused.catalog_connection_id = foreign.connection;
+    assert!(matches!(
+        statistics::record_snapshots(
+            &mut tx,
+            tenant.organization,
+            tenant.table,
+            &[refused],
+            observed
+        )
+        .await,
+        Err(PersistenceError::MissingReference { .. })
+    ));
+    tx.rollback().await.unwrap();
+
+    assert!(
+        statistics::latest(&mut conn, tenant.organization, tenant.table)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        !statistics::has_snapshot(&mut conn, tenant.organization, tenant.table, 1)
+            .await
+            .unwrap()
+    );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_rolled_back_snapshot_is_recognized_beside_a_newer_one(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "rolled-back").await;
+    let observed = DateTime::from_timestamp_millis(LEDGER_BASE_MS).unwrap();
+    statistics::record_snapshots(
+        &mut conn,
+        tenant.organization,
+        tenant.table,
+        &[
+            snapshot(tenant.connection, 1, LEDGER_BASE_MS),
+            snapshot(tenant.connection, 2, LEDGER_BASE_MS + 60_000),
+        ],
+        observed,
+    )
+    .await
+    .unwrap();
+
+    // A rollback points the table at the first commit while the ledger still
+    // holds the second, so the newest row says nothing about the current one.
+    for snapshot_id in [1, 2] {
+        assert!(
+            statistics::has_snapshot(&mut conn, tenant.organization, tenant.table, snapshot_id)
+                .await
+                .unwrap(),
+            "snapshot {snapshot_id}"
+        );
+    }
+    assert!(
+        !statistics::has_snapshot(&mut conn, tenant.organization, tenant.table, 3)
+            .await
+            .unwrap()
+    );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn snapshots_sharing_an_instant_are_both_recognized(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "same-instant").await;
+    let observed = DateTime::from_timestamp_millis(LEDGER_BASE_MS).unwrap();
+    statistics::record_snapshots(
+        &mut conn,
+        tenant.organization,
+        tenant.table,
+        &[
+            snapshot(tenant.connection, 6, LEDGER_BASE_MS),
+            snapshot(tenant.connection, 7, LEDGER_BASE_MS),
+        ],
+        observed,
+    )
+    .await
+    .unwrap();
+
+    for snapshot_id in [6, 7] {
+        assert!(
+            statistics::has_snapshot(&mut conn, tenant.organization, tenant.table, snapshot_id)
+                .await
+                .unwrap(),
+            "snapshot {snapshot_id}"
+        );
+    }
 }

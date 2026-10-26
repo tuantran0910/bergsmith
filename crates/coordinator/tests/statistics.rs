@@ -32,21 +32,34 @@ use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
 use serde_json::json;
 use sqlx::{ConnectOptions, PgPool};
 
-async fn fixture() -> Fixture {
-    let schema = Schema::builder()
+fn id_schema() -> Schema {
+    Schema::builder()
         .with_fields([Arc::new(NestedField::required(
             1,
             "id",
             Type::Primitive(PrimitiveType::Long),
         ))])
         .build()
-        .unwrap();
+        .unwrap()
+}
+
+async fn fixture() -> Fixture {
     let mut commit = Commit::new();
     for index in 0..5_i64 {
         commit = commit.file(FileSpec::data(format!("d{index}"), [row![1 => index]]));
     }
-    TableSpec::new(schema)
+    TableSpec::new(id_schema())
         .commit(commit)
+        .generate()
+        .await
+        .unwrap()
+}
+
+/// Two commits, so one snapshot can be missing while an older one remains.
+async fn committed_twice() -> Fixture {
+    TableSpec::new(id_schema())
+        .commit(Commit::new().file(FileSpec::data("d0", [row![1 => 0_i64]])))
+        .commit(Commit::new().file(FileSpec::data("d1", [row![1 => 1_i64]])))
         .generate()
         .await
         .unwrap()
@@ -218,6 +231,15 @@ async fn a_pass_samples_a_table_and_records_nothing_unchanged(pool: PgPool) {
     assert!(latest.data_bytes > 0);
     assert_eq!(latest.size_histogram.as_array().unwrap().len(), 6);
 
+    // The commit the sample was taken from reaches the snapshot ledger.
+    let recorded =
+        statistics::snapshots(&mut conn, tenant.organization, tenant.table, None, None, 10)
+            .await
+            .unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].snapshot_id, 1);
+    assert_eq!(recorded[0].operation, "append");
+
     // The same metadata location is not sampled again, even after the interval.
     let summary = collector.pass_at(now + TimeDelta::hours(1)).await.unwrap();
     assert_eq!(
@@ -232,6 +254,102 @@ async fn a_pass_samples_a_table_and_records_nothing_unchanged(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(history.len(), 1);
+    // An unchanged table does not re-record its commits either.
+    let repeated =
+        statistics::snapshots(&mut conn, tenant.organization, tenant.table, None, None, 10)
+            .await
+            .unwrap();
+    assert_eq!(repeated.len(), 1);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn an_unchanged_table_backfills_an_empty_snapshot_ledger(pool: PgPool) {
+    let fixture = fixture().await;
+    let mut server = mockito::Server::new_async().await;
+    serve_table(&mut server, &fixture).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = tenant(&mut conn, &server.url(), &fixture).await;
+    drop(conn);
+    let collector = collector(&pool).await;
+    let now = chrono::Utc::now();
+    collector.pass_at(now).await.unwrap();
+
+    // A table sampled before the ledger existed has a sample but no commits.
+    let mut conn = pool.acquire().await.unwrap();
+    sqlx::query("DELETE FROM table_snapshots")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    assert!(
+        !statistics::has_snapshot(&mut conn, tenant.organization, tenant.table, 1)
+            .await
+            .unwrap()
+    );
+    drop(conn);
+
+    let summary = collector.pass_at(now + TimeDelta::hours(1)).await.unwrap();
+    assert_eq!(summary.unchanged, 1);
+    let mut conn = pool.acquire().await.unwrap();
+    assert!(
+        statistics::has_snapshot(&mut conn, tenant.organization, tenant.table, 1)
+            .await
+            .unwrap()
+    );
+    let recorded =
+        statistics::snapshots(&mut conn, tenant.organization, tenant.table, None, None, 10)
+            .await
+            .unwrap();
+    assert_eq!(recorded.len(), 1);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn an_unchanged_table_repairs_a_ledger_that_is_behind(pool: PgPool) {
+    let fixture = committed_twice().await;
+    let mut server = mockito::Server::new_async().await;
+    serve_table(&mut server, &fixture).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = tenant(&mut conn, &server.url(), &fixture).await;
+    drop(conn);
+    let collector = collector(&pool).await;
+    let now = chrono::Utc::now();
+    collector.pass_at(now).await.unwrap();
+
+    // A write that did not commit leaves the newest commit unrecorded while
+    // the older one is still there.
+    let mut conn = pool.acquire().await.unwrap();
+    sqlx::query("DELETE FROM table_snapshots WHERE snapshot_id = 2")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    assert!(
+        !statistics::has_snapshot(&mut conn, tenant.organization, tenant.table, 2)
+            .await
+            .unwrap()
+    );
+    assert!(
+        statistics::has_snapshot(&mut conn, tenant.organization, tenant.table, 1)
+            .await
+            .unwrap()
+    );
+    drop(conn);
+
+    // The unchanged metadata still holds the commit, so the next pass
+    // restores it without duplicating the older row.
+    let summary = collector.pass_at(now + TimeDelta::hours(1)).await.unwrap();
+    assert_eq!(summary.unchanged, 1);
+    let mut conn = pool.acquire().await.unwrap();
+    assert!(
+        statistics::has_snapshot(&mut conn, tenant.organization, tenant.table, 2)
+            .await
+            .unwrap()
+    );
+    let recorded =
+        statistics::snapshots(&mut conn, tenant.organization, tenant.table, None, None, 10)
+            .await
+            .unwrap();
+    assert_eq!(recorded.len(), 2);
+    assert_eq!(recorded[0].snapshot_id, 2);
+    assert_eq!(recorded[1].snapshot_id, 1);
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]

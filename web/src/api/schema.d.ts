@@ -125,6 +125,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tables/{id}/snapshots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Recorded commits of one table, newest first, with the committing engine's summary properties and a commit-per-hour cadence chart ending with the current hour. A Bergsmith publication carries the job that published it. Per-partition counters are omitted unless the caller may submit jobs on the table, because their keys embed partition values. Unknown and inaccessible identifiers both return 404. */
+        get: operations["getTableSnapshots"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/statistics": {
         parameters: {
             query?: never;
@@ -1365,6 +1382,49 @@ export interface components {
             delete_files: string;
             small_files: string;
         };
+        TableSnapshotPage: {
+            items: components["schemas"]["TableSnapshot"][];
+            next_cursor: string | null;
+            cadence: components["schemas"]["SnapshotCadence"];
+        };
+        TableSnapshot: {
+            snapshot_id: string;
+            parent_snapshot_id: string | null;
+            sequence_number: string;
+            /** Format: date-time */
+            committed_at: string;
+            operation: string;
+            delta: components["schemas"]["SnapshotDelta"];
+            /** @description The Bergsmith job that published the snapshot, when the committing engine recorded one. */
+            job_id: string | null;
+            /** @description The committing engine's summary properties, including Bergsmith's own job, publication, and proposal evidence. Per-partition counters (`partitions.*`) are omitted without permission to submit jobs on the table. */
+            properties: {
+                [key: string]: string;
+            };
+        };
+        SnapshotDelta: {
+            added_data_files: string;
+            deleted_data_files: string;
+            added_records: string;
+            deleted_records: string;
+            added_bytes: string;
+            removed_bytes: string;
+            added_delete_files: string;
+            removed_delete_files: string;
+            added_position_deletes: string;
+            removed_position_deletes: string;
+            added_equality_deletes: string;
+            removed_equality_deletes: string;
+        };
+        SnapshotCadence: {
+            hours: number;
+            buckets: components["schemas"]["SnapshotHour"][];
+        };
+        SnapshotHour: {
+            /** Format: date-time */
+            start: string;
+            commits: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -2128,6 +2188,99 @@ export interface operations {
                 };
             };
             /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unknown or inaccessible resource */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    getTableSnapshots: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque continuation bound to organization, principal, and resource. Current grants are rechecked. */
+                cursor?: string;
+                /** @description Inclusive RFC 3339 lower bound for the timeline. */
+                since?: string;
+                /** @description How many hours the cadence chart covers, ending with the current hour. */
+                hours?: number;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Snapshot timeline page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TableSnapshotPage"];
+                };
+            };
+            /** @description Invalid request, cursor, or window */
             400: {
                 headers: {
                     [name: string]: unknown;

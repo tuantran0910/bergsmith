@@ -28,6 +28,9 @@ mod service_identities;
 #[path = "api/table_statistics.rs"]
 mod table_statistics;
 
+#[path = "api/table_snapshots.rs"]
+mod table_snapshots;
+
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, Request, StatusCode};

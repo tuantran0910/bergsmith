@@ -9,7 +9,7 @@ mod support;
 use std::path::PathBuf;
 
 use bergsmith_fixtures::{Commit, FileSpec, Fixture, TableSpec, Value, row};
-use bergsmith_maintenance::{StatisticsConfig, StatisticsError, TableSample};
+use bergsmith_maintenance::{StatisticsConfig, StatisticsError, TableSample, snapshot_history};
 use iceberg::spec::UnboundPartitionSpec;
 use support::{ID, by_tag, data, tagged};
 
@@ -230,4 +230,39 @@ async fn a_table_without_snapshots_is_an_empty_sample() {
     assert!(sample.size_histogram.iter().all(|bucket| bucket.files == 0));
     assert_eq!(sample.partition_count, 0);
     assert_eq!(sample.snapshot_count, 0);
+}
+
+#[tokio::test]
+async fn snapshot_history_lists_every_commit_newest_first() {
+    let fixture = mixed().await;
+    let entries = snapshot_history(fixture.metadata(), 10);
+
+    assert_eq!(entries.len(), 3);
+    let ids: Vec<i64> = entries.iter().map(|entry| entry.snapshot_id).collect();
+    assert_eq!(ids, [3, 2, 1]);
+    let operations: Vec<&str> = entries
+        .iter()
+        .map(|entry| entry.operation.as_str())
+        .collect();
+    assert_eq!(operations, ["delete", "append", "append"]);
+    assert_eq!(entries[0].parent_snapshot_id, Some(2));
+    assert_eq!(entries[2].parent_snapshot_id, None);
+    assert!(
+        entries
+            .windows(2)
+            .all(|pair| pair[0].committed_at >= pair[1].committed_at)
+    );
+    // The fixture declares no summary properties, so the engine's property
+    // map is empty rather than synthesized.
+    assert!(entries.iter().all(|entry| entry.properties.is_empty()));
+}
+
+#[tokio::test]
+async fn snapshot_history_is_bounded_to_the_newest_entries() {
+    let fixture = mixed().await;
+    let entries = snapshot_history(fixture.metadata(), 2);
+
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].snapshot_id, 3);
+    assert_eq!(entries[1].snapshot_id, 2);
 }

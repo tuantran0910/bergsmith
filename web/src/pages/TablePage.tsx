@@ -25,8 +25,9 @@ import { Card, CardContent } from "../ui/Card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/Tabs";
 import { PreviewView } from "./PreviewView";
 import { Access } from "./access/Access";
-import { namespaceKey, type TableTab } from "./tables/search";
+import { namespaceKey, tab, type TableTab } from "./tables/search";
 import { TableStatistics } from "./tables/Statistics";
+import { TableSnapshots } from "./tables/Snapshots";
 
 /** One table: its names and technical identity, then preview and run. */
 export function TablePage({ id }: { id: string }) {
@@ -155,11 +156,14 @@ export function TablePage({ id }: { id: string }) {
             <Tabs
                 value={current}
                 onValueChange={(next) => {
+                    const selected = tab(next);
                     void navigate({
                         to: "/tables/$tableId",
                         params: { tableId: id },
                         search:
-                            next === "statistics" ? { tab: "statistics" } : {},
+                            selected === undefined || selected === "overview"
+                                ? {}
+                                : { tab: selected },
                         replace: true,
                     });
                 }}
@@ -167,6 +171,7 @@ export function TablePage({ id }: { id: string }) {
             >
                 <TabsList>
                     <TabsTrigger value="overview">Overview</TabsTrigger>
+                    <TabsTrigger value="snapshots">Snapshots</TabsTrigger>
                     <TabsTrigger value="statistics">Statistics</TabsTrigger>
                 </TabsList>
                 <TabsContent value="overview">
@@ -314,6 +319,9 @@ export function TablePage({ id }: { id: string }) {
                         />
                     )}
                     {preview.data && <PreviewView preview={preview.data} />}
+                </TabsContent>
+                <TabsContent value="snapshots">
+                    <TableSnapshots id={id} />
                 </TabsContent>
                 <TabsContent value="statistics">
                     <TableStatistics id={id} />

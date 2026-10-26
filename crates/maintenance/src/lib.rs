@@ -42,4 +42,7 @@ pub use plan::{PlanDocument, PlanIds, PlannedDelete, PlannedFile, PlannedTask};
 pub use planner::{BinPreview, FileTally, NoOpReason, PlanInput, PlanOutcome, Planner, Preview};
 pub use rewrite::{AttemptContext, ExecutionRequest, ExecutionResult};
 pub use selection::PartitionPredicate;
-pub use statistics::{PartitionFiles, SizeBucket, StatisticsConfig, StatisticsError, TableSample};
+pub use statistics::{
+    PartitionFiles, SizeBucket, SnapshotDeltas, SnapshotEntry, StatisticsConfig, StatisticsError,
+    TableSample, snapshot_history,
+};
