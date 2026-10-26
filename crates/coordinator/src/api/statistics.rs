@@ -325,6 +325,7 @@ fn document(
                 "partition": partition.partition,
                 "files": partition.files.to_string(),
                 "bytes": partition.bytes.to_string(),
+                "delete_files": partition.delete_files.to_string(),
             }))
             .collect::<Vec<_>>(),
     }))

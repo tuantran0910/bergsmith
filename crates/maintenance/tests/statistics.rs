@@ -114,6 +114,7 @@ async fn partitions_are_grouped_by_spec_and_ordered_by_file_count() {
     assert_eq!(busiest.spec_id, 0);
     assert_eq!(busiest.partition, "tag=x");
     assert_eq!(busiest.files, 2);
+    assert_eq!(busiest.delete_files, 2);
     assert_eq!(
         busiest.bytes,
         size_of(&fixture, "x0") + size_of(&fixture, "x1")
@@ -122,6 +123,7 @@ async fn partitions_are_grouped_by_spec_and_ordered_by_file_count() {
     assert_eq!(unpartitioned.spec_id, 1);
     assert_eq!(unpartitioned.partition, "");
     assert_eq!(unpartitioned.files, 1);
+    assert_eq!(unpartitioned.delete_files, 0);
 }
 
 #[tokio::test]
@@ -136,6 +138,32 @@ async fn top_partitions_are_bounded() {
     assert_eq!(sample.partition_count, 2);
     assert_eq!(sample.top_partitions.len(), 1);
     assert_eq!(sample.top_partitions[0].partition, "tag=x");
+    assert_eq!(sample.top_partitions[0].delete_files, 2);
+}
+
+#[tokio::test]
+async fn delete_only_partitions_are_counted_but_not_listed() {
+    // Deletes in a partition with no live data file cannot appear in a list
+    // ordered by data-file count, but they are not lost: the totals keep them.
+    let fixture = TableSpec::new(tagged())
+        .partitioned_by(by_tag())
+        .commit(
+            Commit::new()
+                .file(data("x0", 2).partition([Value::string("x")]))
+                .file(
+                    FileSpec::position_deletes("p0", [("x0", 0)]).partition([Value::string("y")]),
+                ),
+        )
+        .generate()
+        .await
+        .unwrap();
+    let sample = sample(&fixture, &StatisticsConfig::default()).await;
+
+    assert_eq!(sample.delete_files, 1);
+    assert_eq!(sample.partition_count, 1);
+    assert_eq!(sample.top_partitions.len(), 1);
+    assert_eq!(sample.top_partitions[0].partition, "tag=x");
+    assert_eq!(sample.top_partitions[0].delete_files, 0);
 }
 
 #[tokio::test]
