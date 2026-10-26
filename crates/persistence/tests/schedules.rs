@@ -207,6 +207,183 @@ async fn schedule(
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn enabled_thresholds_are_read_per_table_and_skip_disabled_configuration(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let other = support::tenant(&mut conn, "other").await;
+    let service = service_principal(&mut conn, tenant.organization, "scheduler").await;
+    grant_role(
+        &mut conn,
+        tenant.organization,
+        service,
+        Role::MaintenanceService,
+        GrantScope::table(tenant.table),
+    )
+    .await;
+    let thresholds = HealthThresholds {
+        small_files: Thresholds {
+            warning: 64 * 1024 * 1024,
+            critical: 16 * 1024 * 1024,
+        },
+        ..HealthThresholds::default()
+    };
+    let strict = PolicyId::generate();
+    schedules::create_policy_with_health(
+        &mut conn,
+        &NewMaintenancePolicy {
+            id: strict,
+            organization_id: tenant.organization,
+            name: "strict".to_owned(),
+            specification: PolicySpec::default(),
+            created_by: tenant.user,
+        },
+        &thresholds,
+        None,
+    )
+    .await
+    .unwrap();
+    let lenient = policy(&mut conn, tenant.organization, tenant.user, "lenient").await;
+    schedule(&mut conn, &tenant, strict, service).await;
+    schedule(&mut conn, &tenant, lenient, service).await;
+
+    // Both enabled policies are read for the table, with the stored set.
+    let sets =
+        schedules::enabled_thresholds_for_tables(&mut conn, tenant.organization, &[tenant.table])
+            .await
+            .unwrap();
+    assert_eq!(sets.len(), 2);
+    let strict_set = sets.iter().find(|set| set.policy_id == strict).unwrap();
+    assert_eq!(strict_set.table_id, tenant.table);
+    assert_eq!(strict_set.policy_name, "strict");
+    assert_eq!(strict_set.thresholds().unwrap(), thresholds);
+    let lenient_set = sets.iter().find(|set| set.policy_id == lenient).unwrap();
+    assert_eq!(
+        lenient_set.thresholds().unwrap(),
+        HealthThresholds::default()
+    );
+
+    // A disabled policy admits nothing, so its set is omitted.
+    schedules::update_policy_with_health(
+        &mut conn,
+        tenant.organization,
+        strict,
+        &PolicyUpdate {
+            name: None,
+            specification: None,
+            enabled: Some(false),
+            expected_revision: 1,
+        },
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let sets =
+        schedules::enabled_thresholds_for_tables(&mut conn, tenant.organization, &[tenant.table])
+            .await
+            .unwrap();
+    assert_eq!(sets.len(), 1);
+    assert_eq!(sets[0].policy_id, lenient);
+
+    // Another organization's tables are not read, and neither is a table
+    // without a schedule.
+    assert!(
+        schedules::enabled_thresholds_for_tables(&mut conn, other.organization, &[tenant.table])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        schedules::enabled_thresholds_for_tables(&mut conn, tenant.organization, &[other.table])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn stored_threshold_sets_decode_on_demand_and_reject_corruption(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let service = service_principal(&mut conn, tenant.organization, "scheduler").await;
+    grant_role(
+        &mut conn,
+        tenant.organization,
+        service,
+        Role::MaintenanceService,
+        GrantScope::table(tenant.table),
+    )
+    .await;
+    let thresholds = HealthThresholds {
+        small_files: Thresholds {
+            warning: 64 * 1024 * 1024,
+            critical: 16 * 1024 * 1024,
+        },
+        ..HealthThresholds::default()
+    };
+    let policy_id = PolicyId::generate();
+    schedules::create_policy_with_health(
+        &mut conn,
+        &NewMaintenancePolicy {
+            id: policy_id,
+            organization_id: tenant.organization,
+            name: "strict".to_owned(),
+            specification: PolicySpec::default(),
+            created_by: tenant.user,
+        },
+        &thresholds,
+        None,
+    )
+    .await
+    .unwrap();
+    schedule(&mut conn, &tenant, policy_id, service).await;
+    let sets =
+        schedules::enabled_thresholds_for_tables(&mut conn, tenant.organization, &[tenant.table])
+            .await
+            .unwrap();
+    assert_eq!(sets.len(), 1);
+    assert_eq!(sets[0].thresholds().unwrap(), thresholds);
+
+    // A malformed stored set is reported by the decode, not by the read.
+    sqlx::query(
+        r#"UPDATE maintenance_policies SET health_thresholds =
+           '{"small_files": {"warning": "high"}}'::jsonb WHERE id = $1"#,
+    )
+    .bind(policy_id.as_uuid())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    let sets =
+        schedules::enabled_thresholds_for_tables(&mut conn, tenant.organization, &[tenant.table])
+            .await
+            .unwrap();
+    assert_eq!(sets.len(), 1);
+    assert!(matches!(
+        sets[0].thresholds(),
+        Err(PersistenceError::CorruptValue { .. })
+    ));
+
+    // An inverted ladder fails validation the same way.
+    sqlx::query(
+        r#"UPDATE maintenance_policies SET health_thresholds =
+           '{"small_files": {"warning": 1024, "critical": 1048576}}'::jsonb
+           WHERE id = $1"#,
+    )
+    .bind(policy_id.as_uuid())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    let sets =
+        schedules::enabled_thresholds_for_tables(&mut conn, tenant.organization, &[tenant.table])
+            .await
+            .unwrap();
+    assert!(matches!(
+        sets[0].thresholds(),
+        Err(PersistenceError::CorruptValue { .. })
+    ));
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
 async fn policies_round_trip_and_list_in_identifier_order(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let tenant = support::tenant(&mut conn, "acme").await;

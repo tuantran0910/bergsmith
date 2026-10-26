@@ -697,7 +697,7 @@
     "/api/v1/tables": {
       "get": {
         "operationId": "listTables",
-        "description": "Authorized summaries in ascending UUID order; authorization filters before pagination.",
+        "description": "Authorized summaries in ascending UUID order; authorization filters before pagination. Every row carries the table's health, evaluated from its newest sample and the thresholds of its enabled policies (ADR 0059). `health` keeps one exact state, and `sort=health` orders the worst state first (critical, warning, healthy, unassessed) with ties by id; either parameter evaluates every visible table, so the cost grows with the inventory, and a filtered cursor resumes after the health sort key. A cursor is only valid for the query shape that produced it.",
         "responses": {
           "400": {
             "description": "Invalid request or cursor",
@@ -787,6 +787,31 @@
             "description": "Opaque continuation bound to organization, principal, and resource. Current grants are rechecked.",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "health",
+            "in": "query",
+            "description": "Keep only tables whose evaluated state is exactly this one. An unassessed table has no complete sample.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "healthy",
+                "warning",
+                "critical",
+                "unassessed"
+              ]
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "description": "Order by evaluated state, worst first, ties by id. Applying `health` implies this order.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "health"
+              ]
             }
           }
         ]
@@ -6100,7 +6125,7 @@
     "/api/v1/tables/{id}/recommendations": {
       "get": {
         "operationId": "getTableRecommendations",
-        "description": "Health findings for one table from its newest metadata-only sample, and the action each finding recommends. An actionable finding carries the prefilled preview that assesses it and the planner's estimate from the current table; an advisory finding says why it cannot run yet. Visibility is checked first: a table outside the caller's inventory returns 404, and 403 is reserved for a visible table without jobs:submit. A table without a sample, or with a sample written before the current health counters, returns a null state with no findings or recommendations and performs no catalog request. Counters are decimal strings.",
+        "description": "Health findings for one table from its newest metadata-only sample, and the action each finding recommends. A table's state is the worst evaluation across its enabled policies' threshold sets, and every finding names the source of its thresholds (ADR 0059). An actionable finding carries the prefilled preview that assesses it and the planner's estimate from the current table; an advisory finding says why it cannot run yet. Visibility is checked first: a table outside the caller's inventory returns 404. Findings need inventory visibility only; the catalog assessment needs `jobs:submit`, and `assessment` says whether it is included. A table without a sample, or with a sample written before the current health counters, returns a null state with no findings or recommendations and performs no catalog request. Counters are decimal strings.",
         "parameters": [
           {
             "name": "id",
@@ -8068,7 +8093,8 @@
           "id",
           "table_uuid",
           "created_at",
-          "aliases"
+          "aliases",
+          "health"
         ],
         "properties": {
           "id": {
@@ -8099,6 +8125,10 @@
                 "type": "null"
               }
             ]
+          },
+          "health": {
+            "description": "Evaluated health of the table; `state` is null when unassessed.",
+            "$ref": "#/components/schemas/TableHealthSummary"
           }
         }
       },
@@ -10468,6 +10498,102 @@
           }
         }
       },
+      "TableHealthSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "One table's health as the list carries it, evaluated from the newest sample and the thresholds of its enabled policies (ADR 0059). A null state means the table has no complete sample.",
+        "required": [
+          "state",
+          "sampled_at",
+          "confirmed_at"
+        ],
+        "properties": {
+          "state": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "healthy",
+                  "warning",
+                  "critical"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when the table is unassessed."
+          },
+          "sampled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "confirmed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "HealthThresholdSource": {
+        "anyOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "The documented defaults in the health model.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "defaults"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "One policy's threshold overrides.",
+            "required": [
+              "kind",
+              "policy_id",
+              "policy_name"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "policy"
+                ]
+              },
+              "policy_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "policy_name": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "Where the finding's thresholds came from: the documented defaults, or the policy that supplied them."
+      },
       "TableHealthFinding": {
         "type": "object",
         "additionalProperties": false,
@@ -10478,7 +10604,8 @@
           "measured",
           "threshold",
           "unit",
-          "reason"
+          "reason",
+          "source"
         ],
         "properties": {
           "kind": {
@@ -10519,6 +10646,9 @@
           },
           "reason": {
             "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/HealthThresholdSource"
           }
         }
       },
@@ -10573,7 +10703,7 @@
       "TableHealthRecommendation": {
         "type": "object",
         "additionalProperties": false,
-        "description": "The action that resolves one finding. An advisory recommendation carries only the reason; an actionable one carries the preview and the planner's estimate.",
+        "description": "The action that resolves one finding. An advisory recommendation carries only the reason; an actionable one carries the preview and the planner's estimate when the caller may submit jobs and says so when it may not.",
         "required": [
           "kind",
           "action",
@@ -10582,7 +10712,8 @@
           "preview",
           "outcome",
           "no_op_reason",
-          "estimate"
+          "estimate",
+          "assessment"
         ],
         "properties": {
           "kind": {
@@ -10667,6 +10798,15 @@
                 "type": "null"
               }
             ]
+          },
+          "assessment": {
+            "type": "string",
+            "enum": [
+              "included",
+              "requires_jobs_submit",
+              "not_applicable"
+            ],
+            "description": "Whether the catalog assessment (preview, outcome, estimate) is included: `included` for an actionable recommendation the caller may assess, `requires_jobs_submit` when it is actionable but the caller lacks `jobs:submit`, and `not_applicable` for an advisory recommendation that has no assessment to include."
           }
         }
       },

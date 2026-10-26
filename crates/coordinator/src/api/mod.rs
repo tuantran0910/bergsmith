@@ -22,6 +22,7 @@ mod scheduling;
 mod service_identities;
 mod statistics;
 mod submission;
+mod tables;
 
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Request, State};
@@ -105,8 +106,8 @@ pub fn router(state: ApiState) -> Router {
             "/api/v1/catalogs/{id}/registrations",
             post(discovery::register).delete(discovery::unregister),
         )
-        .route("/api/v1/tables", get(resources::tables))
-        .route("/api/v1/tables/{id}", get(resources::table))
+        .route("/api/v1/tables", get(tables::tables))
+        .route("/api/v1/tables/{id}", get(tables::table))
         .route("/api/v1/tables/{id}/statistics", get(statistics::table))
         .route("/api/v1/tables/{id}/snapshots", get(statistics::snapshots))
         .route(

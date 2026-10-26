@@ -31,6 +31,9 @@ mod service_identities;
 #[path = "api/table_definition.rs"]
 mod table_definition;
 
+#[path = "api/table_health.rs"]
+mod table_health;
+
 #[path = "api/table_maintenance.rs"]
 mod table_maintenance;
 
@@ -292,11 +295,23 @@ fn check_contract(method: &str, uri: &str, status: StatusCode, body: &Value) {
     );
 }
 
+/// Follows `$ref` chains to the schema they name.
+fn resolve<'a>(document: &'a Value, schema: &'a Value) -> &'a Value {
+    let mut current = schema;
+    while let Some(reference) = current["$ref"].as_str() {
+        current = document
+            .pointer(reference.strip_prefix('#').unwrap())
+            .unwrap();
+    }
+    current
+}
+
 #[expect(
     clippy::panic,
     reason = "a schema type unsupported by the contract check must fail the test"
 )]
 fn check_schema(document: &Value, schema: &Value, body: &Value) {
+    let schema = resolve(document, schema);
     if let Some(reference) = schema["$ref"].as_str() {
         return check_schema(
             document,
@@ -310,6 +325,17 @@ fn check_schema(document: &Value, schema: &Value, body: &Value) {
         if body.is_null() {
             assert!(choices.iter().any(|choice| choice["type"] == "null"));
             return;
+        }
+        // A union whose branches carry a `kind` enum is a discriminated one;
+        // validate against the branch the response names.
+        if let Some(choice) = body.get("kind").and_then(Value::as_str).and_then(|kind| {
+            choices.iter().find(|choice| {
+                resolve(document, choice)["properties"]["kind"]["enum"]
+                    .as_array()
+                    .is_some_and(|values| values.iter().any(|value| value.as_str() == Some(kind)))
+            })
+        }) {
+            return check_schema(document, choice, body);
         }
         return check_schema(document, &choices[0], body);
     }
@@ -325,7 +351,12 @@ fn check_schema(document: &Value, schema: &Value, body: &Value) {
                 assert!(
                     fields
                         .keys()
-                        .all(|name| !schema["properties"][name].is_null())
+                        .all(|name| !schema["properties"][name].is_null()),
+                    "undocumented fields {:?} in {body}",
+                    fields
+                        .keys()
+                        .filter(|name| schema["properties"][name].is_null())
+                        .collect::<Vec<_>>()
                 );
             }
             for (name, value) in fields {
@@ -1653,6 +1684,9 @@ async fn recommendations_pair_findings_with_the_planner_estimate(pool: PgPool) {
     assert_eq!(body["findings"][0]["measured"], "4194304");
     assert_eq!(body["findings"][0]["unit"], "bytes");
     assert_eq!(body["findings"][1]["kind"], "snapshot_backlog");
+    // The defaults supplied both bounds, and the finding says so.
+    assert_eq!(body["findings"][0]["source"], json!({"kind": "defaults"}));
+    assert_eq!(body["findings"][1]["source"], json!({"kind": "defaults"}));
 
     // The actionable finding reuses the preview path and carries its estimate.
     assert_eq!(body["recommendations"][0]["kind"], "small_files");
@@ -1666,6 +1700,7 @@ async fn recommendations_pair_findings_with_the_planner_estimate(pool: PgPool) {
     assert_eq!(body["recommendations"][0]["outcome"], "planned");
     assert_eq!(body["recommendations"][0]["estimate"]["tasks"], "1");
     assert_eq!(body["recommendations"][0]["estimate"]["files"], "5");
+    assert_eq!(body["recommendations"][0]["assessment"], "included");
 
     // The M7 finding stays advisory and carries no estimate.
     assert_eq!(body["recommendations"][1]["kind"], "snapshot_backlog");
@@ -1674,6 +1709,7 @@ async fn recommendations_pair_findings_with_the_planner_estimate(pool: PgPool) {
     assert!(body["recommendations"][1]["reason"].is_string());
     assert_eq!(body["recommendations"][1]["preview"], Value::Null);
     assert_eq!(body["recommendations"][1]["estimate"], Value::Null);
+    assert_eq!(body["recommendations"][1]["assessment"], "not_applicable");
     config.assert_async().await;
     load.assert_async().await;
 }
@@ -1706,7 +1742,8 @@ async fn recommendations_hide_tables_outside_the_callers_grants(pool: PgPool) {
     let tenant = preview_tenant(&mut conn, "acme", &server.url(), fixture.metadata().uuid()).await;
     // No grants: the table is outside the caller's inventory.
     let outsider = support::user(&mut conn, tenant.organization, "bob").await;
-    // Views inventory but may not submit: a visible table, denied with 403.
+    // Views inventory but may not submit: findings stay readable, the catalog
+    // assessment does not.
     let viewer = support::user(&mut conn, tenant.organization, "viewer").await;
     grants::create_grant(
         &mut conn,
@@ -1721,6 +1758,24 @@ async fn recommendations_hide_tables_outside_the_callers_grants(pool: PgPool) {
     )
     .await
     .unwrap();
+    let at = chrono::DateTime::from_timestamp_micros(chrono::Utc::now().timestamp_micros())
+        .expect("the current instant");
+    bergsmith_persistence::statistics::record(
+        &mut conn,
+        tenant.organization,
+        tenant.table,
+        &health_sample(tenant.connection, at),
+    )
+    .await
+    .unwrap();
+    bergsmith_persistence::statistics::record_check(
+        &mut conn,
+        tenant.organization,
+        tenant.table,
+        at,
+    )
+    .await
+    .unwrap();
     drop(conn);
     let path = format!("/api/v1/tables/{}/recommendations", tenant.table);
 
@@ -1732,9 +1787,21 @@ async fn recommendations_hide_tables_outside_the_callers_grants(pool: PgPool) {
     let (status, _) = outside.request("GET", &unknown, None, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
+    // The findings are metadata the viewer may already read; only the
+    // estimate needs the submit grant, and no catalog request is made without
+    // it (no mock answers one).
     let reader = Browser::new(&pool, &tenant, viewer, "viewer").await;
-    let (status, _) = reader.request("GET", &path, None, None).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = reader.request("GET", &path, None, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "critical");
+    assert_eq!(body["findings"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        body["recommendations"][0]["assessment"],
+        "requires_jobs_submit"
+    );
+    assert_eq!(body["recommendations"][0]["advisory"], false);
+    assert_eq!(body["recommendations"][0]["preview"], Value::Null);
+    assert_eq!(body["recommendations"][0]["estimate"], Value::Null);
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]

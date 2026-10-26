@@ -161,7 +161,7 @@ pub(super) enum Resource {
 }
 
 impl Resource {
-    const fn name(self) -> &'static str {
+    pub(super) const fn name(self) -> &'static str {
         match self {
             Self::Catalog => "catalogs",
             Self::Table => "tables",
@@ -252,6 +252,31 @@ pub(super) async fn read(
         caller.principal_id,
         resource.name(),
     )?;
+    let rows = read_page(state, caller, resource, &page, id).await?;
+    if id.is_some() {
+        return rows
+            .into_iter()
+            .next()
+            .map(|(_, value)| Json(value))
+            .ok_or_else(ApiError::not_found);
+    }
+    Ok(Json(
+        page.finish(
+            rows.into_iter()
+                .map(|(id, value)| (id.to_string(), value))
+                .collect(),
+        )?,
+    ))
+}
+
+/// One page of `resource` rows within `page`, or the caller's `id` of it.
+pub(super) async fn read_page(
+    state: &ApiState,
+    caller: &bergsmith_persistence::auth::Session,
+    resource: Resource,
+    page: &Page,
+    id: Option<Uuid>,
+) -> Result<Vec<(Uuid, Value)>, ApiError> {
     let after = page
         .after
         .as_deref()
@@ -293,20 +318,90 @@ pub(super) async fn read(
             .fetch_all(state.database.pool())
             .await?
     };
-    if id.is_some() {
-        return rows
-            .into_iter()
-            .next()
-            .map(|(_, value)| Json(value))
-            .ok_or_else(ApiError::not_found);
-    }
-    Ok(Json(
-        page.finish(
-            rows.into_iter()
-                .map(|(id, value)| (id.to_string(), value))
-                .collect(),
-        )?,
+    Ok(rows)
+}
+
+/// The ids of the caller's visible tables, ascending, strictly after `after`.
+///
+/// The health filter walks the inventory in this order because a table's state
+/// is evaluated from its sample rather than stored, so no bounded SQL predicate
+/// can select a page of matches.
+pub(super) async fn visible_table_ids(
+    state: &ApiState,
+    caller: &bergsmith_persistence::auth::Session,
+    after: Option<Uuid>,
+    limit: i64,
+) -> Result<Vec<Uuid>, ApiError> {
+    let roles: Vec<_> = Resource::Table
+        .permission()
+        .roles()
+        .iter()
+        .map(|role| role.as_str())
+        .collect();
+    let rows: Vec<Uuid> = match after {
+        Some(after) => {
+            sqlx::query_scalar(concat!(
+                "SELECT r.id FROM table_identities r JOIN table_identities t ON t.id = r.id \
+                 WHERE r.organization_id = $1 AND ",
+                table_access!(),
+                " AND r.id > $4 ORDER BY r.id LIMIT $5"
+            ))
+            .bind(caller.organization_id.as_uuid())
+            .bind(caller.principal_id.as_uuid())
+            .bind(roles)
+            .bind(after)
+            .bind(limit)
+            .fetch_all(state.database.pool())
+            .await?
+        }
+        None => {
+            sqlx::query_scalar(concat!(
+                "SELECT r.id FROM table_identities r JOIN table_identities t ON t.id = r.id \
+                 WHERE r.organization_id = $1 AND ",
+                table_access!(),
+                " ORDER BY r.id LIMIT $4"
+            ))
+            .bind(caller.organization_id.as_uuid())
+            .bind(caller.principal_id.as_uuid())
+            .bind(roles)
+            .bind(limit)
+            .fetch_all(state.database.pool())
+            .await?
+        }
+    };
+    Ok(rows)
+}
+
+/// The summaries of `ids` the caller may see, in ascending id order.
+///
+/// A table that stops being visible between the scan and this read is simply
+/// absent, which keeps a page's grant filtering identical to the plain list.
+pub(super) async fn table_summaries(
+    state: &ApiState,
+    caller: &bergsmith_persistence::auth::Session,
+    ids: &[Uuid],
+) -> Result<Vec<(Uuid, Value)>, ApiError> {
+    let roles: Vec<_> = Resource::Table
+        .permission()
+        .roles()
+        .iter()
+        .map(|role| role.as_str())
+        .collect();
+    let rows: Vec<(Uuid, Value)> = sqlx::query_as(concat!(
+        "SELECT r.id, ",
+        table_summary!(),
+        " AS document FROM table_identities r JOIN table_identities t ON t.id = r.id \
+         WHERE r.organization_id = $1 AND ",
+        table_access!(),
+        " AND r.id = ANY($4) ORDER BY r.id"
     ))
+    .bind(caller.organization_id.as_uuid())
+    .bind(caller.principal_id.as_uuid())
+    .bind(roles)
+    .bind(ids.to_vec())
+    .fetch_all(state.database.pool())
+    .await?;
+    Ok(rows)
 }
 
 pub(super) async fn catalogs(
@@ -318,20 +413,6 @@ pub(super) async fn catalogs(
         &state,
         &caller.0,
         Resource::Catalog,
-        query.map_err(|_| ApiError::invalid())?.0,
-        None,
-    )
-    .await
-}
-pub(super) async fn tables(
-    State(state): State<ApiState>,
-    caller: Caller,
-    query: Result<Query<PageQuery>, axum::extract::rejection::QueryRejection>,
-) -> Result<Json<Value>, ApiError> {
-    read(
-        &state,
-        &caller.0,
-        Resource::Table,
         query.map_err(|_| ApiError::invalid())?.0,
         None,
     )
@@ -404,20 +485,6 @@ pub(super) async fn catalog(
     }
     tx.commit().await?;
     Ok(summary)
-}
-pub(super) async fn table(
-    State(state): State<ApiState>,
-    caller: Caller,
-    id: Result<Path<Uuid>, axum::extract::rejection::PathRejection>,
-) -> Result<Json<Value>, ApiError> {
-    read(
-        &state,
-        &caller.0,
-        Resource::Table,
-        PageQuery::default(),
-        Some(id.map_err(|_| ApiError::invalid())?.0),
-    )
-    .await
 }
 pub(super) async fn job(
     State(state): State<ApiState>,

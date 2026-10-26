@@ -211,6 +211,13 @@ pub struct StatisticsTotals {
 }
 
 #[derive(sqlx::FromRow)]
+struct TableSampleRow {
+    table_identity_id: Uuid,
+    #[sqlx(flatten)]
+    sample: SampleRow,
+}
+
+#[derive(sqlx::FromRow)]
 struct SampleRow {
     sampled_at: DateTime<Utc>,
     sample_version: i16,
@@ -421,6 +428,75 @@ pub async fn latest(
     .fetch_optional(conn)
     .await?;
     Ok(row.map(StoredTableSample::from))
+}
+
+/// The newest sample of each of `table_ids`, keyed by table.
+///
+/// Batch form of [`latest`] for the tables list and its health filter, which
+/// evaluate a page or a whole visible inventory at once. Tables without a
+/// sample are absent from the result, and the order is the table id order the
+/// query plans on.
+///
+/// # Errors
+///
+/// [`PersistenceError::Database`] when the query fails.
+pub async fn latest_for_tables(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    table_ids: &[TableId],
+) -> Result<Vec<(TableId, StoredTableSample)>, PersistenceError> {
+    let ids: Vec<Uuid> = table_ids.iter().map(|table| *table.as_uuid()).collect();
+    let rows: Vec<TableSampleRow> = sqlx::query_as(concat!(
+        "SELECT DISTINCT ON (table_identity_id) table_identity_id, sampled_at, \
+         catalog_connection_id, ",
+        sample_columns!(),
+        " FROM table_statistics WHERE organization_id = $1 AND table_identity_id = ANY($2) \
+         ORDER BY table_identity_id, sampled_at DESC"
+    ))
+    .bind(organization_id.as_uuid())
+    .bind(&ids)
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            (
+                TableId::from_uuid(row.table_identity_id),
+                StoredTableSample::from(row.sample),
+            )
+        })
+        .collect())
+}
+
+/// When each of `table_ids` was last confirmed fresh, omitting tables never
+/// checked.
+///
+/// Batch form of the check half of [`last_confirmed_at`]; a caller that also
+/// holds the newest sample folds the sample's instant in, as that function
+/// does.
+///
+/// # Errors
+///
+/// [`PersistenceError::Database`] when the query fails.
+pub async fn checks_for_tables(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    table_ids: &[TableId],
+) -> Result<Vec<(TableId, DateTime<Utc>)>, PersistenceError> {
+    let ids: Vec<Uuid> = table_ids.iter().map(|table| *table.as_uuid()).collect();
+    let rows: Vec<(Uuid, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT table_identity_id, checked_at FROM table_statistics_checks \
+         WHERE organization_id = $1 AND table_identity_id = ANY($2) \
+         ORDER BY table_identity_id",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(&ids)
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(table, checked_at)| (TableId::from_uuid(table), checked_at))
+        .collect())
 }
 
 /// Samples of `table_id` newest first, starting strictly before `before` and
