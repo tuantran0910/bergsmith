@@ -12,7 +12,7 @@ use bergsmith_common::ids::TableId;
 use bergsmith_common::permission::Permission;
 use serde_json::{Value, json};
 
-use super::preview::{failed, resolve};
+use super::preview::{MissingTable, failed, resolve};
 use super::{ApiError, ApiState, Caller};
 
 /// Reports `table`'s definition from its catalog metadata.
@@ -26,7 +26,16 @@ pub(super) async fn definition(
     id: Result<axum::extract::Path<uuid::Uuid>, axum::extract::rejection::PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let table = TableId::from_uuid(id.map_err(|_| ApiError::invalid())?.0);
-    let target = resolve(&state, &caller, table, Permission::ViewInventory).await?;
+    // An inventory read hides existence: a table outside the caller's grants
+    // is 404, exactly as `GET /api/v1/tables/{id}` reports it.
+    let target = resolve(
+        &state,
+        &caller,
+        table,
+        Permission::ViewInventory,
+        MissingTable::NotFound,
+    )
+    .await?;
     let definition = state
         .previews
         .definition(&target)

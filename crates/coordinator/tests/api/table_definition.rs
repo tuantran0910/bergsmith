@@ -181,7 +181,7 @@ async fn definition_is_available_to_a_viewer(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
-async fn a_principal_without_a_grant_is_denied(pool: PgPool) {
+async fn an_invisible_table_is_not_found(pool: PgPool) {
     let fixture = evolved_table().await;
     let mut server = mockito::Server::new_async().await;
     let config = server
@@ -197,8 +197,9 @@ async fn a_principal_without_a_grant_is_denied(pool: PgPool) {
     let browser = Browser::new(&pool, &tenant, outsider, "bob").await;
     let uri = format!("/api/v1/tables/{}/definition", tenant.table);
     let (status, body) = browser.request("GET", &uri, None, None).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    // Authorization is decided before any catalog request.
+    // An inventory read hides existence: the same 404 as an unknown table.
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    // Visibility is decided from the ledger, before any catalog request.
     config.assert_async().await;
 }
 

@@ -231,8 +231,10 @@ fn type_text(field_type: &Type) -> String {
             field_text(&list.element_field)
         ),
         Type::Map(map) => format!(
-            "map<{}, {}>",
+            "map<{}: {}, {}: {}>",
+            map.key_field.id,
             field_text(&map.key_field),
+            map.value_field.id,
             field_text(&map.value_field)
         ),
         Type::Variant(_) => "variant".to_owned(),

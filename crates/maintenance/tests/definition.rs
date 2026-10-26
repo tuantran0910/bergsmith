@@ -10,8 +10,8 @@ use std::sync::Arc;
 use bergsmith_fixtures::{Commit, FileSpec, Row, TableSpec, Value, row};
 use bergsmith_maintenance::{DEFINITION_PROPERTIES, TableDefinition};
 use iceberg::spec::{
-    FormatVersion, NestedField, NullOrder, PrimitiveType, Schema, SortDirection, SortField,
-    SortOrder, StructType, TableMetadata, TableMetadataBuilder, Transform, Type,
+    FormatVersion, ListType, MapType, NestedField, NullOrder, PrimitiveType, Schema, SortDirection,
+    SortField, SortOrder, StructType, TableMetadata, TableMetadataBuilder, Transform, Type,
     UnboundPartitionSpec,
 };
 use uuid::Uuid;
@@ -33,6 +33,24 @@ fn schema_with_struct() -> Schema {
                     NestedField::optional(4, "x", Type::Primitive(PrimitiveType::Double)).into(),
                     NestedField::optional(5, "y", Type::Primitive(PrimitiveType::Double)).into(),
                 ])),
+            )
+            .into(),
+            NestedField::optional(
+                6,
+                "tags",
+                Type::List(ListType::new(
+                    NestedField::optional(7, "element", Type::Primitive(PrimitiveType::String))
+                        .into(),
+                )),
+            )
+            .into(),
+            NestedField::optional(
+                8,
+                "attributes",
+                Type::Map(MapType::new(
+                    NestedField::required(9, "key", Type::Primitive(PrimitiveType::String)).into(),
+                    NestedField::optional(10, "value", Type::Primitive(PrimitiveType::Long)).into(),
+                )),
             )
             .into(),
         ])
@@ -100,7 +118,7 @@ fn definition_reports_the_current_schema_and_every_spec() {
     assert_eq!(definition.format_version, "v2");
     assert_eq!(definition.schema.schema_id, 0);
     let fields = &definition.schema.fields;
-    assert_eq!(fields.len(), 3);
+    assert_eq!(fields.len(), 5);
     assert_eq!(fields[0].id, ID);
     assert_eq!(fields[0].name, "id");
     assert_eq!(fields[0].field_type, "long");
@@ -110,7 +128,12 @@ fn definition_reports_the_current_schema_and_every_spec() {
     assert!(!fields[1].required);
     assert_eq!(
         fields[2].field_type,
-        "struct<4: x: optional double, 5: y: optional double>"
+        "struct<6: x: optional double, 7: y: optional double>"
+    );
+    assert_eq!(fields[3].field_type, "list<8: element: optional string>");
+    assert_eq!(
+        fields[4].field_type,
+        "map<9: key: required string, 10: value: optional long>"
     );
 
     let specs = &definition.partition_specs;

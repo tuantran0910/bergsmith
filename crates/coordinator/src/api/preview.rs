@@ -40,7 +40,14 @@ pub(super) async fn preview(
     body: Result<Json<PreviewRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let request = json_body(body)?;
-    let target = resolve(&state, &caller, request.table_id, Permission::SubmitJobs).await?;
+    let target = resolve(
+        &state,
+        &caller,
+        request.table_id,
+        Permission::SubmitJobs,
+        MissingTable::Forbidden,
+    )
+    .await?;
     let assessed = state
         .previews
         .preview_target(caller.principal_id, &target)
@@ -49,40 +56,79 @@ pub(super) async fn preview(
     Ok(Json(report(request.table_id, &assessed)))
 }
 
+/// What a caller learns when no grant lets them use the table.
+#[derive(Clone, Copy)]
+pub(super) enum MissingTable {
+    /// Report a known table the caller lacks `permission` on as 403 and audit
+    /// it. A preview needs this: asking to assess a table the caller cannot
+    /// reach is an authorization failure, not a missing table.
+    Forbidden,
+    /// Report an unknown or invisible table as 404, so its existence stays
+    /// hidden. Inventory reads use this, as their resource queries do.
+    NotFound,
+}
+
 /// Resolves the catalog name and connection the caller may read `table` from
 /// under `permission`.
 ///
-/// Existence is checked first, so an unknown table is 404 while a known table
-/// the caller lacks `permission` on is 403 and audited. Every step is a ledger
-/// read; the connection is released before any catalog I/O.
+/// The caller's grants are checked before any catalog I/O, and
+/// [`MissingTable`] decides whether a table outside them reads as 403 or 404.
+/// Every step is a ledger read; the connection is released before any catalog
+/// request.
 pub(super) async fn resolve(
     state: &ApiState,
     caller: &Caller,
     table: TableId,
     permission: Permission,
+    missing: MissingTable,
 ) -> Result<PreviewTarget, ApiError> {
     let mut conn = state.database.pool().acquire().await?;
     let identity = tables::table_identity(&mut conn, caller.organization_id, table).await?;
-    resources::require(
-        &mut conn,
-        &caller.0,
-        permission,
-        ResourceScope::Table(table),
-    )
-    .await?;
     let roles: Vec<&str> = permission
         .roles()
         .iter()
         .map(|role| role.as_str())
         .collect();
-    let aliases = tables::accessible_aliases_with_connections(
-        &mut conn,
-        caller.organization_id,
-        caller.principal_id,
-        &roles,
-        table,
-    )
-    .await?;
+    let aliases = match missing {
+        MissingTable::Forbidden => {
+            resources::require(
+                &mut conn,
+                &caller.0,
+                permission,
+                ResourceScope::Table(table),
+            )
+            .await?;
+            tables::accessible_aliases_with_connections(
+                &mut conn,
+                caller.organization_id,
+                caller.principal_id,
+                &roles,
+                table,
+            )
+            .await?
+        }
+        MissingTable::NotFound => {
+            let aliases = tables::accessible_aliases_with_connections(
+                &mut conn,
+                caller.organization_id,
+                caller.principal_id,
+                &roles,
+                table,
+            )
+            .await?;
+            if aliases.is_empty() {
+                return Err(ApiError::not_found());
+            }
+            resources::require(
+                &mut conn,
+                &caller.0,
+                permission,
+                ResourceScope::Table(table),
+            )
+            .await?;
+            aliases
+        }
+    };
     // The permission check and this query apply the same grant predicate, so
     // an empty result here would mean the grants changed mid-request.
     if !aliases.is_empty() && !aliases.iter().any(|target| target.connection.enabled) {
