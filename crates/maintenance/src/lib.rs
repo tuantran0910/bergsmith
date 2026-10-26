@@ -18,6 +18,7 @@ mod eligibility;
 mod error;
 mod execution_io;
 mod executor;
+mod health;
 mod hex;
 mod inventory;
 mod limits;
@@ -41,6 +42,9 @@ pub use definition::{
 pub use eligibility::{KeyProblem, Rejection, SkipReason};
 pub use error::PlanError;
 pub use executor::{ExecutionInput, Executor, ExecutorError, NativeExecutor, PreparedScan};
+pub use health::{
+    Finding, HealthError, HealthState, Severity, TableHealth, ThresholdSource, evaluate,
+};
 pub use limits::{ExecutionLimits, ResourceLimit};
 pub use partition::{PartitionKey, PartitionValue};
 pub use plan::{PlanDocument, PlanIds, PlannedDelete, PlannedFile, PlannedTask};
