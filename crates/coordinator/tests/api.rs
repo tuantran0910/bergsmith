@@ -1139,6 +1139,7 @@ fn openapi_documents_every_route() {
         ("/api/v1/tables/{id}/snapshots", "get"),
         ("/api/v1/tables/{id}/definition", "get"),
         ("/api/v1/tables/{id}/maintenance", "get"),
+        ("/api/v1/tables/{id}/recommendations", "get"),
         ("/api/v1/statistics/maintenance", "get"),
         ("/api/v1/overview", "get"),
         ("/api/v1/tables/{id}/statistics", "get"),
@@ -1572,6 +1573,121 @@ async fn preview_assesses_a_table_without_creating_work(pool: PgPool) {
             .await
             .unwrap();
     assert_eq!(counts, (0, 0), "a preview creates no job and no audit row");
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn recommendations_pair_findings_with_the_planner_estimate(pool: PgPool) {
+    use bergsmith_persistence::statistics::{self as samples, NewTableSample};
+
+    let fixture = fixture_table().await;
+    let mut server = mockito::Server::new_async().await;
+    let config = catalog_config_mock(&mut server).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = preview_tenant(&mut conn, "acme", &server.url(), fixture.metadata().uuid()).await;
+    let load = load_mock(&mut server, &fixture, "events").await;
+    let at = chrono::DateTime::from_timestamp_micros(chrono::Utc::now().timestamp_micros())
+        .expect("the current instant");
+    let snapshot = fixture.metadata().current_snapshot_id();
+    samples::record(
+        &mut conn,
+        tenant.organization,
+        tenant.table,
+        &NewTableSample {
+            catalog_connection_id: tenant.connection,
+            sampled_at: at,
+            metadata_location: fixture.metadata_location().to_owned(),
+            snapshot_id: snapshot,
+            last_operation: Some("append".to_owned()),
+            record_count: 5,
+            data_files: 5,
+            // Four MiB per file: below the critical small-file bound.
+            data_bytes: 5 * 4 * 1024 * 1024,
+            delete_files: 0,
+            delete_bytes: 0,
+            position_delete_files: 0,
+            equality_delete_files: 0,
+            position_delete_records: 0,
+            equality_delete_records: 0,
+            manifest_count: 1,
+            data_manifest_count: 1,
+            manifest_bytes: 1_024,
+            partition_count: 0,
+            max_partition_files: 0,
+            small_files: 5,
+            target_file_size_bytes: 512 * 1024 * 1024,
+            // Above the snapshot warning bound, which is advisory.
+            snapshot_count: 1_500,
+            oldest_snapshot_at: Some(at),
+            newest_snapshot_at: Some(at),
+            size_histogram: json!([]),
+            top_partitions: json!([]),
+        },
+    )
+    .await
+    .unwrap();
+    samples::record_check(&mut conn, tenant.organization, tenant.table, at)
+        .await
+        .unwrap();
+    drop(conn);
+    let admin = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+    let path = format!("/api/v1/tables/{}/recommendations", tenant.table);
+    let (status, body) = admin.request("GET", &path, None, None).await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "critical");
+    assert_eq!(
+        body["sampled_at"],
+        at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
+    );
+    assert_eq!(body["findings"].as_array().unwrap().len(), 2);
+    assert_eq!(body["findings"][0]["kind"], "small_files");
+    assert_eq!(body["findings"][0]["severity"], "critical");
+    assert_eq!(body["findings"][0]["measured"], "4194304");
+    assert_eq!(body["findings"][0]["unit"], "bytes");
+    assert_eq!(body["findings"][1]["kind"], "snapshot_backlog");
+
+    // The actionable finding reuses the preview path and carries its estimate.
+    assert_eq!(body["recommendations"][0]["kind"], "small_files");
+    assert_eq!(body["recommendations"][0]["action"], "compaction");
+    assert_eq!(body["recommendations"][0]["advisory"], false);
+    assert_eq!(body["recommendations"][0]["reason"], Value::Null);
+    assert_eq!(
+        body["recommendations"][0]["preview"]["table_id"],
+        tenant.table.to_string()
+    );
+    assert_eq!(body["recommendations"][0]["outcome"], "planned");
+    assert_eq!(body["recommendations"][0]["estimate"]["tasks"], "1");
+    assert_eq!(body["recommendations"][0]["estimate"]["files"], "5");
+
+    // The M7 finding stays advisory and carries no estimate.
+    assert_eq!(body["recommendations"][1]["kind"], "snapshot_backlog");
+    assert_eq!(body["recommendations"][1]["action"], "snapshot_expiration");
+    assert_eq!(body["recommendations"][1]["advisory"], true);
+    assert!(body["recommendations"][1]["reason"].is_string());
+    assert_eq!(body["recommendations"][1]["preview"], Value::Null);
+    assert_eq!(body["recommendations"][1]["estimate"], Value::Null);
+    config.assert_async().await;
+    load.assert_async().await;
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn recommendations_without_a_sample_do_not_touch_the_catalog(pool: PgPool) {
+    let fixture = fixture_table().await;
+    // No catalog mock exists: a catalog request would fail the response.
+    let server = mockito::Server::new_async().await;
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = preview_tenant(&mut conn, "acme", &server.url(), fixture.metadata().uuid()).await;
+    drop(conn);
+    let admin = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+    let path = format!("/api/v1/tables/{}/recommendations", tenant.table);
+    let (status, body) = admin.request("GET", &path, None, None).await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], Value::Null);
+    assert_eq!(body["sampled_at"], Value::Null);
+    assert_eq!(body["confirmed_at"], Value::Null);
+    assert_eq!(body["findings"], json!([]));
+    assert_eq!(body["recommendations"], json!([]));
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]

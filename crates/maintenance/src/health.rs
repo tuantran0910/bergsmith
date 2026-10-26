@@ -114,6 +114,80 @@ pub struct TableHealth {
     pub source: ThresholdSource,
 }
 
+/// A maintenance action a finding recommends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecommendationAction {
+    /// Rewrite small data files, or remove the deletes that pressure them.
+    Compaction,
+    /// Expire retained snapshots (BS-031).
+    SnapshotExpiration,
+    /// Rewrite manifests (BS-031).
+    ManifestRewrite,
+    /// Sample the table again; the collector does this on its interval.
+    Resample,
+}
+
+impl RecommendationAction {
+    /// The stable name used in the API.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Compaction => "compaction",
+            Self::SnapshotExpiration => "snapshot_expiration",
+            Self::ManifestRewrite => "manifest_rewrite",
+            Self::Resample => "resample",
+        }
+    }
+}
+
+/// What a finding recommends, and why it cannot act yet if it cannot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Recommendation {
+    /// The finding this answers.
+    pub kind: FindingKind,
+    /// The operation that resolves it.
+    pub action: RecommendationAction,
+    /// Why the action is not runnable yet; `None` means a preview can run it.
+    pub advisory: Option<&'static str>,
+}
+
+/// Maps one finding to the maintenance action that resolves it.
+///
+/// Only a whole-table compaction can run today. Partition-targeted
+/// compaction, snapshot expiration, and manifest rewrite are advisory until
+/// the planner or BS-031 provides them; a stale sample resolves itself on the
+/// collector's interval.
+#[must_use]
+pub const fn recommend(kind: FindingKind) -> Recommendation {
+    let (action, advisory) = match kind {
+        FindingKind::SmallFiles | FindingKind::DeletePressure => {
+            (RecommendationAction::Compaction, None)
+        }
+        FindingKind::PartitionSkew => (
+            RecommendationAction::Compaction,
+            Some("compaction cannot target one partition yet; a preview assesses the whole table"),
+        ),
+        FindingKind::SnapshotBacklog => (
+            RecommendationAction::SnapshotExpiration,
+            Some("snapshot expiration is not implemented yet (BS-031)"),
+        ),
+        FindingKind::ManifestFragmentation => (
+            RecommendationAction::ManifestRewrite,
+            Some("manifest rewrite is not implemented yet (BS-031)"),
+        ),
+        FindingKind::StaleStatistics => (
+            RecommendationAction::Resample,
+            Some("the collector samples the table on its interval"),
+        ),
+    };
+    Recommendation {
+        kind,
+        action,
+        advisory,
+    }
+}
+
 /// Why an evaluation could not run.
 #[derive(Debug, thiserror::Error)]
 pub enum HealthError {
@@ -769,6 +843,52 @@ mod tests {
         );
         assert_eq!(health.findings[0].severity, Severity::Critical);
         assert_eq!(health.findings[1].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn every_finding_maps_to_the_action_that_resolves_it() {
+        let expected = [
+            (
+                FindingKind::SmallFiles,
+                RecommendationAction::Compaction,
+                false,
+            ),
+            (
+                FindingKind::DeletePressure,
+                RecommendationAction::Compaction,
+                false,
+            ),
+            (
+                FindingKind::PartitionSkew,
+                RecommendationAction::Compaction,
+                true,
+            ),
+            (
+                FindingKind::SnapshotBacklog,
+                RecommendationAction::SnapshotExpiration,
+                true,
+            ),
+            (
+                FindingKind::ManifestFragmentation,
+                RecommendationAction::ManifestRewrite,
+                true,
+            ),
+            (
+                FindingKind::StaleStatistics,
+                RecommendationAction::Resample,
+                true,
+            ),
+        ];
+        assert_eq!(FindingKind::ALL.len(), expected.len());
+        for (kind, action, advisory) in expected {
+            let recommendation = recommend(kind);
+            assert_eq!(recommendation.kind, kind);
+            assert_eq!(recommendation.action, action, "{kind}");
+            assert_eq!(recommendation.advisory.is_some(), advisory, "{kind}");
+            if let Some(reason) = recommendation.advisory {
+                assert!(!reason.is_empty(), "{kind}");
+            }
+        }
     }
 
     #[test]

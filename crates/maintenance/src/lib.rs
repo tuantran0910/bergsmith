@@ -43,7 +43,8 @@ pub use eligibility::{KeyProblem, Rejection, SkipReason};
 pub use error::PlanError;
 pub use executor::{ExecutionInput, Executor, ExecutorError, NativeExecutor, PreparedScan};
 pub use health::{
-    Finding, HealthError, HealthState, Severity, TableHealth, ThresholdSource, evaluate,
+    Finding, HealthError, HealthState, Recommendation, RecommendationAction, Severity, TableHealth,
+    ThresholdSource, evaluate, recommend,
 };
 pub use limits::{ExecutionLimits, ResourceLimit};
 pub use partition::{PartitionKey, PartitionValue};

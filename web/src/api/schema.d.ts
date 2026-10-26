@@ -697,6 +697,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tables/{id}/recommendations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Health findings for one table from its newest metadata-only sample, and the action each finding recommends. An actionable finding carries the prefilled preview that assesses it and the planner's estimate from the current table; an advisory finding says why it cannot run yet. Requires jobs:submit on the table because an actionable recommendation reads the catalog. A table without a sample has null state, no findings, and no recommendation, and the response performs no catalog request. Counters are decimal strings. */
+        get: operations["getTableRecommendations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1697,6 +1714,54 @@ export interface components {
             /** @description Whether more jobs need attention than the bounded list shows. */
             truncated: boolean;
             items: components["schemas"]["OverviewAttentionItem"][];
+        };
+        /** @description One finding at warning or worse, with the measurement and the bound it crossed. */
+        TableHealthFinding: {
+            /** @enum {string} */
+            kind: "small_files" | "delete_pressure" | "snapshot_backlog" | "manifest_fragmentation" | "partition_skew" | "stale_statistics";
+            /** @enum {string} */
+            severity: "warning" | "critical";
+            measured: string;
+            threshold: string;
+            /** @enum {string} */
+            unit: "bytes" | "per_mille" | "snapshots" | "files_per_manifest" | "seconds";
+            reason: string;
+        };
+        /** @description The prefilled preview request that assesses the recommended action. */
+        TableRecommendationPreview: {
+            /** Format: uuid */
+            table_id: string;
+        };
+        /** @description The planner's estimate for the recommended preview. */
+        TableRecommendationEstimate: {
+            tasks: string;
+            files: string;
+            bytes: string;
+            files_removed: string;
+            duration_millis: string;
+        };
+        /** @description The action that resolves one finding. An advisory recommendation carries only the reason; an actionable one carries the preview and the planner's estimate. */
+        TableHealthRecommendation: {
+            /** @enum {string} */
+            kind: "small_files" | "delete_pressure" | "snapshot_backlog" | "manifest_fragmentation" | "partition_skew" | "stale_statistics";
+            /** @enum {string} */
+            action: "compaction" | "snapshot_expiration" | "manifest_rewrite" | "resample";
+            advisory: boolean;
+            reason: string | null;
+            preview: components["schemas"]["TableRecommendationPreview"] | null;
+            outcome: ("planned" | "no_op" | "rejected") | null;
+            no_op_reason: ("no_snapshot" | "no_beneficial_work") | null;
+            estimate: components["schemas"]["TableRecommendationEstimate"] | null;
+        };
+        /** @description One table's health and the action each finding recommends. Null state means the table has no statistics sample. */
+        TableRecommendations: {
+            /** Format: uuid */
+            table_id: string;
+            state: ("healthy" | "warning" | "critical") | null;
+            sampled_at: string | null;
+            confirmed_at: string | null;
+            findings: components["schemas"]["TableHealthFinding"][];
+            recommendations: components["schemas"]["TableHealthRecommendation"][];
         };
     };
     responses: never;
@@ -6555,6 +6620,100 @@ export interface operations {
                 };
             };
             /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    getTableRecommendations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Health findings and their recommended actions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TableRecommendations"];
+                };
+            };
+            /** @description Invalid table identifier */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unknown or inaccessible table */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description The table's catalog connection is disabled, or its identity or metadata changed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Transient failure; retry the same request */
             503: {
                 headers: {
                     [name: string]: unknown;
