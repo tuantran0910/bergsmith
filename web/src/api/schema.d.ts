@@ -1323,7 +1323,7 @@ export interface components {
             partition: string;
             files: string;
             bytes: string;
-            /** @description Delete files in the partition, of either kind. */
+            /** @description Delete files recorded in the partition, of either kind. */
             delete_files: string;
         };
         TableStatistics: {

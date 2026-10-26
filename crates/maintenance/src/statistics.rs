@@ -152,7 +152,7 @@ pub struct SizeBucket {
 }
 
 /// One partition of the current snapshot: its data files and the delete files
-/// that apply to it. Values use the spec's field names and the Iceberg
+/// recorded in it. Values use the spec's field names and the Iceberg
 /// single-value encoding decoded back to text.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -165,9 +165,10 @@ pub struct PartitionFiles {
     pub files: u64,
     /// Bytes of those data files.
     pub bytes: u64,
-    /// Delete files in the partition, of either kind. Zero for samples stored
-    /// before the field existed; a partition without data files is not listed,
-    /// and its delete files still count toward [`TableSample::delete_files`].
+    /// Delete files recorded in the partition, of either kind. Zero for
+    /// samples stored before the field existed; a partition without data
+    /// files is not listed, and its delete files still count toward
+    /// [`TableSample::delete_files`].
     #[serde(default)]
     pub delete_files: u64,
 }
@@ -348,7 +349,7 @@ pub struct TableSample {
     /// Data-file sizes, one entry per configured bucket.
     pub size_histogram: Vec<SizeBucket>,
     /// The busiest partitions by data-file count, each with the delete files
-    /// that apply to it, bounded by [`StatisticsConfig::top_partitions`].
+    /// recorded in it, bounded by [`StatisticsConfig::top_partitions`].
     pub top_partitions: Vec<PartitionFiles>,
     /// Snapshots the table retains.
     pub snapshot_count: u64,

@@ -8707,7 +8707,7 @@
           "delete_files": {
             "type": "string",
             "pattern": "^[0-9]+$",
-            "description": "Delete files in the partition, of either kind."
+            "description": "Delete files recorded in the partition, of either kind."
           }
         }
       },

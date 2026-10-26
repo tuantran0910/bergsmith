@@ -277,7 +277,7 @@ export function TableStatistics({ id }: { id: string }) {
                         <CardTitle>Busiest partitions</CardTitle>
                         <CardDescription>
                             The partitions with the most data files, for skew,
-                            with the delete files that apply to them.
+                            with the delete files recorded in each partition.
                         </CardDescription>
                     </CardHeader>
                     <CardContent>
