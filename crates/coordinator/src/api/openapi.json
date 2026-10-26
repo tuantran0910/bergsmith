@@ -1017,6 +1017,143 @@
         ]
       }
     },
+    "/api/v1/tables/{id}/snapshots": {
+      "get": {
+        "operationId": "getTableSnapshots",
+        "description": "Recorded commits of one table, newest first, with the committing engine's summary properties and a commit-per-hour cadence chart ending with the current hour. A Bergsmith publication carries the job that published it. Per-partition counters are omitted unless the caller may submit jobs on the table, because their keys embed partition values. Unknown and inaccessible identifiers both return 404.",
+        "responses": {
+          "400": {
+            "description": "Invalid request, cursor, or window",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or inaccessible resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Snapshot timeline page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TableSnapshotPage"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque continuation bound to organization, principal, and resource. Current grants are rechecked.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Inclusive RFC 3339 lower bound for the timeline.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "hours",
+            "in": "query",
+            "description": "How many hours the cadence chart covers, ending with the current hour.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 168,
+              "default": 24
+            }
+          }
+        ]
+      }
+    },
     "/api/v1/statistics": {
       "get": {
         "operationId": "getOrganizationStatistics",
@@ -8880,6 +9017,205 @@
             "pattern": "^[0-9]+$"
           },
           "small_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          }
+        }
+      },
+      "TableSnapshotPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "next_cursor",
+          "cadence"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TableSnapshot"
+            }
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cadence": {
+            "$ref": "#/components/schemas/SnapshotCadence"
+          }
+        }
+      },
+      "TableSnapshot": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "snapshot_id",
+          "parent_snapshot_id",
+          "sequence_number",
+          "committed_at",
+          "operation",
+          "delta",
+          "job_id",
+          "properties"
+        ],
+        "properties": {
+          "snapshot_id": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "parent_snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sequence_number": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "committed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "operation": {
+            "type": "string"
+          },
+          "delta": {
+            "$ref": "#/components/schemas/SnapshotDelta"
+          },
+          "job_id": {
+            "description": "The Bergsmith job that published the snapshot, when the committing engine recorded one.",
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "properties": {
+            "description": "The committing engine's summary properties, including Bergsmith's own job, publication, and proposal evidence. Per-partition counters (`partitions.*`) are omitted without permission to submit jobs on the table.",
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "SnapshotDelta": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "added_data_files",
+          "deleted_data_files",
+          "added_records",
+          "deleted_records",
+          "added_bytes",
+          "removed_bytes",
+          "added_delete_files",
+          "removed_delete_files",
+          "added_position_deletes",
+          "removed_position_deletes",
+          "added_equality_deletes",
+          "removed_equality_deletes"
+        ],
+        "properties": {
+          "added_data_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "deleted_data_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "added_records": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "deleted_records": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "added_bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "removed_bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "added_delete_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "removed_delete_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "added_position_deletes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "removed_position_deletes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "added_equality_deletes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "removed_equality_deletes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          }
+        }
+      },
+      "SnapshotCadence": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "hours",
+          "buckets"
+        ],
+        "properties": {
+          "hours": {
+            "type": "integer"
+          },
+          "buckets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SnapshotHour"
+            }
+          }
+        }
+      },
+      "SnapshotHour": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "start",
+          "commits"
+        ],
+        "properties": {
+          "start": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "commits": {
             "type": "string",
             "pattern": "^[0-9]+$"
           }

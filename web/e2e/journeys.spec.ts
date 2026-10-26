@@ -14,6 +14,7 @@ import {
     plannedPreview,
     session,
     table,
+    tableSnapshots,
     tableStatistics,
 } from "../src/test/fixtures";
 import {
@@ -164,6 +165,34 @@ test("shows a table's statistics on an addressable tab", async ({
     await expect(
         page.getByRole("button", { name: "Preview maintenance" }),
     ).toBeVisible();
+});
+
+test("shows a table's snapshot timeline on an addressable tab", async ({
+    page,
+    coordinator,
+}) => {
+    signedIn(coordinator);
+    coordinator.on("GET", "/api/v1/tables/{id}/snapshots", () =>
+        json(200, tableSnapshots),
+    );
+
+    await page.goto(`/tables/${TABLE_ID}`);
+    await page.getByRole("tab", { name: "Snapshots" }).click();
+
+    await expect(page).toHaveURL(
+        new RegExp(`/tables/${TABLE_ID}\\?tab=snapshots$`),
+    );
+    await expect(
+        page.getByRole("img", { name: /Commits per hour/ }),
+    ).toBeVisible();
+    await expect(page.getByText("+2 data files, +40 rows")).toBeVisible();
+    await expect(
+        page.getByRole("link", { name: "job 0000000a" }),
+    ).toHaveAttribute("href", `/jobs/${JOB_ID}`);
+    await expectAccessible(page);
+
+    await page.getByRole("tab", { name: "Overview" }).click();
+    await expect(page).toHaveURL(`/tables/${TABLE_ID}`);
 });
 
 test("follows a job's events to success, then closes the stream", async ({

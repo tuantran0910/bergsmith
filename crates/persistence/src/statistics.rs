@@ -584,3 +584,271 @@ pub async fn totals(
         last_sampled_at: row.last_sampled_at,
     })
 }
+
+/// One snapshot to append to the ledger.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NewTableSnapshot {
+    /// The connection the table was read through.
+    pub catalog_connection_id: CatalogConnectionId,
+    /// The snapshot ID.
+    pub snapshot_id: i64,
+    /// The snapshot this commit replaced.
+    pub parent_snapshot_id: Option<i64>,
+    /// The sequence number the commit was assigned.
+    pub sequence_number: i64,
+    /// When the commit happened.
+    pub committed_at: DateTime<Utc>,
+    /// The operation, such as `append` or `replace`.
+    pub operation: String,
+    /// The committing engine's summary properties, as one JSON object.
+    pub summary: Value,
+}
+
+/// One recorded snapshot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoredTableSnapshot {
+    /// The snapshot ID.
+    pub snapshot_id: i64,
+    /// The snapshot this commit replaced.
+    pub parent_snapshot_id: Option<i64>,
+    /// The sequence number the commit was assigned.
+    pub sequence_number: i64,
+    /// When the commit happened.
+    pub committed_at: DateTime<Utc>,
+    /// The operation, such as `append` or `replace`.
+    pub operation: String,
+    /// The committing engine's summary properties, as one JSON object.
+    pub summary: Value,
+}
+
+/// One hour of commits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommitHour {
+    /// The start of the hour, in UTC.
+    pub hour: DateTime<Utc>,
+    /// Snapshots committed in that hour.
+    pub commits: i64,
+}
+
+#[derive(sqlx::FromRow)]
+struct SnapshotRow {
+    snapshot_id: i64,
+    parent_snapshot_id: Option<i64>,
+    sequence_number: i64,
+    committed_at: DateTime<Utc>,
+    operation: String,
+    summary: Value,
+}
+
+impl From<SnapshotRow> for StoredTableSnapshot {
+    fn from(row: SnapshotRow) -> Self {
+        Self {
+            snapshot_id: row.snapshot_id,
+            parent_snapshot_id: row.parent_snapshot_id,
+            sequence_number: row.sequence_number,
+            committed_at: row.committed_at,
+            operation: row.operation,
+            summary: row.summary,
+        }
+    }
+}
+
+/// Appends `snapshots`, skipping any the ledger already holds, and stamps
+/// them with `observed_at`.
+///
+/// Returns how many rows were inserted. A snapshot is never rewritten, so a
+/// repeated pass inserts nothing.
+///
+/// # Errors
+///
+/// [`PersistenceError::MissingReference`] when the table or connection is not
+/// in the organization, and [`PersistenceError::Database`] when the query
+/// fails.
+pub async fn record_snapshots(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    table_id: TableId,
+    snapshots: &[NewTableSnapshot],
+    observed_at: DateTime<Utc>,
+) -> Result<u64, PersistenceError> {
+    const ENTITY: &str = "table snapshots";
+    let Some(first) = snapshots.first() else {
+        return Ok(0);
+    };
+    let connection = first.catalog_connection_id;
+    let mut snapshot_ids = Vec::with_capacity(snapshots.len());
+    let mut parent_ids = Vec::with_capacity(snapshots.len());
+    let mut sequence_numbers = Vec::with_capacity(snapshots.len());
+    let mut committed_at = Vec::with_capacity(snapshots.len());
+    let mut operations = Vec::with_capacity(snapshots.len());
+    let mut summaries = Vec::with_capacity(snapshots.len());
+    for snapshot in snapshots {
+        snapshot_ids.push(snapshot.snapshot_id);
+        parent_ids.push(snapshot.parent_snapshot_id);
+        sequence_numbers.push(snapshot.sequence_number);
+        committed_at.push(snapshot.committed_at);
+        operations.push(snapshot.operation.clone());
+        summaries.push(snapshot.summary.to_string());
+    }
+    let result = sqlx::query(
+        "INSERT INTO table_snapshots (organization_id, table_identity_id, \
+         catalog_connection_id, snapshot_id, parent_snapshot_id, sequence_number, \
+         committed_at, operation, summary, observed_at) \
+         SELECT $1, $2, $3, u.snapshot_id, u.parent_snapshot_id, u.sequence_number, \
+                u.committed_at, u.operation, u.summary::jsonb, $4 \
+         FROM UNNEST($5::bigint[], $6::bigint[], $7::bigint[], $8::timestamptz[], \
+                     $9::text[], $10::text[]) \
+              AS u(snapshot_id, parent_snapshot_id, sequence_number, committed_at, \
+                   operation, summary) \
+         ON CONFLICT (organization_id, table_identity_id, snapshot_id) DO NOTHING",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(table_id.as_uuid())
+    .bind(connection.as_uuid())
+    .bind(observed_at)
+    .bind(&snapshot_ids)
+    .bind(&parent_ids)
+    .bind(&sequence_numbers)
+    .bind(&committed_at)
+    .bind(&operations)
+    .bind(&summaries)
+    .execute(conn)
+    .await
+    .map_err(|error| PersistenceError::from_write(ENTITY, error))?;
+    Ok(result.rows_affected())
+}
+
+/// Whether `snapshot_id` is recorded for `table_id`.
+///
+/// Membership is the question the collector asks: a rollback legitimately
+/// leaves newer commits recorded, so the newest row says nothing about whether
+/// the table's current snapshot is present. Two commits can also share an
+/// instant, and a snapshot ID does not encode commit order.
+///
+/// # Errors
+///
+/// [`PersistenceError::Database`] when the query fails.
+pub async fn has_snapshot(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    table_id: TableId,
+    snapshot_id: i64,
+) -> Result<bool, PersistenceError> {
+    let present: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM table_snapshots \
+         WHERE organization_id = $1 AND table_identity_id = $2 AND snapshot_id = $3)",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(table_id.as_uuid())
+    .bind(snapshot_id)
+    .fetch_one(conn)
+    .await?;
+    Ok(present)
+}
+
+/// Snapshots of `table_id` newest first, starting strictly before `before`
+/// and at or after `since`.
+///
+/// # Errors
+///
+/// [`PersistenceError::Database`] when the query fails.
+pub async fn snapshots(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    table_id: TableId,
+    before: Option<(DateTime<Utc>, i64)>,
+    since: Option<DateTime<Utc>>,
+    limit: i64,
+) -> Result<Vec<StoredTableSnapshot>, PersistenceError> {
+    let (before_at, before_id) = before.unzip();
+    let rows: Vec<SnapshotRow> = sqlx::query_as(
+        "SELECT snapshot_id, parent_snapshot_id, sequence_number, committed_at, \
+                operation, summary \
+         FROM table_snapshots WHERE organization_id = $1 AND table_identity_id = $2 \
+         AND ($3::timestamptz IS NULL OR (committed_at, snapshot_id) < ($3, $4)) \
+         AND ($5::timestamptz IS NULL OR committed_at >= $5) \
+         ORDER BY committed_at DESC, snapshot_id DESC LIMIT $6",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(table_id.as_uuid())
+    .bind(before_at)
+    .bind(before_id.unwrap_or(i64::MAX))
+    .bind(since)
+    .bind(limit)
+    .fetch_all(conn)
+    .await?;
+    Ok(rows.into_iter().map(StoredTableSnapshot::from).collect())
+}
+
+#[derive(sqlx::FromRow)]
+struct CommitHourRow {
+    hour: chrono::NaiveDateTime,
+    commits: i64,
+}
+
+/// Commits of `table_id` per hour between `since` and `until`, in ascending
+/// hour order. Hours without a commit are absent.
+///
+/// # Errors
+///
+/// [`PersistenceError::Database`] when the query fails.
+pub async fn commit_hours(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    table_id: TableId,
+    since: DateTime<Utc>,
+    until: DateTime<Utc>,
+) -> Result<Vec<CommitHour>, PersistenceError> {
+    let rows: Vec<CommitHourRow> = sqlx::query_as(
+        "SELECT date_trunc('hour', committed_at AT TIME ZONE 'UTC') AS hour, \
+                count(*) AS commits \
+         FROM table_snapshots WHERE organization_id = $1 AND table_identity_id = $2 \
+         AND committed_at >= $3 AND committed_at < $4 \
+         GROUP BY hour ORDER BY hour",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(table_id.as_uuid())
+    .bind(since)
+    .bind(until)
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| CommitHour {
+            hour: row.hour.and_utc(),
+            commits: row.commits,
+        })
+        .collect())
+}
+
+/// Deletes at most `batch` snapshots observed before `older_than`, oldest
+/// first.
+///
+/// Returns how many rows were deleted.
+///
+/// # Errors
+///
+/// [`PersistenceError::InvalidValue`] when the batch is not positive, and
+/// [`PersistenceError::Database`] when the query fails.
+pub async fn prune_snapshots(
+    conn: &mut PgConnection,
+    older_than: DateTime<Utc>,
+    batch: i64,
+) -> Result<u64, PersistenceError> {
+    if batch <= 0 {
+        return Err(PersistenceError::InvalidValue {
+            entity: "table snapshots",
+            constraint: "prune_batch_positive".to_owned(),
+        });
+    }
+    let result = sqlx::query(
+        "DELETE FROM table_snapshots WHERE ctid IN ( \
+             SELECT ctid FROM table_snapshots WHERE observed_at < $1 \
+             ORDER BY observed_at LIMIT $2)",
+    )
+    .bind(older_than)
+    .bind(batch)
+    .execute(conn)
+    .await?;
+    Ok(result.rows_affected())
+}

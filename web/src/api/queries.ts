@@ -97,6 +97,32 @@ export function useTableStatistics(id: string) {
     });
 }
 
+/**
+ * The table's recorded commits, newest first, with the commit-per-hour chart
+ * over the last day. The chart ends with the current hour, so it answers how
+ * busy the table is now rather than over the whole retained history.
+ */
+export function useTableSnapshots(id: string) {
+    const client = useQueryClient();
+    return useInfiniteQuery({
+        queryKey: ["table", id, "snapshots"],
+        initialPageParam: null as string | null,
+        queryFn: ({ pageParam, signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/tables/{id}/snapshots", {
+                        params: {
+                            path: { id },
+                            query: { ...page(pageParam), hours: 24 },
+                        },
+                        signal,
+                    }),
+                ),
+            ),
+        getNextPageParam: (last) => last.next_cursor,
+    });
+}
+
 export function useJobs() {
     const client = useQueryClient();
     return useInfiniteQuery({

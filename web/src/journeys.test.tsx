@@ -32,6 +32,8 @@ import {
     rejectedPreview,
     session,
     table,
+    tableSnapshots,
+    tableSnapshotsQuiet,
     tableStatistics,
 } from "./test/fixtures";
 
@@ -319,6 +321,62 @@ describe("browsing", () => {
         expect(
             screen.getByRole("button", { name: "Preview maintenance" }),
         ).toBeInTheDocument();
+    });
+
+    it("opens a table's snapshot timeline and links its publications", async () => {
+        fake.on("GET", "/api/v1/tables/{id}/snapshots", () =>
+            json(200, tableSnapshots),
+        );
+        const user = start(`/tables/${TABLE_ID}`);
+
+        await user.click(await screen.findByRole("tab", { name: "Snapshots" }));
+
+        expect(window.location.search).toBe("?tab=snapshots");
+        expect(
+            await screen.findByRole("img", { name: /Commits per hour/ }),
+        ).toBeInTheDocument();
+        expect(screen.getByText("+2 data files, +40 rows")).toBeInTheDocument();
+        expect(
+            screen.getByRole("list", { name: "Commits" }),
+        ).toBeInTheDocument();
+        // A Bergsmith publication links to the job that made it.
+        expect(
+            screen.getByRole("link", { name: "job 0000000a" }),
+        ).toHaveAttribute("href", `/jobs/${JOB_ID}`);
+        // A commit from another engine names the engine instead.
+        expect(
+            screen.getByText("Committed by spark 4.0.0"),
+        ).toBeInTheDocument();
+
+        // The request asked for the default day of cadence buckets.
+        const requested = fake.sent(
+            "GET",
+            `/api/v1/tables/${TABLE_ID}/snapshots`,
+        )[0];
+        expect(requested && new URL(requested.url).search).toBe(
+            "?limit=50&hours=24",
+        );
+
+        await user.click(screen.getByRole("tab", { name: "Overview" }));
+        expect(window.location.search).toBe("");
+    });
+
+    it("shows an empty cadence without inventing a peak", async () => {
+        fake.on("GET", "/api/v1/tables/{id}/snapshots", () =>
+            json(200, tableSnapshotsQuiet),
+        );
+        const user = start(`/tables/${TABLE_ID}`);
+
+        await user.click(await screen.findByRole("tab", { name: "Snapshots" }));
+
+        expect(
+            await screen.findByText("No commits in the last 24 hours."),
+        ).toBeInTheDocument();
+        const chart = screen.getByRole("img", { name: /Commits per hour/ });
+        const label = chart.getAttribute("aria-label") ?? "";
+        expect(label).toContain("No commits in the last 24 hours.");
+        expect(label).not.toMatch(/NaN|at most 1 commit|peaking/);
+        expect(screen.getByText("No commits recorded yet")).toBeInTheDocument();
     });
 
     it("lists tables by alias and pages with the cursor", async () => {

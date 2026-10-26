@@ -16,14 +16,16 @@ use std::time::Duration;
 
 use bergsmith_catalog::TableName;
 use bergsmith_common::ids::{CatalogConnectionId, OrganizationId, TableId};
-use bergsmith_maintenance::{StatisticsConfig, TableSample};
+use bergsmith_maintenance::{StatisticsConfig, TableSample, snapshot_history};
 use bergsmith_persistence::PersistenceError;
 use bergsmith_persistence::jobs::Job;
-use bergsmith_persistence::statistics::{self, DueTable, MaintenanceRoute, NewTableSample};
+use bergsmith_persistence::statistics::{
+    self, DueTable, MaintenanceRoute, NewTableSample, NewTableSnapshot,
+};
 use bergsmith_persistence::tables;
 use chrono::{DateTime, TimeDelta, Utc};
 use futures::StreamExt;
-use sqlx::PgPool;
+use sqlx::{Connection, PgPool};
 use tokio::sync::{Mutex, Semaphore};
 use tracing::{debug, warn};
 
@@ -184,6 +186,7 @@ impl StatisticsCollector {
             TimeDelta::try_days(i64::try_from(self.settings.retention_days).unwrap_or(0))
                 .unwrap_or(TimeDelta::MAX);
         statistics::prune(&mut conn, now - retention, PRUNE_BATCH).await?;
+        statistics::prune_snapshots(&mut conn, now - retention, PRUNE_BATCH).await?;
         let cutoff = now - self.interval();
         let due = statistics::due_tables(&mut conn, cutoff, self.settings.page_size).await?;
         drop(conn);
@@ -355,6 +358,36 @@ impl StatisticsCollector {
             let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
             let latest = statistics::latest(&mut conn, organization_id, table_id).await?;
             if latest.is_some_and(|sample| sample.metadata_location == metadata_location) {
+                // The counters are unchanged, so there is no new sample. The
+                // snapshot ledger can still be behind — a table sampled before
+                // this ledger existed, or rows removed with retention — and
+                // the metadata already loaded holds the history, so reconcile
+                // it without another catalog read.
+                let current = binding
+                    .loaded
+                    .metadata
+                    .current_snapshot()
+                    .map(|snapshot| snapshot.snapshot_id());
+                let recorded = match current {
+                    Some(snapshot_id) => {
+                        statistics::has_snapshot(&mut conn, organization_id, table_id, snapshot_id)
+                            .await?
+                    }
+                    None => true,
+                };
+                if !recorded {
+                    let rows = snapshot_rows(binding, &self.settings.sample)?;
+                    if window_holds(&rows, current) {
+                        statistics::record_snapshots(
+                            &mut conn,
+                            organization_id,
+                            table_id,
+                            &rows,
+                            at,
+                        )
+                        .await?;
+                    }
+                }
                 return Ok(SampleOutcome::Unchanged);
             }
         }
@@ -391,8 +424,86 @@ impl StatisticsCollector {
             size_histogram: serde_json::to_value(&sample.size_histogram)?,
             top_partitions: serde_json::to_value(&sample.top_partitions)?,
         };
+        let rows = snapshot_rows(binding, &self.settings.sample)?;
+        // The sample and the commits it was taken with commit together, so a
+        // failure cannot leave a sample whose ledger the next pass skips.
         let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
-        statistics::record(&mut conn, organization_id, table_id, &new).await?;
+        let mut tx = conn.begin().await.map_err(PersistenceError::from)?;
+        statistics::record(&mut tx, organization_id, table_id, &new).await?;
+        statistics::record_snapshots(&mut tx, organization_id, table_id, &rows, at).await?;
+        tx.commit().await.map_err(PersistenceError::from)?;
         Ok(SampleOutcome::Sampled)
+    }
+}
+
+/// Whether the bounded window still holds `current`.
+///
+/// The ledger is a window of the newest snapshots, not a mirror of the
+/// metadata: when the table's current snapshot falls outside it, its absence
+/// from the ledger is retention rather than a gap, and no write can close it.
+fn window_holds(rows: &[NewTableSnapshot], current: Option<i64>) -> bool {
+    current.is_some_and(|snapshot_id| rows.iter().any(|row| row.snapshot_id == snapshot_id))
+}
+
+/// The snapshot ledger rows one loaded table contributes, newest first.
+fn snapshot_rows(
+    binding: &TableBinding,
+    config: &StatisticsConfig,
+) -> Result<Vec<NewTableSnapshot>, serde_json::Error> {
+    snapshot_history(&binding.loaded.metadata, config.snapshot_history)
+        .into_iter()
+        .map(|entry| {
+            Ok(NewTableSnapshot {
+                catalog_connection_id: binding.connection.id,
+                snapshot_id: entry.snapshot_id,
+                parent_snapshot_id: entry.parent_snapshot_id,
+                sequence_number: entry.sequence_number,
+                committed_at: entry.committed_at,
+                operation: entry.operation,
+                summary: serde_json::to_value(entry.properties)?,
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn row(snapshot_id: i64, committed_at_ms: i64) -> NewTableSnapshot {
+        NewTableSnapshot {
+            catalog_connection_id: CatalogConnectionId::from_uuid(Uuid::nil()),
+            snapshot_id,
+            parent_snapshot_id: None,
+            sequence_number: snapshot_id,
+            committed_at: DateTime::from_timestamp_millis(committed_at_ms)
+                .expect("a fixed instant"),
+            operation: "append".to_owned(),
+            summary: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn a_rolled_back_table_holds_its_current_snapshot() {
+        // A rollback leaves the newer commit recorded; the current snapshot is
+        // the older member, not the newest row.
+        let rows = [row(2, 2_000), row(1, 1_000)];
+        assert!(window_holds(&rows, Some(1)));
+    }
+
+    #[test]
+    fn snapshots_sharing_an_instant_are_both_in_the_window() {
+        // Snapshot IDs do not encode commit order, so membership alone decides.
+        let rows = [row(7, 1_000), row(6, 1_000)];
+        assert!(window_holds(&rows, Some(6)));
+        assert!(window_holds(&rows, Some(7)));
+    }
+
+    #[test]
+    fn a_snapshot_outside_the_window_is_not_expected() {
+        let rows = [row(3, 3_000), row(2, 2_000)];
+        assert!(!window_holds(&rows, Some(1)));
+        assert!(!window_holds(&rows, None));
     }
 }

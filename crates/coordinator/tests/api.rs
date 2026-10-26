@@ -28,6 +28,9 @@ mod service_identities;
 #[path = "api/table_statistics.rs"]
 mod table_statistics;
 
+#[path = "api/table_snapshots.rs"]
+mod table_snapshots;
+
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, Request, StatusCode};
@@ -1124,6 +1127,7 @@ fn openapi_documents_every_route() {
         ("/api/v1/catalogs/{id}/check", "post"),
         ("/api/v1/tables", "get"),
         ("/api/v1/tables/{id}", "get"),
+        ("/api/v1/tables/{id}/snapshots", "get"),
         ("/api/v1/tables/{id}/statistics", "get"),
         ("/api/v1/catalogs/{id}/statistics", "get"),
         ("/api/v1/statistics", "get"),

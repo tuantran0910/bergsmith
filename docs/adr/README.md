@@ -64,3 +64,4 @@ record's status; never rewrite an accepted decision.
 | [0055](0055-worker-pool-tokens-in-postgresql.md) | Worker pool tokens stored in PostgreSQL | Proposed |
 | [0056](0056-ui-platform-navigation-and-names-first-operation.md) | UI platform, navigation, and names-first operation | Accepted |
 | [0057](0057-metadata-only-table-statistics.md) | Metadata-only table statistics | Proposed |
+| [0058](0058-snapshot-ledger-for-the-table-explorer.md) | Snapshot ledger for the table explorer | Proposed |

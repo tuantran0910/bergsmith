@@ -224,6 +224,76 @@ export const tableStatistics = schema("TableStatisticsPage", {
     latest: tableSample("2026-10-02T00:00:00Z", "200", "4096"),
 });
 
+/** One recorded commit; `job` marks a Bergsmith publication. */
+export function tableSnapshot(
+    snapshotId: string,
+    committedAt: string,
+    operation: string,
+    addedFiles: string,
+    addedRecords: string,
+    job: string | null,
+): Schemas["TableSnapshot"] {
+    return schema("TableSnapshot", {
+        snapshot_id: snapshotId,
+        parent_snapshot_id: null,
+        sequence_number: snapshotId,
+        committed_at: committedAt,
+        operation,
+        delta: {
+            added_data_files: addedFiles,
+            deleted_data_files: "0",
+            added_records: addedRecords,
+            deleted_records: "0",
+            added_bytes: "2048",
+            removed_bytes: "0",
+            added_delete_files: "0",
+            removed_delete_files: "0",
+            added_position_deletes: "0",
+            removed_position_deletes: "0",
+            added_equality_deletes: "0",
+            removed_equality_deletes: "0",
+        },
+        job_id: job,
+        properties: {
+            "engine-name": "spark",
+            "engine-version": "4.0.0",
+        },
+    });
+}
+
+/** A day of hourly buckets; the sixth hour carries the two fixture commits. */
+export const tableSnapshots = schema("TableSnapshotPage", {
+    items: [
+        tableSnapshot("9", "2026-10-01T05:30:00Z", "append", "2", "40", JOB_ID),
+        tableSnapshot("8", "2026-10-01T05:05:00Z", "replace", "3", "60", null),
+    ],
+    next_cursor: null,
+    cadence: {
+        hours: 24,
+        buckets: Array.from({ length: 24 }, (_, index) =>
+            schema("SnapshotHour", {
+                start: `2026-10-01T${String(index).padStart(2, "0")}:00:00Z`,
+                commits: index === 5 ? "2" : "0",
+            }),
+        ),
+    },
+});
+
+/** A table with no recorded commits: a day of empty buckets. */
+export const tableSnapshotsQuiet = schema("TableSnapshotPage", {
+    items: [],
+    next_cursor: null,
+    cadence: {
+        hours: 24,
+        buckets: Array.from({ length: 24 }, (_, index) =>
+            schema("SnapshotHour", {
+                start: `2026-10-01T${String(index).padStart(2, "0")}:00:00Z`,
+                commits: "0",
+            }),
+        ),
+    },
+});
+
 export const catalogTotals = schema("StatisticsTotals", {
     tables: "2",
     record_count: "1200",

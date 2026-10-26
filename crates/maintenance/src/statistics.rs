@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 use iceberg::io::FileIO;
 use iceberg::spec::{
-    DataContentType, Datum, FormatVersion, ManifestList, PrimitiveLiteral, TableMetadata,
+    DataContentType, Datum, FormatVersion, ManifestList, PrimitiveLiteral, Snapshot, TableMetadata,
 };
 use serde::{Deserialize, Serialize};
 
@@ -49,6 +49,11 @@ pub struct StatisticsConfig {
     /// How many partitions a sample keeps, ordered by file count. The rest
     /// still count toward [`TableSample::partition_count`].
     pub top_partitions: usize,
+    /// How many of the newest snapshots one collection pass records for the
+    /// table explorer's timeline. Older snapshots stay in the table's own
+    /// metadata and are picked up by a later pass if it retains them.
+    #[serde(default = "default_snapshot_history")]
+    pub snapshot_history: usize,
 }
 
 impl Default for StatisticsConfig {
@@ -58,8 +63,14 @@ impl Default for StatisticsConfig {
             size_buckets_bytes: vec![MIB, 8 * MIB, 32 * MIB, 128 * MIB, 512 * MIB],
             default_target_file_size_bytes: 512 * MIB,
             top_partitions: 10,
+            snapshot_history: 500,
         }
     }
+}
+
+/// The snapshot history bound used when a configuration does not set one.
+const fn default_snapshot_history() -> usize {
+    500
 }
 
 impl StatisticsConfig {
@@ -92,6 +103,11 @@ impl StatisticsConfig {
         {
             return Err(StatisticsError::InvalidConfig {
                 reason: "size_buckets_bytes must be strictly ascending",
+            });
+        }
+        if !(1..=10_000).contains(&self.snapshot_history) {
+            return Err(StatisticsError::InvalidConfig {
+                reason: "snapshot_history must be between 1 and 10000",
             });
         }
         Ok(())
@@ -149,6 +165,132 @@ pub struct PartitionFiles {
     pub files: u64,
     /// Bytes of those data files.
     pub bytes: u64,
+}
+
+/// One commit in a table's snapshot log, as its metadata records it.
+///
+/// The summary properties are the committing engine's own: Iceberg's change
+/// counters, whatever the engine adds, and — on a Bergsmith publication — the
+/// `bergsmith.job-id`, `bergsmith.publication-id`, and
+/// `bergsmith.proposal-sha256` evidence. The timeline links a commit to its
+/// job through that property, without a second ledger.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnapshotEntry {
+    /// The snapshot ID.
+    pub snapshot_id: i64,
+    /// The snapshot this commit replaced, if any.
+    pub parent_snapshot_id: Option<i64>,
+    /// The sequence number the commit was assigned.
+    pub sequence_number: i64,
+    /// When the commit happened.
+    pub committed_at: DateTime<Utc>,
+    /// The operation, such as `append`, `overwrite`, `replace`, or `delete`.
+    pub operation: String,
+    /// Every summary property the committing engine wrote, in key order.
+    pub properties: BTreeMap<String, String>,
+}
+
+/// The change counts a snapshot's summary records for its own commit.
+///
+/// A property the engine did not write counts as zero, which is what the
+/// summary means by omission.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnapshotDeltas {
+    /// Data files added by the commit.
+    pub added_data_files: u64,
+    /// Data files the commit deleted.
+    pub deleted_data_files: u64,
+    /// Rows in the data files the commit added.
+    pub added_records: u64,
+    /// Rows in the data files the commit deleted.
+    pub deleted_records: u64,
+    /// Bytes of the data files the commit added.
+    pub added_bytes: u64,
+    /// Bytes of the data files the commit removed.
+    pub removed_bytes: u64,
+    /// Delete files the commit added, of either kind.
+    pub added_delete_files: u64,
+    /// Delete files the commit removed, of either kind.
+    pub removed_delete_files: u64,
+    /// Rows recorded by the position delete files the commit added.
+    pub added_position_deletes: u64,
+    /// Rows recorded by the position delete files the commit removed.
+    pub removed_position_deletes: u64,
+    /// Rows recorded by the equality delete files the commit added.
+    pub added_equality_deletes: u64,
+    /// Rows recorded by the equality delete files the commit removed.
+    pub removed_equality_deletes: u64,
+}
+
+impl SnapshotDeltas {
+    /// Reads the change counts from a snapshot's summary properties.
+    #[must_use]
+    pub fn from_properties(properties: &BTreeMap<String, String>) -> Self {
+        let count = |key: &str| -> u64 {
+            properties
+                .get(key)
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0)
+        };
+        Self {
+            added_data_files: count("added-data-files"),
+            deleted_data_files: count("deleted-data-files"),
+            added_records: count("added-records"),
+            deleted_records: count("deleted-records"),
+            added_bytes: count("added-files-size"),
+            removed_bytes: count("removed-files-size"),
+            added_delete_files: count("added-delete-files"),
+            removed_delete_files: count("removed-delete-files"),
+            added_position_deletes: count("added-position-deletes"),
+            removed_position_deletes: count("removed-position-deletes"),
+            added_equality_deletes: count("added-equality-deletes"),
+            removed_equality_deletes: count("removed-equality-deletes"),
+        }
+    }
+}
+
+/// The newest `limit` entries of `metadata`'s snapshot log, newest first.
+///
+/// A snapshot whose timestamp does not fit the calendar is skipped; two
+/// commits at the same instant keep a stable order by snapshot ID.
+///
+/// Ordering costs O(N log N) in the table's retained snapshots, and the
+/// reference vector is O(N). Only the kept entries have their summaries
+/// cloned, so the allocation that grows with the content of the history is
+/// bounded by `limit` rather than by the table's whole past.
+#[must_use]
+pub fn snapshot_history(metadata: &TableMetadata, limit: usize) -> Vec<SnapshotEntry> {
+    let mut newest: Vec<(DateTime<Utc>, &Snapshot)> = metadata
+        .snapshots()
+        .filter_map(|snapshot| {
+            let committed_at = DateTime::from_timestamp_millis(snapshot.timestamp_ms())?;
+            Some((committed_at, snapshot.as_ref()))
+        })
+        .collect();
+    newest.sort_unstable_by(|(left_at, left), (right_at, right)| {
+        right_at
+            .cmp(left_at)
+            .then_with(|| right.snapshot_id().cmp(&left.snapshot_id()))
+    });
+    newest.truncate(limit);
+    newest
+        .into_iter()
+        .map(|(committed_at, snapshot)| SnapshotEntry {
+            snapshot_id: snapshot.snapshot_id(),
+            parent_snapshot_id: snapshot.parent_snapshot_id(),
+            sequence_number: snapshot.sequence_number(),
+            committed_at,
+            operation: snapshot.summary().operation.as_str().to_owned(),
+            properties: snapshot
+                .summary()
+                .additional_properties
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        })
+        .collect()
 }
 
 /// Everything one metadata-only pass records about a table's current state.
@@ -483,5 +625,62 @@ mod tests {
             Err(StatisticsError::InvalidConfig { .. })
         ));
         assert!(StatisticsConfig::default().validate().is_ok());
+    }
+
+    #[test]
+    fn configuration_rejects_an_unusable_snapshot_history() {
+        for snapshot_history in [0, 10_001] {
+            let config = StatisticsConfig {
+                snapshot_history,
+                ..StatisticsConfig::default()
+            };
+            assert!(matches!(
+                config.validate(),
+                Err(StatisticsError::InvalidConfig { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn a_configuration_without_the_snapshot_bound_keeps_the_default() {
+        let config: StatisticsConfig = serde_json::from_str(
+            r#"{
+                "max_manifest_entries": 10,
+                "size_buckets_bytes": [1024],
+                "default_target_file_size_bytes": 1024,
+                "top_partitions": 1
+            }"#,
+        )
+        .expect("a configuration written before the snapshot bound must still parse");
+        assert_eq!(config.snapshot_history, 500);
+    }
+
+    #[test]
+    fn deltas_read_only_the_change_counters() {
+        let properties = BTreeMap::from([
+            ("added-data-files".to_owned(), "3".to_owned()),
+            ("deleted-data-files".to_owned(), "1".to_owned()),
+            ("added-records".to_owned(), "30".to_owned()),
+            ("deleted-records".to_owned(), "10".to_owned()),
+            ("added-delete-files".to_owned(), "2".to_owned()),
+            ("total-records".to_owned(), "20".to_owned()),
+            ("engine-name".to_owned(), "spark".to_owned()),
+            ("added-records-bogus".to_owned(), "999".to_owned()),
+        ]);
+        let delta = SnapshotDeltas::from_properties(&properties);
+        assert_eq!(delta.added_data_files, 3);
+        assert_eq!(delta.deleted_data_files, 1);
+        assert_eq!(delta.added_records, 30);
+        assert_eq!(delta.deleted_records, 10);
+        assert_eq!(delta.added_delete_files, 2);
+        assert_eq!(delta.removed_delete_files, 0);
+        assert_eq!(delta.added_bytes, 0);
+    }
+
+    #[test]
+    fn an_unreadable_counter_counts_as_zero() {
+        let properties = BTreeMap::from([("added-records".to_owned(), "many".to_owned())]);
+        let delta = SnapshotDeltas::from_properties(&properties);
+        assert_eq!(delta.added_records, 0);
     }
 }
