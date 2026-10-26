@@ -208,7 +208,10 @@ async fn a_pass_samples_a_table_and_records_nothing_unchanged(pool: PgPool) {
     let tenant = tenant(&mut conn, &server.url(), &fixture).await;
     drop(conn);
     let collector = collector(&pool).await;
-    let now = chrono::Utc::now();
+    // PostgreSQL keeps microseconds, so the instants the test compares must
+    // already be truncated or a same-instant assertion can differ by nanos.
+    let now = chrono::DateTime::from_timestamp_micros(chrono::Utc::now().timestamp_micros())
+        .expect("the current instant");
 
     let summary: SampleSummary = collector.pass_at(now).await.unwrap();
     assert_eq!(
@@ -277,7 +280,8 @@ async fn an_unchanged_table_replaces_a_sample_without_the_health_counters(pool: 
     let tenant = tenant(&mut conn, &server.url(), &fixture).await;
     drop(conn);
     let collector = collector(&pool).await;
-    let first = chrono::Utc::now();
+    let first = chrono::DateTime::from_timestamp_micros(chrono::Utc::now().timestamp_micros())
+        .expect("the current instant");
 
     let summary = collector.pass_at(first).await.unwrap();
     assert_eq!(summary.sampled, 1);
@@ -331,7 +335,10 @@ async fn an_unchanged_table_backfills_an_empty_snapshot_ledger(pool: PgPool) {
     let tenant = tenant(&mut conn, &server.url(), &fixture).await;
     drop(conn);
     let collector = collector(&pool).await;
-    let now = chrono::Utc::now();
+    // PostgreSQL keeps microseconds, so the instants the test compares must
+    // already be truncated or a same-instant assertion can differ by nanos.
+    let now = chrono::DateTime::from_timestamp_micros(chrono::Utc::now().timestamp_micros())
+        .expect("the current instant");
     collector.pass_at(now).await.unwrap();
 
     // A table sampled before the ledger existed has a sample but no commits.
@@ -371,7 +378,10 @@ async fn an_unchanged_table_repairs_a_ledger_that_is_behind(pool: PgPool) {
     let tenant = tenant(&mut conn, &server.url(), &fixture).await;
     drop(conn);
     let collector = collector(&pool).await;
-    let now = chrono::Utc::now();
+    // PostgreSQL keeps microseconds, so the instants the test compares must
+    // already be truncated or a same-instant assertion can differ by nanos.
+    let now = chrono::DateTime::from_timestamp_micros(chrono::Utc::now().timestamp_micros())
+        .expect("the current instant");
     collector.pass_at(now).await.unwrap();
 
     // A write that did not commit leaves the newest commit unrecorded while
