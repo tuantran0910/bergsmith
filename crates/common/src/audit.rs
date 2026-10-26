@@ -106,6 +106,12 @@ pub enum AuditAction {
     CatalogUpdated,
     /// A catalog connection's capabilities were checked.
     CatalogChecked,
+    /// A notification destination was created.
+    NotificationDestinationCreated,
+    /// A notification destination was edited, enabled, or disabled.
+    NotificationDestinationUpdated,
+    /// A test notification was sent to a destination.
+    NotificationDestinationTested,
     /// Catalog names were registered as tables.
     CatalogTablesRegistered,
     /// A table's catalog name was unregistered.
@@ -143,6 +149,9 @@ impl AuditAction {
             Self::ScheduleCreated => "schedule.created",
             Self::ScheduleUpdated => "schedule.updated",
             Self::ApiPermissionDenied => "api.permission_denied",
+            Self::NotificationDestinationCreated => "notification.destination_created",
+            Self::NotificationDestinationUpdated => "notification.destination_updated",
+            Self::NotificationDestinationTested => "notification.destination_tested",
             Self::CatalogCreated => "catalog.created",
             Self::CatalogUpdated => "catalog.updated",
             Self::CatalogChecked => "catalog.checked",
@@ -188,6 +197,9 @@ impl AuditAction {
         Self::ScheduleCreated,
         Self::ScheduleUpdated,
         Self::ApiPermissionDenied,
+        Self::NotificationDestinationCreated,
+        Self::NotificationDestinationUpdated,
+        Self::NotificationDestinationTested,
         Self::CatalogCreated,
         Self::CatalogUpdated,
         Self::CatalogChecked,

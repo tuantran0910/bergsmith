@@ -132,6 +132,10 @@ define_id!(
     /// Identifies a schedule that runs one policy against one table.
     ScheduleId
 );
+define_id!(
+    /// Identifies a notification destination.
+    NotificationDestinationId
+);
 
 #[cfg(test)]
 mod tests {

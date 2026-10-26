@@ -714,6 +714,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/notifications/destinations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The organization's notification destinations in ascending identifier order. Requires notifications:manage over the organization. */
+        get: operations["listNotificationDestinations"];
+        put?: never;
+        /** @description Register a webhook or Slack-compatible destination. The URL must be HTTPS and its host must match notifications.allowed_hosts. A webhook must name a signing secret reference; the secret value is never stored. Requires notifications:manage and the CSRF token. */
+        post: operations["createNotificationDestination"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notifications/destinations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description One notification destination. Requires notifications:manage over the organization. */
+        get: operations["getNotificationDestination"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** @description Edit a destination. The request must name the revision it read; a stale revision returns 409 and changes nothing. The kind is fixed; a webhook keeps its signing secret reference. Requires notifications:manage and the CSRF token. */
+        patch: operations["updateNotificationDestination"];
+        trace?: never;
+    };
+    "/api/v1/notifications/destinations/{id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Send one test event and report the destination's HTTP status. A non-2xx status is a completed test with delivered false; an error means no request was made. Requires notifications:manage and the CSRF token. */
+        post: operations["testNotificationDestination"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -736,7 +789,7 @@ export interface components {
         };
         ApiError: {
             /** @enum {string} */
-            reason: "authentication_required" | "csrf_rejected" | "invalid_request" | "resource_not_found" | "permission_denied" | "idempotency_key_reused" | "ledger_unavailable" | "method_not_allowed" | "request_too_large" | "internal_error" | "catalog_credential_unavailable" | "catalog_connection_invalid" | "storage_profile_unavailable" | "storage_unavailable" | "catalog_access_denied" | "catalog_unavailable" | "table_staged" | "job_not_terminal" | "job_already_succeeded" | "table_identity_changed" | "catalog_table_missing" | "inventory_too_large" | "table_metadata_inconsistent" | "preview_capacity_exhausted" | "catalog_unsupported" | "catalog_credentials_unavailable" | "catalog_request_rejected" | "event_stream_capacity_exhausted" | "invalid_policy_parameters" | "invalid_policy_operation" | "invalid_cron_expression" | "invalid_time_zone" | "invalid_maintenance_window" | "run_budget_below_target_file_size" | "invalid_health_thresholds" | "revision_conflict" | "service_identity_not_eligible" | "resource_already_exists" | "catalog_connection_disabled" | "catalog_connection_in_use" | "catalog_connection_changed" | "capability_check_capacity_exhausted" | "catalog_response_too_large" | "table_in_use" | "catalog_namespace_not_found" | "catalog_table_not_found" | "catalog_discovery_capacity_exhausted" | "registration_too_large" | "table_identity_conflict" | "catalog_namespace_mismatch" | "catalog_page_too_large" | "registration_incomplete" | "catalog_token_too_large" | "last_administrator" | "grant_already_exists";
+            reason: "authentication_required" | "csrf_rejected" | "invalid_request" | "resource_not_found" | "permission_denied" | "idempotency_key_reused" | "ledger_unavailable" | "method_not_allowed" | "request_too_large" | "internal_error" | "catalog_credential_unavailable" | "catalog_connection_invalid" | "storage_profile_unavailable" | "storage_unavailable" | "catalog_access_denied" | "catalog_unavailable" | "table_staged" | "job_not_terminal" | "job_already_succeeded" | "table_identity_changed" | "catalog_table_missing" | "inventory_too_large" | "table_metadata_inconsistent" | "preview_capacity_exhausted" | "catalog_unsupported" | "catalog_credentials_unavailable" | "catalog_request_rejected" | "event_stream_capacity_exhausted" | "invalid_policy_parameters" | "invalid_policy_operation" | "invalid_cron_expression" | "invalid_time_zone" | "invalid_maintenance_window" | "run_budget_below_target_file_size" | "invalid_health_thresholds" | "revision_conflict" | "service_identity_not_eligible" | "resource_already_exists" | "catalog_connection_disabled" | "catalog_connection_in_use" | "catalog_connection_changed" | "capability_check_capacity_exhausted" | "catalog_response_too_large" | "table_in_use" | "catalog_namespace_not_found" | "catalog_table_not_found" | "catalog_discovery_capacity_exhausted" | "registration_too_large" | "table_identity_conflict" | "catalog_namespace_mismatch" | "catalog_page_too_large" | "registration_incomplete" | "catalog_token_too_large" | "last_administrator" | "grant_already_exists" | "destination_not_allowed" | "signing_secret_unavailable" | "notification_delivery_failed";
             /** @enum {string} */
             disposition: "RetrySameRequest" | "RetryTask" | "ReplanRequired" | "PermanentFailure" | "ResolvePublication";
             operator_action: string;
@@ -1820,6 +1873,47 @@ export interface components {
             kind: "small_files" | "delete_pressure" | "snapshot_backlog" | "manifest_fragmentation" | "partition_skew" | "stale_statistics";
             /** @enum {string} */
             severity: "warning" | "critical";
+        };
+        NotificationDestination: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** @enum {string} */
+            kind: "webhook" | "slack";
+            url: string;
+            signing_secret_ref: string | null;
+            enabled: boolean;
+            revision: number;
+            /** Format: uuid */
+            created_by: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        NotificationDestinationPage: {
+            items: components["schemas"]["NotificationDestination"][];
+            next_cursor: string | null;
+        };
+        CreateNotificationDestination: {
+            name: string;
+            /** @enum {string} */
+            kind: "webhook" | "slack";
+            url: string;
+            signing_secret_ref?: string | null;
+            enabled?: boolean;
+        };
+        UpdateNotificationDestination: {
+            revision: number;
+            name?: string;
+            url?: string;
+            signing_secret_ref?: string;
+            enabled?: boolean;
+        };
+        NotificationDeliveryTest: {
+            delivered: boolean;
+            status: number;
+            response: string | null;
         };
     };
     responses: never;
@@ -6776,6 +6870,481 @@ export interface operations {
                 };
             };
             /** @description Transient failure; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    listNotificationDestinations: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque continuation bound to organization, principal, and resource. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Resource or page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationDestinationPage"];
+                };
+            };
+            /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request body too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    createNotificationDestination: {
+        parameters: {
+            query?: never;
+            header: {
+                "x-csrf-token": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateNotificationDestination"];
+            };
+        };
+        responses: {
+            /** @description Created destination */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationDestination"];
+                };
+            };
+            /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request body too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    getNotificationDestination: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Notification destination */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationDestination"];
+                };
+            };
+            /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    updateNotificationDestination: {
+        parameters: {
+            query?: never;
+            header: {
+                "x-csrf-token": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateNotificationDestination"];
+            };
+        };
+        responses: {
+            /** @description Updated destination */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationDestination"];
+                };
+            };
+            /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Resource not found in this organization */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Revision conflict or duplicate name */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request body too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    testNotificationDestination: {
+        parameters: {
+            query?: never;
+            header: {
+                "x-csrf-token": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Test result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationDeliveryTest"];
+                };
+            };
+            /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Resource not found in this organization */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request body too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description The destination could not be reached */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
             503: {
                 headers: {
                     [name: string]: unknown;

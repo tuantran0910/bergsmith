@@ -45,6 +45,7 @@ const ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
         "connections:manage",
         "schedules:manage",
         "workers:manage",
+        "notifications:manage",
         "grants:manage",
         "audit:read",
     ],

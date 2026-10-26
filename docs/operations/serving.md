@@ -102,6 +102,17 @@ The JSON document is validated before any listener starts. A minimal document:
 | `loops` | Planning and publication scan intervals |
 | `statistics` | Metadata-only sampling: interval, retention, page and connection bounds, and the sample's manifest-entry and histogram limits ([ADR 0057](../adr/0057-metadata-only-table-statistics.md)) |
 | `observability` | Optional metrics listener and ledger snapshot bounds ([observability](observability.md)) |
+| `notifications` | Outbound destinations: allowed hosts, signing-secret directory, request timeout ([ADR 0060](../adr/0060-notification-destinations-and-durable-delivery.md)) |
+
+`notifications.allowed_hosts` is the complete list of hosts a destination URL
+may name; an empty list allows none, and a literal link-local address is
+rejected even when listed. `notifications.secrets_dir` holds webhook signing
+secrets: a destination stores only a file name, and the file's bytes (with one
+trailing newline removed) are the HMAC key. Both are read at startup for the
+allow-list and at send time for the secret file, so a key rotation needs no
+restart while a host change does. The coordinator sends with no redirects and a
+bounded timeout; deployments should still restrict egress at the network layer,
+as they do for catalog connections.
 
 The OIDC issuer is used for discovery from the coordinator and must be the
 same string the browser receives in the ID token. In a container, make that

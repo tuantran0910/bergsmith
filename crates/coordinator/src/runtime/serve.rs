@@ -23,7 +23,7 @@ use crate::identity::routes::IdentityState;
 use crate::observability::{Observability, RpcMetrics};
 use crate::preview::{CatalogPreviewer, PreviewProfiles};
 use crate::runtime::catalogs::{RuntimeCatalogs, RuntimeWorkerAccess};
-use crate::runtime::config::CoordinatorConfig;
+use crate::runtime::config::{ConfigError, CoordinatorConfig};
 use crate::runtime::http;
 use crate::runtime::planning::PlannerService;
 use crate::runtime::publication::PublicationService;
@@ -40,7 +40,7 @@ const OIDC_DISCOVERY_ATTEMPTS: u32 = 30;
 pub enum ServeError {
     /// The configuration document is invalid.
     #[error(transparent)]
-    Config(#[from] crate::runtime::config::ConfigError),
+    Config(#[from] ConfigError),
     /// Database settings are invalid or the database is unreachable.
     #[error("database connection failed: {0}")]
     Database(#[from] PersistenceError),
@@ -337,6 +337,9 @@ async fn start(
         })
     })?;
     let catalogs = Arc::new(RuntimeCatalogs::new(database.clone(), preview_profiles));
+    let notification_settings = config.notifications.policy()?;
+    let notifications = crate::notifications::DeliveryClient::new(&notification_settings)
+        .map_err(|error| ConfigError::Invalid(format!("notifications: {error}")))?;
     let api = api::ApiState {
         database: database.clone(),
         sessions: sessions.clone(),
@@ -344,6 +347,7 @@ async fn start(
         events: events.clone(),
         checks: CapabilityChecker::default(),
         discovery: CatalogDiscovery::new(catalogs.clone(), DiscoveryLimits::default()),
+        notifications,
     };
     let identity = IdentityState::new(database.clone(), Arc::new(provider), sessions);
 

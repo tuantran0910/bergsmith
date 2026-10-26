@@ -501,6 +501,30 @@ existing job remains an explicit command. See
 [Scheduling and reconciliation](scheduling.md) for occurrence and window
 semantics.
 
+## Notification destinations
+
+`GET /api/v1/notifications/destinations` pages through the organization's
+destinations in ascending identifier order, `POST` registers one,
+`GET .../{id}` reads one, and `PATCH .../{id}` edits name, URL, signing-secret
+reference, or `enabled` when the request names the revision it read. All four
+require organization-wide `notifications:manage`, which only the Administrator
+role carries. A catalog connection or table grant never covers them.
+
+A destination is `webhook` or `slack`. A webhook posts the event envelope and is
+always signed; a Slack destination posts one `text` field and is never signed.
+The URL must be HTTPS, carry no user information or fragment, and name a host
+from `notifications.allowed_hosts` (configuration, not this API). A
+`signing_secret_ref` is a bare file name under `notifications.secrets_dir`; the
+secret value is never returned, audited, or stored. Responses echo the
+reference, not the key.
+
+`POST .../{id}/test` sends one event with kind `notification.test` and answers
+with the destination's HTTP status: a non-2xx status is a completed test with
+`delivered: false`, while a 400 `destination_not_allowed`, a 500
+`signing_secret_unavailable`, or a 502 `notification_delivery_failed` means the
+request was not made or could not complete. The test does not enqueue a durable
+delivery and leaves no delivery-log row.
+
 ## Pagination, errors, and authentication
 
 Lists accept `limit` (default 50, maximum 100) and an opaque `cursor`. Follow

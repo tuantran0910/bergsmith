@@ -1241,6 +1241,7 @@ mod oidc_flow {
                 {"permission": "connections:manage", "scope": {"catalog_connection": connection, "table": null}},
                 {"permission": "schedules:manage", "scope": {"catalog_connection": connection, "table": null}},
                 {"permission": "workers:manage", "scope": {"catalog_connection": connection, "table": null}},
+                {"permission": "notifications:manage", "scope": {"catalog_connection": connection, "table": null}},
                 {"permission": "grants:manage", "scope": {"catalog_connection": connection, "table": null}},
                 {"permission": "audit:read", "scope": {"catalog_connection": connection, "table": null}},
             ]),

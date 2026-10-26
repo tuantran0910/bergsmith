@@ -68,6 +68,9 @@ pub struct CoordinatorConfig {
     /// Metadata-only table statistics sampling.
     #[serde(default)]
     pub statistics: StatisticsSettings,
+    /// Notification destinations and outbound delivery (BS-029).
+    #[serde(default)]
+    pub notifications: NotificationsSettings,
     /// Metrics listener and ledger snapshot bounds.
     #[serde(default)]
     pub observability: ObservabilitySettings,
@@ -731,6 +734,62 @@ fn default_statistics_concurrency() -> usize {
     4
 }
 
+/// Notification destinations and outbound delivery (BS-029, ADR 0060).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotificationsSettings {
+    /// Hosts a destination URL may target, such as `hooks.slack.com`,
+    /// `*.example.com:8443`, or `127.0.0.1:9000`. Empty allows none.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+    /// Directory holding webhook signing secrets. A destination stores only a
+    /// name inside it.
+    #[serde(default)]
+    pub secrets_dir: Option<PathBuf>,
+    /// Timeout for one delivery request.
+    #[serde(default = "default_notification_timeout_seconds")]
+    pub request_timeout_seconds: u64,
+}
+
+impl Default for NotificationsSettings {
+    fn default() -> Self {
+        Self {
+            allowed_hosts: Vec::new(),
+            secrets_dir: None,
+            request_timeout_seconds: default_notification_timeout_seconds(),
+        }
+    }
+}
+
+impl NotificationsSettings {
+    /// The validated outbound policy.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError`] when an allow-list entry is malformed or names a
+    /// link-local address, or the timeout is outside 1 to 60 seconds.
+    pub fn policy(&self) -> Result<crate::notifications::Settings, ConfigError> {
+        let allow_list = bergsmith_common::notifications::AllowList::new(&self.allowed_hosts)
+            .map_err(|error| {
+                ConfigError::Invalid(format!("notifications.allowed_hosts: {error}"))
+            })?;
+        if !(1..=60).contains(&self.request_timeout_seconds) {
+            return Err(ConfigError::Invalid(
+                "notifications.request_timeout_seconds must be 1 to 60".into(),
+            ));
+        }
+        Ok(crate::notifications::Settings::new(
+            allow_list,
+            self.secrets_dir.clone(),
+            Duration::from_secs(self.request_timeout_seconds),
+        ))
+    }
+}
+
+fn default_notification_timeout_seconds() -> u64 {
+    10
+}
+
 /// Metrics settings (BS-020.T2).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -937,6 +996,7 @@ impl CoordinatorConfig {
         }
         self.observability.metrics()?;
         self.statistics.sampling()?;
+        self.notifications.policy()?;
         Ok(())
     }
 

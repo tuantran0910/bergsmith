@@ -14,6 +14,7 @@ pub mod durable_publication;
 pub mod health;
 pub mod identity;
 pub mod inventory;
+pub mod notifications;
 pub mod observability;
 pub mod operator;
 pub mod planning;
