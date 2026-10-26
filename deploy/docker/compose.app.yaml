@@ -68,7 +68,7 @@ services:
       - rustfs-data:/data
 
   rustfs-init:
-    image: amazon/aws-cli:2.38.1@sha256:733d5be1015825e4038c6016f3fa9954868ddee1f611b73be795a9cc2e706bfd
+    image: amazon/aws-cli:2.38.5@sha256:c8156a0e74e13929a42d7e60f0d4e14e7d28d980cd21822505d4bff80e5460c1
     environment:
       AWS_ACCESS_KEY_ID: rustfsadmin
       AWS_SECRET_ACCESS_KEY: rustfsadmin
@@ -102,7 +102,7 @@ services:
       - catalog-data:/var/lib/postgresql/data
 
   lakekeeper-migrate:
-    image: quay.io/lakekeeper/catalog:v0.14.1@sha256:7c5d6b178a1b5ae230bd7d3e7a09da4704ce58fafc66a8b90c3b6edb69ba9817
+    image: quay.io/lakekeeper/catalog:v0.14.2@sha256:9ad8de17a4d291d355215791ee7410409dcaea83cee04ed9279725b6905a4b85
     command: ["migrate"]
     environment: &lakekeeper-env
       LAKEKEEPER__PG_DATABASE_URL_READ: postgres://lakekeeper:lakekeeper@catalog-db:5432/lakekeeper
@@ -114,7 +114,7 @@ services:
         condition: service_healthy
 
   lakekeeper:
-    image: quay.io/lakekeeper/catalog:v0.14.1@sha256:7c5d6b178a1b5ae230bd7d3e7a09da4704ce58fafc66a8b90c3b6edb69ba9817
+    image: quay.io/lakekeeper/catalog:v0.14.2@sha256:9ad8de17a4d291d355215791ee7410409dcaea83cee04ed9279725b6905a4b85
     command: ["serve"]
     environment: *lakekeeper-env
     healthcheck:
@@ -129,7 +129,7 @@ services:
         condition: service_completed_successfully
 
   lakekeeper-init:
-    image: alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+    image: alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
     command: ["/bin/sh", "-c", "apk add --no-cache curl jq >/dev/null && sh /bootstrap/init.sh"]
     environment:
       # Development-only RustFS credentials.
@@ -174,7 +174,7 @@ services:
       retries: 60
 
   certificates:
-    image: alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+    image: alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
     command:
       - /bin/sh
       - -c
@@ -194,7 +194,7 @@ services:
 
   worker-init:
     profiles: ["worker"]
-    image: alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+    image: alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
     command: ["/bin/sh", "-c", "mkdir -p /state && chown 10001:10001 /state && chmod 700 /state"]
     volumes:
       - worker-state:/state
