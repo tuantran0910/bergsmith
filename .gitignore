@@ -20,6 +20,7 @@
 .DS_Store
 
 # Web UI (added in M4)
+/node_modules/
 /web/node_modules/
 /web/dist/
 /.playwright-mcp/

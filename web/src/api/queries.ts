@@ -57,16 +57,33 @@ export function useCatalogNames() {
     });
 }
 
-export function useTables() {
+/**
+ * The tables the session may see, worst health first when `health` or the
+ * health order is requested. The server evaluates every visible table for
+ * those, so the page is not a client-side slice of one page.
+ */
+export function useTables({
+    health,
+    sort,
+}: {
+    health?: "healthy" | "warning" | "critical" | "unassessed" | undefined;
+    sort?: "health" | undefined;
+} = {}) {
     const client = useQueryClient();
     return useInfiniteQuery({
-        queryKey: ["tables"],
+        queryKey: ["tables", health ?? "any", sort ?? "name"],
         initialPageParam: null as string | null,
         queryFn: ({ pageParam, signal }) =>
             forSession(client, () =>
                 call(
                     api.GET("/api/v1/tables", {
-                        params: { query: page(pageParam) },
+                        params: {
+                            query: {
+                                ...page(pageParam),
+                                ...(health === undefined ? {} : { health }),
+                                ...(sort === undefined ? {} : { sort }),
+                            },
+                        },
                         signal,
                     }),
                 ),
@@ -104,6 +121,28 @@ export function useTableDefinition(id: string) {
             forSession(client, () =>
                 call(
                     api.GET("/api/v1/tables/{id}/definition", {
+                        params: { path: { id } },
+                        signal,
+                    }),
+                ),
+            ),
+    });
+}
+
+/**
+ * The table's evaluated health: its state, the findings behind it, and the
+ * action each finding recommends. Findings need only inventory visibility;
+ * an actionable recommendation carries the planner's estimate when the
+ * session may submit jobs, and `assessment` makes that explicit.
+ */
+export function useTableRecommendations(id: string) {
+    const client = useQueryClient();
+    return useQuery({
+        queryKey: ["table", id, "recommendations"],
+        queryFn: ({ signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/tables/{id}/recommendations", {
                         params: { path: { id } },
                         signal,
                     }),

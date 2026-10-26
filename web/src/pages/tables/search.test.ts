@@ -1,7 +1,9 @@
 import {
+    healthFilter,
     namespaceKey,
     parseNamespaceKey,
     sortColumn,
+    tab,
     validateTablesSearch,
 } from "./search";
 
@@ -47,5 +49,17 @@ it("drops blank, unknown, and malformed values", () => {
 
 it("recognizes only the columns the table can sort", () => {
     expect(sortColumn("name")).toBe("name");
+    expect(sortColumn("health")).toBe("health");
     expect(sortColumn("nope")).toBeUndefined();
+});
+
+it("keeps only a known health filter and opens the health tab", () => {
+    expect(validateTablesSearch({ health: "critical" })).toEqual({
+        health: "critical",
+    });
+    expect(validateTablesSearch({ health: "broken" })).toEqual({});
+    expect(healthFilter("unassessed")).toBe("unassessed");
+    expect(healthFilter("healthy")).toBe("healthy");
+    expect(healthFilter("Critical")).toBeUndefined();
+    expect(tab("health")).toBe("health");
 });

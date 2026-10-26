@@ -11,6 +11,7 @@ import {
 } from "../components/DataTable";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { FilterBar } from "../components/FilterBar";
+import { HealthBadge, type HealthState } from "../components/HealthBadge";
 import {
     EmptyState,
     LoadMore,
@@ -31,7 +32,12 @@ import {
 } from "../format";
 import { buttonVariants } from "../ui/Button";
 import { Select } from "../ui/Select";
-import { namespaceKey, sortColumn, type TablesSearch } from "./tables/search";
+import {
+    healthFilter,
+    namespaceKey,
+    sortColumn,
+    type TablesSearch,
+} from "./tables/search";
 
 /** The names and context one table shows, without losing its other aliases. */
 function display(table: Schemas["Table"], names: ReadonlyMap<string, string>) {
@@ -63,11 +69,30 @@ function display(table: Schemas["Table"], names: ReadonlyMap<string, string>) {
     };
 }
 
+/** Critical first; an unassessed table sorts last, never as healthy. */
+function healthRank(state: HealthState): number {
+    switch (state) {
+        case "critical":
+            return 0;
+        case "warning":
+            return 1;
+        case "healthy":
+            return 2;
+        default:
+            return 3;
+    }
+}
+
 /** Canonical tables the session may see, named through their aliases. */
 export function TablesPage() {
     const search = useSearch({ from: "/tables" });
     const navigate = useNavigate();
-    const tables = useTables();
+    // The coordinator owns the health filter and order (ADR 0059): the state
+    // is computed on read, so only it can filter or sort across every table.
+    const tables = useTables({
+        health: healthFilter(search.health),
+        sort: search.sort === "health" ? "health" : undefined,
+    });
     const catalogs = useCatalogNames();
     const names = useMemo(
         () => catalogs.data ?? new Map<string, string>(),
@@ -145,7 +170,8 @@ export function TablesPage() {
     const filtersActive =
         (search.q ?? "") !== "" ||
         search.catalog !== undefined ||
-        search.namespace !== undefined;
+        search.namespace !== undefined ||
+        search.health !== undefined;
 
     function change(patch: Partial<TablesSearch>): void {
         const merged = { ...search, ...patch };
@@ -159,6 +185,7 @@ export function TablesPage() {
             ...(merged.namespace !== undefined && merged.namespace !== ""
                 ? { namespace: merged.namespace }
                 : {}),
+            ...(merged.health !== undefined ? { health: merged.health } : {}),
             ...(merged.sort !== undefined ? { sort: merged.sort } : {}),
             ...(merged.order !== undefined ? { order: merged.order } : {}),
         };
@@ -166,7 +193,7 @@ export function TablesPage() {
     }
 
     function clearFilters(): void {
-        change({ q: "", catalog: "", namespace: "" });
+        change({ q: "", catalog: "", namespace: "", health: undefined });
     }
 
     function onSortChange(next: SortState): void {
@@ -278,6 +305,12 @@ export function TablesPage() {
             ),
         },
         {
+            id: "health",
+            header: "Health",
+            sortValue: (table) => healthRank(table.health.state),
+            cell: (table) => <HealthBadge state={table.health.state} />,
+        },
+        {
             id: "records",
             header: "Rows",
             align: "end",
@@ -362,7 +395,7 @@ export function TablesPage() {
                     }}
                 />
             )}
-            {tables.isSuccess && items.length === 0 && (
+            {tables.isSuccess && items.length === 0 && !filtersActive && (
                 <EmptyState
                     icon={Table2Icon}
                     title="No tables are visible to you."
@@ -383,7 +416,7 @@ export function TablesPage() {
                     hold a grant on the catalog or the table.
                 </EmptyState>
             )}
-            {items.length > 0 && (
+            {(items.length > 0 || filtersActive) && (
                 <>
                     <FilterBar
                         query={search.q ?? ""}
@@ -398,7 +431,7 @@ export function TablesPage() {
                                 : undefined
                         }
                         result={
-                            filtersActive
+                            filtersActive && items.length > 0
                                 ? `${number(visible.length)} of ${number(items.length)} ${
                                       tables.hasNextPage ? "loaded" : "tables"
                                   }`
@@ -436,6 +469,36 @@ export function TablesPage() {
                                 </span>
                             </span>
                         )}
+                        <span className="flex items-center gap-1.5">
+                            <label
+                                htmlFor="table-health"
+                                className="text-sm font-medium whitespace-nowrap text-foreground"
+                            >
+                                Health
+                            </label>
+                            <span className="w-36">
+                                <Select
+                                    id="table-health"
+                                    value={search.health ?? ""}
+                                    onValueChange={(value) => {
+                                        change({ health: healthFilter(value) });
+                                    }}
+                                    options={[
+                                        { value: "", label: "All states" },
+                                        {
+                                            value: "critical",
+                                            label: "Critical",
+                                        },
+                                        { value: "warning", label: "Warning" },
+                                        { value: "healthy", label: "Healthy" },
+                                        {
+                                            value: "unassessed",
+                                            label: "Not assessed",
+                                        },
+                                    ]}
+                                />
+                            </span>
+                        </span>
                         {namespaceOptions.length > 0 && (
                             <span className="flex items-center gap-1.5">
                                 <label
@@ -468,52 +531,72 @@ export function TablesPage() {
                             </span>
                         )}
                     </FilterBar>
-                    {(filtersActive || search.sort !== undefined) &&
-                        tables.hasNextPage && (
-                            <p className="mb-3 text-xs text-muted-foreground">
-                                Search and sort cover the{" "}
-                                {count(items.length, "loaded table")}. Load more
-                                to widen them.
-                            </p>
-                        )}
-                    <div ref={tableFrame}>
-                        <DataTable
-                            rows={visible}
-                            columns={columns}
-                            getRowKey={(table) => table.id}
-                            sort={sort}
-                            onSortChange={onSortChange}
-                            caption="Tables"
-                            empty={
-                                <NoResults
-                                    onClear={
-                                        filtersActive ? clearFilters : undefined
+                    {items.length === 0 ? (
+                        tables.isSuccess ? (
+                            <NoResults onClear={clearFilters}>
+                                No tables match these filters. Adjust or clear
+                                the health filter to see every table.
+                            </NoResults>
+                        ) : null
+                    ) : (
+                        <>
+                            {search.health !== undefined && (
+                                <p className="mb-3 text-xs text-muted-foreground">
+                                    The coordinator evaluates every visible
+                                    table for the health filter and order; the
+                                    other filters cover the loaded rows.
+                                </p>
+                            )}
+                            {(filtersActive || search.sort !== undefined) &&
+                                tables.hasNextPage && (
+                                    <p className="mb-3 text-xs text-muted-foreground">
+                                        Search and sort cover the{" "}
+                                        {count(items.length, "loaded table")}.
+                                        Load more to widen them.
+                                    </p>
+                                )}
+                            <div ref={tableFrame}>
+                                <DataTable
+                                    rows={visible}
+                                    columns={columns}
+                                    getRowKey={(table) => table.id}
+                                    sort={sort}
+                                    onSortChange={onSortChange}
+                                    caption="Tables"
+                                    empty={
+                                        <NoResults
+                                            onClear={
+                                                filtersActive
+                                                    ? clearFilters
+                                                    : undefined
+                                            }
+                                        >
+                                            No tables match these filters.
+                                            Adjust the search or clear the
+                                            filters to see every loaded table.
+                                        </NoResults>
                                     }
-                                >
-                                    No tables match these filters. Adjust the
-                                    search or clear the filters to see every
-                                    loaded table.
-                                </NoResults>
-                            }
-                        />
-                    </div>
-                    {tableOverflows && (
-                        <p className="mt-2 text-xs text-muted-foreground">
-                            Scroll horizontally for more columns.
-                        </p>
-                    )}
-                    {(visible.length > 0 ||
-                        tables.hasNextPage ||
-                        !filtersActive) && (
-                        <LoadMore
-                            shown={visible.length}
-                            noun="tables"
-                            hasMore={tables.hasNextPage}
-                            loading={tables.isFetchingNextPage}
-                            onLoad={() => {
-                                void tables.fetchNextPage();
-                            }}
-                        />
+                                />
+                            </div>
+                            {tableOverflows && (
+                                <p className="mt-2 text-xs text-muted-foreground">
+                                    Scroll horizontally for more columns.
+                                </p>
+                            )}
+                            {(visible.length > 0 ||
+                                tables.hasNextPage ||
+                                !filtersActive) && (
+                                <LoadMore
+                                    shown={visible.length}
+                                    noun="tables"
+                                    hasMore={tables.hasNextPage}
+                                    loading={tables.isFetchingNextPage}
+                                    onLoad={() => {
+                                        void tables.fetchNextPage();
+                                    }}
+                                />
+                            )}
+                        </>
                     )}
                 </>
             )}

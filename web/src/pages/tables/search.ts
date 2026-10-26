@@ -5,6 +5,7 @@ const SORTS = [
     "name",
     "catalog",
     "namespace",
+    "health",
     "registered",
     "records",
     "size",
@@ -17,6 +18,7 @@ export type TableSort = (typeof SORTS)[number];
 const TABS = [
     "overview",
     "definition",
+    "health",
     "snapshots",
     "statistics",
     "maintenance",
@@ -30,12 +32,23 @@ export interface TableSearch {
     tab?: TableTab;
 }
 
+/** The evaluated states a table list can be filtered to. */
+const HEALTH = ["healthy", "warning", "critical", "unassessed"] as const;
+
+export type TableHealthFilter = (typeof HEALTH)[number];
+
 export interface TablesSearch {
     q?: string;
     catalog?: string;
     namespace?: string;
+    health?: TableHealthFilter | undefined;
     sort?: TableSort;
     order?: "asc" | "desc";
+}
+
+/** The filter in a search parameter, or `undefined` for anything else. */
+export function healthFilter(value: unknown): TableHealthFilter | undefined {
+    return HEALTH.find((candidate) => candidate === value);
 }
 
 function text(value: unknown): string | undefined {
@@ -90,6 +103,7 @@ export function validateTablesSearch(
     const namespace = text(search["namespace"]);
     const levels =
         namespace === undefined ? undefined : parseNamespaceKey(namespace);
+    const health = healthFilter(search["health"]);
     const sort = sortColumn(search["sort"]);
     const order =
         search["order"] === "asc" || search["order"] === "desc"
@@ -99,6 +113,7 @@ export function validateTablesSearch(
         ...(q !== undefined ? { q } : {}),
         ...(catalog !== undefined ? { catalog } : {}),
         ...(levels !== undefined ? { namespace: namespaceKey(levels) } : {}),
+        ...(health !== undefined ? { health } : {}),
         ...(sort !== undefined ? { sort } : {}),
         ...(order !== undefined ? { order } : {}),
     };

@@ -161,6 +161,86 @@ export const table = schema("Table", {
     health: { state: null, sampled_at: null, confirmed_at: null },
 });
 
+/** A table's evaluated health; the null state is "not assessed". */
+export function tableHealth(
+    state: "healthy" | "warning" | "critical" | null,
+): Schemas["TableHealthSummary"] {
+    return schema("TableHealthSummary", {
+        state,
+        sampled_at: state === null ? null : "2026-10-26T00:00:00Z",
+        confirmed_at: state === null ? null : "2026-10-26T00:05:00Z",
+    });
+}
+
+/**
+ * One table's findings and the action each recommends. The coordinator picks
+ * one threshold set per assessment, so every finding shares its source.
+ */
+export function tableRecommendations(
+    source: "defaults" | "policy" = "policy",
+): Schemas["TableRecommendations"] {
+    const findingSource: Schemas["HealthThresholdSource"] =
+        source === "defaults"
+            ? { kind: "defaults" }
+            : { kind: "policy", policy_id: POLICY_ID, policy_name: "nightly" };
+    return schema("TableRecommendations", {
+        table_id: TABLE_ID,
+        state: "critical",
+        sampled_at: "2026-10-26T00:00:00Z",
+        confirmed_at: "2026-10-26T00:05:00Z",
+        findings: [
+            {
+                kind: "small_files",
+                severity: "critical",
+                measured: "4194304",
+                threshold: "33554432",
+                unit: "bytes",
+                reason: "Live data files average 4.0 MiB, below the 32.0 MiB critical bound.",
+                source: findingSource,
+            },
+            {
+                kind: "snapshot_backlog",
+                severity: "warning",
+                measured: "1500",
+                threshold: "1000",
+                unit: "snapshots",
+                reason: "The table retains 1,500 snapshots, at or above the 1,000 warning bound.",
+                source: findingSource,
+            },
+        ],
+        recommendations: [
+            {
+                kind: "small_files",
+                action: "compaction",
+                advisory: false,
+                reason: null,
+                assessment: "included",
+                preview: { table_id: TABLE_ID },
+                outcome: "planned",
+                no_op_reason: null,
+                estimate: {
+                    tasks: "1",
+                    files: "5",
+                    bytes: "20971520",
+                    files_removed: "5",
+                    duration_millis: "120000",
+                },
+            },
+            {
+                kind: "snapshot_backlog",
+                action: "snapshot_expiration",
+                advisory: true,
+                reason: "snapshot expiration is not implemented yet (BS-031)",
+                assessment: "not_applicable",
+                preview: null,
+                outcome: null,
+                no_op_reason: null,
+                estimate: null,
+            },
+        ],
+    });
+}
+
 /** One metadata-only sample; `rows` and `bytes` are decimal strings. */
 export function tableSample(
     sampledAt: string,

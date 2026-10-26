@@ -11,8 +11,8 @@ The browser application in `web/` covers manual maintenance over the
 | Sign-in | Asks for the organization slug and starts `/auth/login`; returns to the page that asked |
 | Catalogs | Lists authorized connections and opens guided setup, with a capability check before saving |
 | Catalog connection | Shows settings, capabilities, read-only storage profiles, unresolved publications, and registered names; connection administrators can edit, discover, register, and remove names |
-| Tables | Lists the tables the session may see, named `catalog.namespace.table` through their aliases |
-| Table | Shows the table's names, previews maintenance (outcome, unsupported features, bins, estimate), and runs it |
+| Tables | Lists the tables the session may see, named `catalog.namespace.table` through their aliases, each with its evaluated health; the list can be filtered to one state and ordered worst first |
+| Table | Shows the table's names and health, previews maintenance (outcome, unsupported features, bins, estimate), and runs it; addressable tabs cover its definition, health, snapshots, statistics, and maintenance history |
 | Jobs | Lists jobs with execution and publication status side by side |
 | Job | Shows execution and publication separately, streams events live, requests cancellation, and retries with a fresh plan |
 | Policies | Lists maintenance policies and creates or edits one, sending the revision it read; a conflict stops the save until the current revision is reloaded |
@@ -31,6 +31,24 @@ administer organization configuration. Creating a schedule also needs
 `inventory:read` to choose a table and `workers:manage` to choose a service
 identity; the page names the missing grants rather than offer a control that
 cannot work.
+
+## Health
+
+A table's state comes from its newest metadata-only sample and the thresholds of
+its enabled policies, evaluated when the page is read (ADR 0059). `Healthy`
+means a sample exists and no finding fired; a sample that is missing, incomplete,
+or too old to present is **not assessed**, never healthy. Each finding names the
+measurement, the bound it crossed, and the policy that supplied the bound; with
+no enabled policy the documented defaults apply, and a disabled policy
+contributes nothing.
+
+Findings need inventory visibility only, so a viewer can explain a state. The
+catalog assessment behind a runnable recommendation — the planner's estimate —
+needs `jobs:submit`, and the recommendation says so rather than disappearing.
+Filtering or ordering the table list by state is done by the coordinator over
+every visible table, so those results do not depend on how many rows the page
+has loaded; the name, catalog, and namespace filters still cover the loaded
+rows.
 
 ## Reading job status
 

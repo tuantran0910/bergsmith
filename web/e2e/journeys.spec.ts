@@ -16,8 +16,10 @@ import {
     table,
     tableSnapshots,
     tableDefinition,
+    tableHealth,
     overview,
     tableMaintenance,
+    tableRecommendations,
     tableStatistics,
 } from "../src/test/fixtures";
 import {
@@ -844,4 +846,64 @@ test("the policy blocks inline styles and string script sinks", async ({
         .toBe(true);
     // The violations were the point of this test.
     problems.length = 0;
+});
+
+test("filters tables by health and opens the health tab", async ({
+    page,
+    coordinator,
+}) => {
+    signedIn(coordinator);
+    coordinator
+        .on("GET", "/api/v1/tables", (request) =>
+            json(
+                200,
+                schema("TablePage", {
+                    items:
+                        new URLSearchParams(request.search).get("health") ===
+                        "critical"
+                            ? [
+                                  schema("Table", {
+                                      ...table,
+                                      health: tableHealth("critical"),
+                                  }),
+                              ]
+                            : [
+                                  schema("Table", {
+                                      ...table,
+                                      health: tableHealth("warning"),
+                                  }),
+                              ],
+                    next_cursor: null,
+                }),
+            ),
+        )
+        .on("GET", "/api/v1/tables/{id}", () =>
+            json(
+                200,
+                schema("Table", {
+                    ...table,
+                    health: tableHealth("critical"),
+                }),
+            ),
+        )
+        .on("GET", "/api/v1/tables/{id}/recommendations", () =>
+            json(200, tableRecommendations()),
+        );
+
+    await page.goto("/tables");
+    await expect(page.getByRole("cell", { name: "Warning" })).toBeVisible();
+    await page.getByRole("combobox", { name: "Health" }).click();
+    await page.getByRole("option", { name: "Critical" }).click();
+    await expect(page).toHaveURL(/health=critical/);
+    await expect(page.getByRole("cell", { name: "Critical" })).toBeVisible();
+    await expectAccessible(page);
+
+    await page.goto(`/tables/${TABLE_ID}?tab=health`);
+    await expect(page.getByRole("cell", { name: "Small files" })).toBeVisible();
+    // Every finding names the one threshold set the assessment used.
+    await expect(
+        page.getByRole("cell", { name: "Policy “nightly”" }),
+    ).toHaveCount(2);
+    await expect(page.getByText(/5 files \(20.0 MiB\)/)).toBeVisible();
+    await expectAccessible(page);
 });
