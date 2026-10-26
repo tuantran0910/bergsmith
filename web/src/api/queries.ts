@@ -20,6 +20,22 @@ function page(cursor: string | null): { limit: number; cursor?: string } {
     return cursor === null ? { limit: PAGE } : { limit: PAGE, cursor };
 }
 
+/**
+ * What needs attention across the organization. Job and table figures follow
+ * the session's grants; the schedule and worker sections are null when it may
+ * not read them.
+ */
+export function useOverview() {
+    const client = useQueryClient();
+    return useQuery({
+        queryKey: ["overview"],
+        queryFn: ({ signal }) =>
+            forSession(client, () =>
+                call(api.GET("/api/v1/overview", { signal })),
+            ),
+    });
+}
+
 export function useCatalogNames() {
     const client = useQueryClient();
     return useQuery({

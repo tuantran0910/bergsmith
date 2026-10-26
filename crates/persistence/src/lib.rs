@@ -20,6 +20,7 @@ pub mod leadership;
 pub mod maintenance;
 pub mod metrics;
 pub mod occurrences;
+pub mod overview;
 pub mod plans;
 pub mod publications;
 pub mod schedules;

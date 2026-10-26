@@ -16,6 +16,7 @@ import {
     table,
     tableSnapshots,
     tableDefinition,
+    overview,
     tableMaintenance,
     tableStatistics,
 } from "../src/test/fixtures";
@@ -35,7 +36,9 @@ function signedIn(coordinator: FakeCoordinator, role = "Operator") {
     coordinator
         .on("GET", "/auth/session", () => json(200, session(role)))
         .on("GET", "/api/v1/catalogs", () => json(200, catalogs))
-        .on("GET", "/api/v1/tables/{id}", () => json(200, table));
+        .on("GET", "/api/v1/tables/{id}", () => json(200, table))
+        // The landing page reads the overview; every shell journey visits it.
+        .on("GET", "/api/v1/overview", () => json(200, overview));
 }
 
 test("signs in through the organization and returns to the requested page", async ({
@@ -540,7 +543,14 @@ test("lands on the overview and opens the tables", async ({
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
     await expect(
-        page.getByText("Attention overview is not yet available"),
+        page.getByRole("heading", { name: "Needs attention" }),
+    ).toBeVisible();
+    await expect(page.getByText("Publication unresolved")).toBeVisible();
+    await expect(
+        page.getByRole("link", { name: /^Replan required/ }),
+    ).toBeVisible();
+    await expect(
+        page.getByRole("img", { name: /Jobs in the last day/ }),
     ).toBeVisible();
     await expectAccessible(page);
 

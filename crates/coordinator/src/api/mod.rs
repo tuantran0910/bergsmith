@@ -12,6 +12,7 @@ mod discovery;
 mod events;
 mod grants;
 mod maintenance;
+mod overview;
 mod pagination;
 mod preview;
 mod principals;
@@ -114,6 +115,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/tables/{id}/maintenance", get(maintenance::table))
         .route("/api/v1/catalogs/{id}/statistics", get(statistics::catalog))
         .route("/api/v1/statistics", get(statistics::organization))
+        .route("/api/v1/overview", get(overview::overview))
         .route(
             "/api/v1/statistics/maintenance",
             get(maintenance::organization),
