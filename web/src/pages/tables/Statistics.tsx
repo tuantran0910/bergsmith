@@ -276,7 +276,8 @@ export function TableStatistics({ id }: { id: string }) {
                     <CardHeader>
                         <CardTitle>Busiest partitions</CardTitle>
                         <CardDescription>
-                            The partitions with the most data files, for skew.
+                            The partitions with the most data files, for skew,
+                            with the delete files that apply to them.
                         </CardDescription>
                     </CardHeader>
                     <CardContent>
@@ -286,6 +287,9 @@ export function TableStatistics({ id }: { id: string }) {
                                     <TableHead>Partition</TableHead>
                                     <TableHead className="text-right">
                                         Data files
+                                    </TableHead>
+                                    <TableHead className="text-right">
+                                        Delete files
                                     </TableHead>
                                     <TableHead className="text-right">
                                         Data size
@@ -307,6 +311,9 @@ export function TableStatistics({ id }: { id: string }) {
                                         </TableCell>
                                         <TableCell className="text-right tabular-nums">
                                             {exactCount(partition.files)}
+                                        </TableCell>
+                                        <TableCell className="text-right tabular-nums">
+                                            {exactCount(partition.delete_files)}
                                         </TableCell>
                                         <TableCell className="text-right tabular-nums">
                                             {exactBytes(partition.bytes)}

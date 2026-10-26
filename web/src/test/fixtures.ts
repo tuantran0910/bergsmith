@@ -210,6 +210,7 @@ export function tableSample(
                 partition: "day=2026-10-01",
                 files: "2",
                 bytes: "2048",
+                delete_files: "1",
             },
         ],
     });

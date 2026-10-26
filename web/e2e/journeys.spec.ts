@@ -157,6 +157,15 @@ test("shows a table's statistics on an addressable tab", async ({
         page.getByRole("columnheader", { name: "Rows" }),
     ).toBeVisible();
     await expect(page.getByText("day=2026-10-01")).toBeVisible();
+    const partitions = page.getByRole("region", {
+        name: "Busiest partitions",
+    });
+    await expect(
+        partitions.getByRole("columnheader", { name: "Delete files" }),
+    ).toBeVisible();
+    await expect(
+        partitions.getByRole("cell", { name: "1", exact: true }),
+    ).toBeVisible();
     await expectAccessible(page);
 
     // The overview is still one click away and keeps its own address.

@@ -151,9 +151,9 @@ pub struct SizeBucket {
     pub bytes: u64,
 }
 
-/// One partition of the current snapshot, as a readable label and its file
-/// count. Values use the spec's field names and the Iceberg single-value
-/// encoding decoded back to text.
+/// One partition of the current snapshot: its data files and the delete files
+/// that apply to it. Values use the spec's field names and the Iceberg
+/// single-value encoding decoded back to text.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PartitionFiles {
@@ -165,6 +165,19 @@ pub struct PartitionFiles {
     pub files: u64,
     /// Bytes of those data files.
     pub bytes: u64,
+    /// Delete files in the partition, of either kind. Zero for samples stored
+    /// before the field existed; a partition without data files is not listed,
+    /// and its delete files still count toward [`TableSample::delete_files`].
+    #[serde(default)]
+    pub delete_files: u64,
+}
+
+/// Counts one partition's live files while a sample walks manifests.
+#[derive(Default)]
+struct PartitionTally {
+    files: u64,
+    bytes: u64,
+    delete_files: u64,
 }
 
 /// One commit in a table's snapshot log, as its metadata records it.
@@ -334,8 +347,8 @@ pub struct TableSample {
     pub target_file_size_bytes: u64,
     /// Data-file sizes, one entry per configured bucket.
     pub size_histogram: Vec<SizeBucket>,
-    /// The busiest partitions, bounded by
-    /// [`StatisticsConfig::top_partitions`].
+    /// The busiest partitions by data-file count, each with the delete files
+    /// that apply to it, bounded by [`StatisticsConfig::top_partitions`].
     pub top_partitions: Vec<PartitionFiles>,
     /// Snapshots the table retains.
     pub snapshot_count: u64,
@@ -414,7 +427,7 @@ impl TableSample {
     ) -> Result<(), StatisticsError> {
         let list = file_io.new_input(manifest_list)?.read().await?;
         let list = ManifestList::parse_with_version(&list, FormatVersion::V2)?;
-        let mut partitions: BTreeMap<PartitionKey, (u64, u64)> = BTreeMap::new();
+        let mut partitions: BTreeMap<PartitionKey, PartitionTally> = BTreeMap::new();
         let mut live: u64 = 0;
         for manifest_file in list.entries() {
             self.manifest_count += 1;
@@ -442,14 +455,16 @@ impl TableSample {
                         }
                         add_to_bucket(&mut self.size_histogram, &config.size_buckets_bytes, size);
                         let key = specs.key(file.partition_spec_id(), file.partition())?;
-                        let partition = partitions.entry(key).or_insert((0, 0));
-                        partition.0 += 1;
-                        partition.1 = partition.1.saturating_add(size);
+                        let partition = partitions.entry(key).or_default();
+                        partition.files += 1;
+                        partition.bytes = partition.bytes.saturating_add(size);
                     }
                     DataContentType::PositionDeletes => {
                         self.delete_files += 1;
                         self.delete_bytes = self.delete_bytes.saturating_add(size);
                         self.position_delete_files += 1;
+                        let key = specs.key(file.partition_spec_id(), file.partition())?;
+                        partitions.entry(key).or_default().delete_files += 1;
                         self.position_delete_records =
                             self.position_delete_records.saturating_add(records);
                     }
@@ -457,6 +472,8 @@ impl TableSample {
                         self.delete_files += 1;
                         self.delete_bytes = self.delete_bytes.saturating_add(size);
                         self.equality_delete_files += 1;
+                        let key = specs.key(file.partition_spec_id(), file.partition())?;
+                        partitions.entry(key).or_default().delete_files += 1;
                         self.equality_delete_records =
                             self.equality_delete_records.saturating_add(records);
                     }
@@ -464,14 +481,18 @@ impl TableSample {
             }
         }
 
-        self.partition_count = u64::try_from(partitions.len()).unwrap_or(u64::MAX);
+        self.partition_count =
+            u64::try_from(partitions.values().filter(|tally| tally.files > 0).count())
+                .unwrap_or(u64::MAX);
         let mut top: Vec<PartitionFiles> = partitions
             .into_iter()
-            .map(|(key, (files, bytes))| PartitionFiles {
+            .filter(|(_, tally)| tally.files > 0)
+            .map(|(key, tally)| PartitionFiles {
                 spec_id: key.spec_id(),
                 partition: partition_label(specs, &key),
-                files,
-                bytes,
+                files: tally.files,
+                bytes: tally.bytes,
+                delete_files: tally.delete_files,
             })
             .collect();
         top.sort_by(|left, right| {
@@ -653,6 +674,14 @@ mod tests {
         )
         .expect("a configuration written before the snapshot bound must still parse");
         assert_eq!(config.snapshot_history, 500);
+    }
+
+    #[test]
+    fn a_partition_stored_before_delete_counts_reads_as_zero() {
+        let partition: PartitionFiles =
+            serde_json::from_str(r#"{"spec_id":0,"partition":"tag=x","files":2,"bytes":2048}"#)
+                .expect("a sample written before the delete count must still parse");
+        assert_eq!(partition.delete_files, 0);
     }
 
     #[test]

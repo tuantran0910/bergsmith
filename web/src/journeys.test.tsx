@@ -315,6 +315,12 @@ describe("browsing", () => {
         expect(screen.getByText("day=2026-10-01")).toBeInTheDocument();
         expect(screen.getAllByText("200").length).toBeGreaterThan(0);
         expect(screen.getAllByText("120").length).toBeGreaterThan(0);
+        const partitions = screen.getByRole("region", {
+            name: "Busiest partitions",
+        });
+        expect(
+            within(partitions).getByRole("cell", { name: "1" }),
+        ).toBeInTheDocument();
 
         await user.click(screen.getByRole("tab", { name: "Overview" }));
         expect(window.location.search).toBe("");

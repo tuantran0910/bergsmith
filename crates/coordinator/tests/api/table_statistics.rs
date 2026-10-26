@@ -46,7 +46,13 @@ fn sample(
             {"lower_bound_bytes": 1024, "upper_bound_bytes": null, "files": 2, "bytes": 3584}
         ]),
         top_partitions: json!([
-            {"spec_id": 0, "partition": "day=2026-01-01", "files": 2, "bytes": 2048}
+            {
+                "spec_id": 0,
+                "partition": "day=2026-01-01",
+                "files": 2,
+                "bytes": 2048,
+                "delete_files": 1
+            }
         ]),
     }
 }
@@ -107,6 +113,8 @@ async fn table_statistics_expose_precision_safe_samples_and_history(pool: PgPool
         Value::Null
     );
     assert_eq!(latest["top_partitions"][0]["partition"], "day=2026-01-01");
+    assert_eq!(latest["top_partitions"][0]["files"], "2");
+    assert_eq!(latest["top_partitions"][0]["delete_files"], "1");
     assert!(
         latest["newest_snapshot_age_seconds"]
             .as_str()
