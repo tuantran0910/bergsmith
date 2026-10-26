@@ -11,10 +11,3 @@ CREATE INDEX jobs_terminal_by_table
 CREATE INDEX jobs_terminal_by_organization
     ON jobs (organization_id, id DESC)
     WHERE state IN ('Succeeded', 'NoOp', 'Cancelled', 'ReplanRequired', 'Failed');
-
--- The landing overview windows terminal jobs by their terminal transition,
--- not by creation, so a job that started earlier and ended inside the window
--- still counts.
-CREATE INDEX jobs_terminal_by_organization_ended
-    ON jobs (organization_id, updated_at DESC)
-    WHERE state IN ('Succeeded', 'NoOp', 'Cancelled', 'ReplanRequired', 'Failed');
