@@ -47,8 +47,9 @@ before confirmations existed. There is no health column, no health
 job, and no background recomputation: staleness ages with time, and storing a
 verdict would let it disagree with the sample it describes.
 
-**A sample declares which counters it carries.** `table_statistics.sample_version`
-is 0 for a sample written before the health counters existed and 1 once
+**A sample declares which counters it carries.**
+`table_statistics.sample_version` is 0 for a sample written before the health
+counters existed and 1 once
 `data_manifest_count` and `max_partition_files` are present. Because samples
 are immutable, an old row is never updated: the collector's unchanged shortcut
 requires the newest sample to be at the current version, so a legacy sample is
@@ -82,14 +83,16 @@ sample is described as the sampled snapshot rather than the current one.
 The file-size and delete-ratio defaults are the researched vendor heuristics.
 The snapshot critical bound is five times the researched warning, because
 1,000 retained snapshots is already unusual and 5,000 threatens metadata
-handling. Manifest fragmentation uses data files per data manifest, excluding delete
-manifests, which cannot hold data files: Iceberg's default manifest target is
+handling. Manifest fragmentation uses data files per data manifest, excluding
+delete manifests, which cannot hold data files: Iceberg's default manifest
+target is
 8 MiB, which holds thousands of entries, so a data manifest with fewer than
 1,000 entries is small and one with fewer than 100 is severe. The skew defaults
 flag a table where one partition holds half (warning) or four fifths (critical)
 of the data files; the sample stores the busiest partition's file count itself,
-so a display bound that hides the partition list cannot hide the skew. Staleness defaults to 12 and 72 times the
-default five-minute sampling interval. The "evaluated when" guards keep a
+so a display bound that hides the partition list cannot hide the skew.
+Staleness defaults to 12 and 72 times the default five-minute sampling
+interval. The "evaluated when" guards keep a
 seeding or single-file table from being reported as unhealthy for being small;
 they are part of the model, not policy, and their boundaries are tested.
 
