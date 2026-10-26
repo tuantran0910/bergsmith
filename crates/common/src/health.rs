@@ -96,6 +96,100 @@ impl fmt::Display for FindingKind {
     }
 }
 
+/// How serious a finding is.
+///
+/// Ordered so the worst finding determines a table's state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    /// The table is outside a healthy bound but still usable.
+    Warning,
+    /// The table needs attention soon.
+    Critical,
+}
+
+impl Severity {
+    /// The stable name used in the API and in stored triggers.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Warning => "warning",
+            Self::Critical => "critical",
+        }
+    }
+}
+
+impl Severity {
+    /// Parses the stable name, or `None` if it is unrecognized.
+    #[must_use]
+    pub fn from_name(value: &str) -> Option<Self> {
+        match value {
+            "warning" => Some(Self::Warning),
+            "critical" => Some(Self::Critical),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for Severity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A health condition that may admit maintenance.
+///
+/// A policy names one finding and the severity it must reach; admission
+/// evaluates the table and admits only when the condition holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HealthTrigger {
+    /// The finding the condition watches.
+    pub kind: FindingKind,
+    /// The least severity that satisfies the condition.
+    pub severity: Severity,
+}
+
+impl HealthTrigger {
+    /// A condition on `kind` at `severity`.
+    #[must_use]
+    pub const fn new(kind: FindingKind, severity: Severity) -> Self {
+        Self { kind, severity }
+    }
+}
+
+/// One evaluated finding, reduced to what a trigger needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HealthFinding {
+    /// The signal that fired.
+    pub kind: FindingKind,
+    /// How serious its crossing is.
+    pub severity: Severity,
+}
+
+/// A table's evaluated findings, the input to a trigger check.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HealthVerdict {
+    /// Findings at warning or worse, one per kind.
+    pub findings: Vec<HealthFinding>,
+}
+
+impl HealthVerdict {
+    /// A verdict over `findings`.
+    #[must_use]
+    pub fn new(findings: Vec<HealthFinding>) -> Self {
+        Self { findings }
+    }
+
+    /// Whether a finding of the trigger's kind reaches its severity.
+    #[must_use]
+    pub fn reaches(&self, trigger: &HealthTrigger) -> bool {
+        self.findings
+            .iter()
+            .any(|finding| finding.kind == trigger.kind && finding.severity >= trigger.severity)
+    }
+}
+
 /// The unit a finding's values are measured in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

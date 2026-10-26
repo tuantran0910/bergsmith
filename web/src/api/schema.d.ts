@@ -736,7 +736,7 @@ export interface components {
         };
         ApiError: {
             /** @enum {string} */
-            reason: "authentication_required" | "csrf_rejected" | "invalid_request" | "resource_not_found" | "permission_denied" | "idempotency_key_reused" | "ledger_unavailable" | "method_not_allowed" | "request_too_large" | "internal_error" | "catalog_credential_unavailable" | "catalog_connection_invalid" | "storage_profile_unavailable" | "storage_unavailable" | "catalog_access_denied" | "catalog_unavailable" | "table_staged" | "job_not_terminal" | "job_already_succeeded" | "table_identity_changed" | "catalog_table_missing" | "inventory_too_large" | "table_metadata_inconsistent" | "preview_capacity_exhausted" | "catalog_unsupported" | "catalog_credentials_unavailable" | "catalog_request_rejected" | "event_stream_capacity_exhausted" | "invalid_policy_parameters" | "invalid_policy_operation" | "invalid_cron_expression" | "invalid_time_zone" | "invalid_maintenance_window" | "run_budget_below_target_file_size" | "revision_conflict" | "service_identity_not_eligible" | "resource_already_exists" | "catalog_connection_disabled" | "catalog_connection_in_use" | "catalog_connection_changed" | "capability_check_capacity_exhausted" | "catalog_response_too_large" | "table_in_use" | "catalog_namespace_not_found" | "catalog_table_not_found" | "catalog_discovery_capacity_exhausted" | "registration_too_large" | "table_identity_conflict" | "catalog_namespace_mismatch" | "catalog_page_too_large" | "registration_incomplete" | "catalog_token_too_large" | "last_administrator" | "grant_already_exists";
+            reason: "authentication_required" | "csrf_rejected" | "invalid_request" | "resource_not_found" | "permission_denied" | "idempotency_key_reused" | "ledger_unavailable" | "method_not_allowed" | "request_too_large" | "internal_error" | "catalog_credential_unavailable" | "catalog_connection_invalid" | "storage_profile_unavailable" | "storage_unavailable" | "catalog_access_denied" | "catalog_unavailable" | "table_staged" | "job_not_terminal" | "job_already_succeeded" | "table_identity_changed" | "catalog_table_missing" | "inventory_too_large" | "table_metadata_inconsistent" | "preview_capacity_exhausted" | "catalog_unsupported" | "catalog_credentials_unavailable" | "catalog_request_rejected" | "event_stream_capacity_exhausted" | "invalid_policy_parameters" | "invalid_policy_operation" | "invalid_cron_expression" | "invalid_time_zone" | "invalid_maintenance_window" | "run_budget_below_target_file_size" | "invalid_health_thresholds" | "revision_conflict" | "service_identity_not_eligible" | "resource_already_exists" | "catalog_connection_disabled" | "catalog_connection_in_use" | "catalog_connection_changed" | "capability_check_capacity_exhausted" | "catalog_response_too_large" | "table_in_use" | "catalog_namespace_not_found" | "catalog_table_not_found" | "catalog_discovery_capacity_exhausted" | "registration_too_large" | "table_identity_conflict" | "catalog_namespace_mismatch" | "catalog_page_too_large" | "registration_incomplete" | "catalog_token_too_large" | "last_administrator" | "grant_already_exists";
             /** @enum {string} */
             disposition: "RetrySameRequest" | "RetryTask" | "ReplanRequired" | "PermanentFailure" | "ResolvePublication";
             operator_action: string;
@@ -941,6 +941,7 @@ export interface components {
             cancellation_requested: boolean;
             publication_started: boolean;
             statistics?: components["schemas"]["JobStatistics"];
+            trigger: components["schemas"]["HealthTrigger"] | null;
         };
         /** @description The data of one job event. `reason` is set only for transitions, as the typed state reason; operator cancellation text is never included. */
         JobEvent: {
@@ -981,6 +982,8 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             updated_at: string;
+            health_thresholds: components["schemas"]["HealthThresholds"];
+            health_trigger: components["schemas"]["HealthTrigger"] | null;
         };
         MaintenancePolicyCreate: {
             name: string;
@@ -992,6 +995,8 @@ export interface components {
             min_input_files?: number;
             /** Format: int64 */
             max_input_bytes?: number;
+            health_thresholds?: components["schemas"]["HealthThresholds"];
+            health_trigger?: components["schemas"]["HealthTrigger"];
         };
         MaintenancePolicyPage: {
             items: components["schemas"]["MaintenancePolicy"][];
@@ -1010,6 +1015,9 @@ export interface components {
             /** Format: int64 */
             max_input_bytes?: number;
             enabled?: boolean;
+            health_thresholds?: components["schemas"]["HealthThresholds"];
+            /** @description Absent leaves the trigger alone; null clears it. */
+            health_trigger?: components["schemas"]["HealthTrigger"] | null;
         };
         MaintenanceSchedule: {
             /** Format: uuid */
@@ -1763,6 +1771,29 @@ export interface components {
             confirmed_at: string | null;
             findings: components["schemas"]["TableHealthFinding"][];
             recommendations: components["schemas"]["TableHealthRecommendation"][];
+        };
+        /** @description A finding's warning and critical bounds, in the finding's unit. Critical must be strictly more severe than warning. */
+        HealthThreshold: {
+            /** Format: int64 */
+            warning: number;
+            /** Format: int64 */
+            critical: number;
+        };
+        /** @description Per-finding bounds. An absent finding keeps the documented default, so a partial object is a valid override. */
+        HealthThresholds: {
+            small_files?: components["schemas"]["HealthThreshold"];
+            delete_pressure?: components["schemas"]["HealthThreshold"];
+            snapshot_backlog?: components["schemas"]["HealthThreshold"];
+            manifest_fragmentation?: components["schemas"]["HealthThreshold"];
+            partition_skew?: components["schemas"]["HealthThreshold"];
+            stale_statistics?: components["schemas"]["HealthThreshold"];
+        };
+        /** @description A health condition that allows a schedule to admit maintenance. */
+        HealthTrigger: {
+            /** @enum {string} */
+            kind: "small_files" | "delete_pressure" | "snapshot_backlog" | "manifest_fragmentation" | "partition_skew" | "stale_statistics";
+            /** @enum {string} */
+            severity: "warning" | "critical";
         };
     };
     responses: never;

@@ -479,6 +479,7 @@ export function job(state: JobState, overrides: Partial<Job> = {}): Job {
         updated_at: "2026-10-21T10:05:00Z",
         cancellation_requested: false,
         publication_started: false,
+        trigger: null,
         ...overrides,
     });
 }
@@ -569,6 +570,15 @@ export function policy(
         target_file_size_bytes: 268_435_456,
         min_input_files: 5,
         max_input_bytes: 107_374_182_400,
+        health_thresholds: {
+            small_files: { warning: 134_217_728, critical: 33_554_432 },
+            delete_pressure: { warning: 100, critical: 500 },
+            snapshot_backlog: { warning: 1_000, critical: 5_000 },
+            manifest_fragmentation: { warning: 1_000, critical: 100 },
+            partition_skew: { warning: 500, critical: 800 },
+            stale_statistics: { warning: 3_600, critical: 21_600 },
+        },
+        health_trigger: null,
         enabled: true,
         revision: 3,
         created_at: "2026-10-01T00:00:00Z",

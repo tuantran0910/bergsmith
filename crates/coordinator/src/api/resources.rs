@@ -97,7 +97,10 @@ macro_rules! job_summary {
                 WHERE p.id = r.created_by AND p.organization_id = r.organization_id), \
              'created_at', r.created_at, 'updated_at', r.updated_at, \
              'cancellation_requested', r.cancellation_requested_at IS NOT NULL, \
-             'publication_started', r.publication_started_at IS NOT NULL)"
+             'publication_started', r.publication_started_at IS NOT NULL, \
+             'trigger', CASE WHEN r.trigger_finding IS NULL THEN NULL \
+                ELSE jsonb_build_object('kind', r.trigger_finding, \
+                                        'severity', r.trigger_severity) END)"
         )
     };
 }

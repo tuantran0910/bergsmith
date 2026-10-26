@@ -4,6 +4,7 @@
 #[path = "../../persistence/tests/support/mod.rs"]
 mod support;
 
+use bergsmith_common::health::{FindingKind, HealthThresholds, HealthTrigger, Severity};
 use bergsmith_common::ids::{PolicyId, PrincipalId, RoleGrantId, ScheduleId};
 use bergsmith_common::permission::{GrantScope, Role};
 use bergsmith_common::policy::PolicySpec;
@@ -15,6 +16,7 @@ use bergsmith_persistence::occurrences;
 use bergsmith_persistence::schedules::{
     self, NewMaintenancePolicy, NewMaintenanceSchedule, PolicyUpdate, ScheduleUpdate,
 };
+use bergsmith_persistence::statistics::{self, NewTableSample};
 use bergsmith_persistence::tenancy::{self, NewPrincipal, PrincipalKind};
 use chrono::{DateTime, TimeZone, Utc};
 use sqlx::{PgConnection, PgPool};
@@ -25,6 +27,215 @@ struct Fixture {
     policy: PolicyId,
     schedule: ScheduleId,
     epoch: i64,
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn an_invalid_health_configuration_does_not_starve_later_schedules(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let fixture = fixture(&mut conn, "acme").await;
+    // Stored configuration is not constrained by the schema; a zero warning
+    // bound is invalid and the trigger cannot be evaluated.
+    sqlx::query(
+        "UPDATE maintenance_policies
+         SET health_thresholds = '{\"small_files\":{\"warning\":0,\"critical\":1}}'::jsonb,
+             health_trigger = '{\"kind\":\"small_files\",\"severity\":\"warning\"}'::jsonb
+         WHERE id = $1",
+    )
+    .bind(fixture.policy.as_uuid())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    let healthy = second_schedule(&mut conn, &fixture).await;
+    set_due(&mut conn, &fixture, at(10)).await;
+    set_schedule_due(&mut conn, fixture.tenant.organization, healthy, at(10)).await;
+    drop(conn);
+
+    // One slot per pass. The corrupt schedule is attempted first; the pass must
+    // stay successful and the next pass must admit the later schedule.
+    let runner = ScheduleRunner::new(pool.clone(), fixture.epoch, 1);
+    let first = runner.admit_due_at(at(10)).await.unwrap();
+    assert_eq!(first.admitted, 0);
+    let second = runner.admit_due_at(at(10)).await.unwrap();
+    assert_eq!(second.admitted, 1);
+
+    let mut conn = pool.acquire().await.unwrap();
+    let jobs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM jobs WHERE organization_id = $1 AND table_identity_id = $2",
+    )
+    .bind(fixture.tenant.organization.as_uuid())
+    .bind(fixture.tenant.table.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(jobs, 1);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn the_runner_evaluates_staleness_with_the_admission_clock(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let fixture = fixture(&mut conn, "acme").await;
+    let trigger = HealthTrigger::new(FindingKind::StaleStatistics, Severity::Warning);
+    arm_trigger(&mut conn, &fixture, trigger).await;
+    let scan = at(10);
+    let decision = scan + chrono::TimeDelta::seconds(2);
+    // The confirmation is 3,599 seconds old at the scan and 3,601 at the
+    // decision, so only the admission clock crosses the warning threshold.
+    let confirmed = scan - chrono::TimeDelta::seconds(3_599);
+    record_sample(&mut conn, &fixture.tenant, confirmed, 2, 512 * 1024 * 1024).await;
+    set_due(&mut conn, &fixture, scan).await;
+    drop(conn);
+
+    let runner = ScheduleRunner::new(pool.clone(), fixture.epoch, 16);
+    let summary = runner.admit_due_with(scan, || decision).await.unwrap();
+    assert_eq!(summary.admitted, 1);
+}
+
+/// A sample of `files` data files of `bytes_each` bytes, plus its confirmation.
+async fn record_sample(
+    conn: &mut PgConnection,
+    tenant: &support::Tenant,
+    at: DateTime<Utc>,
+    files: u64,
+    bytes_each: u64,
+) {
+    statistics::record(
+        conn,
+        tenant.organization,
+        tenant.table,
+        &NewTableSample {
+            catalog_connection_id: tenant.connection,
+            sampled_at: at,
+            metadata_location: "s3://bucket/table/metadata/v1.metadata.json".to_owned(),
+            snapshot_id: Some(1),
+            last_operation: Some("append".to_owned()),
+            record_count: files,
+            data_files: files,
+            data_bytes: files * bytes_each,
+            delete_files: 0,
+            delete_bytes: 0,
+            position_delete_files: 0,
+            equality_delete_files: 0,
+            position_delete_records: 0,
+            equality_delete_records: 0,
+            manifest_count: 1,
+            data_manifest_count: 1,
+            manifest_bytes: 1_024,
+            partition_count: 0,
+            max_partition_files: 0,
+            small_files: 0,
+            target_file_size_bytes: 512 * 1024 * 1024,
+            snapshot_count: 1,
+            oldest_snapshot_at: Some(at),
+            newest_snapshot_at: Some(at),
+            size_histogram: serde_json::json!([]),
+            top_partitions: serde_json::json!([]),
+        },
+    )
+    .await
+    .unwrap();
+    statistics::record_check(conn, tenant.organization, tenant.table, at)
+        .await
+        .unwrap();
+}
+
+async fn arm_trigger(conn: &mut PgConnection, fixture: &Fixture, trigger: HealthTrigger) {
+    let policy = schedules::policy(conn, fixture.tenant.organization, fixture.policy)
+        .await
+        .unwrap();
+    schedules::update_policy_with_health(
+        conn,
+        fixture.tenant.organization,
+        fixture.policy,
+        &PolicyUpdate {
+            name: None,
+            specification: None,
+            enabled: None,
+            expected_revision: policy.revision,
+        },
+        Some(HealthThresholds::default()),
+        Some(Some(trigger)),
+    )
+    .await
+    .unwrap();
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn the_runner_admits_only_when_the_policy_trigger_is_met(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let fixture = fixture(&mut conn, "acme").await;
+    let now = at(10);
+    set_due(&mut conn, &fixture, now).await;
+    arm_trigger(
+        &mut conn,
+        &fixture,
+        HealthTrigger::new(FindingKind::SmallFiles, Severity::Warning),
+    )
+    .await;
+    // Four MiB per file: the sample reports critical small files.
+    record_sample(&mut conn, &fixture.tenant, now, 5, 4 * 1024 * 1024).await;
+    drop(conn);
+
+    let runner = ScheduleRunner::new(pool.clone(), fixture.epoch, 16);
+    let summary = runner.admit_due_at(now).await.unwrap();
+    assert_eq!(summary.admitted, 1);
+    assert_eq!(summary.skipped, 0);
+
+    let mut conn = pool.acquire().await.unwrap();
+    let (kind, severity): (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT trigger_finding, trigger_severity FROM jobs
+         WHERE organization_id = $1 AND table_identity_id = $2",
+    )
+    .bind(fixture.tenant.organization.as_uuid())
+    .bind(fixture.tenant.table.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(kind.as_deref(), Some("small_files"));
+    assert_eq!(severity.as_deref(), Some("warning"));
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn the_runner_skips_when_the_sample_is_healthy(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let fixture = fixture(&mut conn, "acme").await;
+    let now = at(10);
+    set_due(&mut conn, &fixture, now).await;
+    arm_trigger(
+        &mut conn,
+        &fixture,
+        HealthTrigger::new(FindingKind::SmallFiles, Severity::Warning),
+    )
+    .await;
+    // Half a gigabyte per file: no finding fires.
+    record_sample(&mut conn, &fixture.tenant, now, 2, 512 * 1024 * 1024).await;
+    drop(conn);
+
+    let runner = ScheduleRunner::new(pool.clone(), fixture.epoch, 16);
+    let summary = runner.admit_due_at(now).await.unwrap();
+    assert_eq!(summary.admitted, 0);
+    assert_eq!(summary.skipped, 1);
+
+    let mut conn = pool.acquire().await.unwrap();
+    let jobs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM jobs WHERE organization_id = $1 AND table_identity_id = $2",
+    )
+    .bind(fixture.tenant.organization.as_uuid())
+    .bind(fixture.tenant.table.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(jobs, 0);
+    let reason: Option<String> = sqlx::query_scalar(
+        "SELECT reason FROM maintenance_schedule_occurrences
+         WHERE organization_id = $1 AND schedule_id = $2
+         ORDER BY scheduled_for DESC LIMIT 1",
+    )
+    .bind(fixture.tenant.organization.as_uuid())
+    .bind(fixture.schedule.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(reason.as_deref(), Some("HealthTriggerNotMet"));
 }
 
 async fn fixture(conn: &mut PgConnection, slug: &str) -> Fixture {

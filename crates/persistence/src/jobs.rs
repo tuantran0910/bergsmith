@@ -1,5 +1,6 @@
 //! Jobs and their append-only event history.
 
+use bergsmith_common::health::{FindingKind, HealthTrigger, Severity};
 use bergsmith_common::ids::{JobId, OrganizationId, PrincipalId, TableId};
 use bergsmith_common::job::{JobState, PublicationContext};
 use chrono::{DateTime, Utc};
@@ -14,7 +15,8 @@ macro_rules! job_columns {
     () => {
         "id, organization_id, table_identity_id, state, state_revision, state_reason, \
          retry_of_job_id, created_by, created_at, updated_at, cancellation_requested_at, \
-         cancellation_requested_by, cancellation_reason, publication_started_at, deadline_at"
+         cancellation_requested_by, cancellation_reason, publication_started_at, deadline_at, \
+         trigger_finding, trigger_severity"
     };
 }
 pub(crate) use job_columns;
@@ -44,6 +46,8 @@ pub struct Job {
     pub created_at: DateTime<Utc>,
     /// When the job row last changed (database time).
     pub updated_at: DateTime<Utc>,
+    /// The health condition that admitted the job, when a trigger did.
+    pub trigger: Option<HealthTrigger>,
     /// The first cancellation request, if any. Requests are monotonic: a
     /// recorded request never changes.
     pub cancellation: Option<CancellationRequest>,
@@ -163,6 +167,8 @@ pub(crate) struct JobRow {
     cancellation_reason: Option<String>,
     publication_started_at: Option<DateTime<Utc>>,
     deadline_at: Option<DateTime<Utc>>,
+    trigger_finding: Option<String>,
+    trigger_severity: Option<String>,
 }
 
 impl TryFrom<JobRow> for Job {
@@ -189,6 +195,7 @@ impl TryFrom<JobRow> for Job {
                 }),
             publication_started_at: row.publication_started_at,
             deadline_at: row.deadline_at,
+            trigger: trigger_from_row(row.trigger_finding, row.trigger_severity)?,
         })
     }
 }
@@ -219,6 +226,33 @@ impl TryFrom<JobEventRow> for JobEvent {
             actor: row.actor_id.map(PrincipalId::from_uuid),
             occurred_at: row.occurred_at,
         })
+    }
+}
+
+/// Rebuilds a job's admitting condition from its two stored columns.
+fn trigger_from_row(
+    finding: Option<String>,
+    severity: Option<String>,
+) -> Result<Option<HealthTrigger>, PersistenceError> {
+    match (finding, severity) {
+        (None, None) => Ok(None),
+        (Some(finding), Some(severity)) => {
+            let kind =
+                FindingKind::from_name(&finding).ok_or_else(|| PersistenceError::CorruptValue {
+                    entity: "job trigger finding",
+                    value: finding,
+                })?;
+            let severity =
+                Severity::from_name(&severity).ok_or_else(|| PersistenceError::CorruptValue {
+                    entity: "job trigger severity",
+                    value: severity,
+                })?;
+            Ok(Some(HealthTrigger::new(kind, severity)))
+        }
+        (finding, severity) => Err(PersistenceError::CorruptValue {
+            entity: "job trigger",
+            value: format!("{finding:?}/{severity:?}"),
+        }),
     }
 }
 
@@ -296,11 +330,25 @@ pub(crate) fn job_not_found(id: JobId) -> PersistenceError {
 /// [`PersistenceError::MissingReference`] when the table, retried job, or
 /// creator does not exist in the organization.
 pub async fn create_job(conn: &mut PgConnection, new: &NewJob) -> Result<Job, PersistenceError> {
+    create_job_with_trigger(conn, new, None).await
+}
+
+/// Creates a job that records the health condition that admitted it.
+///
+/// # Errors
+///
+/// As [`create_job`].
+pub async fn create_job_with_trigger(
+    conn: &mut PgConnection,
+    new: &NewJob,
+    trigger: Option<HealthTrigger>,
+) -> Result<Job, PersistenceError> {
     let mut tx = conn.begin().await?;
     crate::tenancy::lock_table_connections(&mut tx, new.organization_id, new.table_id).await?;
     let job: Job = sqlx::query_as::<_, JobRow>(concat!(
-        "INSERT INTO jobs (id, organization_id, table_identity_id, state, retry_of_job_id, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        "INSERT INTO jobs (id, organization_id, table_identity_id, state, retry_of_job_id,
+                           created_by, trigger_finding, trigger_severity)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING ",
         job_columns!()
     ))
@@ -310,6 +358,8 @@ pub async fn create_job(conn: &mut PgConnection, new: &NewJob) -> Result<Job, Pe
     .bind(JobState::Planning.as_str())
     .bind(new.retry_of.as_ref().map(JobId::as_uuid))
     .bind(new.created_by.as_uuid())
+    .bind(trigger.map(|trigger| trigger.kind.as_str()))
+    .bind(trigger.map(|trigger| trigger.severity.as_str()))
     .fetch_one(&mut *tx)
     .await
     .map_err(|error| PersistenceError::from_write("job", error))?

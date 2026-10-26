@@ -11,6 +11,7 @@ pub mod checks;
 pub mod database;
 pub mod discovery;
 pub mod durable_publication;
+pub mod health;
 pub mod identity;
 pub mod inventory;
 pub mod observability;

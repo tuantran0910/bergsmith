@@ -6,10 +6,16 @@
 //! state: everything it needs was validated and persisted by BS-019.T1, and the
 //! occurrence row it writes is what makes admission idempotent.
 
+use bergsmith_maintenance::ThresholdSource;
+use bergsmith_maintenance::evaluate;
 use bergsmith_persistence::PersistenceError;
-use bergsmith_persistence::occurrences::{self, OUTSIDE_WINDOW_REASON, OccurrenceState};
+use bergsmith_persistence::occurrences::{
+    self, HEALTH_TRIGGER_REASON, HealthEvaluation, OUTSIDE_WINDOW_REASON, OccurrenceState,
+    ScheduleHealth,
+};
+use bergsmith_persistence::statistics::{self, SAMPLE_VERSION};
 use chrono::{DateTime, Utc};
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 /// How many due schedules one pass examines. A busy organization is drained
@@ -77,12 +83,14 @@ impl ScheduleRunner {
     ///
     /// The scan clock selects due schedules; the admission clock is sampled per
     /// schedule after its row locks, so a pass that blocked cannot admit a run
-    /// after its window closed. Production passes `Utc::now` for both.
+    /// after its window closed and time-dependent health is judged at the
+    /// decision. Production passes `Utc::now` for both; tests use distinct
+    /// instants to pin the behavior.
     ///
     /// # Errors
     ///
     /// As [`Self::admit_due`].
-    async fn admit_due_with<F>(
+    pub async fn admit_due_with<F>(
         &self,
         scan_now: DateTime<Utc>,
         clock: F,
@@ -109,7 +117,13 @@ impl ScheduleRunner {
         let mut summary = AdmissionSummary::default();
         for schedule in schedules {
             let mut conn = self.pool.acquire().await?;
-            match occurrences::admit_with_clock(&mut conn, schedule, self.epoch, &clock).await {
+            let evaluate =
+                async |conn: &mut PgConnection, health: &ScheduleHealth, now: DateTime<Utc>| {
+                    health_evaluation(conn, health, now).await
+                };
+            match occurrences::admit_with_health(&mut conn, schedule, self.epoch, &clock, evaluate)
+                .await
+            {
                 Ok(Some(occurrence)) => match occurrence.state {
                     OccurrenceState::Admitted => {
                         summary.admitted += 1;
@@ -140,6 +154,11 @@ impl ScheduleRunner {
                                 schedule_id = %schedule,
                                 "schedule occurrence skipped outside its maintenance window"
                             );
+                        } else if occurrence.reason.as_deref() == Some(HEALTH_TRIGGER_REASON) {
+                            tracing::debug!(
+                                schedule_id = %schedule,
+                                "schedule occurrence skipped because its health trigger is unmet"
+                            );
                         } else {
                             tracing::warn!(
                                 schedule_id = %schedule,
@@ -163,6 +182,58 @@ impl ScheduleRunner {
         }
         Ok(summary)
     }
+}
+
+/// The table's health evaluation for the locked policy configuration.
+///
+/// Runs inside the admission transaction, after the schedule and state locks,
+/// with the admission instant. A missing or incomplete sample, or one that
+/// cannot be presented, is logged and treated as an unmet trigger.
+async fn health_evaluation(
+    conn: &mut PgConnection,
+    health: &ScheduleHealth,
+    now: DateTime<Utc>,
+) -> Result<Option<HealthEvaluation>, PersistenceError> {
+    let Some(stored) = statistics::latest(conn, health.organization_id, health.table_id).await?
+    else {
+        return Ok(None);
+    };
+    if stored.sample_version < SAMPLE_VERSION {
+        return Ok(None);
+    }
+    let confirmed = statistics::last_confirmed_at(conn, health.organization_id, health.table_id)
+        .await?
+        .unwrap_or(stored.sampled_at);
+    let sample = match crate::health::sample_model(&stored) {
+        Ok(sample) => sample,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "health sample cannot be presented; treating the trigger as unmet"
+            );
+            return Ok(None);
+        }
+    };
+    let evaluation = match evaluate(
+        &sample,
+        confirmed,
+        &health.thresholds,
+        ThresholdSource::Policy(health.policy_id),
+        now,
+    ) {
+        Ok(evaluation) => evaluation,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "health evaluation failed; treating the trigger as unmet"
+            );
+            return Ok(None);
+        }
+    };
+    Ok(Some(HealthEvaluation {
+        verdict: crate::health::verdict(&evaluation),
+        policy_revision: health.policy_revision,
+    }))
 }
 
 /// Whether the failure concerns the coordinator's ledger, not one schedule.

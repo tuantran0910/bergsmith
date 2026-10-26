@@ -15,14 +15,14 @@ use bergsmith_common::health::HealthThresholds;
 use bergsmith_common::ids::TableId;
 use bergsmith_common::permission::Permission;
 use bergsmith_maintenance::{
-    Estimate, Finding, Recommendation, TableHealth, TableSample, ThresholdSource, evaluate,
-    recommend,
+    Estimate, Finding, Recommendation, TableHealth, ThresholdSource, evaluate, recommend,
 };
 use bergsmith_persistence::statistics::{self, StoredTableSample};
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use crate::health::sample_model;
 use crate::preview::AssessedPreview;
 
 use super::pagination::PageQuery;
@@ -205,46 +205,6 @@ fn estimate(estimate: &Estimate) -> Value {
         "files_removed": estimate.files_removed.to_string(),
         "duration_millis": estimate.duration_millis.to_string(),
     })
-}
-
-/// The stored sample as the health model's input.
-///
-/// The ledger stores counters as `bigint` and the histogram and partitions as
-/// JSON; a row that cannot be presented is a ledger defect, not a client
-/// error.
-fn sample_model(stored: &StoredTableSample) -> Result<TableSample, ApiError> {
-    Ok(TableSample {
-        metadata_location: stored.metadata_location.clone(),
-        snapshot_id: stored.snapshot_id,
-        last_operation: stored.last_operation.clone(),
-        record_count: counter(stored.record_count)?,
-        data_files: counter(stored.data_files)?,
-        data_bytes: counter(stored.data_bytes)?,
-        delete_files: counter(stored.delete_files)?,
-        delete_bytes: counter(stored.delete_bytes)?,
-        position_delete_files: counter(stored.position_delete_files)?,
-        equality_delete_files: counter(stored.equality_delete_files)?,
-        position_delete_records: counter(stored.position_delete_records)?,
-        equality_delete_records: counter(stored.equality_delete_records)?,
-        manifest_count: counter(stored.manifest_count)?,
-        data_manifest_count: counter(stored.data_manifest_count)?,
-        manifest_bytes: counter(stored.manifest_bytes)?,
-        partition_count: counter(stored.partition_count)?,
-        max_partition_files: counter(stored.max_partition_files)?,
-        small_files: counter(stored.small_files)?,
-        target_file_size_bytes: counter(stored.target_file_size_bytes)?,
-        size_histogram: serde_json::from_value(stored.size_histogram.clone())
-            .map_err(|_| ApiError::internal())?,
-        top_partitions: serde_json::from_value(stored.top_partitions.clone())
-            .map_err(|_| ApiError::internal())?,
-        snapshot_count: counter(stored.snapshot_count)?,
-        oldest_snapshot_at: stored.oldest_snapshot_at,
-        newest_snapshot_at: stored.newest_snapshot_at,
-    })
-}
-
-fn counter(value: i64) -> Result<u64, ApiError> {
-    u64::try_from(value).map_err(|_| ApiError::internal())
 }
 
 fn stamp(at: DateTime<Utc>) -> String {

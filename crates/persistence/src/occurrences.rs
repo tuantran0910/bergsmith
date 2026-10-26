@@ -21,10 +21,12 @@
 //! its job.
 
 use bergsmith_common::audit::{ActorKind, AuditAction, AuditOutcome};
+use bergsmith_common::health::{HealthThresholds, HealthTrigger, HealthVerdict};
 use bergsmith_common::ids::{JobId, OrganizationId, PolicyId, PrincipalId, ScheduleId, TableId};
 use bergsmith_common::schedule::CronSchedule;
+use bergsmith_common::window::MaintenanceWindow;
 use chrono::{DateTime, Utc};
-use serde_json::json;
+use serde_json::{Value, json};
 use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 
@@ -39,6 +41,9 @@ const MAX_PAGE: i64 = 1_000;
 /// The stable persisted reason for an occurrence evaluated outside its window.
 pub const OUTSIDE_WINDOW_REASON: &str = "OutsideWindow";
 
+/// The stable persisted reason for an occurrence whose health trigger is unmet.
+pub const HEALTH_TRIGGER_REASON: &str = "HealthTriggerNotMet";
+
 /// Why admission skipped an evaluation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SkipReason {
@@ -52,6 +57,8 @@ enum SkipReason {
     ServiceIdentityIneligible,
     /// The evaluation fell outside the schedule's maintenance window.
     OutsideWindow,
+    /// The policy's health trigger is not met by the table's findings.
+    HealthTriggerNotMet,
 }
 
 impl SkipReason {
@@ -63,6 +70,7 @@ impl SkipReason {
             Self::PolicyDisabled => "PolicyDisabled",
             Self::ServiceIdentityIneligible => "ServiceIdentityIneligible",
             Self::OutsideWindow => OUTSIDE_WINDOW_REASON,
+            Self::HealthTriggerNotMet => HEALTH_TRIGGER_REASON,
         }
     }
 
@@ -72,7 +80,7 @@ impl SkipReason {
     /// schedule whose cron is more frequent than its window, so auditing every
     /// one would bury real denials. The occurrence row still records the span.
     const fn audited(self) -> bool {
-        !matches!(self, Self::OutsideWindow)
+        !matches!(self, Self::OutsideWindow | Self::HealthTriggerNotMet)
     }
 }
 
@@ -190,6 +198,9 @@ struct DueSchedule {
     service_principal_id: Uuid,
     enabled: bool,
     policy_enabled: bool,
+    policy_revision: i64,
+    health_thresholds: Value,
+    health_trigger: Option<Value>,
 }
 
 /// Returns the enabled schedules whose next instant is at or before `now`.
@@ -452,6 +463,79 @@ pub async fn admit_with_clock<F>(
 where
     F: FnOnce() -> DateTime<Utc> + Send,
 {
+    admit_with_health(conn, schedule_id, epoch, clock, no_health_evaluation).await
+}
+
+/// An evaluator for callers that do not use health triggers.
+async fn no_health_evaluation(
+    _: &mut PgConnection,
+    _: &ScheduleHealth,
+    _: DateTime<Utc>,
+) -> Result<Option<HealthEvaluation>, PersistenceError> {
+    Ok(None)
+}
+
+/// A table verdict and the policy revision that produced it.
+///
+/// The revision binds the verdict to the thresholds it was evaluated with. The
+/// evaluator receives the locked policy configuration, so the revision it
+/// returns is the one admission is applying.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HealthEvaluation {
+    /// The table's evaluated findings.
+    pub verdict: HealthVerdict,
+    /// The policy revision whose thresholds produced the verdict.
+    pub policy_revision: i64,
+}
+
+/// The locked policy configuration a health trigger evaluates with.
+///
+/// Admission reads it under the schedule and state locks, so a concurrent
+/// policy edit cannot change the thresholds between the evaluation and the
+/// decision.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScheduleHealth {
+    /// The owning organization.
+    pub organization_id: OrganizationId,
+    /// The policy that declares the trigger.
+    pub policy_id: PolicyId,
+    /// The table the schedule maintains.
+    pub table_id: TableId,
+    /// The policy revision the configuration was read at.
+    pub policy_revision: i64,
+    /// The thresholds the trigger evaluates with.
+    pub thresholds: HealthThresholds,
+    /// The condition admission must satisfy.
+    pub trigger: HealthTrigger,
+}
+
+/// Admits with a health evaluator for the policy's trigger.
+///
+/// `evaluate` is called after the schedule and state locks with the admission
+/// instant, so a time-dependent finding is judged at the moment the decision
+/// is made rather than when the pass began. A policy without a trigger never
+/// calls it; a policy with one admits only when the evaluation matches the
+/// locked policy revision and a finding of the trigger's kind reaches its
+/// severity.
+///
+/// # Errors
+///
+/// As [`admit_with_clock`], plus whatever `evaluate` returns.
+pub async fn admit_with_health<F, E>(
+    conn: &mut PgConnection,
+    schedule_id: ScheduleId,
+    epoch: i64,
+    clock: F,
+    evaluate: E,
+) -> Result<Option<Occurrence>, PersistenceError>
+where
+    F: FnOnce() -> DateTime<Utc> + Send,
+    E: AsyncFnOnce(
+        &mut PgConnection,
+        &ScheduleHealth,
+        DateTime<Utc>,
+    ) -> Result<Option<HealthEvaluation>, PersistenceError>,
+{
     let mut tx = conn.begin().await?;
     crate::leadership::ensure_leadership(&mut tx, epoch).await?;
     let Some((schedule, first)) = lock_due(&mut tx, schedule_id).await? else {
@@ -485,7 +569,10 @@ where
         })?;
     let until = coalesced_until(&timing, first, now);
     let next = timing.next_occurrence(now);
-    let occurrence = decide(&mut tx, &schedule, &timing, first, until, next, now).await?;
+    let occurrence = decide(
+        &mut tx, &schedule, &timing, first, until, next, now, evaluate,
+    )
+    .await?;
     // Recheck the epoch before committing the job and its occurrence, so a
     // coordinator that lost leadership mid-decision cannot add work.
     crate::leadership::ensure_leadership(&mut tx, epoch).await?;
@@ -502,7 +589,8 @@ async fn lock_due(
         "SELECT s.id, s.organization_id, s.policy_id, s.table_identity_id,
                 s.cron_expression, s.time_zone, s.window_start_minute,
                 s.window_end_minute, s.service_principal_id, s.enabled,
-                p.enabled AS policy_enabled
+                p.enabled AS policy_enabled, p.revision AS policy_revision,
+                p.health_thresholds, p.health_trigger
          FROM maintenance_schedules s
          JOIN maintenance_policies p
            ON p.organization_id = s.organization_id AND p.id = s.policy_id
@@ -538,7 +626,11 @@ async fn lock_due(
 /// occurrence that is evaluated after its window closed is skipped rather than
 /// starting maintenance during active writes; the next recurrence can admit
 /// again.
-async fn decide(
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one decision already carries the locked schedule, timing, and span"
+)]
+async fn decide<E>(
     conn: &mut PgConnection,
     schedule: &DueSchedule,
     timing: &CronSchedule,
@@ -546,7 +638,15 @@ async fn decide(
     until: Option<DateTime<Utc>>,
     next: Option<DateTime<Utc>>,
     now: DateTime<Utc>,
-) -> Result<Occurrence, PersistenceError> {
+    evaluate: E,
+) -> Result<Occurrence, PersistenceError>
+where
+    E: AsyncFnOnce(
+        &mut PgConnection,
+        &ScheduleHealth,
+        DateTime<Utc>,
+    ) -> Result<Option<HealthEvaluation>, PersistenceError>,
+{
     if !schedule.policy_enabled {
         return skip(
             conn,
@@ -618,24 +718,119 @@ async fn decide(
     if let Some(window) = window
         && !window.contains_instant(now, timing.time_zone.zone())
     {
-        // Skip the due span in one evaluation: jump to the first
-        // occurrence at or after the next opening instead of recording one row
-        // per cron tick. A window opening always exists for a valid schedule, but
-        // a corrupt time-zone transition leaves the schedule dormant.
-        let next_in_window = window
-            .next_opening(now, timing.time_zone.zone())
-            .and_then(|opening| timing.next_occurrence(opening - chrono::Duration::seconds(1)));
         return skip(
             conn,
             schedule,
             first,
             until,
-            next_in_window,
+            next_in_window(window, timing, now),
             SkipReason::OutsideWindow,
         )
         .await;
     }
-    admit_or_coalesce(conn, schedule, first, until, next).await
+    match health_gate(conn, schedule, now, evaluate).await? {
+        HealthGate::Unmet => {
+            skip(
+                conn,
+                schedule,
+                first,
+                until,
+                next,
+                SkipReason::HealthTriggerNotMet,
+            )
+            .await
+        }
+        HealthGate::Proceed(trigger) => {
+            admit_or_coalesce(conn, schedule, first, until, next, trigger).await
+        }
+    }
+}
+
+/// Whether admission proceeds, and the condition that admits it.
+enum HealthGate {
+    /// Proceed, naming the admitting condition when a trigger caused it.
+    Proceed(Option<HealthTrigger>),
+    /// The policy's condition is not satisfied.
+    Unmet,
+}
+
+/// Evaluates the policy's condition with the admission instant.
+async fn health_gate<E>(
+    conn: &mut PgConnection,
+    schedule: &DueSchedule,
+    now: DateTime<Utc>,
+    evaluate: E,
+) -> Result<HealthGate, PersistenceError>
+where
+    E: AsyncFnOnce(
+        &mut PgConnection,
+        &ScheduleHealth,
+        DateTime<Utc>,
+    ) -> Result<Option<HealthEvaluation>, PersistenceError>,
+{
+    let Some(health) = schedule_health(schedule)? else {
+        return Ok(HealthGate::Proceed(None));
+    };
+    let evaluation = evaluate(conn, &health, now).await?;
+    let met = evaluation.is_some_and(|evaluation| {
+        evaluation.policy_revision == schedule.policy_revision
+            && evaluation.verdict.reaches(&health.trigger)
+    });
+    if met {
+        Ok(HealthGate::Proceed(Some(health.trigger)))
+    } else {
+        Ok(HealthGate::Unmet)
+    }
+}
+
+/// The policy health configuration, when the policy declares a trigger.
+fn schedule_health(schedule: &DueSchedule) -> Result<Option<ScheduleHealth>, PersistenceError> {
+    let trigger: Option<HealthTrigger> = schedule
+        .health_trigger
+        .clone()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| PersistenceError::CorruptValue {
+            entity: "policy health trigger",
+            value: error.to_string(),
+        })?;
+    let Some(trigger) = trigger else {
+        return Ok(None);
+    };
+    let thresholds: HealthThresholds = serde_json::from_value(schedule.health_thresholds.clone())
+        .map_err(|error| PersistenceError::CorruptValue {
+        entity: "policy health thresholds",
+        value: error.to_string(),
+    })?;
+    thresholds
+        .validate()
+        .map_err(|error| PersistenceError::CorruptValue {
+            entity: "policy health thresholds",
+            value: error.to_string(),
+        })?;
+    Ok(Some(ScheduleHealth {
+        organization_id: OrganizationId::from_uuid(schedule.organization_id),
+        policy_id: PolicyId::from_uuid(schedule.policy_id),
+        table_id: TableId::from_uuid(schedule.table_identity_id),
+        policy_revision: schedule.policy_revision,
+        thresholds,
+        trigger,
+    }))
+}
+
+/// The first occurrence at or after the window's next opening.
+///
+/// One skip covers the whole out-of-window span instead of recording one row
+/// per cron tick. A window opening always exists for a valid schedule, but a
+/// corrupt time-zone transition leaves the schedule dormant.
+fn next_in_window(
+    window: MaintenanceWindow,
+    timing: &CronSchedule,
+    now: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    window
+        .next_opening(now, timing.time_zone.zone())
+        .and_then(|opening| timing.next_occurrence(opening - chrono::Duration::seconds(1)))
 }
 
 /// Records a permitted evaluation and its job or existing table owner.
@@ -645,6 +840,7 @@ async fn admit_or_coalesce(
     first: DateTime<Utc>,
     until: Option<DateTime<Utc>>,
     next: Option<DateTime<Utc>>,
+    trigger: Option<HealthTrigger>,
 ) -> Result<Occurrence, PersistenceError> {
     let occurrence = insert_pending(conn, schedule, first, until).await?;
     let blocking: Option<Uuid> = sqlx::query_scalar(
@@ -667,7 +863,7 @@ async fn admit_or_coalesce(
         )
         .await?
     } else {
-        let job = jobs::create_job(
+        let job = jobs::create_job_with_trigger(
             conn,
             &NewJob {
                 id: JobId::generate(),
@@ -676,6 +872,7 @@ async fn admit_or_coalesce(
                 retry_of: None,
                 created_by: PrincipalId::from_uuid(schedule.service_principal_id),
             },
+            trigger,
         )
         .await?;
         let occurrence = finish(
