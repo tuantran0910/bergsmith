@@ -59,6 +59,14 @@ pub(super) async fn overview(
         ATTENTION_LIMIT,
     )
     .await?;
+    let attention_summary = overview::attention_summary(
+        &mut conn,
+        caller.organization_id,
+        caller.principal_id,
+        &roles,
+        attention_since,
+    )
+    .await?;
     let tables = overview::tables(
         &mut conn,
         caller.organization_id,
@@ -95,13 +103,19 @@ pub(super) async fn overview(
     };
 
     Ok(Json(report(
-        outcomes, &attention, tables, schedules, workers,
+        outcomes,
+        attention_summary,
+        &attention,
+        tables,
+        schedules,
+        workers,
     )))
 }
 
 /// The wire form of the overview.
 fn report(
     outcomes: overview::JobOutcomes,
+    attention_summary: overview::AttentionSummary,
     attention: &[overview::AttentionJob],
     tables: overview::TableOverview,
     schedules: Option<overview::ScheduleOverview>,
@@ -119,16 +133,25 @@ fn report(
                 .collect::<serde_json::Map<_, _>>(),
             "conflict_rate_percent": percent(outcomes.replanned, ended),
         },
-        "attention": attention
-            .iter()
-            .map(|job| json!({
-                "job_id": job.job_id,
-                "table_id": job.table_id,
-                "state": job.state.as_str(),
-                "reason": job.reason.as_str(),
-                "age_seconds": counter(job.age_seconds),
-            }))
-            .collect::<Vec<_>>(),
+        "attention": {
+            "unresolved_publications": counter(attention_summary.unresolved_publications),
+            "oldest_unresolved_age_seconds": counter(
+                attention_summary.oldest_unresolved_age_seconds,
+            ),
+            "terminal_jobs": counter(attention_summary.terminal_jobs),
+            "truncated": i64::try_from(attention.len()).unwrap_or(i64::MAX)
+                < attention_summary.unresolved_publications + attention_summary.terminal_jobs,
+            "items": attention
+                .iter()
+                .map(|job| json!({
+                    "job_id": job.job_id,
+                    "table_id": job.table_id,
+                    "state": job.state.as_str(),
+                    "reason": job.reason.as_str(),
+                    "age_seconds": counter(job.age_seconds),
+                }))
+                .collect::<Vec<_>>(),
+        },
         "tables": {
             "window_days": ATTENTION_WINDOW_DAYS,
             "total": counter(tables.total),
@@ -138,8 +161,8 @@ fn report(
         "schedules": schedules.map(|s| json!({
             "total": counter(s.total),
             "enabled": counter(s.enabled),
-            "pending": counter(s.pending),
-            "oldest_pending_age_seconds": counter(s.oldest_pending_age_seconds),
+            "overdue": counter(s.overdue),
+            "oldest_overdue_age_seconds": counter(s.oldest_overdue_age_seconds),
             "coalesced_last_day": counter(s.coalesced),
             "skipped_last_day": counter(s.skipped),
         })),

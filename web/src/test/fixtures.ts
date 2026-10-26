@@ -231,22 +231,28 @@ export const overview = schema("Overview", {
         },
         conflict_rate_percent: "33.3",
     },
-    attention: [
-        {
-            job_id: JOB_ID,
-            table_id: TABLE_ID,
-            state: "CommitOutcomeUnknown",
-            reason: "unresolved_publication",
-            age_seconds: "7200",
-        },
-        {
-            job_id: RETRY_JOB_ID,
-            table_id: TABLE_ID,
-            state: "ReplanRequired",
-            reason: "replan_required",
-            age_seconds: "120",
-        },
-    ],
+    attention: {
+        unresolved_publications: "1",
+        oldest_unresolved_age_seconds: "7200",
+        terminal_jobs: "1",
+        truncated: false,
+        items: [
+            {
+                job_id: JOB_ID,
+                table_id: TABLE_ID,
+                state: "CommitOutcomeUnknown",
+                reason: "unresolved_publication",
+                age_seconds: "7200",
+            },
+            {
+                job_id: RETRY_JOB_ID,
+                table_id: TABLE_ID,
+                state: "ReplanRequired",
+                reason: "replan_required",
+                age_seconds: "120",
+            },
+        ],
+    },
     tables: {
         window_days: 30,
         total: "2",
@@ -256,8 +262,8 @@ export const overview = schema("Overview", {
     schedules: {
         total: "1",
         enabled: "1",
-        pending: "1",
-        oldest_pending_age_seconds: "600",
+        overdue: "1",
+        oldest_overdue_age_seconds: "600",
         coalesced_last_day: "0",
         skipped_last_day: "0",
     },

@@ -6042,7 +6042,7 @@
     "/api/v1/overview": {
       "get": {
         "operationId": "getOverview",
-        "description": "What needs attention in the organization, from the execution ledger: terminal jobs in the last day by outcome and conflict rate, jobs whose publication is unresolved or whose work a conflict discarded, visible tables without a sample or with a decision pending, schedule evaluations that are late or folded, and registered worker capacity. Job and table figures follow the caller's grants; the schedule and worker sections are null when the caller may not read them.",
+        "description": "What needs attention in the organization, from the execution ledger: terminal jobs whose terminal transition falls in the last day, by outcome and conflict rate; unresolved publications in full and a bounded list of jobs that need attention; visible tables without a sample or with a decision pending by terminal transition; schedule cursors that are overdue plus occurrences folded or skipped in the last day; and registered worker capacity. Job and table figures follow the caller's grants; the schedule and worker sections are null when the caller may not read them.",
         "responses": {
           "401": {
             "description": "Sign in required",
@@ -10077,49 +10077,6 @@
           }
         }
       },
-      "OverviewAttention": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "job_id",
-          "table_id",
-          "state",
-          "reason",
-          "age_seconds"
-        ],
-        "properties": {
-          "job_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "table_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "state": {
-            "type": "string",
-            "enum": [
-              "Committing",
-              "CommitOutcomeUnknown",
-              "ReplanRequired",
-              "Failed"
-            ]
-          },
-          "reason": {
-            "type": "string",
-            "enum": [
-              "unresolved_publication",
-              "replan_required",
-              "failed"
-            ]
-          },
-          "age_seconds": {
-            "type": "string",
-            "pattern": "^[0-9]+$",
-            "description": "Seconds since the publication was authorized, or since the job ended."
-          }
-        }
-      },
       "OverviewTables": {
         "type": "object",
         "additionalProperties": false,
@@ -10157,8 +10114,8 @@
         "required": [
           "total",
           "enabled",
-          "pending",
-          "oldest_pending_age_seconds",
+          "overdue",
+          "oldest_overdue_age_seconds",
           "coalesced_last_day",
           "skipped_last_day"
         ],
@@ -10171,16 +10128,6 @@
             "type": "string",
             "pattern": "^[0-9]+$"
           },
-          "pending": {
-            "type": "string",
-            "pattern": "^[0-9]+$",
-            "description": "Occurrences still awaiting an admission decision."
-          },
-          "oldest_pending_age_seconds": {
-            "type": "string",
-            "pattern": "^[0-9]+$",
-            "description": "Seconds the oldest pending occurrence has waited."
-          },
           "coalesced_last_day": {
             "type": "string",
             "pattern": "^[0-9]+$",
@@ -10190,6 +10137,16 @@
             "type": "string",
             "pattern": "^[0-9]+$",
             "description": "Occurrences refused in the last day."
+          },
+          "overdue": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Enabled schedules whose next due instant has passed."
+          },
+          "oldest_overdue_age_seconds": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Seconds the oldest overdue schedule has waited."
           }
         }
       },
@@ -10245,10 +10202,7 @@
             "$ref": "#/components/schemas/OverviewJobs"
           },
           "attention": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/OverviewAttention"
-            }
+            "$ref": "#/components/schemas/OverviewAttention"
           },
           "tables": {
             "$ref": "#/components/schemas/OverviewTables"
@@ -10274,6 +10228,87 @@
                 "type": "null"
               }
             ]
+          }
+        }
+      },
+      "OverviewAttentionItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "job_id",
+          "table_id",
+          "state",
+          "reason",
+          "age_seconds"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "table_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "Committing",
+              "CommitOutcomeUnknown",
+              "ReplanRequired",
+              "Failed"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "unresolved_publication",
+              "replan_required",
+              "failed"
+            ]
+          },
+          "age_seconds": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Seconds since the publication was authorized, or since the job ended."
+          }
+        }
+      },
+      "OverviewAttention": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "unresolved_publications",
+          "oldest_unresolved_age_seconds",
+          "terminal_jobs",
+          "truncated",
+          "items"
+        ],
+        "properties": {
+          "unresolved_publications": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Unresolved publications without a bound."
+          },
+          "oldest_unresolved_age_seconds": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Seconds since the oldest unresolved publication was authorized."
+          },
+          "terminal_jobs": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Replanned or failed jobs inside the window, by terminal transition."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "Whether more jobs need attention than the bounded list shows."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OverviewAttentionItem"
+            }
           }
         }
       }

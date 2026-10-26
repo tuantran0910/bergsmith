@@ -91,6 +91,74 @@ impl JobOutcomes {
     }
 }
 
+/// Counts the attention backlog independently of the bounded item list.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AttentionSummary {
+    /// Jobs whose send was authorized and whose outcome is not recorded.
+    pub unresolved_publications: i64,
+    /// Seconds since the oldest unresolved publication was authorized.
+    pub oldest_unresolved_age_seconds: i64,
+    /// Replanned or failed jobs inside the window, by terminal transition.
+    pub terminal_jobs: i64,
+}
+
+/// Counts the jobs that need attention: unresolved publications without a
+/// bound, and terminal jobs in the window.
+///
+/// This is separate from [`attention`] because that list is bounded. A page
+/// that counts its own rows would report five unresolved publications when
+/// six exist.
+///
+/// # Errors
+///
+/// [`PersistenceError`] when the query fails.
+pub async fn attention_summary(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    principal_id: PrincipalId,
+    roles: &[String],
+    since: DateTime<Utc>,
+) -> Result<AttentionSummary, PersistenceError> {
+    let sql = concat!(
+        "WITH attention AS ( \
+             SELECT j.state, \
+                    EXTRACT(EPOCH FROM (now() - \
+                        CASE WHEN j.state IN ('Committing', 'CommitOutcomeUnknown') \
+                             THEN COALESCE(j.publication_started_at, j.updated_at) \
+                             ELSE j.updated_at END)) AS age_seconds \
+             FROM jobs j \
+             JOIN table_identities t \
+               ON t.id = j.table_identity_id AND t.organization_id = j.organization_id \
+             WHERE j.organization_id = $1 \
+               AND (j.state IN ('Committing', 'CommitOutcomeUnknown') \
+                    OR (j.state IN ('ReplanRequired', 'Failed') AND j.updated_at >= $4)) \
+               AND ",
+        table_visible!(),
+        " ) \
+         SELECT count(*) FILTER ( \
+                    WHERE state IN ('Committing', 'CommitOutcomeUnknown'))::bigint \
+                    AS unresolved_publications, \
+                COALESCE(FLOOR(max(age_seconds) FILTER ( \
+                    WHERE state IN ('Committing', 'CommitOutcomeUnknown'))), 0)::bigint \
+                    AS oldest_unresolved_age_seconds, \
+                count(*) FILTER ( \
+                    WHERE state IN ('ReplanRequired', 'Failed'))::bigint AS terminal_jobs \
+         FROM attention"
+    );
+    let row: AttentionSummaryRow = sqlx::query_as(sql)
+        .bind(organization_id.as_uuid())
+        .bind(principal_id.as_uuid())
+        .bind(roles)
+        .bind(since)
+        .fetch_one(conn)
+        .await?;
+    Ok(AttentionSummary {
+        unresolved_publications: row.unresolved_publications,
+        oldest_unresolved_age_seconds: row.oldest_unresolved_age_seconds,
+        terminal_jobs: row.terminal_jobs,
+    })
+}
+
 /// Inventory coverage and the tables whose newest job needs a decision.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TableOverview {
@@ -110,10 +178,12 @@ pub struct ScheduleOverview {
     pub total: i64,
     /// Schedules that are enabled.
     pub enabled: i64,
-    /// Occurrences still awaiting an admission decision.
-    pub pending: i64,
-    /// Seconds the oldest pending occurrence has waited; zero when none.
-    pub oldest_pending_age_seconds: i64,
+    /// Enabled schedules whose next due instant has passed. Admission commits
+    /// an occurrence and finishes it in one transaction, so a late evaluation
+    /// is visible here even while the scheduler cannot run.
+    pub overdue: i64,
+    /// Seconds the oldest overdue schedule has waited; zero when none.
+    pub oldest_overdue_age_seconds: i64,
     /// Occurrences folded into a later evaluation in the last day.
     pub coalesced: i64,
     /// Occurrences refused in the last day.
@@ -159,7 +229,7 @@ pub async fn job_outcomes(
            ON t.id = j.table_identity_id AND t.organization_id = j.organization_id \
          WHERE j.organization_id = $1 \
            AND j.state IN ('Succeeded', 'NoOp', 'Cancelled', 'ReplanRequired', 'Failed') \
-           AND j.created_at >= $4 \
+           AND j.updated_at >= $4 \
            AND ",
         table_visible!()
     );
@@ -182,8 +252,11 @@ pub async fn job_outcomes(
 /// The jobs that need attention, oldest first, bounded by `limit`.
 ///
 /// Unresolved publications come first because they block new work on their
-/// table; replanned and failed jobs follow. The window bounds the terminal
-/// states so an old failure does not sit on the page forever.
+/// table; replanned and failed jobs follow. Both ages are measured from the
+/// event that matters: an unresolved publication from its send authorization,
+/// a terminal job from its terminal transition. The window bounds the terminal
+/// states by that transition, so an old failure does not sit on the page
+/// forever while a job created earlier and ended today still counts.
 ///
 /// # Errors
 ///
@@ -199,13 +272,15 @@ pub async fn attention(
     let sql = concat!(
         "SELECT j.id, j.table_identity_id, j.state, \
                 GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (now() - \
-                    COALESCE(j.publication_started_at, j.updated_at)))))::bigint AS age_seconds \
+                    CASE WHEN j.state IN ('Committing', 'CommitOutcomeUnknown') \
+                         THEN COALESCE(j.publication_started_at, j.updated_at) \
+                         ELSE j.updated_at END))))::bigint AS age_seconds \
          FROM jobs j \
          JOIN table_identities t \
            ON t.id = j.table_identity_id AND t.organization_id = j.organization_id \
          WHERE j.organization_id = $1 \
            AND (j.state IN ('Committing', 'CommitOutcomeUnknown') \
-                OR (j.state IN ('ReplanRequired', 'Failed') AND j.created_at >= $4)) \
+                OR (j.state IN ('ReplanRequired', 'Failed') AND j.updated_at >= $4)) \
            AND ",
         table_visible!(),
         " ORDER BY CASE WHEN j.state IN ('Committing', 'CommitOutcomeUnknown') THEN 0 ELSE 1 END, \
@@ -245,7 +320,7 @@ pub async fn tables(
              FROM jobs j \
              JOIN visible v ON v.id = j.table_identity_id \
              WHERE j.state IN ('Succeeded', 'NoOp', 'Cancelled', 'ReplanRequired', 'Failed') \
-               AND j.created_at >= $4 \
+               AND j.updated_at >= $4 \
              ORDER BY j.table_identity_id, j.id DESC \
          ) \
          SELECT (SELECT count(*) FROM visible)::bigint AS total, \
@@ -283,15 +358,20 @@ pub async fn schedules(
     let row: SchedulesRow = sqlx::query_as(
         "WITH s AS ( \
              SELECT id, enabled FROM maintenance_schedules WHERE organization_id = $1 \
+         ), st AS ( \
+             SELECT schedule_id, next_due_at FROM maintenance_schedule_state \
+             WHERE organization_id = $1 \
          ), o AS ( \
              SELECT state, scheduled_for, created_at \
              FROM maintenance_schedule_occurrences WHERE organization_id = $1 \
          ) \
          SELECT (SELECT count(*) FROM s)::bigint AS total, \
                 (SELECT count(*) FROM s WHERE enabled)::bigint AS enabled, \
-                (SELECT count(*) FROM o WHERE state = 'Pending')::bigint AS pending, \
-                (SELECT COALESCE(FLOOR(max(EXTRACT(EPOCH FROM (now() - scheduled_for)))), 0)::bigint \
-                 FROM o WHERE state = 'Pending') AS oldest_pending_age_seconds, \
+                (SELECT count(*) FROM s JOIN st ON st.schedule_id = s.id \
+                 WHERE s.enabled AND st.next_due_at <= now())::bigint AS overdue, \
+                (SELECT COALESCE(FLOOR(max(EXTRACT(EPOCH FROM (now() - st.next_due_at)))), 0)::bigint \
+                 FROM s JOIN st ON st.schedule_id = s.id \
+                 WHERE s.enabled AND st.next_due_at <= now()) AS oldest_overdue_age_seconds, \
                 (SELECT count(*) FROM o \
                  WHERE state = 'Coalesced' AND created_at >= now() - interval '24 hours')::bigint \
                     AS coalesced, \
@@ -305,8 +385,8 @@ pub async fn schedules(
     Ok(ScheduleOverview {
         total: row.total,
         enabled: row.enabled,
-        pending: row.pending,
-        oldest_pending_age_seconds: row.oldest_pending_age_seconds,
+        overdue: row.overdue,
+        oldest_overdue_age_seconds: row.oldest_overdue_age_seconds,
         coalesced: row.coalesced,
         skipped: row.skipped,
     })
@@ -392,6 +472,13 @@ impl AttentionRow {
 }
 
 #[derive(sqlx::FromRow)]
+struct AttentionSummaryRow {
+    unresolved_publications: i64,
+    oldest_unresolved_age_seconds: i64,
+    terminal_jobs: i64,
+}
+
+#[derive(sqlx::FromRow)]
 struct TablesRow {
     total: i64,
     never_sampled: i64,
@@ -402,8 +489,8 @@ struct TablesRow {
 struct SchedulesRow {
     total: i64,
     enabled: i64,
-    pending: i64,
-    oldest_pending_age_seconds: i64,
+    overdue: i64,
+    oldest_overdue_age_seconds: i64,
     coalesced: i64,
     skipped: i64,
 }

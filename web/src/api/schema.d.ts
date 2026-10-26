@@ -687,7 +687,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description What needs attention in the organization, from the execution ledger: terminal jobs in the last day by outcome and conflict rate, jobs whose publication is unresolved or whose work a conflict discarded, visible tables without a sample or with a decision pending, schedule evaluations that are late or folded, and registered worker capacity. Job and table figures follow the caller's grants; the schedule and worker sections are null when the caller may not read them. */
+        /** @description What needs attention in the organization, from the execution ledger: terminal jobs whose terminal transition falls in the last day, by outcome and conflict rate; unresolved publications in full and a bounded list of jobs that need attention; visible tables without a sample or with a decision pending by terminal transition; schedule cursors that are overdue plus occurrences folded or skipped in the last day; and registered worker capacity. Job and table figures follow the caller's grants; the schedule and worker sections are null when the caller may not read them. */
         get: operations["getOverview"];
         put?: never;
         post?: never;
@@ -1633,18 +1633,6 @@ export interface components {
             /** @description Replanned jobs as a percentage of terminal jobs in the window, one decimal. */
             conflict_rate_percent: string;
         };
-        OverviewAttention: {
-            /** Format: uuid */
-            job_id: string;
-            /** Format: uuid */
-            table_id: string;
-            /** @enum {string} */
-            state: "Committing" | "CommitOutcomeUnknown" | "ReplanRequired" | "Failed";
-            /** @enum {string} */
-            reason: "unresolved_publication" | "replan_required" | "failed";
-            /** @description Seconds since the publication was authorized, or since the job ended. */
-            age_seconds: string;
-        };
         OverviewTables: {
             /** Format: int32 */
             window_days: number;
@@ -1658,14 +1646,14 @@ export interface components {
         OverviewSchedules: {
             total: string;
             enabled: string;
-            /** @description Occurrences still awaiting an admission decision. */
-            pending: string;
-            /** @description Seconds the oldest pending occurrence has waited. */
-            oldest_pending_age_seconds: string;
             /** @description Occurrences folded into a later evaluation in the last day. */
             coalesced_last_day: string;
             /** @description Occurrences refused in the last day. */
             skipped_last_day: string;
+            /** @description Enabled schedules whose next due instant has passed. */
+            overdue: string;
+            /** @description Seconds the oldest overdue schedule has waited. */
+            oldest_overdue_age_seconds: string;
         };
         OverviewWorkers: {
             /** @description Sessions that are not superseded. */
@@ -1680,12 +1668,35 @@ export interface components {
         };
         Overview: {
             jobs: components["schemas"]["OverviewJobs"];
-            attention: components["schemas"]["OverviewAttention"][];
+            attention: components["schemas"]["OverviewAttention"];
             tables: components["schemas"]["OverviewTables"];
             /** @description Present only for callers allowed to manage schedules. */
             schedules: components["schemas"]["OverviewSchedules"] | null;
             /** @description Present only for callers allowed to manage workers. */
             workers: components["schemas"]["OverviewWorkers"] | null;
+        };
+        OverviewAttentionItem: {
+            /** Format: uuid */
+            job_id: string;
+            /** Format: uuid */
+            table_id: string;
+            /** @enum {string} */
+            state: "Committing" | "CommitOutcomeUnknown" | "ReplanRequired" | "Failed";
+            /** @enum {string} */
+            reason: "unresolved_publication" | "replan_required" | "failed";
+            /** @description Seconds since the publication was authorized, or since the job ended. */
+            age_seconds: string;
+        };
+        OverviewAttention: {
+            /** @description Unresolved publications without a bound. */
+            unresolved_publications: string;
+            /** @description Seconds since the oldest unresolved publication was authorized. */
+            oldest_unresolved_age_seconds: string;
+            /** @description Replanned or failed jobs inside the window, by terminal transition. */
+            terminal_jobs: string;
+            /** @description Whether more jobs need attention than the bounded list shows. */
+            truncated: boolean;
+            items: components["schemas"]["OverviewAttentionItem"][];
         };
     };
     responses: never;

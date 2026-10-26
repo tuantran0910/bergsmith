@@ -90,7 +90,10 @@ const OUTCOME_LABELS: Record<string, string> = {
 };
 
 /** Why a job is on the attention list. */
-const REASON_LABELS: Record<Schemas["OverviewAttention"]["reason"], string> = {
+const REASON_LABELS: Record<
+    Schemas["OverviewAttentionItem"]["reason"],
+    string
+> = {
     unresolved_publication: "Publication unresolved",
     replan_required: "Replan required",
     failed: "Failed",
@@ -233,19 +236,17 @@ export function OverviewPage() {
                         <MetricGrid>
                             <Metric
                                 label="Unresolved publications"
-                                value={String(
-                                    overview.data.attention.filter(
-                                        (job) =>
-                                            job.reason ===
-                                            "unresolved_publication",
-                                    ).length,
+                                value={exactCount(
+                                    overview.data.attention
+                                        .unresolved_publications,
                                 )}
                                 detail={
-                                    overview.data.attention.length === 0
+                                    overview.data.attention
+                                        .unresolved_publications === "0"
                                         ? "None waiting"
                                         : `Oldest ${elapsed(
-                                              overview.data.attention[0]
-                                                  ?.age_seconds ?? "0",
+                                              overview.data.attention
+                                                  .oldest_unresolved_age_seconds,
                                           )}`
                                 }
                             />
@@ -271,7 +272,7 @@ export function OverviewPage() {
                                 detail={`of ${exactCount(overview.data.tables.total)} tables`}
                             />
                         </MetricGrid>
-                        {overview.data.attention.length === 0 ? (
+                        {overview.data.attention.items.length === 0 ? (
                             <EmptyState
                                 icon={GaugeIcon}
                                 title="Nothing is waiting on you"
@@ -282,7 +283,7 @@ export function OverviewPage() {
                             </EmptyState>
                         ) : (
                             <ul className="m-0 mt-4 grid list-none gap-2 p-0">
-                                {overview.data.attention.map((job) => (
+                                {overview.data.attention.items.map((job) => (
                                     <li key={job.job_id}>
                                         <Link
                                             to="/jobs/$jobId"
@@ -301,6 +302,25 @@ export function OverviewPage() {
                                     </li>
                                 ))}
                             </ul>
+                        )}
+                        {overview.data.attention.truncated && (
+                            <p className="mt-3 text-sm text-muted-foreground">
+                                Showing the oldest{" "}
+                                {overview.data.attention.items.length} of{" "}
+                                {exactCount(
+                                    String(
+                                        Number(
+                                            overview.data.attention
+                                                .unresolved_publications,
+                                        ) +
+                                            Number(
+                                                overview.data.attention
+                                                    .terminal_jobs,
+                                            ),
+                                    ),
+                                )}{" "}
+                                jobs that need attention.
+                            </p>
                         )}
                     </section>
 
@@ -394,15 +414,15 @@ export function OverviewPage() {
                                             detail={`of ${exactCount(overview.data.schedules.total)}`}
                                         />
                                         <Metric
-                                            label="Pending evaluations"
+                                            label="Overdue evaluations"
                                             value={exactCount(
-                                                overview.data.schedules.pending,
+                                                overview.data.schedules.overdue,
                                             )}
                                             detail={
                                                 overview.data.schedules
-                                                    .pending === "0"
+                                                    .overdue === "0"
                                                     ? "None waiting"
-                                                    : `Oldest ${elapsed(overview.data.schedules.oldest_pending_age_seconds)}`
+                                                    : `Oldest ${elapsed(overview.data.schedules.oldest_overdue_age_seconds)}`
                                             }
                                         />
                                         <Metric
