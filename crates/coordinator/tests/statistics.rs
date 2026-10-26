@@ -208,7 +208,10 @@ async fn a_pass_samples_a_table_and_records_nothing_unchanged(pool: PgPool) {
     let tenant = tenant(&mut conn, &server.url(), &fixture).await;
     drop(conn);
     let collector = collector(&pool).await;
-    let now = chrono::Utc::now();
+    // PostgreSQL keeps microseconds, so the instants the test compares must
+    // already be truncated or a same-instant assertion can differ by nanos.
+    let now = chrono::DateTime::from_timestamp_micros(chrono::Utc::now().timestamp_micros())
+        .expect("the current instant");
 
     let summary: SampleSummary = collector.pass_at(now).await.unwrap();
     assert_eq!(
@@ -260,6 +263,67 @@ async fn a_pass_samples_a_table_and_records_nothing_unchanged(pool: PgPool) {
             .await
             .unwrap();
     assert_eq!(repeated.len(), 1);
+    // The pass that recorded nothing still confirmed the metadata, so the
+    // table is fresh even though its sample is an hour old.
+    let confirmed = statistics::last_confirmed_at(&mut conn, tenant.organization, tenant.table)
+        .await
+        .unwrap();
+    assert_eq!(confirmed, Some(now + TimeDelta::hours(1)));
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn an_unchanged_table_replaces_a_sample_without_the_health_counters(pool: PgPool) {
+    let fixture = fixture().await;
+    let mut server = mockito::Server::new_async().await;
+    serve_table(&mut server, &fixture).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = tenant(&mut conn, &server.url(), &fixture).await;
+    drop(conn);
+    let collector = collector(&pool).await;
+    let first = chrono::DateTime::from_timestamp_micros(chrono::Utc::now().timestamp_micros())
+        .expect("the current instant");
+
+    let summary = collector.pass_at(first).await.unwrap();
+    assert_eq!(summary.sampled, 1);
+
+    // A sample written before the health counters existed is immutable: it
+    // keeps version 0 and zeros, and retention eventually removes it.
+    let mut conn = pool.acquire().await.unwrap();
+    sqlx::query(
+        "UPDATE table_statistics SET sample_version = 0, data_manifest_count = 0, \
+         max_partition_files = 0 WHERE organization_id = $1 AND table_identity_id = $2",
+    )
+    .bind(tenant.organization.as_uuid())
+    .bind(tenant.table.as_uuid())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+
+    // The metadata is unchanged, but the incomplete sample is replaced rather
+    // than taken as unchanged, so the health counters are filled.
+    let second = first + TimeDelta::hours(1);
+    let summary = collector.pass_at(second).await.unwrap();
+    assert_eq!(
+        summary,
+        SampleSummary {
+            sampled: 1,
+            unchanged: 0,
+            skipped: 0
+        }
+    );
+
+    let history = statistics::history(&mut conn, tenant.organization, tenant.table, None, None, 10)
+        .await
+        .unwrap();
+    assert_eq!(history.len(), 2, "the legacy sample stays as history");
+    assert_eq!(history[1].sample_version, 0);
+    assert_eq!(history[1].data_manifest_count, 0);
+    assert_eq!(history[1].max_partition_files, 0);
+    assert_eq!(history[0].sample_version, statistics::SAMPLE_VERSION);
+    assert!(history[0].data_manifest_count >= 1);
+    assert!(history[0].max_partition_files >= 1);
+    assert_eq!(history[0].metadata_location, history[1].metadata_location);
+    assert_eq!(history[0].sampled_at, second);
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
@@ -271,7 +335,10 @@ async fn an_unchanged_table_backfills_an_empty_snapshot_ledger(pool: PgPool) {
     let tenant = tenant(&mut conn, &server.url(), &fixture).await;
     drop(conn);
     let collector = collector(&pool).await;
-    let now = chrono::Utc::now();
+    // PostgreSQL keeps microseconds, so the instants the test compares must
+    // already be truncated or a same-instant assertion can differ by nanos.
+    let now = chrono::DateTime::from_timestamp_micros(chrono::Utc::now().timestamp_micros())
+        .expect("the current instant");
     collector.pass_at(now).await.unwrap();
 
     // A table sampled before the ledger existed has a sample but no commits.
@@ -311,7 +378,10 @@ async fn an_unchanged_table_repairs_a_ledger_that_is_behind(pool: PgPool) {
     let tenant = tenant(&mut conn, &server.url(), &fixture).await;
     drop(conn);
     let collector = collector(&pool).await;
-    let now = chrono::Utc::now();
+    // PostgreSQL keeps microseconds, so the instants the test compares must
+    // already be truncated or a same-instant assertion can differ by nanos.
+    let now = chrono::DateTime::from_timestamp_micros(chrono::Utc::now().timestamp_micros())
+        .expect("the current instant");
     collector.pass_at(now).await.unwrap();
 
     // A write that did not commit leaves the newest commit unrecorded while

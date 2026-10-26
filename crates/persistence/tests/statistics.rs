@@ -31,8 +31,10 @@ fn sample(connection: bergsmith_common::ids::CatalogConnectionId) -> NewTableSam
         position_delete_records: 10,
         equality_delete_records: 0,
         manifest_count: 2,
+        data_manifest_count: 2,
         manifest_bytes: 2_048,
         partition_count: 2,
+        max_partition_files: 2,
         small_files: 1,
         target_file_size_bytes: 1_048_576,
         snapshot_count: 4,
@@ -153,7 +155,7 @@ async fn due_tables_are_oldest_first_and_stop_when_sampled(pool: PgPool) {
     let due = statistics::due_tables(&mut conn, cutoff, 10).await.unwrap();
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].table_id, tenant.table);
-    assert_eq!(due[0].last_sampled_at, None);
+    assert_eq!(due[0].last_confirmed_at, None);
     let routes = statistics::maintenance_routes(&mut conn, tenant.organization, tenant.table)
         .await
         .unwrap();
@@ -174,7 +176,121 @@ async fn due_tables_are_oldest_first_and_stop_when_sampled(pool: PgPool) {
     let later = now + TimeDelta::minutes(10);
     let due = statistics::due_tables(&mut conn, later, 10).await.unwrap();
     assert_eq!(due.len(), 1);
-    assert_eq!(due[0].last_sampled_at, Some(fresh.sampled_at));
+    assert_eq!(due[0].last_confirmed_at, Some(fresh.sampled_at));
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn samples_record_the_counter_version_they_carry(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "version").await;
+    statistics::record(
+        &mut conn,
+        tenant.organization,
+        tenant.table,
+        &sample(tenant.connection),
+    )
+    .await
+    .unwrap();
+    let latest = statistics::latest(&mut conn, tenant.organization, tenant.table)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.sample_version, statistics::SAMPLE_VERSION);
+    assert!(latest.data_manifest_count > 0);
+    assert!(latest.max_partition_files > 0);
+
+    // A sample written before the counters existed reads back as version 0.
+    sqlx::query("UPDATE table_statistics SET sample_version = 0")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    let latest = statistics::latest(&mut conn, tenant.organization, tenant.table)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.sample_version, 0);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn confirmations_keep_an_unchanged_table_fresh_and_move_forward_only(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "confirmed").await;
+    let now = DateTime::from_timestamp_micros(Utc::now().timestamp_micros()).unwrap();
+    let cutoff = now - TimeDelta::minutes(5);
+
+    // Neither sampled nor checked: due.
+    let due = statistics::due_tables(&mut conn, cutoff, 10).await.unwrap();
+    assert_eq!(due.len(), 1);
+
+    // A confirmation one minute ago is fresh even though no sample exists.
+    let checked = now - TimeDelta::minutes(1);
+    statistics::record_check(&mut conn, tenant.organization, tenant.table, checked)
+        .await
+        .unwrap();
+    assert_eq!(
+        statistics::last_confirmed_at(&mut conn, tenant.organization, tenant.table)
+            .await
+            .unwrap(),
+        Some(checked)
+    );
+    assert!(
+        statistics::due_tables(&mut conn, cutoff, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // A retried, older confirmation does not move the instant back.
+    statistics::record_check(
+        &mut conn,
+        tenant.organization,
+        tenant.table,
+        checked - TimeDelta::hours(1),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        statistics::last_confirmed_at(&mut conn, tenant.organization, tenant.table)
+            .await
+            .unwrap(),
+        Some(checked)
+    );
+
+    // Once the interval has passed since the confirmation, the table is due.
+    let due = statistics::due_tables(&mut conn, checked, 10)
+        .await
+        .unwrap();
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].last_confirmed_at, Some(checked));
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn freshness_falls_back_to_the_newest_sample(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "freshness").await;
+    let mut recorded = sample(tenant.connection);
+    recorded.sampled_at = DateTime::from_timestamp_micros(Utc::now().timestamp_micros()).unwrap();
+    statistics::record(&mut conn, tenant.organization, tenant.table, &recorded)
+        .await
+        .unwrap();
+    assert_eq!(
+        statistics::last_confirmed_at(&mut conn, tenant.organization, tenant.table)
+            .await
+            .unwrap(),
+        Some(recorded.sampled_at)
+    );
+
+    // A later confirmation is the freshness even though the sample is older.
+    let checked = recorded.sampled_at + TimeDelta::minutes(5);
+    statistics::record_check(&mut conn, tenant.organization, tenant.table, checked)
+        .await
+        .unwrap();
+    assert_eq!(
+        statistics::last_confirmed_at(&mut conn, tenant.organization, tenant.table)
+            .await
+            .unwrap(),
+        Some(checked)
+    );
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]

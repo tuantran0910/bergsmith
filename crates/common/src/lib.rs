@@ -9,6 +9,7 @@ pub mod audit;
 pub mod capabilities;
 pub mod digest;
 pub mod disposition;
+pub mod health;
 pub mod ids;
 pub mod job;
 pub mod permission;
