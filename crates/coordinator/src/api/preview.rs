@@ -198,7 +198,7 @@ fn report(table: TableId, assessed: &AssessedPreview) -> Value {
 }
 
 /// What a job would do, mirroring the planner's own outcome order.
-fn outcome(preview: &Preview) -> (&'static str, Option<&'static str>) {
+pub(super) fn outcome(preview: &Preview) -> (&'static str, Option<&'static str>) {
     if preview.baseline.is_none() {
         return ("no_op", Some(NoOpReason::NoSnapshot.as_str()));
     }

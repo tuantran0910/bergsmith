@@ -16,6 +16,7 @@ mod overview;
 mod pagination;
 mod preview;
 mod principals;
+mod recommendations;
 mod resources;
 mod scheduling;
 mod service_identities;
@@ -113,6 +114,10 @@ pub fn router(state: ApiState) -> Router {
             get(definition::definition),
         )
         .route("/api/v1/tables/{id}/maintenance", get(maintenance::table))
+        .route(
+            "/api/v1/tables/{id}/recommendations",
+            get(recommendations::table),
+        )
         .route("/api/v1/catalogs/{id}/statistics", get(statistics::catalog))
         .route("/api/v1/statistics", get(statistics::organization))
         .route("/api/v1/overview", get(overview::overview))

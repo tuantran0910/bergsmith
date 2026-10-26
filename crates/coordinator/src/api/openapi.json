@@ -6096,6 +6096,115 @@
           }
         }
       }
+    },
+    "/api/v1/tables/{id}/recommendations": {
+      "get": {
+        "operationId": "getTableRecommendations",
+        "description": "Health findings for one table from its newest metadata-only sample, and the action each finding recommends. An actionable finding carries the prefilled preview that assesses it and the planner's estimate from the current table; an advisory finding says why it cannot run yet. Visibility is checked first: a table outside the caller's inventory returns 404, and 403 is reserved for a visible table without jobs:submit. A table without a sample, or with a sample written before the current health counters, returns a null state with no findings or recommendations and performs no catalog request. Counters are decimal strings.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Invalid table identifier",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or inaccessible table",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The table's catalog connection is disabled, or its identity or metadata changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Transient failure; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Health findings and their recommended actions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TableRecommendations"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -10308,6 +10417,277 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/OverviewAttentionItem"
+            }
+          }
+        }
+      },
+      "TableHealthFinding": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "One finding at warning or worse, with the measurement and the bound it crossed.",
+        "required": [
+          "kind",
+          "severity",
+          "measured",
+          "threshold",
+          "unit",
+          "reason"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "small_files",
+              "delete_pressure",
+              "snapshot_backlog",
+              "manifest_fragmentation",
+              "partition_skew",
+              "stale_statistics"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "warning",
+              "critical"
+            ]
+          },
+          "measured": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "threshold": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "unit": {
+            "type": "string",
+            "enum": [
+              "bytes",
+              "per_mille",
+              "snapshots",
+              "files_per_manifest",
+              "seconds"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "TableRecommendationPreview": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "The prefilled preview request that assesses the recommended action.",
+        "required": [
+          "table_id"
+        ],
+        "properties": {
+          "table_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "TableRecommendationEstimate": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "The planner's estimate for the recommended preview.",
+        "required": [
+          "tasks",
+          "files",
+          "bytes",
+          "files_removed",
+          "duration_millis"
+        ],
+        "properties": {
+          "tasks": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "files_removed": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "duration_millis": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          }
+        }
+      },
+      "TableHealthRecommendation": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "The action that resolves one finding. An advisory recommendation carries only the reason; an actionable one carries the preview and the planner's estimate.",
+        "required": [
+          "kind",
+          "action",
+          "advisory",
+          "reason",
+          "preview",
+          "outcome",
+          "no_op_reason",
+          "estimate"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "small_files",
+              "delete_pressure",
+              "snapshot_backlog",
+              "manifest_fragmentation",
+              "partition_skew",
+              "stale_statistics"
+            ]
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "compaction",
+              "delete_cleanup",
+              "snapshot_expiration",
+              "manifest_rewrite",
+              "resample"
+            ]
+          },
+          "advisory": {
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TableRecommendationPreview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "planned",
+                  "no_op",
+                  "rejected"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "no_op_reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "no_snapshot",
+                  "no_beneficial_work"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "estimate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TableRecommendationEstimate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "TableRecommendations": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "One table's health and the action each finding recommends. Null state means the table has no statistics sample.",
+        "required": [
+          "table_id",
+          "state",
+          "sampled_at",
+          "confirmed_at",
+          "findings",
+          "recommendations"
+        ],
+        "properties": {
+          "table_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "healthy",
+                  "warning",
+                  "critical"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null when the table has no sample or its sample predates the current health counters."
+          },
+          "sampled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "confirmed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TableHealthFinding"
+            }
+          },
+          "recommendations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TableHealthRecommendation"
             }
           }
         }
