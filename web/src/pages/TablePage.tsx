@@ -7,6 +7,7 @@ import { useKeyedMutation } from "../api/keyed";
 import { useCatalogNames, useTable } from "../api/queries";
 import { useBreadcrumbLabel } from "../components/Breadcrumbs";
 import { ErrorNotice } from "../components/ErrorNotice";
+import { HealthBadge } from "../components/HealthBadge";
 import { Metric, MetricGrid } from "../components/Metric";
 import { LoadingDetail, PageHeader } from "../components/Page";
 import { ResourceId } from "../components/ResourceId";
@@ -27,6 +28,7 @@ import { PreviewView } from "./PreviewView";
 import { Access } from "./access/Access";
 import { namespaceKey, tab, type TableTab } from "./tables/search";
 import { TableDefinition } from "./tables/Definition";
+import { TableHealth } from "./tables/Health";
 import { TableMaintenance } from "./tables/Maintenance";
 import { TableStatistics } from "./tables/Statistics";
 import { TableSnapshots } from "./tables/Snapshots";
@@ -123,7 +125,16 @@ export function TablePage({ id }: { id: string }) {
         <section>
             <PageHeader
                 title={fullName}
-                description="A preview reads current table metadata and creates no job. Running maintenance plans again from the table as it is then."
+                description={
+                    <span className="inline-flex flex-wrap items-center gap-2">
+                        <HealthBadge state={table.data.health.state} />
+                        <span>
+                            A preview reads current table metadata and creates
+                            no job. Running maintenance plans again from the
+                            table as it is then.
+                        </span>
+                    </span>
+                }
                 actions={
                     canSubmit ? (
                         <>
@@ -174,6 +185,7 @@ export function TablePage({ id }: { id: string }) {
                 <TabsList>
                     <TabsTrigger value="overview">Overview</TabsTrigger>
                     <TabsTrigger value="definition">Definition</TabsTrigger>
+                    <TabsTrigger value="health">Health</TabsTrigger>
                     <TabsTrigger value="snapshots">Snapshots</TabsTrigger>
                     <TabsTrigger value="statistics">Statistics</TabsTrigger>
                     <TabsTrigger value="maintenance">Maintenance</TabsTrigger>
@@ -326,6 +338,9 @@ export function TablePage({ id }: { id: string }) {
                 </TabsContent>
                 <TabsContent value="definition">
                     <TableDefinition id={id} />
+                </TabsContent>
+                <TabsContent value="health">
+                    <TableHealth id={id} />
                 </TabsContent>
                 <TabsContent value="snapshots">
                     <TableSnapshots id={id} />

@@ -35,8 +35,10 @@ import {
     tableSnapshots,
     tableSnapshotsQuiet,
     tableDefinition,
+    tableHealth,
     overview,
     tableMaintenance,
+    tableRecommendations,
     tableStatistics,
 } from "./test/fixtures";
 
@@ -2155,3 +2157,224 @@ describe("workers", () => {
 function cleanupAndStart(path: string) {
     return start(path);
 }
+
+it("filters tables by evaluated health through the coordinator", async () => {
+    const warned = schema("Table", {
+        ...table,
+        id: "0190f3c4-0000-7000-8000-000000000004",
+        table_uuid: "6f1c0d0e-1111-4222-8333-444455556668",
+        health: tableHealth("warning"),
+    });
+    const critical = schema("Table", {
+        ...table,
+        health: tableHealth("critical"),
+    });
+    fake.on("GET", "/api/v1/tables", (request) =>
+        json(
+            200,
+            schema("TablePage", {
+                items:
+                    new URL(request.url).searchParams.get("health") ===
+                    "critical"
+                        ? [critical]
+                        : [table, warned],
+                next_cursor: null,
+            }),
+        ),
+    );
+    const user = start("/tables");
+
+    // The column names each state; an unassessed table never reads as healthy.
+    expect(await screen.findByText("Warning")).toBeInTheDocument();
+    expect(screen.getByText("Not assessed")).toBeInTheDocument();
+
+    // The filter is the coordinator's: it is sent with the request and kept in
+    // the address.
+    await user.click(screen.getByRole("combobox", { name: "Health" }));
+    await user.click(screen.getByRole("option", { name: "Critical" }));
+
+    // The row badge and the select's own value both read "Critical".
+    await waitFor(() => {
+        expect(screen.getAllByText("Critical").length).toBeGreaterThanOrEqual(
+            2,
+        );
+    });
+    expect(screen.queryAllByText("Warning")).toHaveLength(0);
+    await waitFor(() => {
+        expect(window.location.search).toContain("health=critical");
+    });
+    const requests = fake.sent("GET", "/api/v1/tables");
+    const last = requests.at(-1);
+    expect(
+        last === undefined
+            ? null
+            : new URL(last.url).searchParams.get("health"),
+    ).toBe("critical");
+});
+
+it("shows findings, their threshold source, and the recommended action", async () => {
+    fake.on("GET", "/api/v1/tables/{id}", () =>
+        json(
+            200,
+            schema("Table", { ...table, health: tableHealth("critical") }),
+        ),
+    ).on("GET", "/api/v1/tables/{id}/recommendations", () =>
+        json(200, tableRecommendations()),
+    );
+    start(`/tables/${TABLE_ID}?tab=health`);
+
+    // The header and the state card both name the evaluated state.
+    await waitFor(() => {
+        expect(screen.getAllByText("Critical").length).toBeGreaterThanOrEqual(
+            2,
+        );
+    });
+    expect(
+        screen.getByRole("columnheader", { name: "Finding" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Small files")).toBeInTheDocument();
+    expect(screen.getAllByText(/Policy “nightly”/)).toHaveLength(2);
+    // The runnable recommendation carries the planner's estimate.
+    expect(screen.getByText(/5 files \(20.0 MiB\)/)).toBeInTheDocument();
+    expect(screen.getByText("Compaction")).toBeInTheDocument();
+    // The advisory one explains why it cannot run yet.
+    expect(screen.getByText(/Advisory for now/)).toBeInTheDocument();
+    expect(screen.getByText("Snapshot expiration")).toBeInTheDocument();
+});
+
+it("keeps the health filter available when it matches no table", async () => {
+    fake.on("GET", "/api/v1/tables", (request) =>
+        json(
+            200,
+            schema("TablePage", {
+                items:
+                    new URL(request.url).searchParams.get("health") ===
+                    "critical"
+                        ? []
+                        : [table],
+                next_cursor: null,
+            }),
+        ),
+    );
+    const user = start("/tables");
+    expect(await screen.findByText("Not assessed")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("combobox", { name: "Health" }));
+    await user.click(screen.getByRole("option", { name: "Critical" }));
+
+    // The empty result keeps the controls, so the selection can be undone.
+    expect(await screen.findByText("No matches.")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Health" })).toHaveTextContent(
+        "Critical",
+    );
+    const clear = screen.getAllByRole("button", { name: "Clear filters" });
+    expect(clear.length).toBeGreaterThan(0);
+    await user.click(clear[0] as HTMLElement);
+    expect(await screen.findByText("Not assessed")).toBeInTheDocument();
+    await waitFor(() => {
+        expect(window.location.search).not.toContain("health=");
+    });
+});
+
+it("names the documented defaults when no policy supplied the thresholds", async () => {
+    fake.on("GET", "/api/v1/tables/{id}", () =>
+        json(
+            200,
+            schema("Table", { ...table, health: tableHealth("critical") }),
+        ),
+    ).on("GET", "/api/v1/tables/{id}/recommendations", () =>
+        json(200, tableRecommendations("defaults")),
+    );
+    start(`/tables/${TABLE_ID}?tab=health`);
+
+    await waitFor(() => {
+        expect(screen.getAllByText("Documented defaults")).toHaveLength(2);
+    });
+    expect(screen.queryByText(/Policy “/)).not.toBeInTheDocument();
+});
+
+it("says an action the planner rejects cannot run on this table", async () => {
+    const base = tableRecommendations("policy");
+    const recommendations = base.recommendations.map((recommendation) =>
+        recommendation.kind === "small_files"
+            ? { ...recommendation, outcome: "rejected" as const }
+            : recommendation,
+    );
+    fake.on("GET", "/api/v1/tables/{id}", () =>
+        json(
+            200,
+            schema("Table", { ...table, health: tableHealth("critical") }),
+        ),
+    ).on("GET", "/api/v1/tables/{id}/recommendations", () =>
+        json(200, schema("TableRecommendations", { ...base, recommendations })),
+    );
+    start(`/tables/${TABLE_ID}?tab=health`);
+
+    expect(
+        await screen.findByText(/cannot run this action/),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Unsupported here")).toBeInTheDocument();
+    expect(screen.queryByText(/A preview plans/)).not.toBeInTheDocument();
+});
+
+it("tells a viewer that an estimate needs the submit grant", async () => {
+    const base = tableRecommendations("policy");
+    const recommendations = base.recommendations.map((recommendation) =>
+        recommendation.kind === "small_files"
+            ? {
+                  ...recommendation,
+                  assessment: "requires_jobs_submit" as const,
+                  preview: null,
+                  outcome: null,
+                  estimate: null,
+              }
+            : recommendation,
+    );
+    fake.on("GET", "/auth/session", () => json(200, session("Viewer")))
+        .on("GET", "/api/v1/tables/{id}", () =>
+            json(
+                200,
+                schema("Table", { ...table, health: tableHealth("critical") }),
+            ),
+        )
+        .on("GET", "/api/v1/tables/{id}/recommendations", () =>
+            json(
+                200,
+                schema("TableRecommendations", { ...base, recommendations }),
+            ),
+        );
+    start(`/tables/${TABLE_ID}?tab=health`);
+
+    expect(
+        await screen.findByText(/The estimate needs the/),
+    ).toBeInTheDocument();
+    expect(screen.getByText("jobs:submit")).toBeInTheDocument();
+    // The viewer cannot run maintenance from this page either.
+    expect(
+        screen.queryByRole("button", { name: "Run maintenance" }),
+    ).not.toBeInTheDocument();
+});
+
+it("shows no empty state while a filtered list is loading or failed", async () => {
+    let settle!: (response: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+        settle = resolve;
+    });
+    fake.on("GET", "/api/v1/tables", () => pending);
+    start("/tables?health=critical");
+
+    // The controls stay usable while the request is out, but nothing claims
+    // the filter matched nothing before a successful response.
+    expect(await screen.findByText("Loading tables…")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Health" })).toHaveTextContent(
+        "Critical",
+    );
+    expect(screen.queryByText("No matches.")).not.toBeInTheDocument();
+    expect(fake.sent("GET", "/api/v1/tables")).toHaveLength(1);
+
+    // A permanent failure is not retried, so one response settles the query.
+    settle(apiError(500, "internal_error", "PermanentFailure", "do_not_retry"));
+    // The failure is shown as a failure, not as "nothing matched".
+    expect(await screen.findByText("Internal error")).toBeInTheDocument();
+    expect(screen.queryByText("No matches.")).not.toBeInTheDocument();
+});
