@@ -40,7 +40,7 @@ pub(super) async fn preview(
     body: Result<Json<PreviewRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let request = json_body(body)?;
-    let target = resolve(&state, &caller, request.table_id).await?;
+    let target = resolve(&state, &caller, request.table_id, Permission::SubmitJobs).await?;
     let assessed = state
         .previews
         .preview_target(caller.principal_id, &target)
@@ -49,26 +49,28 @@ pub(super) async fn preview(
     Ok(Json(report(request.table_id, &assessed)))
 }
 
-/// Resolves the catalog name and connection the caller may preview.
+/// Resolves the catalog name and connection the caller may read `table` from
+/// under `permission`.
 ///
 /// Existence is checked first, so an unknown table is 404 while a known table
-/// the caller may not submit for is 403 and audited. Every step is a ledger
+/// the caller lacks `permission` on is 403 and audited. Every step is a ledger
 /// read; the connection is released before any catalog I/O.
-async fn resolve(
+pub(super) async fn resolve(
     state: &ApiState,
     caller: &Caller,
     table: TableId,
+    permission: Permission,
 ) -> Result<PreviewTarget, ApiError> {
     let mut conn = state.database.pool().acquire().await?;
     let identity = tables::table_identity(&mut conn, caller.organization_id, table).await?;
     resources::require(
         &mut conn,
         &caller.0,
-        Permission::SubmitJobs,
+        permission,
         ResourceScope::Table(table),
     )
     .await?;
-    let roles: Vec<&str> = Permission::SubmitJobs
+    let roles: Vec<&str> = permission
         .roles()
         .iter()
         .map(|role| role.as_str())
@@ -100,14 +102,14 @@ async fn resolve(
     })
 }
 
-/// Logs a failed assessment and returns the typed API error.
+/// Logs a failed catalog read and returns the typed API error.
 ///
 /// Client mistakes are not logged; server-side failures and configuration
 /// gaps are. The fields are the table, the stable reason, the sanitized error
 /// kind, and an upstream HTTP status when there was one. The upstream message,
 /// URLs, and table locations are never interpolated: they are catalog- or
 /// Iceberg-controlled text.
-fn failed(table: TableId, error: &PreviewError) -> ApiError {
+pub(super) fn failed(table: TableId, error: &PreviewError) -> ApiError {
     let api = ApiError::classify(error);
     if api.status.is_server_error() || api.disposition == FailureDisposition::RetrySameRequest {
         tracing::warn!(
@@ -115,7 +117,7 @@ fn failed(table: TableId, error: &PreviewError) -> ApiError {
             reason = api.reason,
             kind = error.kind(),
             upstream_status = ?error.upstream_status(),
-            "api preview failed"
+            "api table read failed"
         );
     }
     api

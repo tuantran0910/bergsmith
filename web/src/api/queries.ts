@@ -76,6 +76,27 @@ export function useTable(id: string) {
 }
 
 /**
+ * The table's current definition: its schema, every retained partition spec,
+ * its sort order, and its allow-listed properties. The coordinator reads it
+ * from catalog metadata on each request, so it is never a stale sample.
+ */
+export function useTableDefinition(id: string) {
+    const client = useQueryClient();
+    return useQuery({
+        queryKey: ["table", id, "definition"],
+        queryFn: ({ signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/tables/{id}/definition", {
+                        params: { path: { id } },
+                        signal,
+                    }),
+                ),
+            ),
+    });
+}
+
+/**
  * The table's newest sample and its history, newest first. The newest sample
  * is returned with every page, so the summary does not wait for the history.
  */

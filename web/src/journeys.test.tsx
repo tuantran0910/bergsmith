@@ -34,6 +34,7 @@ import {
     table,
     tableSnapshots,
     tableSnapshotsQuiet,
+    tableDefinition,
     tableStatistics,
 } from "./test/fixtures";
 
@@ -326,6 +327,28 @@ describe("browsing", () => {
         expect(window.location.search).toBe("");
         expect(
             screen.getByRole("button", { name: "Preview maintenance" }),
+        ).toBeInTheDocument();
+    });
+
+    it("opens a table's definition tab and keeps it in the URL", async () => {
+        fake.on("GET", "/api/v1/tables/{id}/definition", () =>
+            json(200, tableDefinition),
+        );
+        const user = start(`/tables/${TABLE_ID}`);
+
+        await user.click(
+            await screen.findByRole("tab", { name: "Definition" }),
+        );
+
+        expect(window.location.search).toBe("?tab=definition");
+        expect(
+            await screen.findByRole("heading", { name: "Schema" }),
+        ).toBeInTheDocument();
+        expect(screen.getByText("row key")).toBeInTheDocument();
+        expect(screen.getByText("identity")).toBeInTheDocument();
+        expect(screen.getByText("write.format.default")).toBeInTheDocument();
+        expect(
+            screen.getByText(/one partition holds every row/),
         ).toBeInTheDocument();
     });
 

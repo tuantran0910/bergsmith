@@ -216,6 +216,54 @@ export function tableSample(
     });
 }
 
+/** A table definition with an old spec, a default spec, and one property. */
+export const tableDefinition = schema("TableDefinition", {
+    table_id: TABLE_ID,
+    format_version: "v2",
+    schema: {
+        schema_id: 0,
+        fields: [
+            {
+                id: 1,
+                name: "id",
+                type: "long",
+                required: true,
+                doc: "row key",
+            },
+            {
+                id: 2,
+                name: "tag",
+                type: "string",
+                required: false,
+                doc: null,
+            },
+        ],
+    },
+    partition_specs: [
+        {
+            spec_id: 0,
+            default: false,
+            fields: [
+                {
+                    source_id: 2,
+                    field_id: 1000,
+                    name: "tag",
+                    transform: "identity",
+                },
+            ],
+        },
+        { spec_id: 1, default: true, fields: [] },
+    ],
+    sort_order: {
+        order_id: 0,
+        fields: [],
+    },
+    properties: {
+        "write.format.default": "parquet",
+        "write.target-file-size-bytes": "1048576",
+    },
+});
+
 export const tableStatistics = schema("TableStatisticsPage", {
     items: [
         tableSample("2026-10-02T00:00:00Z", "200", "4096"),

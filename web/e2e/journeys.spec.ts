@@ -15,6 +15,7 @@ import {
     session,
     table,
     tableSnapshots,
+    tableDefinition,
     tableStatistics,
 } from "../src/test/fixtures";
 import {
@@ -174,6 +175,33 @@ test("shows a table's statistics on an addressable tab", async ({
     await expect(
         page.getByRole("button", { name: "Preview maintenance" }),
     ).toBeVisible();
+});
+
+test("shows a table's definition on an addressable tab", async ({
+    page,
+    coordinator,
+}) => {
+    signedIn(coordinator);
+    coordinator.on("GET", "/api/v1/tables/{id}/definition", () =>
+        json(200, tableDefinition),
+    );
+
+    await page.goto(`/tables/${TABLE_ID}`);
+    await page.getByRole("tab", { name: "Definition" }).click();
+
+    await expect(page).toHaveURL(
+        new RegExp(`/tables/${TABLE_ID}\\?tab=definition$`),
+    );
+    await expect(page.getByRole("heading", { name: "Schema" })).toBeVisible();
+    await expect(
+        page.getByRole("region", { name: "Schema fields" }),
+    ).toBeVisible();
+    await expect(page.getByText("row key")).toBeVisible();
+    await expect(
+        page.getByRole("region", { name: "Spec 0 fields" }),
+    ).toBeVisible();
+    await expect(page.getByText("write.format.default")).toBeVisible();
+    await expectAccessible(page);
 });
 
 test("shows a table's snapshot timeline on an addressable tab", async ({

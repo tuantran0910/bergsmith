@@ -26,6 +26,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/Tabs";
 import { PreviewView } from "./PreviewView";
 import { Access } from "./access/Access";
 import { namespaceKey, tab, type TableTab } from "./tables/search";
+import { TableDefinition } from "./tables/Definition";
 import { TableStatistics } from "./tables/Statistics";
 import { TableSnapshots } from "./tables/Snapshots";
 
@@ -171,6 +172,7 @@ export function TablePage({ id }: { id: string }) {
             >
                 <TabsList>
                     <TabsTrigger value="overview">Overview</TabsTrigger>
+                    <TabsTrigger value="definition">Definition</TabsTrigger>
                     <TabsTrigger value="snapshots">Snapshots</TabsTrigger>
                     <TabsTrigger value="statistics">Statistics</TabsTrigger>
                 </TabsList>
@@ -319,6 +321,9 @@ export function TablePage({ id }: { id: string }) {
                         />
                     )}
                     {preview.data && <PreviewView preview={preview.data} />}
+                </TabsContent>
+                <TabsContent value="definition">
+                    <TableDefinition id={id} />
                 </TabsContent>
                 <TabsContent value="snapshots">
                     <TableSnapshots id={id} />
