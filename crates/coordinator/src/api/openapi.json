@@ -1154,6 +1154,115 @@
         ]
       }
     },
+    "/api/v1/tables/{id}/definition": {
+      "get": {
+        "operationId": "getTableDefinition",
+        "description": "The current definition of one table: its schema, every retained partition spec, its default sort order, and an allow-listed set of table properties. Metadata only: no data or delete file is read, no partition value is included, and no metadata location, credential, or connection setting is returned. Unknown and inaccessible identifiers both return 404.",
+        "responses": {
+          "400": {
+            "description": "Invalid table identifier",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or inaccessible table",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The catalog reports a different table identity, or every usable catalog connection is disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Catalog unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The table's current definition",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TableDefinition"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      }
+    },
     "/api/v1/statistics": {
       "get": {
         "operationId": "getOrganizationStatistics",
@@ -8638,6 +8747,182 @@
           },
           "publication_confirmed": {
             "type": "boolean"
+          }
+        }
+      },
+      "TableDefinition": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "table_id",
+          "format_version",
+          "schema",
+          "partition_specs",
+          "sort_order",
+          "properties"
+        ],
+        "properties": {
+          "table_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "format_version": {
+            "description": "The Iceberg format version, such as `v2`.",
+            "type": "string"
+          },
+          "schema": {
+            "$ref": "#/components/schemas/TableDefinitionSchema"
+          },
+          "partition_specs": {
+            "description": "Every partition spec the metadata retains, oldest spec ID first, including specs only older files reference.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TableDefinitionPartitionSpec"
+            }
+          },
+          "sort_order": {
+            "$ref": "#/components/schemas/TableDefinitionSortOrder"
+          },
+          "properties": {
+            "description": "The allow-listed table properties that the table sets, by key. Unset properties are omitted, and properties outside the allow-list are never reported.",
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "TableDefinitionSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schema_id", "fields"],
+        "properties": {
+          "schema_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "fields": {
+            "description": "Top-level fields in schema order. A nested type appears in the field's `type` text.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TableDefinitionField"
+            }
+          }
+        }
+      },
+      "TableDefinitionField": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "type", "required", "doc"],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "description": "The field type, with nested field IDs and names, such as `struct<4: x: optional double>`.",
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "doc": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "TableDefinitionPartitionSpec": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["spec_id", "default", "fields"],
+        "properties": {
+          "spec_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "default": {
+            "description": "Whether this is the table's default spec.",
+            "type": "boolean"
+          },
+          "fields": {
+            "description": "The spec's fields in spec order; empty for an unpartitioned spec.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TableDefinitionPartitionField"
+            }
+          }
+        }
+      },
+      "TableDefinitionPartitionField": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_id", "field_id", "name", "transform"],
+        "properties": {
+          "source_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "field_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "name": {
+            "type": "string"
+          },
+          "transform": {
+            "description": "The transform as Iceberg renders it, such as `identity` or `truncate[2]`.",
+            "type": "string"
+          }
+        }
+      },
+      "TableDefinitionSortOrder": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["order_id", "fields"],
+        "properties": {
+          "order_id": {
+            "description": "The order ID. Zero is the unsorted order.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "fields": {
+            "description": "Sort fields in application order; empty when the table is unsorted.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TableDefinitionSortField"
+            }
+          }
+        }
+      },
+      "TableDefinitionSortField": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_id", "transform", "direction", "null_order"],
+        "properties": {
+          "source_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "transform": {
+            "type": "string"
+          },
+          "direction": {
+            "type": "string",
+            "enum": ["asc", "desc"]
+          },
+          "null_order": {
+            "type": "string",
+            "enum": ["nulls-first", "nulls-last"]
           }
         }
       },

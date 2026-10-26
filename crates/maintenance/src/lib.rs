@@ -12,6 +12,7 @@ mod binpack;
 mod budget;
 mod config;
 pub mod deadline;
+mod definition;
 mod deletes;
 mod eligibility;
 mod error;
@@ -33,6 +34,10 @@ pub use align::{
 pub use baseline::PlanningBaseline;
 pub use budget::{BinDisposition, DeferReason, Estimate};
 pub use config::PlannerConfig;
+pub use definition::{
+    DEFINITION_PROPERTIES, FieldDefinition, SchemaDefinition, SortFieldDefinition,
+    SortOrderDefinition, SpecDefinition, SpecFieldDefinition, TableDefinition,
+};
 pub use eligibility::{KeyProblem, Rejection, SkipReason};
 pub use error::PlanError;
 pub use executor::{ExecutionInput, Executor, ExecutorError, NativeExecutor, PreparedScan};

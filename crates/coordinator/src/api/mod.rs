@@ -7,6 +7,7 @@
 mod catalogs;
 mod commands;
 mod creation;
+mod definition;
 mod discovery;
 mod events;
 mod grants;
@@ -105,6 +106,10 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/tables/{id}", get(resources::table))
         .route("/api/v1/tables/{id}/statistics", get(statistics::table))
         .route("/api/v1/tables/{id}/snapshots", get(statistics::snapshots))
+        .route(
+            "/api/v1/tables/{id}/definition",
+            get(definition::definition),
+        )
         .route("/api/v1/catalogs/{id}/statistics", get(statistics::catalog))
         .route("/api/v1/statistics", get(statistics::organization))
         .route(

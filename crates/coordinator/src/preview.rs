@@ -17,7 +17,9 @@ use std::sync::Arc;
 
 use bergsmith_catalog::{CatalogConnection, CatalogError, ConnectionConfig, TableName};
 use bergsmith_common::ids::{CatalogConnectionId, PrincipalId, TableId};
-use bergsmith_maintenance::{PlanError, PlanInput, Planner, PlannerConfig, Preview};
+use bergsmith_maintenance::{
+    PlanError, PlanInput, Planner, PlannerConfig, Preview, TableDefinition,
+};
 use bergsmith_persistence::tables::TableAlias;
 use bergsmith_persistence::tenancy::CatalogConnection as StoredConnection;
 use bergsmith_storage::{CredentialCell, ObjectStore, StorageProfile, StorageProfiles};
@@ -475,6 +477,34 @@ impl CatalogPreviewer {
             preview,
             bins_total,
         })
+    }
+
+    /// Loads `target`'s current definition from table metadata.
+    ///
+    /// Only the catalog's load-table response is read. No object-store call
+    /// happens, so a definition is available without storage credentials and
+    /// without opening a data or delete file.
+    ///
+    /// # Errors
+    ///
+    /// A [`PreviewError`] when the connection cannot be configured, the catalog
+    /// is unavailable, or the catalog's table identity differs from the
+    /// canonical one. Access to the table and the connection is the caller's
+    /// responsibility; this function holds no grants and performs no
+    /// authorization.
+    pub async fn definition(
+        &self,
+        target: &PreviewTarget,
+    ) -> Result<TableDefinition, PreviewError> {
+        let config = connection_config(&target.connection)?;
+        let catalog = self.catalogs.catalog(&config, &target.connection).await?;
+        let name = TableName {
+            namespace: target.alias.namespace.clone(),
+            name: target.alias.name.clone(),
+        };
+        let loaded = catalog.load_table(&name, false).await?;
+        verify_identity(target, loaded.metadata.uuid())?;
+        Ok(TableDefinition::from_metadata(&loaded.metadata))
     }
 }
 

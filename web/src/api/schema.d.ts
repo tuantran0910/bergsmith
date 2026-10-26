@@ -142,6 +142,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tables/{id}/definition": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The current definition of one table: its schema, every retained partition spec, its default sort order, and an allow-listed set of table properties. Metadata only: no data or delete file is read, no partition value is included, and no metadata location, credential, or connection setting is returned. Unknown and inaccessible identifiers both return 404. */
+        get: operations["getTableDefinition"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/statistics": {
         parameters: {
             query?: never;
@@ -1309,6 +1326,70 @@ export interface components {
             plan_recorded: boolean;
             publication_confirmed: boolean;
         };
+        TableDefinition: {
+            /** Format: uuid */
+            table_id: string;
+            /** @description The Iceberg format version, such as `v2`. */
+            format_version: string;
+            schema: components["schemas"]["TableDefinitionSchema"];
+            /** @description Every partition spec the metadata retains, oldest spec ID first, including specs only older files reference. */
+            partition_specs: components["schemas"]["TableDefinitionPartitionSpec"][];
+            sort_order: components["schemas"]["TableDefinitionSortOrder"];
+            /** @description The allow-listed table properties that the table sets, by key. Unset properties are omitted, and properties outside the allow-list are never reported. */
+            properties: {
+                [key: string]: string;
+            };
+        };
+        TableDefinitionSchema: {
+            /** Format: int32 */
+            schema_id: number;
+            /** @description Top-level fields in schema order. A nested type appears in the field's `type` text. */
+            fields: components["schemas"]["TableDefinitionField"][];
+        };
+        TableDefinitionField: {
+            /** Format: int32 */
+            id: number;
+            name: string;
+            /** @description The field type, with nested field IDs and names, such as `struct<4: x: optional double>`. */
+            type: string;
+            required: boolean;
+            doc: string | null;
+        };
+        TableDefinitionPartitionSpec: {
+            /** Format: int32 */
+            spec_id: number;
+            /** @description Whether this is the table's default spec. */
+            default: boolean;
+            /** @description The spec's fields in spec order; empty for an unpartitioned spec. */
+            fields: components["schemas"]["TableDefinitionPartitionField"][];
+        };
+        TableDefinitionPartitionField: {
+            /** Format: int32 */
+            source_id: number;
+            /** Format: int32 */
+            field_id: number;
+            name: string;
+            /** @description The transform as Iceberg renders it, such as `identity` or `truncate[2]`. */
+            transform: string;
+        };
+        TableDefinitionSortOrder: {
+            /**
+             * Format: int64
+             * @description The order ID. Zero is the unsorted order.
+             */
+            order_id: number;
+            /** @description Sort fields in application order; empty when the table is unsorted. */
+            fields: components["schemas"]["TableDefinitionSortField"][];
+        };
+        TableDefinitionSortField: {
+            /** Format: int32 */
+            source_id: number;
+            transform: string;
+            /** @enum {string} */
+            direction: "asc" | "desc";
+            /** @enum {string} */
+            null_order: "nulls-first" | "nulls-last";
+        };
         TableStatisticsSizeBucket: {
             lower_bound_bytes: string;
             /** @description Exclusive upper bound; null for the final bucket. */
@@ -2337,6 +2418,100 @@ export interface operations {
                 };
             };
             /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    getTableDefinition: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The table's current definition */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TableDefinition"];
+                };
+            };
+            /** @description Invalid table identifier */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unknown or inaccessible table */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description The catalog reports a different table identity, or every usable catalog connection is disabled. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Catalog unavailable; retry the same request */
             503: {
                 headers: {
                     [name: string]: unknown;

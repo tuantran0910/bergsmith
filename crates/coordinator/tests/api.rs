@@ -25,6 +25,9 @@ mod schedule_occurrences;
 #[path = "api/service_identities.rs"]
 mod service_identities;
 
+#[path = "api/table_definition.rs"]
+mod table_definition;
+
 #[path = "api/table_statistics.rs"]
 mod table_statistics;
 
@@ -1128,6 +1131,7 @@ fn openapi_documents_every_route() {
         ("/api/v1/tables", "get"),
         ("/api/v1/tables/{id}", "get"),
         ("/api/v1/tables/{id}/snapshots", "get"),
+        ("/api/v1/tables/{id}/definition", "get"),
         ("/api/v1/tables/{id}/statistics", "get"),
         ("/api/v1/catalogs/{id}/statistics", "get"),
         ("/api/v1/statistics", "get"),
