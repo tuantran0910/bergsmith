@@ -299,9 +299,14 @@ impl PublicationService {
                     );
                 }
                 Err(error) => {
+                    let diagnostics = error.diagnostics();
                     tracing::error!(
                         job_id = %job.id,
                         reason_code = error.reason_code(),
+                        size = diagnostics.size,
+                        limit = diagnostics.limit,
+                        manifests = diagnostics.manifests,
+                        entries = diagnostics.entries,
                         "publication failed permanently"
                     );
                     if job.operation == JobOperation::RemoveOrphanFiles {
@@ -909,13 +914,7 @@ impl PublicationError {
             Self::Persistence(_) => true,
             // A corrupt manifest or an unsupported feature cannot improve on
             // retry; a storage read can.
-            Self::Orphans(OrphanError::Io(error)) => !matches!(
-                error.kind(),
-                iceberg::ErrorKind::DataInvalid | iceberg::ErrorKind::FeatureUnsupported
-            ),
-            Self::Orphans(OrphanError::Storage(error)) => {
-                matches!(error, bergsmith_storage::StorageError::Io(_))
-            }
+            Self::Orphans(error) => error.is_transient(),
             Self::Access(error) => error.is_transient(),
             Self::Durable(error) => !matches!(
                 error,
@@ -928,7 +927,6 @@ impl PublicationError {
             Self::PlanMissing
             | Self::Proposal
             | Self::AuthorityRevoked
-            | Self::Orphans(_)
             | Self::Planning(_)
             | Self::Plan(_) => false,
         }
@@ -943,6 +941,15 @@ impl PublicationError {
                 | DurablePublicationError::Catalog(CatalogError::Status { status: 404, .. }),
             ) => JobState::ReplanRequired,
             _ => JobState::Failed,
+        }
+    }
+
+    /// The safe numeric fields of an orphan failure, for structured logs.
+    #[must_use]
+    pub fn diagnostics(&self) -> bergsmith_maintenance::orphans::OrphanDiagnostics {
+        match self {
+            Self::Orphans(error) => error.diagnostics(),
+            _ => bergsmith_maintenance::orphans::OrphanDiagnostics::default(),
         }
     }
 

@@ -26,6 +26,8 @@ use crate::baseline::DATA_PATH_PROPERTY;
 
 mod reachable;
 
+use reachable::ObjectIdentity;
+
 use crate::error::PlanError;
 pub use reachable::{ReachabilityBounds, Reachable};
 
@@ -316,6 +318,50 @@ fn bergsmith_roots(table: &Location, data_location: &str) -> Result<Vec<Location
     Ok(roots)
 }
 
+/// The numeric bound an orphan failure crossed, for structured logs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OrphanDiagnostics {
+    /// The observed object size in bytes.
+    pub size: Option<u64>,
+    /// The configured bound in bytes.
+    pub limit: Option<u64>,
+    /// The observed manifest count.
+    pub manifests: Option<usize>,
+    /// The observed manifest-entry count.
+    pub entries: Option<usize>,
+}
+
+impl OrphanError {
+    /// The safe numeric fields a failure carries, for structured logs.
+    ///
+    /// Paths and third-party error chains stay out of logs.
+    #[must_use]
+    pub fn diagnostics(&self) -> OrphanDiagnostics {
+        match self {
+            Self::ScanObjectTooLarge { size, limit } => OrphanDiagnostics {
+                size: Some(*size),
+                limit: Some(*limit),
+                ..OrphanDiagnostics::default()
+            },
+            Self::ScanTooLarge { manifests, entries } => OrphanDiagnostics {
+                manifests: Some(*manifests),
+                entries: Some(*entries),
+                ..OrphanDiagnostics::default()
+            },
+            Self::ListingTooLarge { limit } => OrphanDiagnostics {
+                limit: u64::try_from(*limit).ok(),
+                ..OrphanDiagnostics::default()
+            },
+            Self::InvalidPolicy
+            | Self::Location(_)
+            | Self::Io(_)
+            | Self::Storage(_)
+            | Self::Blocking(_)
+            | Self::ScanUnboundedManifest { .. } => OrphanDiagnostics::default(),
+        }
+    }
+}
+
 /// The table, ledger, and window a deletion check applies.
 #[derive(Clone, Copy, Debug)]
 pub struct CandidateCheck<'a> {
@@ -366,17 +412,20 @@ pub fn verify_candidate(
     {
         return CandidateVerdict::Skip;
     }
-    match fresh {
-        None => CandidateVerdict::Absent,
-        Some(entry)
-            if entry.size == candidate.size_bytes
-                && entry
-                    .last_modified_ms
-                    .is_some_and(|modified| modified <= check.cutoff_ms) =>
-        {
-            CandidateVerdict::Delete
-        }
-        Some(_) => CandidateVerdict::Skip,
+    let Some(entry) = fresh else {
+        return CandidateVerdict::Absent;
+    };
+    if ObjectIdentity::of(&entry.location) != ObjectIdentity::of(&location) {
+        return CandidateVerdict::Skip;
+    }
+    if entry.size == candidate.size_bytes
+        && entry
+            .last_modified_ms
+            .is_some_and(|modified| modified <= check.cutoff_ms)
+    {
+        CandidateVerdict::Delete
+    } else {
+        CandidateVerdict::Skip
     }
 }
 
@@ -949,6 +998,20 @@ mod tests {
         .unwrap();
         assert_eq!(first, second);
         assert_eq!(first.candidates[0].path, "s3://b/t/data/a.parquet");
+    }
+
+    #[test]
+    fn bound_failures_carry_safe_numeric_diagnostics() {
+        let object = OrphanError::ScanObjectTooLarge { size: 10, limit: 5 };
+        assert_eq!(object.diagnostics().size, Some(10));
+        assert_eq!(object.diagnostics().limit, Some(5));
+        let scan = OrphanError::ScanTooLarge {
+            manifests: 3,
+            entries: 9,
+        };
+        assert_eq!(scan.diagnostics().manifests, Some(3));
+        assert_eq!(scan.diagnostics().entries, Some(9));
+        assert!(!object.is_transient());
     }
 
     #[test]

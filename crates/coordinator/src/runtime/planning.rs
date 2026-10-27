@@ -277,9 +277,14 @@ impl PlannerService {
                     );
                 }
                 Err(error) => {
+                    let diagnostics = error.diagnostics();
                     tracing::error!(
                         job_id = %job.id,
                         reason_code = error.reason_code(),
+                        size = diagnostics.size,
+                        limit = diagnostics.limit,
+                        manifests = diagnostics.manifests,
+                        entries = diagnostics.entries,
                         "planning failed permanently"
                     );
                     summary.failed += u32::from(self.fail(&job, error.reason_code()).await?);
@@ -840,13 +845,7 @@ impl PlanningError {
     pub fn is_transient(&self) -> bool {
         match self {
             Self::Persistence(_) => true,
-            Self::Orphan(OrphanError::Io(error)) => !matches!(
-                error.kind(),
-                iceberg::ErrorKind::DataInvalid | iceberg::ErrorKind::FeatureUnsupported
-            ),
-            Self::Orphan(OrphanError::Storage(error)) => {
-                matches!(error, bergsmith_storage::StorageError::Io(_))
-            }
+            Self::Orphan(error) => error.is_transient(),
             // Only metadata I/O can succeed on a retry. Invalid selections,
             // duplicate files, missing sequences, oversized inventories, and
             // malformed locations/predicates are deterministic for the same
@@ -865,10 +864,18 @@ impl PlanningError {
             // cannot succeed on retry.
             Self::Expiration(_)
             | Self::ExpirationRefSafetyUnavailable
-            | Self::Orphan(_)
             | Self::OrphanCleanupUnavailable
             | Self::OrphanListingTooLarge
             | Self::Superseded => false,
+        }
+    }
+
+    /// The safe numeric fields of an orphan failure, for structured logs.
+    #[must_use]
+    pub fn diagnostics(&self) -> bergsmith_maintenance::orphans::OrphanDiagnostics {
+        match self {
+            Self::Orphan(error) => error.diagnostics(),
+            _ => bergsmith_maintenance::orphans::OrphanDiagnostics::default(),
         }
     }
 

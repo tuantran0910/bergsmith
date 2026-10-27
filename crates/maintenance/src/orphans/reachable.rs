@@ -16,12 +16,9 @@ use super::OrphanError;
 /// The bounds of one reachability scan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReachabilityBounds {
-    /// The most manifests one scan reads.
-    pub max_manifests: usize,
-    /// The most manifest entries one scan reads.
-    pub max_entries: usize,
-    /// The largest manifest list or manifest one scan reads, in bytes.
-    pub max_bytes: u64,
+    manifests: usize,
+    entries: usize,
+    bytes: u64,
 }
 
 impl ReachabilityBounds {
@@ -39,10 +36,28 @@ impl ReachabilityBounds {
             return Err(OrphanError::InvalidPolicy);
         }
         Ok(Self {
-            max_manifests,
-            max_entries,
-            max_bytes,
+            manifests: max_manifests,
+            entries: max_entries,
+            bytes: max_bytes,
         })
+    }
+
+    /// The most manifests one scan reads.
+    #[must_use]
+    pub const fn max_manifests(&self) -> usize {
+        self.manifests
+    }
+
+    /// The most manifest entries one scan reads.
+    #[must_use]
+    pub const fn max_entries(&self) -> usize {
+        self.entries
+    }
+
+    /// The largest manifest list or manifest one scan reads, in bytes.
+    #[must_use]
+    pub const fn max_bytes(&self) -> u64 {
+        self.bytes
     }
 }
 
@@ -52,10 +67,10 @@ impl ReachabilityBounds {
 /// backend. Reachability stores identities, so a live file written as `s3a`
 /// cannot be missed because the listing spells it `s3`.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct ObjectIdentity(Backend, String, String);
+pub(crate) struct ObjectIdentity(Backend, String, String);
 
 impl ObjectIdentity {
-    fn of(location: &Location) -> Self {
+    pub(crate) fn of(location: &Location) -> Self {
         Self(
             location.backend(),
             location.authority().to_owned(),
@@ -173,10 +188,10 @@ impl Reachable {
         self.insert(manifest_list)?;
         let input = file_io.new_input(manifest_list)?;
         let size = input.metadata().await?.size;
-        if size > bounds.max_bytes {
+        if size > bounds.max_bytes() {
             return Err(OrphanError::ScanObjectTooLarge {
                 size,
-                limit: bounds.max_bytes,
+                limit: bounds.max_bytes(),
             });
         }
         let bytes = input.read().await?;
@@ -187,7 +202,7 @@ impl Reachable {
         .await??;
         for manifest in list.entries() {
             self.manifests = self.manifests.saturating_add(1);
-            if self.manifests > bounds.max_manifests {
+            if self.manifests > bounds.max_manifests() {
                 return Err(OrphanError::ScanTooLarge {
                     manifests: self.manifests,
                     entries: self.entries,
@@ -209,7 +224,7 @@ impl Reachable {
             if self
                 .entries
                 .saturating_add(usize::try_from(declared).unwrap_or(usize::MAX))
-                > bounds.max_entries
+                > bounds.max_entries()
             {
                 return Err(OrphanError::ScanTooLarge {
                     manifests: self.manifests,
@@ -223,10 +238,10 @@ impl Reachable {
             // that follows cannot exceed the byte bound.
             let input = file_io.new_input(&manifest.manifest_path)?;
             let size = input.metadata().await?.size;
-            if size > bounds.max_bytes {
+            if size > bounds.max_bytes() {
                 return Err(OrphanError::ScanObjectTooLarge {
                     size,
-                    limit: bounds.max_bytes,
+                    limit: bounds.max_bytes(),
                 });
             }
             let bytes = file_io.new_input(&manifest.manifest_path)?.read().await?;
@@ -234,7 +249,7 @@ impl Reachable {
                 tokio::task::spawn_blocking(move || Manifest::parse_avro(&bytes)).await??;
             for entry in loaded.entries() {
                 self.entries = self.entries.saturating_add(1);
-                if self.entries > bounds.max_entries {
+                if self.entries > bounds.max_entries() {
                     return Err(OrphanError::ScanTooLarge {
                         manifests: self.manifests,
                         entries: self.entries,
