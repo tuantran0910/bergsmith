@@ -433,6 +433,7 @@ export const tableMaintenance = schema("TableMaintenancePage", {
         {
             job_id: JOB_ID,
             state: "ReplanRequired",
+            operation: "compact",
             created_at: "2026-10-02T00:00:00Z",
             updated_at: "2026-10-02T00:01:05Z",
             elapsed_millis: "65000",
@@ -445,6 +446,7 @@ export const tableMaintenance = schema("TableMaintenancePage", {
         {
             job_id: RETRY_JOB_ID,
             state: "Succeeded",
+            operation: "compact",
             created_at: "2026-10-01T00:00:00Z",
             updated_at: "2026-10-01T00:02:30Z",
             elapsed_millis: "150000",

@@ -30,10 +30,47 @@ export function isTerminal(state: JobState): boolean {
     return TERMINAL.has(state);
 }
 
-type Boundary = Pick<Job, "state" | "publication_started">;
+type Boundary = Pick<Job, "state" | "publication_started" | "operation">;
 
-/** Where the rewrite work stands. */
+/** Where the job's work stands, in the operation's own terms. */
 export function executionStatus(job: Boundary): StatusLine {
+    if (job.operation === "remove_orphan_files") {
+        switch (job.state) {
+            case "Planning":
+            case "Queued":
+                return { label: "Planning cleanup", tone: "progress" };
+            case "ReadyToCommit":
+                return { label: "Plan ready", tone: "progress" };
+            case "Deleting":
+                return {
+                    label: "Deleting unreferenced files",
+                    tone: "progress",
+                };
+            case "Committing":
+            case "CommitOutcomeUnknown":
+                return {
+                    label: "Deleting unreferenced files",
+                    tone: "progress",
+                };
+            case "Cancelling":
+                return {
+                    label: "Stopping after cancellation",
+                    tone: "warning",
+                };
+            case "Succeeded":
+                // Completion means every candidate was resolved; a batch may
+                // have skipped every one, so do not claim files were removed.
+                return { label: "Cleanup finished", tone: "ok" };
+            case "NoOp":
+                return { label: "No orphan files", tone: "neutral" };
+            case "Cancelled":
+                return { label: "Stopped: cancelled", tone: "neutral" };
+            case "ReplanRequired":
+                return { label: "Stopped: replan required", tone: "error" };
+            case "Failed":
+                return { label: "Failed", tone: "error" };
+        }
+    }
     switch (job.state) {
         case "Planning":
             return { label: "Planning", tone: "progress" };
@@ -46,6 +83,8 @@ export function executionStatus(job: Boundary): StatusLine {
         case "CommitOutcomeUnknown":
         case "Succeeded":
             return { label: "Outputs ready", tone: "ok" };
+        case "Deleting":
+            return { label: "Deleting unreferenced files", tone: "progress" };
         case "Cancelling":
             return { label: "Stopping after cancellation", tone: "warning" };
         case "NoOp":
@@ -61,6 +100,11 @@ export function executionStatus(job: Boundary): StatusLine {
 
 /** Whether the exact catalog publication happened. */
 export function publicationStatus(job: Boundary): StatusLine {
+    if (job.operation === "remove_orphan_files") {
+        // Cleanup removes unreferenced objects and never commits, so there is
+        // nothing to confirm or resolve.
+        return { label: "Not applicable", tone: "neutral" };
+    }
     switch (job.state) {
         case "Succeeded":
             return { label: "Confirmed", tone: "ok" };
@@ -70,6 +114,8 @@ export function publicationStatus(job: Boundary): StatusLine {
             return { label: "Committing", tone: "progress" };
         case "NoOp":
             return { label: "Not needed", tone: "neutral" };
+        case "Deleting":
+            return { label: "Not applicable", tone: "neutral" };
         case "Cancelled":
         case "ReplanRequired":
         case "Failed":

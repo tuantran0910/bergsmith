@@ -23,9 +23,13 @@ pub enum JobState {
     Committing,
     /// A commit may have happened and catalog evidence has not resolved the outcome.
     CommitOutcomeUnknown,
+    /// An authorized local deletion is in progress; every removed object is
+    /// recorded and the operation cannot publish.
+    Deleting,
     /// Cancellation won before send authorization; dispatch and acceptance are fenced.
     Cancelling,
-    /// The exact proposal is proven published.
+    /// The job's authorized side effect is complete: the exact proposal is
+    /// proven published, or an orphan cleanup resolved every planned object.
     Succeeded,
     /// Planning found no eligible or beneficial work.
     NoOp,
@@ -39,13 +43,14 @@ pub enum JobState {
 
 impl JobState {
     /// Every state, in lifecycle order.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Planning,
         Self::Queued,
         Self::Running,
         Self::ReadyToCommit,
         Self::Committing,
         Self::CommitOutcomeUnknown,
+        Self::Deleting,
         Self::Cancelling,
         Self::Succeeded,
         Self::NoOp,
@@ -64,6 +69,7 @@ impl JobState {
             Self::ReadyToCommit => "ReadyToCommit",
             Self::Committing => "Committing",
             Self::CommitOutcomeUnknown => "CommitOutcomeUnknown",
+            Self::Deleting => "Deleting",
             Self::Cancelling => "Cancelling",
             Self::Succeeded => "Succeeded",
             Self::NoOp => "NoOp",
@@ -117,7 +123,11 @@ impl JobState {
             ),
             Self::ReadyToCommit => matches!(
                 to,
-                Self::Committing | Self::ReplanRequired | Self::Failed | Self::Cancelling
+                Self::Committing
+                    | Self::Deleting
+                    | Self::ReplanRequired
+                    | Self::Failed
+                    | Self::Cancelling
             ),
             Self::Committing => matches!(
                 to,
@@ -136,6 +146,10 @@ impl JobState {
                     | Self::ReplanRequired
                     | Self::Failed
             ),
+            // A deletion never publishes, so it may be cancelled at any point:
+            // objects already removed were unreferenced, and the receipts say
+            // which ones.
+            Self::Deleting => matches!(to, Self::Succeeded | Self::Cancelling | Self::Failed),
             Self::Cancelling => matches!(to, Self::Cancelled),
             Self::Succeeded
             | Self::NoOp
@@ -191,11 +205,17 @@ pub enum JobOperation {
     Compact,
     /// Remove snapshots that no live plan or publication pins.
     ExpireSnapshots,
+    /// Delete storage objects that no retained snapshot references.
+    RemoveOrphanFiles,
 }
 
 impl JobOperation {
     /// Every operation.
-    pub const ALL: [Self; 2] = [Self::Compact, Self::ExpireSnapshots];
+    pub const ALL: [Self; 3] = [
+        Self::Compact,
+        Self::ExpireSnapshots,
+        Self::RemoveOrphanFiles,
+    ];
 
     /// Returns the persisted name of the operation.
     #[must_use]
@@ -203,6 +223,7 @@ impl JobOperation {
         match self {
             Self::Compact => "Compact",
             Self::ExpireSnapshots => "ExpireSnapshots",
+            Self::RemoveOrphanFiles => "RemoveOrphanFiles",
         }
     }
 
@@ -286,6 +307,7 @@ mod tests {
             (ReadyToCommit, Committing),
             (ReadyToCommit, ReplanRequired),
             (ReadyToCommit, Failed),
+            (ReadyToCommit, Deleting),
             (ReadyToCommit, Cancelling),
             (Committing, Cancelling),
             (Committing, Succeeded),
@@ -295,6 +317,9 @@ mod tests {
             (Committing, Failed),
             (CommitOutcomeUnknown, Succeeded),
             (CommitOutcomeUnknown, Committing),
+            (Deleting, Succeeded),
+            (Deleting, Cancelling),
+            (Deleting, Failed),
             (Cancelling, Cancelled),
         ]
         .into_iter()

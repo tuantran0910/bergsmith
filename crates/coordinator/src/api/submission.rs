@@ -19,7 +19,8 @@ use super::{ApiError, ApiState, Caller, accepted_job, json_body};
 #[serde(deny_unknown_fields)]
 pub(super) struct SubmitJob {
     table_id: TableId,
-    /// `compact` (the default) or `expire_snapshots`.
+    /// `compact` (the default), `expire_snapshots`, or
+    /// `remove_orphan_files`.
     operation: Option<String>,
 }
 
@@ -29,6 +30,7 @@ impl SubmitJob {
         match self.operation.as_deref() {
             None | Some("compact") => Ok(JobOperation::Compact),
             Some("expire_snapshots") => Ok(JobOperation::ExpireSnapshots),
+            Some("remove_orphan_files") => Ok(JobOperation::RemoveOrphanFiles),
             Some(_) => Err(ApiError::invalid()),
         }
     }
@@ -42,13 +44,7 @@ pub(super) async fn submit(
 ) -> Result<Response, ApiError> {
     let request = json_body(body)?;
     let operation = request.job_operation()?;
-    if operation == JobOperation::ExpireSnapshots && !state.expiration_ref_safety {
-        return Err(ApiError::permanent(
-            axum::http::StatusCode::BAD_REQUEST,
-            "expiration_ref_safety_unavailable",
-            "configure_a_catalog_with_atomic_reference_protection",
-        ));
-    }
+    require_available(&state, operation)?;
     let key = submission_key(&caller.0, &headers, &request)?;
     let id = creation::create_job(
         &state,
@@ -112,6 +108,32 @@ fn submission_key(
         operation: "SubmitJob".into(),
         request_hash: Sha256Digest::of(b"bergsmith.api.submit-job.v1", &canonical).to_hex(),
     })
+}
+
+/// Refuses an operation this deployment has not enabled.
+///
+/// Submission and retry share the check, so a retry cannot start an
+/// operation a fresh submission would be refused.
+///
+/// # Errors
+///
+/// 400 `expiration_ref_safety_unavailable` for snapshot expiration without
+/// catalog reference safety, and 400 `orphan_cleanup_unavailable` for orphan
+/// cleanup while `orphans.enabled` is off.
+pub(super) fn require_available(state: &ApiState, operation: JobOperation) -> Result<(), ApiError> {
+    match operation {
+        JobOperation::ExpireSnapshots if !state.expiration_ref_safety => Err(ApiError::permanent(
+            axum::http::StatusCode::BAD_REQUEST,
+            "expiration_ref_safety_unavailable",
+            "configure_a_catalog_with_atomic_reference_protection",
+        )),
+        JobOperation::RemoveOrphanFiles if !state.orphans_enabled => Err(ApiError::permanent(
+            axum::http::StatusCode::BAD_REQUEST,
+            "orphan_cleanup_unavailable",
+            "enable_orphan_cleanup_in_the_deployment_configuration",
+        )),
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]

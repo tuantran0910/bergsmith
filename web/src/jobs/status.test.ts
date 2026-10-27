@@ -46,6 +46,11 @@ const STATES: Record<
         execution: "Outputs ready",
         publication: ["Outcome unknown", "Outcome unknown"],
     },
+    Deleting: {
+        terminal: false,
+        execution: "Deleting unreferenced files",
+        publication: ["Not applicable", "Not applicable"],
+    },
     Cancelling: {
         terminal: false,
         execution: "Stopping after cancellation",
@@ -91,13 +96,25 @@ describe.each(
 
     it("reports execution separately from publication", () => {
         expect(
-            executionStatus({ state, publication_started: false }).label,
+            executionStatus({
+                state,
+                operation: "compact",
+                publication_started: false,
+            }).label,
         ).toBe(expected.execution);
         expect(
-            publicationStatus({ state, publication_started: false }).label,
+            publicationStatus({
+                state,
+                operation: "compact",
+                publication_started: false,
+            }).label,
         ).toBe(expected.publication[0]);
         expect(
-            publicationStatus({ state, publication_started: true }).label,
+            publicationStatus({
+                state,
+                operation: "compact",
+                publication_started: true,
+            }).label,
         ).toBe(expected.publication[1]);
     });
 
@@ -114,8 +131,11 @@ describe.each(
 it("only Succeeded confirms publication", () => {
     const confirmed = (Object.keys(STATES) as JobState[]).filter(
         (state) =>
-            publicationStatus({ state, publication_started: true }).label ===
-            "Confirmed",
+            publicationStatus({
+                state,
+                operation: "compact",
+                publication_started: true,
+            }).label === "Confirmed",
     );
     expect(confirmed).toEqual(["Succeeded"]);
 });
@@ -131,4 +151,49 @@ it.each([
     const message = cancellationMessage(outcome);
     expect(message.tone).toBe(tone);
     expect(message.label).not.toBe("");
+});
+
+describe("orphan cleanup", () => {
+    it("never claims a catalog publication", () => {
+        for (const state of [
+            "Planning",
+            "ReadyToCommit",
+            "Deleting",
+            "Succeeded",
+        ] as JobState[]) {
+            expect(
+                publicationStatus({
+                    state,
+                    operation: "remove_orphan_files",
+                    publication_started: false,
+                }),
+            ).toEqual({ label: "Not applicable", tone: "neutral" });
+        }
+    });
+});
+
+describe("orphan cleanup labels", () => {
+    const expected: Partial<Record<JobState, string>> = {
+        Planning: "Planning cleanup",
+        ReadyToCommit: "Plan ready",
+        Deleting: "Deleting unreferenced files",
+        Succeeded: "Cleanup finished",
+        NoOp: "No orphan files",
+        Cancelled: "Stopped: cancelled",
+        Failed: "Failed",
+    };
+    it("describes cleanup in its own terms", () => {
+        for (const [state, label] of Object.entries(expected) as [
+            JobState,
+            string,
+        ][]) {
+            expect(
+                executionStatus({
+                    state,
+                    operation: "remove_orphan_files",
+                    publication_started: false,
+                }).label,
+            ).toBe(label);
+        }
+    });
 });

@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::error::PlanError;
 
 /// The table property naming where data files are written.
-const DATA_PATH_PROPERTY: &str = "write.data.path";
+pub(crate) const DATA_PATH_PROPERTY: &str = "write.data.path";
 
 /// The table state a plan was built from.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

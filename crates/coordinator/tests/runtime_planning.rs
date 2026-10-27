@@ -229,6 +229,7 @@ async fn a_planning_pass_prefers_enabled_connections_and_registers_dispatch(pool
         64 * 1024 * 1024 * 1024,
         RetryPolicy::default(),
         false,
+        bergsmith_coordinator::runtime::config::OrphanConfig::default(),
     )
     .unwrap();
 
@@ -451,6 +452,7 @@ async fn a_scheduled_job_is_planned_with_its_policy_budget(pool: PgPool) {
         1024 * 1024 * 1024,
         RetryPolicy::default(),
         false,
+        bergsmith_coordinator::runtime::config::OrphanConfig::default(),
     )
     .unwrap();
     let summary = planner.pass().await.unwrap();
@@ -619,6 +621,7 @@ async fn an_expiration_job_becomes_ready_to_commit_without_a_dispatch(pool: PgPo
         64 * 1024 * 1024 * 1024,
         RetryPolicy::default(),
         true,
+        bergsmith_coordinator::runtime::config::OrphanConfig::default(),
     )
     .unwrap();
 

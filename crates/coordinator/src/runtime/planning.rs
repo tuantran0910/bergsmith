@@ -17,11 +17,16 @@ use std::time::Duration;
 
 use bergsmith_common::ids::{JobId, PlanId};
 use bergsmith_common::job::{JobOperation, JobState};
+use bergsmith_maintenance::orphans::{
+    OrphanBaseline, OrphanError, OrphanPlanDocument, OrphanPolicy, OrphanStep, Reachable,
+    select_orphans,
+};
 use bergsmith_maintenance::{
     ExpirationError, ExpirationPlanDocument, ExpirationPolicy, PlanDocument, PlanError, PlanIds,
     PlanInput, PlanOutcome, PlannedTask, Planner, PlannerConfig, plan_expiration,
 };
 use bergsmith_persistence::expirations::{self, NewExpirationPlan};
+use bergsmith_persistence::orphans::{self as orphan_plans, NewOrphanPlan};
 use bergsmith_persistence::scheduling::RetryPolicy;
 use bergsmith_persistence::{PersistenceError, jobs, schedules};
 use bergsmith_protocol::hashing::artifact_digest;
@@ -33,7 +38,7 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::runtime::catalogs::{AccessError, RuntimeCatalogs, TableBinding};
-use crate::runtime::config::TaskSettings;
+use crate::runtime::config::{OrphanConfig, TaskSettings};
 use crate::scheduling::{Scheduler, SchedulingError};
 
 /// The execution budget of the connection a job is planned through.
@@ -89,6 +94,8 @@ enum PlannedWork {
     Rewrite(Box<PlanDocument>),
     /// A metadata-only expiration plan; the job is already `ReadyToCommit`.
     Expiration,
+    /// An orphan-file plan; the job is already `ReadyToCommit`.
+    OrphanCleanup,
     /// No work.
     NoOp(bergsmith_maintenance::NoOpReason),
     /// The MVP cannot maintain the table.
@@ -106,6 +113,8 @@ pub struct PlannerService {
     retry: RetryPolicy,
     /// Whether the catalog's `remove-snapshots` rejects referenced snapshots.
     expiration_ref_safety: bool,
+    /// Orphan-file cleanup limits and enablement.
+    orphan: OrphanConfig,
     page: i64,
     retry_after: tokio::sync::Mutex<BTreeMap<JobId, RetryEntry>>,
     planning_cursor: std::sync::Mutex<Uuid>,
@@ -138,6 +147,7 @@ impl PlannerService {
         admission_max_input_bytes: u64,
         retry: RetryPolicy,
         expiration_ref_safety: bool,
+        orphan: OrphanConfig,
     ) -> Result<Self, PlanError> {
         config.validate()?;
         task.limits()
@@ -151,6 +161,7 @@ impl PlannerService {
             admission_max_input_bytes,
             retry,
             expiration_ref_safety,
+            orphan,
             page: DEFAULT_PLANNING_PAGE,
             retry_after: tokio::sync::Mutex::new(BTreeMap::new()),
             planning_cursor: std::sync::Mutex::new(Uuid::nil()),
@@ -245,7 +256,9 @@ impl PlannerService {
                                 }
                             }
                         }
-                        PlannedWork::Expiration => summary.planned += 1,
+                        PlannedWork::Expiration | PlannedWork::OrphanCleanup => {
+                            summary.planned += 1;
+                        }
                         PlannedWork::NoOp(reason) => {
                             tracing::debug!(reason = reason.as_str(), "job has no work");
                             summary.no_op += 1;
@@ -264,9 +277,14 @@ impl PlannerService {
                     );
                 }
                 Err(error) => {
+                    let diagnostics = error.diagnostics();
                     tracing::error!(
                         job_id = %job.id,
                         reason_code = error.reason_code(),
+                        size = diagnostics.size,
+                        limit = diagnostics.limit,
+                        manifests = diagnostics.manifests,
+                        entries = diagnostics.entries,
                         "planning failed permanently"
                     );
                     summary.failed += u32::from(self.fail(&job, error.reason_code()).await?);
@@ -338,6 +356,12 @@ impl PlannerService {
 
     #[tracing::instrument(skip_all, fields(job_id = %job.id))]
     async fn plan_job(&self, job: &jobs::Job) -> Result<(PlannedWork, jobs::Job), PlanningError> {
+        // Cleanup reads the publication ledger before the catalog, so a
+        // commit that lands while it works is protected by at least one of the
+        // two views (see `plan_orphans`).
+        if job.operation == JobOperation::RemoveOrphanFiles {
+            return self.plan_orphans(job).await;
+        }
         let binding = self
             .catalogs
             .binding_for_job(job)
@@ -429,28 +453,13 @@ impl PlannerService {
         .map_err(PlanningError::Plan)?
         else {
             let reason = bergsmith_maintenance::NoOpReason::NoSnapshot;
-            let recorded = self
-                .record_expiration_noop(&mut conn, job, reason, binding)
-                .await?;
+            let recorded = self.record_noop(&mut conn, job, reason, binding).await?;
             return Ok((PlannedWork::NoOp(reason), recorded));
         };
         let protected =
             expirations::protected_snapshots(&mut conn, job.organization_id, job.table_id, job.id)
                 .await?;
-        let protection_ms = i64::try_from(
-            binding
-                .connection
-                .settings
-                .max_execution_seconds()
-                .saturating_add(
-                    binding
-                        .connection
-                        .settings
-                        .max_unresolved_publication_seconds(),
-                ),
-        )
-        .unwrap_or(i64::MAX / 1_000)
-        .saturating_mul(1_000);
+        let protection_ms = binding.protection_window_ms();
         let policy =
             ExpirationPolicy::from_metadata(&binding.loaded.metadata, 1, protection_ms, protected)
                 .map_err(PlanningError::Expiration)?;
@@ -458,9 +467,7 @@ impl PlannerService {
             .map_err(PlanningError::Expiration)?;
         if decision.remove.is_empty() {
             let reason = bergsmith_maintenance::NoOpReason::NoExpiredSnapshots;
-            let recorded = self
-                .record_expiration_noop(&mut conn, job, reason, binding)
-                .await?;
+            let recorded = self.record_noop(&mut conn, job, reason, binding).await?;
             return Ok((PlannedWork::NoOp(reason), recorded));
         }
         let document =
@@ -492,8 +499,144 @@ impl PlannerService {
         Ok((PlannedWork::Expiration, recorded))
     }
 
-    /// Records an expiration no-op inside the fenced planning transaction.
-    async fn record_expiration_noop(
+    /// Plans an orphan-file cleanup.
+    ///
+    /// The listing covers the whole table location; the reachability scan
+    /// reads every retained snapshot's manifests. Objects under Bergsmith's
+    /// prefix, referenced objects, and objects younger than the connection's
+    /// protection window or the operation's minimum age are never candidates.
+    /// An empty selection ends the job `NoOp`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one plan keeps the gate, reachability, selection, and durable plan in one fenced step"
+    )]
+    async fn plan_orphans(
+        &self,
+        job: &jobs::Job,
+    ) -> Result<(PlannedWork, jobs::Job), PlanningError> {
+        if !self.orphan.enabled() {
+            return Err(PlanningError::OrphanCleanupUnavailable);
+        }
+        // Read the ledger before the catalog. If a proposal lands in between,
+        // its files are reachable from the metadata read afterwards; if it is
+        // still unresolved, this read protects its manifests. Either way the
+        // handoff cannot drop both views.
+        let unresolved = {
+            let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
+            orphan_plans::unresolved_manifest_lists(
+                &mut conn,
+                job.organization_id,
+                job.table_id,
+                job.id,
+            )
+            .await?
+        };
+        let binding = self
+            .catalogs
+            .binding_for_job(job)
+            .await
+            .map_err(PlanningError::Access)?;
+        let baseline = OrphanBaseline::capture(
+            &binding.loaded.metadata,
+            binding.loaded.metadata_location.as_deref(),
+        )
+        .map_err(PlanningError::Plan)?;
+        let metadata_location = binding.loaded.metadata_location.as_deref().ok_or_else(|| {
+            PlanningError::Plan(PlanError::StagedTable {
+                table_uuid: binding.loaded.metadata.uuid(),
+            })
+        })?;
+        let reachable = Reachable::capture(
+            &binding.loaded.metadata,
+            metadata_location,
+            &unresolved,
+            binding.store.file_io(),
+            self.orphan
+                .reachability_bounds()
+                .map_err(PlanningError::Orphan)?,
+        )
+        .await
+        .map_err(PlanningError::Orphan)?;
+        let table = Location::parse(binding.loaded.metadata.location())
+            .map_err(OrphanError::Location)
+            .map_err(PlanningError::Orphan)?;
+        let listed = tokio::time::timeout(
+            self.orphan.operation_timeout(),
+            binding
+                .store
+                .list_bounded(&table, self.orphan.max_listed_objects()),
+        )
+        .await
+        .map_err(|_| {
+            PlanningError::Orphan(OrphanError::TimedOut {
+                step: OrphanStep::List,
+            })
+        })?
+        .map_err(|error| match error {
+            bergsmith_storage::StorageError::ListingTooLarge { .. } => {
+                PlanningError::OrphanListingTooLarge
+            }
+            error => PlanningError::Access(AccessError::Storage(error)),
+        })?;
+        let policy = OrphanPolicy::new(
+            self.orphan.minimum_age_seconds(),
+            binding.protection_window_ms(),
+            self.orphan.max_candidates(),
+        )
+        .map_err(PlanningError::Orphan)?;
+        let decision = select_orphans(
+            &reachable,
+            &listed,
+            binding.loaded.metadata.location(),
+            &baseline.data_location,
+            &policy,
+            Utc::now(),
+        )
+        .map_err(PlanningError::Orphan)?;
+        if decision.candidates.is_empty() {
+            let reason = bergsmith_maintenance::NoOpReason::NoOrphanFiles;
+            let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
+            let recorded = self.record_noop(&mut conn, job, reason, &binding).await?;
+            return Ok((PlannedWork::NoOp(reason), recorded));
+        }
+        let document = OrphanPlanDocument::new(
+            job.id,
+            PlanId::generate(),
+            baseline,
+            u64::try_from(listed.len()).unwrap_or(u64::MAX),
+            &reachable,
+            &decision,
+        )
+        .map_err(PlanningError::Plan)?;
+        let content = document.to_value().map_err(PlanningError::Plan)?;
+        let hash = document
+            .content_hash()
+            .map_err(PlanningError::Plan)?
+            .to_hex();
+        let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
+        let recorded = orphan_plans::create_orphan_plan(
+            &mut conn,
+            &NewOrphanPlan {
+                id: document.plan_id(),
+                job_id: job.id,
+                content: &content,
+                content_hash: &hash,
+            },
+            job.state_revision,
+            self.scheduler.epoch(),
+        )
+        .await
+        .map_err(|error| match error {
+            PersistenceError::RevisionConflict { .. } | PersistenceError::JobNotInState { .. } => {
+                PlanningError::Superseded
+            }
+            error => PlanningError::Persistence(error),
+        })?;
+        Ok((PlannedWork::OrphanCleanup, recorded))
+    }
+
+    /// Records a metadata-only no-op inside the fenced planning transaction.
+    async fn record_noop(
         &self,
         conn: &mut sqlx::PgConnection,
         job: &jobs::Job,
@@ -678,6 +821,15 @@ pub enum PlanningError {
     /// The catalog has no certified protection against concurrent refs.
     #[error("expiration requires catalog reference safety")]
     ExpirationRefSafetyUnavailable,
+    /// Orphan-file selection failed.
+    #[error(transparent)]
+    Orphan(#[from] OrphanError),
+    /// Orphan-file cleanup is disabled in this deployment.
+    #[error("orphan-file cleanup is disabled")]
+    OrphanCleanupUnavailable,
+    /// The table's listing exceeds the configured bound.
+    #[error("the table lists more objects than orphan cleanup may examine")]
+    OrphanListingTooLarge,
     /// Recording the outcome failed.
     #[error(transparent)]
     Record(#[from] crate::planning::PlanningError),
@@ -692,9 +844,10 @@ pub enum PlanningError {
 impl PlanningError {
     /// Whether another pass can succeed without operator action.
     #[must_use]
-    pub const fn is_transient(&self) -> bool {
+    pub fn is_transient(&self) -> bool {
         match self {
             Self::Persistence(_) => true,
+            Self::Orphan(error) => error.is_transient(),
             // Only metadata I/O can succeed on a retry. Invalid selections,
             // duplicate files, missing sequences, oversized inventories, and
             // malformed locations/predicates are deterministic for the same
@@ -709,19 +862,37 @@ impl PlanningError {
                 )
             ),
             Self::Access(error) => error.is_transient(),
-            Self::Expiration(_) | Self::ExpirationRefSafetyUnavailable | Self::Superseded => false,
+            // A bound violation, a malformed path, and a disabled operation
+            // cannot succeed on retry.
+            Self::Expiration(_)
+            | Self::ExpirationRefSafetyUnavailable
+            | Self::OrphanCleanupUnavailable
+            | Self::OrphanListingTooLarge
+            | Self::Superseded => false,
+        }
+    }
+
+    /// The safe numeric fields of an orphan failure, for structured logs.
+    #[must_use]
+    pub fn diagnostics(&self) -> bergsmith_maintenance::orphans::OrphanDiagnostics {
+        match self {
+            Self::Orphan(error) => error.diagnostics(),
+            _ => bergsmith_maintenance::orphans::OrphanDiagnostics::default(),
         }
     }
 
     /// A stable reason for job state and logs.
     #[must_use]
-    pub const fn reason_code(&self) -> &'static str {
+    pub fn reason_code(&self) -> &'static str {
         match self {
             Self::Persistence(_) => "PlanningLedgerUnavailable",
             Self::Plan(PlanError::InvalidConfig(_)) => "PlanningConfigurationInvalid",
             Self::Plan(_) => "PlanningFailed",
             Self::Expiration(_) => "PlanningExpirationInvalid",
             Self::ExpirationRefSafetyUnavailable => "ExpirationRefSafetyUnavailable",
+            Self::Orphan(error) => error.reason_code(),
+            Self::OrphanCleanupUnavailable => "OrphanCleanupUnavailable",
+            Self::OrphanListingTooLarge => "OrphanListingTooLarge",
             Self::Record(_) => "PlanningRecordFailed",
             Self::Access(error) => error.reason_code(),
             Self::Superseded => "PlanningSuperseded",
@@ -918,6 +1089,7 @@ mod tests {
             1024,
             RetryPolicy::default(),
             false,
+            OrphanConfig::default(),
         )
         .unwrap()
     }

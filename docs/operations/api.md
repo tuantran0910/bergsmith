@@ -41,7 +41,7 @@ as `x-csrf-token`. All responses use `Cache-Control: no-store`.
 | `GET /api/v1/catalogs/{id}/statistics` | Totals over the newest sample of every visible table on one connection; 404 when the connection is not visible |
 | `GET /api/v1/statistics` | The same totals over every table the caller may view in the organization |
 | `GET /api/v1/jobs`, `GET /api/v1/jobs/{id}` | Authorized job state, revision, requester and their display name, the table's caller-visible aliases, cancellation/publication boundary, retry link, and the `trigger` (finding kind and severity) that admitted it, or null |
-| `POST /api/v1/jobs` | Idempotent durable submission of `compact` (default) or `expire_snapshots`; returns 202 with job and operation IDs and Location |
+| `POST /api/v1/jobs` | Idempotent durable submission of `compact` (default), `expire_snapshots`, or `remove_orphan_files`; returns 202 with job and operation IDs and Location |
 | `POST /api/v1/jobs/{id}/cancel` | Record a cancellation request and report what it achieved |
 | `POST /api/v1/jobs/{id}/retry` | Create a fresh-plan retry of a terminal job; 202 with the new job |
 | `POST /api/v1/previews` | Assess a table without creating work |
@@ -323,9 +323,10 @@ catalog's message, URLs, table locations, or Iceberg error text.
 ## Job operations
 
 `POST /api/v1/jobs` requires `jobs:submit` on the table and an `Idempotency-Key`.
-The body is `{"table_id": "<uuid>"}` for compaction or
+The body is `{"table_id": "<uuid>"}` for compaction,
 `{"table_id": "<uuid>", "operation": "expire_snapshots"}` for snapshot
-expiration; an unknown operation answers 400. Expiration also requires
+expiration, or `{"table_id": "<uuid>", "operation": "remove_orphan_files"}`
+for orphan-file cleanup; an unknown operation answers 400. Expiration also requires
 `expiration.catalog_ref_safety`, because a catalog must atomically refuse to
 remove a snapshot that a concurrently created branch or tag references;
 otherwise the request answers 400 `expiration_ref_safety_unavailable`. A
@@ -335,8 +336,33 @@ guarantee; an authorized send is never resent.
 A submission that omits `operation` keeps the pre-expiration canonical
 representation for idempotency, so a retry with an original compaction key
 still replays the original job. Every job document reports
-`operation` as `compact` or `expire_snapshots`, and a retry copies the source's
-operation.
+`operation` as `compact`, `expire_snapshots`, or `remove_orphan_files`, and a
+retry copies the source's operation. A retry is refused with the same 400 as
+a submission while its operation is unavailable
+(`expiration_ref_safety_unavailable` or `orphan_cleanup_unavailable`).
+
+Orphan cleanup requires `orphans.enabled`; otherwise the request answers 400
+`orphan_cleanup_unavailable` and no job is created. It is coordinator-only and
+publishes nothing: the planner lists the table location, proves what the
+current metadata still references, and stores an immutable plan of objects to
+remove. The coordinator then deletes them in bounded passes from `Deleting`,
+re-checking every object against freshly loaded metadata first. Nothing below
+the table location under a `bergsmith` path segment (which covers
+`<data-location>/bergsmith/` and older layouts), nothing referenced by the
+table or an unresolved publication, and nothing younger than the larger of
+`orphans.minimum_age_seconds` and the connection's
+`max_execution_seconds + max_unresolved_publication_seconds` window is ever
+deleted. A scan or listing beyond `orphans.max_scan_manifests`,
+`orphans.max_scan_entries`, `orphans.max_scan_bytes`, or
+`orphans.max_listed_objects` fails the job instead of deleting from a partial
+view; a manifest shared by several snapshots is read and counted once. Each
+batch re-lists the table, so a candidate that became referenced, young, or a
+different size is recorded as skipped rather than deleted. Every storage step
+has the `orphans.operation_timeout_seconds` deadline. A delete that keeps
+failing with nothing else removed ends the job `Failed` with
+`OrphanDeleteFailed` after five consecutive passes; the objects already
+deleted keep their receipts. Turning `orphans.enabled` off fails a planned or
+`Deleting` cleanup at its next pass with `OrphanCleanupUnavailable`.
 
 Snapshot expiration is metadata-only. The planner selects snapshot entries
 older than both `history.expire.max-snapshot-age-ms` and the connection's
@@ -392,7 +418,7 @@ persisted. The response reports the job's `state`, `revision`,
 | `cancelling` | Cancellation won before send authorization; the job is `Cancelling` |
 | `too_late_publication_started` | A commit request was already authorized and may publish |
 | `publication_unresolved` | The commit outcome is unknown; no abort is assumed |
-| `too_late_committed` | The job published |
+| `too_late_committed` | The job published (a finished cleanup reports `already_ended`, because it never publishes) |
 | `cancelled` | The job already ended cancelled |
 | `already_ended` | The job ended another way without publishing; nothing changed |
 

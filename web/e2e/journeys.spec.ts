@@ -139,6 +139,51 @@ test("browses to a table, previews it, and submits a job", async ({
     expect(submitted?.headers["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/);
 });
 
+test("submits orphan cleanup from the table page", async ({
+    page,
+    coordinator,
+}) => {
+    signedIn(coordinator);
+    coordinator
+        .on("GET", "/api/v1/tables", () =>
+            json(
+                200,
+                schema("TablePage", { items: [table], next_cursor: null }),
+            ),
+        )
+        .on("POST", "/api/v1/jobs", () =>
+            json(202, {
+                operation_id: JOB_ID,
+                job_id: JOB_ID,
+                resource_url: `/api/v1/jobs/${JOB_ID}`,
+            }),
+        )
+        .on("GET", "/api/v1/jobs/{id}", () =>
+            json(200, job("Deleting", { operation: "remove_orphan_files" })),
+        )
+        .on("GET", "/api/v1/jobs/{id}/events", () =>
+            eventStream([event(1, "Planning", null)]),
+        );
+
+    await page.goto("/tables");
+    await page.getByRole("link", { name: /^orders/ }).click();
+    await expect(
+        page.getByRole("heading", { name: "lake.sales.orders" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Remove orphan files" }).click();
+    await page
+        .getByRole("button", { name: "Confirm remove orphan files" })
+        .click();
+    await expect(page).toHaveURL(`/jobs/${JOB_ID}`);
+    await expect(page.getByText("Not applicable")).toBeVisible();
+    await expectAccessible(page);
+
+    expect(coordinator.sent("POST", "/api/v1/jobs")[0]?.body).toEqual({
+        table_id: TABLE_ID,
+        operation: "remove_orphan_files",
+    });
+});
+
 test("shows a table's statistics on an addressable tab", async ({
     page,
     coordinator,

@@ -348,6 +348,12 @@ async fn start(
         })
     })?;
     let catalogs = Arc::new(RuntimeCatalogs::new(database.clone(), preview_profiles));
+    let orphan_settings = config.orphans.cleanup().map_err(|error| {
+        ServeError::Database(PersistenceError::InvalidValue {
+            entity: "orphans",
+            constraint: error.to_string(),
+        })
+    })?;
     let notification_settings = config.notifications.policy()?;
     let notifications = crate::notifications::DeliveryClient::new(&notification_settings)
         .map_err(|error| ConfigError::Invalid(format!("notifications: {error}")))?;
@@ -360,6 +366,7 @@ async fn start(
         discovery: CatalogDiscovery::new(catalogs.clone(), DiscoveryLimits::default()),
         notifications,
         expiration_ref_safety: config.expiration.catalog_ref_safety,
+        orphans_enabled: orphan_settings.enabled(),
     };
     let identity = IdentityState::new(database.clone(), Arc::new(provider), sessions);
 
@@ -397,6 +404,7 @@ async fn start(
         scheduler_config.max_job_input_bytes,
         scheduler_config.retry,
         config.expiration.catalog_ref_safety,
+        orphan_settings,
     )
     .map_err(|error| {
         ServeError::Database(PersistenceError::InvalidValue {
@@ -416,6 +424,7 @@ async fn start(
         })?,
         scheduler_config.retry,
         config.expiration.catalog_ref_safety,
+        orphan_settings,
     );
     let statistics = Arc::new(StatisticsCollector::new(
         database.pool().clone(),

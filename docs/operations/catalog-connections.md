@@ -201,7 +201,7 @@ Then configure:
 | Snapshot expiration (`expire_snapshots`, `history.expire.max-snapshot-age-ms`) | Retain snapshots for longer than E + U. A job's planning snapshot, and any snapshot it may have published, must not expire while the job is unresolved |
 | `history.expire.min-snapshots-to-keep` | High enough that a busy table keeps a snapshot published during an unresolved job |
 | Source file retention | Data files, delete files, and manifests of the planning snapshot must stay readable for at least E. Losing them fails the job; it never publishes from incomplete input |
-| Orphan file cleanup (`remove_orphan_files` and similar) | Either set `older_than` above E + U, or exclude `<data-location>/bergsmith/` and the metadata location's unpublished manifests while jobs are unresolved |
+| Orphan file cleanup (`remove_orphan_files`, external cleaners) | The built-in job lists the table location but never deletes an object under a `bergsmith` path segment or named by an unresolved publication; it keeps every referenced object and the metadata log, and ages objects by the larger of its minimum age and E + U. An external cleaner must exclude `<data-location>/bergsmith/`, unresolved proposal manifests, and use `older_than` above E + U while jobs are unresolved |
 | Incomplete multipart uploads | Add a bucket lifecycle rule `AbortIncompleteMultipartUpload` (ADR 0014). Bergsmith cannot list leftover uploads itself |
 | Catalog idempotency window | If replays are used, the catalog must remember keys longer than the replay deadline Bergsmith records at first send |
 

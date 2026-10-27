@@ -151,6 +151,7 @@ pub(super) async fn retry(
     if source.state == JobState::Succeeded {
         return Err(ApiError::conflict("job_already_succeeded", "nothing_to_do"));
     }
+    super::submission::require_available(&state, source.operation)?;
     let retry = creation::create_job(
         &state,
         &caller,

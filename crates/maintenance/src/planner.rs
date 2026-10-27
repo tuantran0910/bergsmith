@@ -104,6 +104,8 @@ pub enum NoOpReason {
     NoBeneficialWork,
     /// Every remaining snapshot is younger than the retention cutoff or pinned.
     NoExpiredSnapshots,
+    /// No listed object is old, unreferenced, and outside Bergsmith's prefix.
+    NoOrphanFiles,
 }
 
 impl NoOpReason {
@@ -114,6 +116,7 @@ impl NoOpReason {
             Self::NoSnapshot => "no_snapshot",
             Self::NoBeneficialWork => "no_beneficial_work",
             Self::NoExpiredSnapshots => "no_expired_snapshots",
+            Self::NoOrphanFiles => "no_orphan_files",
         }
     }
 }

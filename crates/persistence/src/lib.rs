@@ -22,6 +22,7 @@ pub mod maintenance;
 pub mod metrics;
 pub mod notifications;
 pub mod occurrences;
+pub mod orphans;
 pub mod overview;
 pub mod plans;
 pub mod publications;

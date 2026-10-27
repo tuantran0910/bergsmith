@@ -68,3 +68,4 @@ record's status; never rewrite an accepted decision.
 | [0059](0059-explainable-table-health-model.md) | Explainable table health model | Proposed |
 | [0060](0060-notification-destinations-and-durable-delivery.md) | Notification destinations and durable delivery | Proposed |
 | [0061](0061-snapshot-expiration.md) | Snapshot expiration with ledger-aware retention bounds | Proposed |
+| [0062](0062-orphan-file-cleanup.md) | Orphan-file cleanup with reachability and ledger protection | Proposed |

@@ -14,7 +14,7 @@
 //! job, because a retained delete file can apply in several jobs.
 
 use bergsmith_common::ids::{JobId, OrganizationId, PrincipalId, TableId};
-use bergsmith_common::job::JobState;
+use bergsmith_common::job::{JobOperation, JobState};
 use chrono::{DateTime, Utc};
 use sqlx::PgConnection;
 
@@ -28,6 +28,8 @@ pub struct MaintenanceEntry {
     pub job_id: JobId,
     /// How the job ended.
     pub state: JobState,
+    /// What the job did.
+    pub operation: JobOperation,
     /// When the job was created.
     pub created_at: DateTime<Utc>,
     /// When it reached its terminal state.
@@ -158,7 +160,7 @@ macro_rules! totals {
 
 const HISTORY_SQL: &str = concat!(
     "WITH jobs_in AS ( \
-         SELECT j.id, j.state, j.created_at, j.updated_at \
+         SELECT j.id, j.state, j.operation, j.created_at, j.updated_at \
          FROM jobs j \
          WHERE j.organization_id = $1 AND j.table_identity_id = $2 \
            AND j.state IN ('Succeeded', 'NoOp', 'Cancelled', 'ReplanRequired', 'Failed') \
@@ -168,7 +170,7 @@ const HISTORY_SQL: &str = concat!(
          LIMIT $5 \
      ), ",
     impact!(),
-    " SELECT j.id, j.state, j.created_at, j.updated_at, \
+    " SELECT j.id, j.state, j.operation, j.created_at, j.updated_at, \
             FLOOR(GREATEST(0, EXTRACT(EPOCH FROM (j.updated_at - j.created_at)) * 1000))::bigint \
                 AS elapsed_millis, \
             (SELECT count(*) FROM sources s WHERE s.job_id = j.id) AS input_files, \
@@ -300,6 +302,7 @@ pub async fn organization_totals(
 struct EntryRow {
     id: uuid::Uuid,
     state: String,
+    operation: String,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     elapsed_millis: i64,
@@ -315,6 +318,12 @@ impl EntryRow {
         Ok(MaintenanceEntry {
             job_id: JobId::from_uuid(self.id),
             state: parse_job_state(&self.state)?,
+            operation: JobOperation::from_name(&self.operation).ok_or_else(|| {
+                PersistenceError::InvalidValue {
+                    entity: "maintenance entry",
+                    constraint: format!("unknown job operation {:?}", self.operation),
+                }
+            })?,
             created_at: self.created_at,
             updated_at: self.updated_at,
             elapsed_millis: self.elapsed_millis,

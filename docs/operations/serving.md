@@ -104,6 +104,7 @@ The JSON document is validated before any listener starts. A minimal document:
 | `observability` | Optional metrics listener and ledger snapshot bounds ([observability](observability.md)) |
 | `notifications` | Outbound destinations: allowed hosts, signing-secret directory, request timeout ([ADR 0060](../adr/0060-notification-destinations-and-durable-delivery.md)) |
 | `expiration` | Catalog reference safety for snapshot expiration (`catalog_ref_safety`) |
+| `orphans` | Orphan-file cleanup: enablement, minimum object age, the listing, scan, object-byte, candidate, and per-pass deletion bounds, and the storage step deadline ([ADR 0062](../adr/0062-orphan-file-cleanup.md)) |
 
 `expiration.catalog_ref_safety` is false by default. Enabling snapshot
 expiration requires an operator to verify that the catalog rejects a
@@ -114,6 +115,27 @@ submission answers 400 `expiration_ref_safety_unavailable` until the setting is
 enabled. A restart with the setting off also fails any prepared but unsent
 expiration job before its first send; an already authorized send is recovered
 from evidence rather than resent.
+
+Orphan-file cleanup (`orphans`) deletes storage objects, so it is off until
+`enabled` is set. Each bound fails the job instead of deleting from an
+incomplete view:
+
+| Key | Default | Range | Bounds |
+|---|---|---|---|
+| `enabled` | `false` | | Whether cleanup may be submitted, planned, or continued |
+| `minimum_age_seconds` | 259200 (3 days) | 0–31536000 | Objects younger than this, or than the connection's execution plus unresolved-publication window, are kept |
+| `max_listed_objects` | 1000000 | 1–10000000 | Objects one table listing may return |
+| `max_scan_manifests` | 100000 | 1–1000000 | Distinct manifests one reachability scan reads |
+| `max_scan_entries` | 500000 | 1–10000000 | Manifest entries one scan reads, each distinct manifest counted once |
+| `max_scan_bytes` | 67108864 (64 MiB) | 1–1073741824 | Size of one manifest list or manifest |
+| `max_candidates` | 10000 | 1–1000000 | Objects one plan may delete; the oldest are kept, the rest wait for a later job |
+| `max_deletions_per_pass` | 500 | 1–`max_candidates` | Objects one deletion pass resolves |
+| `operation_timeout_seconds` | 120 | 1–3600 | Deadline for one storage step: one manifest read, the listing, or one delete |
+
+A listed key that is not a valid storage location (for example one with an
+invalid path segment, a query, or a fragment) fails the listing, so one such
+object under the table location blocks cleanup for that table until it is
+removed or renamed. The job fails rather than deleting from a partial view.
 
 `notifications.allowed_hosts` is the complete list of hosts a destination URL
 may name; an empty list allows none, and a literal link-local address is
