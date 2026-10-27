@@ -1033,6 +1033,17 @@ impl DeliveryOutcome {
             Self::Failed => "Failed",
         }
     }
+
+    /// Parses a stored outcome.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "Delivered" => Some(Self::Delivered),
+            "Rejected" => Some(Self::Rejected),
+            "Failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
 }
 
 /// One attempt's result and the delivery's next state.
@@ -1103,6 +1114,299 @@ pub async fn record_delivery(
     .await?;
     tx.commit().await?;
     Ok(true)
+}
+
+/// Where a delivery stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeliveryState {
+    /// Waiting for its next attempt.
+    Pending,
+    /// The destination accepted it.
+    Delivered,
+    /// The attempt cap was reached without acceptance.
+    Exhausted,
+}
+
+impl DeliveryState {
+    /// The stable name persisted in PostgreSQL.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "Pending",
+            Self::Delivered => "Delivered",
+            Self::Exhausted => "Exhausted",
+        }
+    }
+
+    /// Parses a stored state.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "Pending" => Some(Self::Pending),
+            "Delivered" => Some(Self::Delivered),
+            "Exhausted" => Some(Self::Exhausted),
+            _ => None,
+        }
+    }
+}
+
+/// Optional filters for the delivery log.
+#[derive(Clone, Debug, Default)]
+pub struct DeliveryFilter {
+    /// Only this state.
+    pub state: Option<DeliveryState>,
+    /// Only deliveries of this rule.
+    pub rule: Option<NotificationRuleId>,
+    /// Only deliveries to this destination.
+    pub destination: Option<NotificationDestinationId>,
+}
+
+/// One delivery as the log shows it.
+#[derive(Clone, Debug)]
+pub struct NotificationDelivery {
+    /// Delivery identifier.
+    pub id: uuid::Uuid,
+    /// Rule that enqueued it.
+    pub rule_id: NotificationRuleId,
+    /// Destination that receives it.
+    pub destination_id: NotificationDestinationId,
+    /// Destination name.
+    pub destination_name: String,
+    /// Destination transport shape.
+    pub destination_kind: DestinationKind,
+    /// Event kind.
+    pub event_kind: EventKind,
+    /// When the event happened.
+    pub occurred_at: DateTime<Utc>,
+    /// One sentence for a human.
+    pub summary: String,
+    /// Resource type.
+    pub resource_kind: String,
+    /// Resource identifier.
+    pub resource_id: String,
+    /// Resource label.
+    pub resource_label: Option<String>,
+    /// Stable reason code.
+    pub reason: Option<String>,
+    /// Current state.
+    pub state: DeliveryState,
+    /// Attempts recorded so far.
+    pub attempt_count: i32,
+    /// When the next attempt is due.
+    pub next_attempt_at: DateTime<Utc>,
+    /// The last stable failure reason.
+    pub last_error: Option<String>,
+    /// When the row was enqueued.
+    pub created_at: DateTime<Utc>,
+    /// When the row last changed.
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(sqlx::FromRow)]
+struct DeliveryRow {
+    id: uuid::Uuid,
+    rule_id: uuid::Uuid,
+    destination_id: uuid::Uuid,
+    destination_name: String,
+    destination_kind: String,
+    event_kind: String,
+    occurred_at: DateTime<Utc>,
+    summary: String,
+    resource_kind: String,
+    resource_id: String,
+    resource_label: Option<String>,
+    reason: Option<String>,
+    state: String,
+    attempts: i32,
+    next_attempt_at: DateTime<Utc>,
+    last_error: Option<String>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+fn delivery_from_row(row: DeliveryRow) -> Result<NotificationDelivery, PersistenceError> {
+    Ok(NotificationDelivery {
+        id: row.id,
+        rule_id: NotificationRuleId::from_uuid(row.rule_id),
+        destination_id: NotificationDestinationId::from_uuid(row.destination_id),
+        destination_name: row.destination_name,
+        destination_kind: DestinationKind::from_name(&row.destination_kind).ok_or_else(|| {
+            PersistenceError::CorruptValue {
+                entity: "notification destination",
+                value: format!("unknown kind {}", row.destination_kind),
+            }
+        })?,
+        event_kind: EventKind::from_name(&row.event_kind).ok_or_else(|| {
+            PersistenceError::CorruptValue {
+                entity: "notification delivery",
+                value: format!("unknown event kind {}", row.event_kind),
+            }
+        })?,
+        occurred_at: row.occurred_at,
+        summary: row.summary,
+        resource_kind: row.resource_kind,
+        resource_id: row.resource_id,
+        resource_label: row.resource_label,
+        reason: row.reason,
+        state: DeliveryState::from_name(&row.state).ok_or_else(|| {
+            PersistenceError::CorruptValue {
+                entity: "notification delivery",
+                value: format!("unknown state {}", row.state),
+            }
+        })?,
+        attempt_count: row.attempts,
+        next_attempt_at: row.next_attempt_at,
+        last_error: row.last_error,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    })
+}
+
+/// Reads one bounded page of deliveries, newest first.
+///
+/// `after` is the `(created_at, id)` of the last row on the previous page.
+///
+/// # Errors
+///
+/// Database errors, or [`PersistenceError::CorruptValue`] for a stored value
+/// this release does not know.
+pub async fn deliveries(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    filter: &DeliveryFilter,
+    after: Option<(DateTime<Utc>, uuid::Uuid)>,
+    limit: i64,
+) -> Result<Vec<NotificationDelivery>, PersistenceError> {
+    let rows: Vec<DeliveryRow> = sqlx::query_as(
+        "SELECT d.id, d.rule_id, d.destination_id,
+                n.name AS destination_name, n.kind AS destination_kind,
+                d.event_kind, d.occurred_at, d.summary, d.resource_kind,
+                d.resource_id, d.resource_label, d.reason, d.state, d.attempts,
+                d.next_attempt_at, d.last_error, d.created_at, d.updated_at
+         FROM notification_deliveries d
+         JOIN notification_destinations n
+           ON n.organization_id = d.organization_id AND n.id = d.destination_id
+         WHERE d.organization_id = $1
+           AND ($2::text IS NULL OR d.state = $2)
+           AND ($3::uuid IS NULL OR d.rule_id = $3)
+           AND ($4::uuid IS NULL OR d.destination_id = $4)
+           AND ($5::timestamptz IS NULL
+                OR (d.created_at, d.id) < ($5, $6))
+         ORDER BY d.created_at DESC, d.id DESC
+         LIMIT $7",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(filter.state.map(DeliveryState::as_str))
+    .bind(filter.rule.as_ref().map(NotificationRuleId::as_uuid))
+    .bind(
+        filter
+            .destination
+            .as_ref()
+            .map(NotificationDestinationId::as_uuid),
+    )
+    .bind(after.map(|after| after.0))
+    .bind(after.map(|after| after.1))
+    .bind(limit)
+    .fetch_all(conn)
+    .await?;
+    rows.into_iter().map(delivery_from_row).collect()
+}
+
+/// Reads one delivery in the organization.
+///
+/// # Errors
+///
+/// [`PersistenceError::NotFound`] when it does not exist, and database errors.
+pub async fn delivery(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    id: uuid::Uuid,
+) -> Result<NotificationDelivery, PersistenceError> {
+    let row: Option<DeliveryRow> = sqlx::query_as(
+        "SELECT d.id, d.rule_id, d.destination_id,
+                n.name AS destination_name, n.kind AS destination_kind,
+                d.event_kind, d.occurred_at, d.summary, d.resource_kind,
+                d.resource_id, d.resource_label, d.reason, d.state, d.attempts,
+                d.next_attempt_at, d.last_error, d.created_at, d.updated_at
+         FROM notification_deliveries d
+         JOIN notification_destinations n
+           ON n.organization_id = d.organization_id AND n.id = d.destination_id
+         WHERE d.organization_id = $1 AND d.id = $2",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(id)
+    .fetch_optional(conn)
+    .await?;
+    row.map(delivery_from_row)
+        .transpose()?
+        .ok_or_else(|| PersistenceError::NotFound {
+            entity: "notification delivery",
+            id: id.to_string(),
+        })
+}
+
+/// One recorded send attempt.
+#[derive(Clone, Debug)]
+pub struct NotificationAttempt {
+    /// One-based attempt number.
+    pub attempt: i32,
+    /// When it finished.
+    pub finished_at: DateTime<Utc>,
+    /// What the send produced.
+    pub outcome: DeliveryOutcome,
+    /// The HTTP status, when a response arrived.
+    pub status: Option<i32>,
+    /// Stable failure reason.
+    pub reason: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct AttemptRow {
+    attempt: i32,
+    finished_at: DateTime<Utc>,
+    outcome: String,
+    status: Option<i32>,
+    reason: Option<String>,
+}
+
+/// Reads a delivery's attempts in order.
+///
+/// # Errors
+///
+/// Database errors, or [`PersistenceError::CorruptValue`] for an outcome this
+/// release does not know.
+pub async fn attempts(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    id: uuid::Uuid,
+) -> Result<Vec<NotificationAttempt>, PersistenceError> {
+    let rows: Vec<AttemptRow> = sqlx::query_as(
+        "SELECT a.attempt, a.finished_at, a.outcome, a.status, a.reason
+         FROM notification_attempts a
+         JOIN notification_deliveries d ON d.id = a.delivery_id
+         WHERE d.organization_id = $1 AND d.id = $2
+         ORDER BY a.attempt",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(id)
+    .fetch_all(conn)
+    .await?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(NotificationAttempt {
+                attempt: row.attempt,
+                finished_at: row.finished_at,
+                outcome: DeliveryOutcome::from_name(&row.outcome).ok_or_else(|| {
+                    PersistenceError::CorruptValue {
+                        entity: "notification attempt",
+                        value: format!("unknown outcome {}", row.outcome),
+                    }
+                })?,
+                status: row.status,
+                reason: row.reason,
+            })
+        })
+        .collect()
 }
 
 /// Deletes delivered and exhausted deliveries older than `before`.

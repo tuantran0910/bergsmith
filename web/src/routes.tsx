@@ -76,6 +76,22 @@ const SchedulePage = lazyPage(
     "SchedulePage",
 );
 const AuditPage = lazyPage(() => import("./pages/AuditPage"), "AuditPage");
+const NotificationsPage = lazyPage(
+    () => import("./pages/notifications/NotificationsPage"),
+    "NotificationsPage",
+);
+const NotificationRulesPage = lazyPage(
+    () => import("./pages/notifications/NotificationRulesPage"),
+    "NotificationRulesPage",
+);
+const DeliveriesPage = lazyPage(
+    () => import("./pages/notifications/DeliveriesPage"),
+    "DeliveriesPage",
+);
+const DeliveryPage = lazyPage(
+    () => import("./pages/notifications/DeliveryPage"),
+    "DeliveryPage",
+);
 const WorkersPage = lazyPage(
     () => import("./pages/WorkersPage"),
     "WorkersPage",
@@ -237,6 +253,36 @@ const workersRoute = createRoute({
     component: WorkersPage,
 });
 
+const notificationsRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/notifications",
+    component: NotificationsPage,
+});
+
+const notificationRulesRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/notifications/rules",
+    component: NotificationRulesPage,
+});
+
+const deliveriesRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/notifications/deliveries",
+    component: DeliveriesPage,
+});
+
+const deliveryRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/notifications/deliveries/$deliveryId",
+    beforeLoad: ({ params }) => {
+        if (!isResourceId(params.deliveryId)) throw notFound();
+    },
+    component: function DeliveryRoute() {
+        const { deliveryId } = deliveryRoute.useParams();
+        return <DeliveryPage key={deliveryId} id={deliveryId} />;
+    },
+});
+
 const usersRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/users",
@@ -288,6 +334,10 @@ const routeTree = rootRoute.addChildren([
     scheduleRoute,
     auditRoute,
     workersRoute,
+    notificationsRoute,
+    notificationRulesRoute,
+    deliveriesRoute,
+    deliveryRoute,
 ]);
 
 /** A router over the application's routes; tests pass a memory history. */

@@ -558,6 +558,22 @@ hours. A replayed source event does not advance the counter. On `PATCH`, an abse
 `repeat_threshold` keeps the stored value, `null` clears it, and an object or
 number replaces it.
 
+## Notification deliveries
+
+`GET /api/v1/notifications/deliveries` pages through the organization's
+delivery log, newest first, with `limit` and `cursor`. `state` filters on
+`pending`, `delivered`, or `exhausted`; `rule_id` and `destination_id` narrow
+the log to one rule or destination. `GET .../{id}` reads one delivery with its
+attempt history. Both require organization-wide `notifications:manage`.
+
+A delivery shows the event kind, summary, resource identifiers, and the stable
+reason; the attempt history shows the attempt number, completion instant,
+outcome (`delivered`, `rejected`, or `failed`), HTTP status, and stable reason.
+A response body is never stored, because a destination can echo a credential
+from its URL path in an error page. Delivered and exhausted rows are pruned
+after 30 days; a pending row remains until it succeeds or reaches the attempt
+cap.
+
 ## Pagination, errors, and authentication
 
 Lists accept `limit` (default 50, maximum 100) and an opaque `cursor`. Follow

@@ -3,6 +3,7 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import {
     AnvilIcon,
+    BellIcon,
     CalendarClockIcon,
     DatabaseIcon,
     GaugeIcon,
@@ -25,6 +26,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
     type SessionInfo,
     canManageCatalog,
+    canManageNotifications,
     canManageSchedules,
     canManageWorkers,
     canReadAudit,
@@ -54,7 +56,8 @@ interface Destination {
         | "/workers"
         | "/audit"
         | "/users"
-        | "/service-identities";
+        | "/service-identities"
+        | "/notifications";
     label: string;
     icon: LucideIcon;
     allowed: (session: SessionInfo) => boolean;
@@ -129,6 +132,12 @@ const GROUPS: readonly { label: string; items: Destination[] }[] = [
                 label: "Service identities",
                 icon: KeyRoundIcon,
                 allowed: canManageWorkers,
+            },
+            {
+                to: "/notifications",
+                label: "Notifications",
+                icon: BellIcon,
+                allowed: canManageNotifications,
             },
             {
                 to: "/audit",
