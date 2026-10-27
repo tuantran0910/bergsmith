@@ -38,6 +38,11 @@ job that wrote them is `Committing` or `CommitOutcomeUnknown`.
 
 ## Known gaps in this release
 
-- Roles are granted and revoked from the command line only
-  ([identity.md](identity.md#granting-roles)); the web UI has no
-  administration pages.
+- Production catalog and storage certification is pending: Lakekeeper v0.14.0
+  and Amazon S3 are not certified, and the Docker Compose deployment awaits
+  the production acceptance run ([support matrix](../support-matrix.md)).
+- Connections with an external `credential_ref` fail until the runtime
+  resolves credential references ([api.md](api.md)).
+- Broader maintenance (snapshot expiration, orphan cleanup, manifest rewrite,
+  dangling-delete removal) and notifications are not available.
+- Kubernetes and Helm are planned for M8.

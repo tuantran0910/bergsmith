@@ -433,10 +433,13 @@ policy runs at most once per table; changing the timing updates that schedule
 instead of adding another.
 
 `POST /api/v1/policies` accepts `name` and optional `operation`,
-`target_file_size_bytes`, `min_input_files`, and `max_input_bytes`, defaulting
-to 256 MiB, five files, and 100 GiB. `PATCH` accepts the `revision` the caller
-read plus any of `name`, `operation`, `target_file_size_bytes`,
-`min_input_files`, `max_input_bytes`, and `enabled`.
+`target_file_size_bytes`, `min_input_files`, `max_input_bytes`, and the health
+conditions `health_thresholds` and `health_trigger`, defaulting to 256 MiB,
+five files, and 100 GiB. `PATCH` accepts the `revision` the caller read plus
+any of `name`, `operation`, `target_file_size_bytes`, `min_input_files`,
+`max_input_bytes`, `health_thresholds`, `health_trigger`, and `enabled`. A
+provided `health_thresholds` replaces the stored set; `health_trigger` is left
+alone when absent and cleared by null.
 `POST /api/v1/schedules` accepts `policy_id`, `table_id`, `cron_expression`,
 `time_zone`, an optional `window` object with `start_minute` and `end_minute`,
 and `service_principal_id`; `PATCH` accepts `revision` plus any of
@@ -461,9 +464,11 @@ several instants into one evaluation, the state (`Pending`, `Admitted`,
 `Coalesced`, `Skipped`), the job that was created or already owned the table,
 and the stable reason for a coalesced or skipped row: `TableBusy` when a
 nonterminal job held the table, or `OutsideWindow`, `PolicyDisabled`,
-`ConnectionDisabled`, `MaintenancePaused`, or `ServiceIdentityIneligible` when
-admission refused. The page is keyed on `scheduled_for`, which is unique within a
-schedule, and an unknown schedule returns 404 rather than an empty page.
+`ConnectionDisabled`, `MaintenancePaused`, `ServiceIdentityIneligible`, or
+`HealthTriggerNotMet` when admission refused; the health reason records a
+policy condition that is unmet or unassessed. The page is keyed on
+`scheduled_for`, which is unique within a schedule, and an unknown schedule
+returns 404 rather than an empty page.
 
 Edits are optimistic. A request whose `revision` is stale returns 409
 `revision_conflict` and changes nothing. `POST` on an existing policy name or an

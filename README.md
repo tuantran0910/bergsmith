@@ -5,8 +5,10 @@ compacts small files and applies position and equality deletes natively in
 Rust, then publishes the result through standard Iceberg REST conditional
 commits.
 
-**Status:** native planning and local execution (milestone M2). End-to-end
-platform certification is pending; see
+**Status:** native execution, distributed recovery, identity and authorization,
+the browser UI, scheduling, statistics, and table health with health-triggered
+schedules are merged. The M5 production acceptance gate, selective concurrency
+(M6), and M7–M8 work remain; end-to-end certification is pending. See
 [`docs/support-matrix.md`](docs/support-matrix.md).
 
 ## How it works
