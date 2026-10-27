@@ -164,7 +164,9 @@ function JobDetail({ job }: { job: Job }) {
                 <Lane title="Execution" status={executionStatus(job)}>
                     {job.operation === "expire_snapshots"
                         ? "Metadata-only work: no worker tasks."
-                        : "The rewrite work that workers do."}
+                        : job.operation === "remove_orphan_files"
+                          ? "Coordinator-only deletion: no worker tasks."
+                          : "The rewrite work that workers do."}
                 </Lane>
                 <Lane title="Publication" status={publicationStatus(job)}>
                     The catalog commit. Only a confirmed publication changed the
@@ -300,7 +302,9 @@ function JobFacts({
                     <dd className="m-0">
                         {job.operation === "expire_snapshots"
                             ? "Snapshot expiration"
-                            : "Compaction"}
+                            : job.operation === "remove_orphan_files"
+                              ? "Orphan-file cleanup"
+                              : "Compaction"}
                     </dd>
                     <dt className="text-muted-foreground">State</dt>
                     <dd className="m-0">

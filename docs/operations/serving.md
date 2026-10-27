@@ -104,6 +104,7 @@ The JSON document is validated before any listener starts. A minimal document:
 | `observability` | Optional metrics listener and ledger snapshot bounds ([observability](observability.md)) |
 | `notifications` | Outbound destinations: allowed hosts, signing-secret directory, request timeout ([ADR 0060](../adr/0060-notification-destinations-and-durable-delivery.md)) |
 | `expiration` | Catalog reference safety for snapshot expiration (`catalog_ref_safety`) |
+| `orphans` | Orphan-file cleanup: enablement, minimum object age, and the listing, scan, candidate, and per-pass deletion bounds ([ADR 0062](../adr/0062-orphan-file-cleanup.md)) |
 
 `expiration.catalog_ref_safety` is false by default. Enabling snapshot
 expiration requires an operator to verify that the catalog rejects a

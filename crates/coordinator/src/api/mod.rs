@@ -72,6 +72,8 @@ pub struct ApiState {
     pub notifications: crate::notifications::DeliveryClient,
     /// Whether the catalog rejects removal of a referenced snapshot atomically.
     pub expiration_ref_safety: bool,
+    /// Whether orphan-file cleanup may be submitted.
+    pub orphans_enabled: bool,
 }
 
 /// Builds the `/api/v1` resource router, including its `OpenAPI` document.

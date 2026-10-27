@@ -115,6 +115,7 @@ enum_conversions!(JobState, wire::JobState, job_state, job_state_to_wire, [
     ReadyToCommit <=> ReadyToCommit,
     Committing <=> Committing,
     CommitOutcomeUnknown <=> CommitOutcomeUnknown,
+    Deleting <=> Deleting,
     Cancelling <=> Cancelling,
     Succeeded <=> Succeeded,
     NoOp <=> NoOp,

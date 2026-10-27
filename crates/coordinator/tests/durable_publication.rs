@@ -1538,6 +1538,7 @@ async fn the_runtime_retries_a_401_before_authorizing_an_intent(pool: PgPool) {
         publication::PublicationConfig::default(),
         RetryPolicy::default(),
         false,
+        bergsmith_coordinator::runtime::config::OrphanConfig::default(),
     );
     run.load.remove_async().await;
     let rejected = run

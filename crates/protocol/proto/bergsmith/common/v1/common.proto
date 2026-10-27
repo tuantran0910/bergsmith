@@ -21,6 +21,7 @@ enum JobState {
   JOB_STATE_CANCELLED = 10;
   JOB_STATE_REPLAN_REQUIRED = 11;
   JOB_STATE_FAILED = 12;
+  JOB_STATE_DELETING = 13;
 }
 
 // State of one execution attempt.

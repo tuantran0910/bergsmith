@@ -46,6 +46,11 @@ const STATES: Record<
         execution: "Outputs ready",
         publication: ["Outcome unknown", "Outcome unknown"],
     },
+    Deleting: {
+        terminal: false,
+        execution: "Deleting unreferenced files",
+        publication: ["Not applicable", "Not applicable"],
+    },
     Cancelling: {
         terminal: false,
         execution: "Stopping after cancellation",

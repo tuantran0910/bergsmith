@@ -15,14 +15,21 @@ use bergsmith_catalog::{Baseline, CatalogError};
 use bergsmith_common::ids::JobId;
 use bergsmith_common::job::{JobOperation, JobState};
 use bergsmith_maintenance::PlanningBaseline;
+use bergsmith_maintenance::orphans::{
+    OrphanError, OrphanPlanDocument, OrphanPolicy, ReachabilityBounds, Reachable,
+};
+use bergsmith_persistence::orphans::{self as orphan_plans, Disposition, Receipt};
 use bergsmith_persistence::scheduling::RetryPolicy;
 use bergsmith_persistence::{PersistenceError, jobs, publications};
-use sqlx::PgPool;
+use bergsmith_storage::Location;
+use chrono::Utc;
+use sqlx::{Connection, PgPool};
 use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::durable_publication::{self, DurablePublicationError, PublicationConfig};
-use crate::runtime::catalogs::RuntimeCatalogs;
+use crate::runtime::catalogs::{AccessError, RuntimeCatalogs};
+use crate::runtime::config::OrphanConfig;
 use crate::runtime::planning::DEFAULT_PLANNING_PAGE;
 use crate::runtime::statistics::StatisticsCollector;
 
@@ -39,6 +46,8 @@ pub struct PublicationSummary {
     pub deferred: u32,
     /// Publication outcomes that remain unknown.
     pub unresolved: u32,
+    /// Orphan-deletion passes that ran.
+    pub cleaned: u32,
 }
 
 impl PublicationSummary {
@@ -49,6 +58,7 @@ impl PublicationSummary {
             Outcome::Failed => self.failed += 1,
             Outcome::Unresolved => self.unresolved += 1,
             Outcome::Superseded => {}
+            Outcome::Cleaned => self.cleaned += 1,
         }
     }
 }
@@ -64,9 +74,12 @@ pub struct PublicationService {
     retry_after: tokio::sync::Mutex<BTreeMap<JobId, RetryEntry>>,
     cursor: std::sync::Mutex<Uuid>,
     intent_cursor: std::sync::Mutex<Uuid>,
+    deleting_cursor: std::sync::Mutex<Uuid>,
     statistics: Option<Arc<StatisticsCollector>>,
     /// Whether the catalog's `remove-snapshots` rejects referenced snapshots.
     expiration_ref_safety: bool,
+    /// Orphan-file cleanup limits and enablement.
+    orphan: OrphanConfig,
 }
 
 #[derive(Clone, Copy)]
@@ -85,6 +98,7 @@ impl PublicationService {
         config: PublicationConfig,
         retry: RetryPolicy,
         expiration_ref_safety: bool,
+        orphan: OrphanConfig,
     ) -> Self {
         Self {
             pool,
@@ -96,8 +110,10 @@ impl PublicationService {
             retry_after: tokio::sync::Mutex::new(BTreeMap::new()),
             cursor: std::sync::Mutex::new(Uuid::nil()),
             intent_cursor: std::sync::Mutex::new(Uuid::nil()),
+            deleting_cursor: std::sync::Mutex::new(Uuid::nil()),
             statistics: None,
             expiration_ref_safety,
+            orphan,
         }
     }
 
@@ -141,10 +157,6 @@ impl PublicationService {
     ///
     /// A database failure that concerns the whole pass. A failure scoped to
     /// one job is logged and leaves that job's durable state unchanged.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one pass keeps ready, resumed, and deferred jobs under one summary"
-    )]
     pub async fn pass(&self) -> Result<PublicationSummary, PublicationError> {
         let now = Instant::now();
         let mut summary = PublicationSummary::default();
@@ -168,46 +180,30 @@ impl PublicationService {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Uuid::nil();
         }
         drop(conn);
-        for job in ready {
-            if self.deferred(job.id, now).await {
-                summary.deferred += 1;
-                continue;
-            }
-            match self.publish_job(&job).await {
-                Ok(outcome) => {
-                    self.clear_retry(job.id).await;
-                    match outcome {
-                        Outcome::Published => {
-                            summary.published += 1;
-                            self.refresh_statistics(&job);
-                        }
-                        Outcome::Replanned => summary.replanned += 1,
-                        Outcome::Failed => summary.failed += 1,
-                        Outcome::Unresolved => summary.unresolved += 1,
-                        Outcome::Superseded => {}
-                    }
-                }
-                Err(error) if error.is_transient() => {
-                    self.defer(job.id).await;
-                    summary.deferred += 1;
-                    tracing::warn!(
-                        job_id = %job.id,
-                        reason_code = error.reason_code(),
-                        "publication deferred"
-                    );
-                }
-                Err(error) => {
-                    tracing::error!(
-                        job_id = %job.id,
-                        reason_code = error.reason_code(),
-                        "publication failed permanently"
-                    );
-                    self.stop(&job, JobState::Failed, error.reason_code())
-                        .await?;
-                    summary.failed += 1;
-                }
-            }
+        self.process_jobs(ready, now, &mut summary).await?;
+        // A deletion pass that did not finish leaves the job `Deleting`; the
+        // next pass resumes it from the durable receipts.
+        let cursor = *self
+            .deleting_cursor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
+        let deleting =
+            jobs::in_state_after(&mut conn, JobState::Deleting, cursor, self.page).await?;
+        if let Some(last) = deleting.last() {
+            *self
+                .deleting_cursor
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = *last.id.as_uuid();
         }
+        if i64::try_from(deleting.len()).unwrap_or(i64::MAX) < self.page {
+            *self
+                .deleting_cursor
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Uuid::nil();
+        }
+        drop(conn);
+        self.process_jobs(deleting, now, &mut summary).await?;
         // A crash after intent creation, or a catalog failure before send
         // authorization, leaves Committing with no publication_started_at.
         // Evidence recovery cannot resolve that state, so resume the first
@@ -266,6 +262,50 @@ impl PublicationService {
             }
         }
         Ok(summary)
+    }
+
+    /// Runs one publication or deletion step per job and records the outcome.
+    async fn process_jobs(
+        &self,
+        jobs: Vec<jobs::Job>,
+        now: Instant,
+        summary: &mut PublicationSummary,
+    ) -> Result<(), PublicationError> {
+        for job in jobs {
+            if self.deferred(job.id, now).await {
+                summary.deferred += 1;
+                continue;
+            }
+            match self.publish_job(&job).await {
+                Ok(outcome) => {
+                    self.clear_retry(job.id).await;
+                    summary.record(outcome);
+                    if outcome == Outcome::Published {
+                        self.refresh_statistics(&job);
+                    }
+                }
+                Err(error) if error.is_transient() => {
+                    self.defer(job.id).await;
+                    summary.deferred += 1;
+                    tracing::warn!(
+                        job_id = %job.id,
+                        reason_code = error.reason_code(),
+                        "publication deferred"
+                    );
+                }
+                Err(error) => {
+                    tracing::error!(
+                        job_id = %job.id,
+                        reason_code = error.reason_code(),
+                        "publication failed permanently"
+                    );
+                    self.stop(&job, error.terminal_state(), error.reason_code())
+                        .await?;
+                    summary.failed += 1;
+                }
+            }
+        }
+        Ok(())
     }
 
     #[tracing::instrument(skip_all, fields(job_id = %job.id))]
@@ -328,6 +368,9 @@ impl PublicationService {
                 return Ok(Outcome::Failed);
             }
             return self.publish_expiration_job(job).await;
+        }
+        if job.operation == JobOperation::RemoveOrphanFiles {
+            return self.publish_orphan_job(job).await;
         }
         let binding = self
             .catalogs
@@ -505,6 +548,175 @@ impl PublicationService {
         }
     }
 
+    /// Executes one bounded orphan-deletion batch (ADR 0062).
+    ///
+    /// The first pass moves the job from `ReadyToCommit` to `Deleting`; later
+    /// passes resume from the durable receipts. Every candidate is re-verified
+    /// against freshly loaded metadata before its object is removed, so a file
+    /// that became referenced, got younger than the window, or was listed
+    /// outside the table is skipped and recorded, never deleted.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one deletion pass keeps re-verification, receipts, and completion in one durable step"
+    )]
+    async fn publish_orphan_job(&self, job: &jobs::Job) -> Result<Outcome, PublicationError> {
+        if !self.orphan.enabled {
+            self.stop_orphan(job, JobState::Failed, "OrphanCleanupUnavailable")
+                .await?;
+            return Ok(Outcome::Failed);
+        }
+        let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
+        let (content, stored_hash) = orphan_plans::orphan_plan(&mut conn, job.id)
+            .await?
+            .ok_or(PublicationError::PlanMissing)?;
+        let document = OrphanPlanDocument::from_persisted(content)?;
+        if document.job_id != job.id || document.content_hash()?.to_hex() != stored_hash {
+            return Err(PublicationError::PlanMissing);
+        }
+        let job = if job.state == JobState::ReadyToCommit {
+            match orphan_plans::begin_deletion(&mut conn, job.id, job.state_revision, self.epoch)
+                .await
+            {
+                Ok(started) => started,
+                Err(
+                    PersistenceError::RevisionConflict { .. }
+                    | PersistenceError::JobNotInState { .. },
+                ) => return Ok(Outcome::Superseded),
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            job.clone()
+        };
+        let binding = self
+            .catalogs
+            .binding_for_job(&job)
+            .await
+            .map_err(PublicationError::Access)?;
+        let metadata_location = binding
+            .loaded
+            .metadata_location
+            .as_deref()
+            .ok_or(PublicationError::Proposal)?;
+        let reachable = Reachable::capture(
+            &binding.loaded.metadata,
+            metadata_location,
+            binding.store.file_io(),
+            ReachabilityBounds::new(self.orphan.max_scan_entries, self.orphan.max_scan_entries)?,
+        )
+        .await?;
+        let table =
+            Location::parse(binding.loaded.metadata.location()).map_err(OrphanError::Location)?;
+        let bergsmith = table
+            .child("bergsmith")
+            .map_err(|_| PublicationError::Proposal)?;
+        let protection_ms = i64::try_from(
+            binding
+                .connection
+                .settings
+                .max_execution_seconds()
+                .saturating_add(
+                    binding
+                        .connection
+                        .settings
+                        .max_unresolved_publication_seconds(),
+                ),
+        )
+        .unwrap_or(i64::MAX / 1_000)
+        .saturating_mul(1_000);
+        let policy = OrphanPolicy::new(
+            self.orphan.minimum_age_seconds,
+            protection_ms,
+            self.orphan.max_candidates,
+        )?;
+        let cutoff_ms = policy.cutoff_ms(Utc::now());
+        let recorded = orphan_plans::recorded_paths(&mut conn, job.id).await?;
+        let mut receipts = Vec::new();
+        let mut resolved = 0usize;
+        for candidate in &document.candidates {
+            if resolved >= self.orphan.max_deletions_per_pass {
+                break;
+            }
+            if recorded.contains(&candidate.path) {
+                continue;
+            }
+            let location = Location::parse(&candidate.path).map_err(OrphanError::Location)?;
+            let protected = !location.is_within(&table)
+                || location.is_within(&bergsmith)
+                || reachable.contains(&location)
+                || candidate.last_modified_ms > cutoff_ms;
+            let disposition = if protected {
+                Disposition::Skipped
+            } else {
+                binding
+                    .store
+                    .delete(&location)
+                    .await
+                    .map_err(AccessError::Storage)?;
+                Disposition::Deleted
+            };
+            receipts.push(Receipt {
+                path: &candidate.path,
+                disposition,
+                size_bytes: candidate.size_bytes,
+            });
+            resolved = resolved.saturating_add(1);
+        }
+        orphan_plans::record_receipts(&mut conn, job.id, &receipts).await?;
+        let (count, _bytes) = orphan_plans::receipt_totals(&mut conn, job.id).await?;
+        if u64::try_from(count).unwrap_or(u64::MAX)
+            >= u64::try_from(document.candidates.len()).unwrap_or(u64::MAX)
+        {
+            self.stop_orphan(&job, JobState::Succeeded, "OrphanFilesRemoved")
+                .await?;
+        }
+        Ok(Outcome::Cleaned)
+    }
+
+    /// Ends a deletion pass as its terminal state under the leader lease.
+    async fn stop_orphan(
+        &self,
+        job: &jobs::Job,
+        to: JobState,
+        reason: &'static str,
+    ) -> Result<(), PersistenceError> {
+        let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
+        if to == JobState::Succeeded {
+            match orphan_plans::finish_deletion(
+                &mut conn,
+                job.id,
+                job.state_revision,
+                self.epoch,
+                reason,
+            )
+            .await
+            {
+                Ok(_)
+                | Err(
+                    PersistenceError::RevisionConflict { .. }
+                    | PersistenceError::JobNotInState { .. },
+                ) => Ok(()),
+                Err(error) => Err(error),
+            }
+        } else {
+            let mut tx = conn.begin().await?;
+            jobs::transition_job(
+                &mut tx,
+                &jobs::Transition {
+                    job_id: job.id,
+                    expected_revision: job.state_revision,
+                    to,
+                    reason: Some(reason.to_owned()),
+                    actor: None,
+                    non_publication_proven: false,
+                },
+            )
+            .await?;
+            bergsmith_persistence::scheduling::check_leadership(&mut tx, self.epoch).await?;
+            tx.commit().await?;
+            Ok(())
+        }
+    }
+
     async fn stop(
         &self,
         job: &jobs::Job,
@@ -565,6 +777,8 @@ enum Outcome {
     Replanned,
     Failed,
     Unresolved,
+    /// An orphan-deletion pass ran, whether or not every candidate is done.
+    Cleaned,
     Superseded,
 }
 
@@ -582,7 +796,7 @@ pub enum PublicationError {
     Plan(#[from] bergsmith_maintenance::PlanError),
     /// The catalog or storage could not be resolved.
     #[error(transparent)]
-    Access(#[from] crate::runtime::catalogs::AccessError),
+    Access(#[from] AccessError),
     /// Publication preparation or the send failed.
     #[error(transparent)]
     Durable(#[from] DurablePublicationError),
@@ -592,6 +806,9 @@ pub enum PublicationError {
     /// The baseline could not be pinned for a commit.
     #[error("publication proposal could not be built")]
     Proposal,
+    /// Orphan-file selection or deletion failed.
+    #[error(transparent)]
+    Orphans(#[from] OrphanError),
 }
 
 impl PublicationError {
@@ -599,7 +816,7 @@ impl PublicationError {
     #[must_use]
     pub const fn is_transient(&self) -> bool {
         match self {
-            Self::Persistence(_) => true,
+            Self::Persistence(_) | Self::Orphans(OrphanError::Io(_)) => true,
             Self::Access(error) => error.is_transient(),
             Self::Durable(error) => !matches!(
                 error,
@@ -609,7 +826,11 @@ impl PublicationError {
                 }) | DurablePublicationError::BaselineChanged(_)
                     | DurablePublicationError::InvalidIntent(_)
             ),
-            Self::PlanMissing | Self::Proposal | Self::Planning(_) | Self::Plan(_) => false,
+            Self::PlanMissing
+            | Self::Proposal
+            | Self::Orphans(_)
+            | Self::Planning(_)
+            | Self::Plan(_) => false,
         }
     }
 
@@ -644,6 +865,7 @@ impl PublicationError {
             )) => "ExecutionAuthorityRevoked",
             Self::Durable(_) => "PublicationFailed",
             Self::PlanMissing => "PlanMissing",
+            Self::Orphans(_) => "OrphanCleanupInvalid",
             Self::Proposal => "PublicationProposalInvalid",
         }
     }

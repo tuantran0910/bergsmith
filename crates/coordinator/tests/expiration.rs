@@ -326,6 +326,7 @@ async fn publication_service(pool: &PgPool, epoch: i64, safety: bool) -> Publica
         publication::PublicationConfig::default(),
         RetryPolicy::default(),
         safety,
+        bergsmith_coordinator::runtime::config::OrphanConfig::default(),
     )
 }
 

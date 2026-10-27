@@ -79,6 +79,23 @@ export function TablePage({ id }: { id: string }) {
             });
         },
     );
+    const cleanup = useKeyedMutation(
+        (key: string) =>
+            call(
+                api.POST("/api/v1/jobs", {
+                    params: {
+                        header: { "Idempotency-Key": key, ...csrfHeader() },
+                    },
+                    body: { table_id: id, operation: "remove_orphan_files" },
+                }),
+            ),
+        (accepted) => {
+            void navigate({
+                to: "/jobs/$jobId",
+                params: { jobId: accepted.job_id },
+            });
+        },
+    );
     const submit = useKeyedMutation(
         (key: string) =>
             call(
@@ -179,6 +196,18 @@ export function TablePage({ id }: { id: string }) {
                                     ? "Submitting…"
                                     : "Run maintenance"}
                             </Button>
+                            <Confirm
+                                label="Remove orphan files"
+                                description="Deletes storage objects no retained snapshot references, outside Bergsmith's own prefix, older than the deployment's minimum age and the connection's protection window. It re-checks every object against current table metadata before deleting. This cannot be undone, and the deployment must enable orphan cleanup."
+                                pending={
+                                    cleanup.isPending ||
+                                    uncertain(cleanup.error)
+                                }
+                                error={cleanup.error}
+                                onConfirm={() => {
+                                    cleanup.mutate(undefined);
+                                }}
+                            />
                             <Confirm
                                 label="Expire snapshots"
                                 description="Removes snapshot entries older than the table's retention settings and the connection's execution and publication bounds. Running jobs' snapshots, every branch and tag, and anything newer are kept. No data or metadata files are deleted."

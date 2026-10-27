@@ -7651,7 +7651,8 @@
               "destination_url_invalid",
               "destination_url_unavailable",
               "notifications_secrets_dir_unconfigured",
-              "expiration_ref_safety_unavailable"
+              "expiration_ref_safety_unavailable",
+              "orphan_cleanup_unavailable"
             ]
           },
           "disposition": {
@@ -7863,6 +7864,7 @@
               "ReadyToCommit",
               "Committing",
               "CommitOutcomeUnknown",
+              "Deleting",
               "Cancelling",
               "Succeeded",
               "NoOp",
@@ -8359,6 +8361,7 @@
               "ReadyToCommit",
               "Committing",
               "CommitOutcomeUnknown",
+              "Deleting",
               "Cancelling",
               "Succeeded",
               "NoOp",
@@ -8431,7 +8434,8 @@
             "type": "string",
             "enum": [
               "compact",
-              "expire_snapshots"
+              "expire_snapshots",
+              "remove_orphan_files"
             ],
             "description": "The maintenance operation this job performs."
           }
@@ -8477,6 +8481,7 @@
                   "ReadyToCommit",
                   "Committing",
                   "CommitOutcomeUnknown",
+                  "Deleting",
                   "Cancelling",
                   "Succeeded",
                   "NoOp",
@@ -8499,6 +8504,7 @@
               "ReadyToCommit",
               "Committing",
               "CommitOutcomeUnknown",
+              "Deleting",
               "Cancelling",
               "Succeeded",
               "NoOp",
@@ -9392,9 +9398,10 @@
             "type": "string",
             "enum": [
               "compact",
-              "expire_snapshots"
+              "expire_snapshots",
+              "remove_orphan_files"
             ],
-            "description": "Maintenance operation: compact (default) or expire_snapshots. Snapshot expiration removes only snapshot entries and deletes no files."
+            "description": "Maintenance operation: compact (default), expire_snapshots, or remove_orphan_files. Snapshot expiration removes only snapshot entries and deletes no files; orphan cleanup deletes objects no retained snapshot references, outside Bergsmith's own prefix and older than the configured window."
           }
         }
       },

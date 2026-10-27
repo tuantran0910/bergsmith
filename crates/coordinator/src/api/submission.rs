@@ -19,7 +19,8 @@ use super::{ApiError, ApiState, Caller, accepted_job, json_body};
 #[serde(deny_unknown_fields)]
 pub(super) struct SubmitJob {
     table_id: TableId,
-    /// `compact` (the default) or `expire_snapshots`.
+    /// `compact` (the default), `expire_snapshots`, or
+    /// `remove_orphan_files`.
     operation: Option<String>,
 }
 
@@ -29,6 +30,7 @@ impl SubmitJob {
         match self.operation.as_deref() {
             None | Some("compact") => Ok(JobOperation::Compact),
             Some("expire_snapshots") => Ok(JobOperation::ExpireSnapshots),
+            Some("remove_orphan_files") => Ok(JobOperation::RemoveOrphanFiles),
             Some(_) => Err(ApiError::invalid()),
         }
     }
@@ -47,6 +49,13 @@ pub(super) async fn submit(
             axum::http::StatusCode::BAD_REQUEST,
             "expiration_ref_safety_unavailable",
             "configure_a_catalog_with_atomic_reference_protection",
+        ));
+    }
+    if operation == JobOperation::RemoveOrphanFiles && !state.orphans_enabled {
+        return Err(ApiError::permanent(
+            axum::http::StatusCode::BAD_REQUEST,
+            "orphan_cleanup_unavailable",
+            "enable_orphan_cleanup_in_the_deployment_configuration",
         ));
     }
     let key = submission_key(&caller.0, &headers, &request)?;

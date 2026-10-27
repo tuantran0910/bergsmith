@@ -46,6 +46,8 @@ export function executionStatus(job: Boundary): StatusLine {
         case "CommitOutcomeUnknown":
         case "Succeeded":
             return { label: "Outputs ready", tone: "ok" };
+        case "Deleting":
+            return { label: "Deleting unreferenced files", tone: "progress" };
         case "Cancelling":
             return { label: "Stopping after cancellation", tone: "warning" };
         case "NoOp":
@@ -70,6 +72,8 @@ export function publicationStatus(job: Boundary): StatusLine {
             return { label: "Committing", tone: "progress" };
         case "NoOp":
             return { label: "Not needed", tone: "neutral" };
+        case "Deleting":
+            return { label: "Not applicable", tone: "neutral" };
         case "Cancelled":
         case "ReplanRequired":
         case "Failed":

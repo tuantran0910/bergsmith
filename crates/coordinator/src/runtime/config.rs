@@ -54,6 +54,9 @@ pub struct CoordinatorConfig {
     /// Snapshot-expiration safety settings.
     #[serde(default)]
     pub expiration: ExpirationSettings,
+    /// Orphan-file cleanup limits and enablement (BS-031.T2).
+    #[serde(default)]
+    pub orphans: OrphanSettings,
     /// Scheduler admission and timing.
     #[serde(default)]
     pub scheduler: SchedulerSettings,
@@ -92,6 +95,146 @@ pub struct ExpirationSettings {
     /// operator certifies the behavior for this catalog.
     #[serde(default)]
     pub catalog_ref_safety: bool,
+}
+
+/// Orphan-file cleanup settings (BS-031.T2, ADR 0062).
+///
+/// Cleanup deletes storage objects, so it does nothing until an operator sets
+/// `enabled`. Every bound fails closed: a listing or scan beyond its limit ends
+/// the job instead of deleting from an incomplete view.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrphanSettings {
+    /// Whether orphan-file cleanup may run at all.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Objects younger than this many seconds are never deleted.
+    #[serde(default = "default_orphan_minimum_age_seconds")]
+    pub minimum_age_seconds: u64,
+    /// The most objects one listing may return.
+    #[serde(default = "default_orphan_max_listed_objects")]
+    pub max_listed_objects: usize,
+    /// The most manifest entries, and manifests, one reachability scan reads.
+    #[serde(default = "default_orphan_max_scan_entries")]
+    pub max_scan_entries: usize,
+    /// The most candidates one plan may carry.
+    #[serde(default = "default_orphan_max_candidates")]
+    pub max_candidates: usize,
+    /// The most objects one deletion pass resolves.
+    #[serde(default = "default_orphan_max_deletions_per_pass")]
+    pub max_deletions_per_pass: usize,
+}
+
+impl Default for OrphanSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            minimum_age_seconds: default_orphan_minimum_age_seconds(),
+            max_listed_objects: default_orphan_max_listed_objects(),
+            max_scan_entries: default_orphan_max_scan_entries(),
+            max_candidates: default_orphan_max_candidates(),
+            max_deletions_per_pass: default_orphan_max_deletions_per_pass(),
+        }
+    }
+}
+
+impl OrphanSettings {
+    /// The validated settings the services use.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::Invalid`] when a bound is outside its range or the
+    /// per-pass bound exceeds the candidate bound.
+    pub fn cleanup(&self) -> Result<OrphanConfig, ConfigError> {
+        if self.minimum_age_seconds > 31_536_000 {
+            return Err(ConfigError::Invalid(
+                "orphans.minimum_age_seconds must be at most 31536000".into(),
+            ));
+        }
+        if !(1..=10_000_000).contains(&self.max_listed_objects) {
+            return Err(ConfigError::Invalid(
+                "orphans.max_listed_objects must be between 1 and 10000000".into(),
+            ));
+        }
+        if !(1..=10_000_000).contains(&self.max_scan_entries) {
+            return Err(ConfigError::Invalid(
+                "orphans.max_scan_entries must be between 1 and 10000000".into(),
+            ));
+        }
+        if !(1..=1_000_000).contains(&self.max_candidates) {
+            return Err(ConfigError::Invalid(
+                "orphans.max_candidates must be between 1 and 1000000".into(),
+            ));
+        }
+        if !(1..=1_000_000).contains(&self.max_deletions_per_pass) {
+            return Err(ConfigError::Invalid(
+                "orphans.max_deletions_per_pass must be between 1 and 1000000".into(),
+            ));
+        }
+        if self.max_deletions_per_pass > self.max_candidates {
+            return Err(ConfigError::Invalid(
+                "orphans.max_deletions_per_pass must not exceed orphans.max_candidates".into(),
+            ));
+        }
+        Ok(OrphanConfig {
+            enabled: self.enabled,
+            minimum_age_seconds: self.minimum_age_seconds,
+            max_listed_objects: self.max_listed_objects,
+            max_scan_entries: self.max_scan_entries,
+            max_candidates: self.max_candidates,
+            max_deletions_per_pass: self.max_deletions_per_pass,
+        })
+    }
+}
+
+const fn default_orphan_minimum_age_seconds() -> u64 {
+    3 * 24 * 60 * 60
+}
+
+const fn default_orphan_max_listed_objects() -> usize {
+    1_000_000
+}
+
+const fn default_orphan_max_scan_entries() -> usize {
+    500_000
+}
+
+const fn default_orphan_max_candidates() -> usize {
+    10_000
+}
+
+const fn default_orphan_max_deletions_per_pass() -> usize {
+    500
+}
+
+/// Validated orphan-file cleanup settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OrphanConfig {
+    /// Whether cleanup may run.
+    pub enabled: bool,
+    /// The minimum object age in seconds.
+    pub minimum_age_seconds: u64,
+    /// The most objects one listing may return.
+    pub max_listed_objects: usize,
+    /// The most manifest entries, and manifests, one scan reads.
+    pub max_scan_entries: usize,
+    /// The most candidates one plan may carry.
+    pub max_candidates: usize,
+    /// The most objects one deletion pass resolves.
+    pub max_deletions_per_pass: usize,
+}
+
+impl Default for OrphanConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            minimum_age_seconds: default_orphan_minimum_age_seconds(),
+            max_listed_objects: default_orphan_max_listed_objects(),
+            max_scan_entries: default_orphan_max_scan_entries(),
+            max_candidates: default_orphan_max_candidates(),
+            max_deletions_per_pass: default_orphan_max_deletions_per_pass(),
+        }
+    }
 }
 
 /// PostgreSQL connection and pool settings.

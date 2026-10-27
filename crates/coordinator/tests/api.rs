@@ -148,6 +148,7 @@ impl Browser {
             event_hub(),
             notifications(),
             true,
+            true,
         )
         .await
     }
@@ -168,6 +169,7 @@ impl Browser {
             events,
             notifications(),
             true,
+            true,
         )
         .await
     }
@@ -186,6 +188,27 @@ impl Browser {
             previewer(),
             event_hub(),
             notifications(),
+            false,
+            true,
+        )
+        .await
+    }
+
+    async fn without_orphans(
+        pool: &PgPool,
+        tenant: &support::Tenant,
+        principal: PrincipalId,
+        subject: &str,
+    ) -> Self {
+        Self::with_state(
+            pool,
+            tenant,
+            principal,
+            subject,
+            previewer(),
+            event_hub(),
+            notifications(),
+            true,
             false,
         )
         .await
@@ -207,6 +230,7 @@ impl Browser {
             event_hub(),
             notifications,
             true,
+            true,
         )
         .await
     }
@@ -224,6 +248,7 @@ impl Browser {
         events: JobEventHub,
         notifications: bergsmith_coordinator::notifications::DeliveryClient,
         expiration_ref_safety: bool,
+        orphans_enabled: bool,
     ) -> Self {
         let config = SessionConfig {
             secure: false,
@@ -258,6 +283,7 @@ impl Browser {
                 discovery: discovery(pool),
                 notifications,
                 expiration_ref_safety,
+                orphans_enabled,
             }),
             cookie: format!("{}={}", config.cookie_name, issued.token.expose()),
             csrf: issued.csrf.expose().into(),
@@ -311,6 +337,7 @@ fn router_with(pool: &PgPool, config: SessionConfig) -> Router {
         discovery: discovery(pool),
         notifications: notifications(),
         expiration_ref_safety: true,
+        orphans_enabled: true,
     })
 }
 
@@ -4607,4 +4634,57 @@ async fn worker_sessions_are_listed_for_administrators_only(pool: PgPool) {
     let (status, denied) = viewer.request("GET", "/api/v1/workers", None, None).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert!(denied.get("items").is_none());
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn orphan_cleanup_is_refused_when_disabled(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    let browser = Browser::without_orphans(&pool, &tenant, tenant.user, "alice").await;
+    let (status, body) = browser
+        .request(
+            "POST",
+            "/api/v1/jobs",
+            Some(json!({
+                "table_id": tenant.table,
+                "operation": "remove_orphan_files",
+            })),
+            Some("orphans-off"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["reason"], "orphan_cleanup_unavailable");
+    let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE organization_id = $1")
+        .bind(tenant.organization.as_uuid())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(jobs, 0, "a refused submission creates no job");
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn orphan_cleanup_submission_reports_its_operation(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+    let (status, accepted) = browser
+        .request(
+            "POST",
+            "/api/v1/jobs",
+            Some(json!({
+                "table_id": tenant.table,
+                "operation": "remove_orphan_files",
+            })),
+            Some("orphans-on"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");
+    let id = accepted["job_id"].as_str().unwrap();
+    let (_, job) = browser
+        .request("GET", &format!("/api/v1/jobs/{id}"), None, None)
+        .await;
+    assert_eq!(job["operation"], "remove_orphan_files");
+    assert_eq!(job["state"], "Planning");
 }

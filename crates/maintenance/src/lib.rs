@@ -23,6 +23,7 @@ mod health;
 mod hex;
 mod inventory;
 mod limits;
+pub mod orphans;
 mod partition;
 mod plan;
 mod planner;
