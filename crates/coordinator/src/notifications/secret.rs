@@ -1,9 +1,11 @@
-//! Signing-secret resolution (BS-029.T1, ADR 0060).
+//! Secret and destination-URL resolution (BS-029.T1, ADR 0060).
 //!
-//! A webhook destination stores a reference: a bare file name under
-//! `notifications.secrets_dir`. The key is read when a request is sent, so
-//! rotating it needs no database write, and the value never enters the ledger,
-//! an API response, or a log.
+//! A destination stores references: bare file names under
+//! `notifications.secrets_dir`. One file holds a webhook's HMAC key and another
+//! holds the endpoint URL (a Slack URL embeds a bearer token in its path). Files
+//! are read when a destination is written and when a request is sent, so
+//! rotating either needs no database write, and neither value enters the
+//! ledger, an API response, or a log.
 
 use std::io;
 use std::path::Path;
@@ -12,10 +14,10 @@ use bergsmith_common::notifications::SecretRef;
 use bergsmith_common::secret::Secret;
 use tokio::io::AsyncReadExt;
 
-/// The largest accepted signing secret, in bytes.
+/// The largest accepted secret file, in bytes.
 pub const MAX_SECRET_BYTES: u64 = 4096;
 
-/// Why a signing secret could not be resolved.
+/// Why a secret or URL reference could not be resolved.
 #[derive(Debug, thiserror::Error)]
 pub enum SecretError {
     /// `notifications.secrets_dir` is not configured, so no reference can
@@ -23,33 +25,34 @@ pub enum SecretError {
     #[error("notifications.secrets_dir is not configured")]
     NotConfigured,
     /// The stored reference is not a safe file name.
-    #[error("signing secret reference is invalid")]
+    #[error("secret reference is invalid")]
     InvalidReference,
     /// The file could not be read.
-    #[error("signing secret is unavailable: {source}")]
+    #[error("secret is unavailable: {source}")]
     Unavailable {
         /// The underlying I/O error, which names no secret value.
         #[source]
         source: io::Error,
     },
     /// The file was empty after trimming a trailing newline.
-    #[error("signing secret is empty")]
+    #[error("secret is empty")]
     Empty,
     /// The file was not UTF-8, which a shared key must be to round-trip.
-    #[error("signing secret is not utf-8")]
+    #[error("secret is not utf-8")]
     NotUtf8,
     /// The file exceeded [`MAX_SECRET_BYTES`].
-    #[error("signing secret is larger than {max} bytes")]
+    #[error("secret is larger than {max} bytes")]
     TooLarge {
         /// The accepted maximum.
         max: u64,
     },
 }
 
-/// Reads the signing secret named by `reference`.
+/// Reads the secret file named by `reference`.
 ///
-/// One trailing newline (LF or CRLF) is stripped, because keys are commonly
-/// created with an editor that adds one; every other byte is part of the key.
+/// One trailing newline (LF or CRLF) is stripped, because keys and URLs are
+/// commonly created with an editor that adds one; every other byte is part of
+/// the value.
 ///
 /// # Errors
 ///

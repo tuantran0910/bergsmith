@@ -29,7 +29,7 @@ pub const MAX_RESPONSE_BYTES: usize = 1024;
 pub struct Target<'a> {
     /// Transport shape.
     pub kind: DestinationKind,
-    /// The stored destination URL.
+    /// The destination URL, resolved from its reference before the send.
     pub url: &'a str,
     /// The stored signing-secret reference; required for a webhook.
     pub signing_secret_ref: Option<&'a str>,
@@ -110,6 +110,12 @@ impl DeliveryClient {
     #[must_use]
     pub fn allow_list(&self) -> &bergsmith_common::notifications::AllowList {
         &self.allow_list
+    }
+
+    /// The directory holding secret references, if one is configured.
+    #[must_use]
+    pub fn secrets_dir(&self) -> Option<&Path> {
+        self.secrets_dir.as_deref()
     }
 
     /// Sends one event.

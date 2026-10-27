@@ -33,11 +33,12 @@ hosts.
 ## Decision
 
 **Destinations are organization-scoped records with an optimistic revision.**
-`notification_destinations` holds a name, a kind, a URL, an optional signing
-secret reference, `enabled`, `revision`, and the creating principal. Two kinds
-exist: `webhook` posts a Bergsmith event envelope as JSON and is always signed;
-`slack` posts a Slack-compatible `{"text": ...}` body and carries no signature.
-Disabling is an update that flips `enabled`, like policies and schedules.
+`notification_destinations` holds a name, a kind, a destination-URL reference,
+an optional signing-secret reference, `enabled`, `revision`, and the creating
+principal. Two kinds exist: `webhook` posts a Bergsmith event envelope as JSON
+and is always signed; `slack` posts a Slack-compatible `{"text": ...}` body and
+carries no signature. Disabling is an update that flips `enabled`, like policies
+and schedules.
 
 **The URL must be HTTPS and its host must match a configured allow-list.**
 `notifications.allowed_hosts` is deployment configuration, not a database
@@ -52,6 +53,14 @@ created or edited and again before every send, so tightening the configuration
 takes effect for existing rows. DNS rebinding under an allow-listed name is out
 of scope; deployments restrict egress at the network layer, as they already do
 for catalog connections.
+
+**Destination URLs are references too.** A Slack incoming-webhook URL embeds a
+bearer token in its path, so the endpoint is a credential. The row stores
+`url_ref`, and the coordinator reads `notifications.secrets_dir/<url_ref>` when
+the destination is created or edited and before every send; the resolved URL is
+then held to the scheme, host, and allow-list policy above. Request bodies,
+responses, and audit records carry the reference only, so the token never
+reaches PostgreSQL or the audit trail.
 
 **Signing secrets are references.** A webhook destination stores
 `signing_secret_ref`, a name matching `[A-Za-z0-9._-]{1,128}` that is neither
@@ -100,7 +109,9 @@ delivery log, require that permission. Sending a test request also requires it.
 ## Consequences
 
 - An operator can wire a signed endpoint or a Slack channel without giving
-  Bergsmith a new credential store; the signing key stays in a mount.
+  Bergsmith a new credential store; the signing key and the endpoint URL stay
+  in a mount and never reach the ledger, the audit trail, or a response. A
+  Slack token in a URL path is protected exactly like a signing key.
 - The allow-list is deployment policy; adding a destination host is a
   configuration change and a restart, not a UI action.
 - Events that have no write point today (a table turning critical, a pool with

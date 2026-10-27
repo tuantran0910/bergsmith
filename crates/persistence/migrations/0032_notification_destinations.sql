@@ -1,19 +1,23 @@
 -- BS-029.T1: notification destinations (ADR 0060).
 --
 -- An organization may register webhook or Slack-compatible endpoints that
--- receive events. The row holds a reference to the signing secret, never the
--- secret itself: the coordinator reads notifications.secrets_dir/<reference>
--- when it sends. A webhook is always signed; a Slack body carries no
--- Bergsmith signature, so exactly one of the two shapes names a reference.
+-- receive events. The row holds only references, never the credential-bearing
+-- values: the coordinator reads notifications.secrets_dir/<reference> when a
+-- destination is written and before every send. A Slack webhook URL embeds a
+-- bearer token in its path, so the URL is a secret like the webhook key and the
+-- audit trail must never see it. A webhook is always signed; a Slack body
+-- carries no Bergsmith signature, so exactly one of the two shapes names a
+-- signing reference.
 --
--- The URL is validated against notifications.allowed_hosts by the coordinator
--- before insert and before every send, so this table only bounds its length.
+-- The resolved URL is validated against notifications.allowed_hosts by the
+-- coordinator before insert and before every send.
 CREATE TABLE notification_destinations (
     id uuid PRIMARY KEY,
     organization_id uuid NOT NULL REFERENCES organizations (id),
     name text NOT NULL CHECK (name ~ '^[A-Za-z0-9][A-Za-z0-9 ._-]{0,199}$'),
     kind text NOT NULL CHECK (kind IN ('webhook', 'slack')),
-    url text NOT NULL CHECK (length(url) BETWEEN 1 AND 2048),
+    url_ref text NOT NULL
+        CHECK (url_ref ~ '^[A-Za-z0-9._-]{1,128}$' AND url_ref NOT IN ('.', '..')),
     signing_secret_ref text
         CHECK (signing_secret_ref ~ '^[A-Za-z0-9._-]{1,128}$'),
     enabled boolean NOT NULL DEFAULT true,

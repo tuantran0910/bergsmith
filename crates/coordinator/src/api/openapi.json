@@ -6412,6 +6412,16 @@
               }
             }
           },
+          "409": {
+            "description": "Destination name already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "413": {
             "description": "Request body too large",
             "content": {
@@ -6934,7 +6944,10 @@
               "grant_already_exists",
               "destination_not_allowed",
               "signing_secret_unavailable",
-              "notification_delivery_failed"
+              "notification_delivery_failed",
+              "destination_url_invalid",
+              "destination_url_unavailable",
+              "notifications_secrets_dir_unconfigured"
             ]
           },
           "disposition": {
@@ -11539,7 +11552,7 @@
           "id",
           "name",
           "kind",
-          "url",
+          "url_ref",
           "signing_secret_ref",
           "enabled",
           "revision",
@@ -11563,10 +11576,6 @@
               "webhook",
               "slack"
             ]
-          },
-          "url": {
-            "type": "string",
-            "maxLength": 2048
           },
           "signing_secret_ref": {
             "anyOf": [
@@ -11597,6 +11606,13 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "url_ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._-]{1,128}$",
+            "description": "Name of the URL file under notifications.secrets_dir. The coordinator reads the URL when the destination is written and before every send; the resolved URL must be HTTPS and name a host from notifications.allowed_hosts."
           }
         }
       },
@@ -11632,7 +11648,7 @@
         "required": [
           "name",
           "kind",
-          "url"
+          "url_ref"
         ],
         "properties": {
           "name": {
@@ -11647,11 +11663,6 @@
               "slack"
             ]
           },
-          "url": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 2048
-          },
           "signing_secret_ref": {
             "anyOf": [
               {
@@ -11665,6 +11676,13 @@
           },
           "enabled": {
             "type": "boolean"
+          },
+          "url_ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._-]{1,128}$",
+            "description": "Name of the URL file under notifications.secrets_dir. The coordinator reads the URL when the destination is written and before every send; the resolved URL must be HTTPS and name a host from notifications.allowed_hosts."
           }
         }
       },
@@ -11684,17 +11702,19 @@
             "minLength": 1,
             "maxLength": 200
           },
-          "url": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 2048
-          },
           "signing_secret_ref": {
             "type": "string",
             "maxLength": 128
           },
           "enabled": {
             "type": "boolean"
+          },
+          "url_ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._-]{1,128}$",
+            "description": "Name of the URL file under notifications.secrets_dir. The coordinator reads the URL when the destination is written and before every send; the resolved URL must be HTTPS and name a host from notifications.allowed_hosts."
           }
         }
       },

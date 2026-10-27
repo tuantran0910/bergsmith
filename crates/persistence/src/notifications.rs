@@ -1,11 +1,11 @@
 //! Notification destinations (BS-029.T1, ADR 0060).
 //!
 //! A destination is an organization-scoped webhook or Slack-compatible
-//! endpoint. It holds a URL, an optional signing-secret reference, and an
-//! optimistic `revision`, so two editors cannot silently overwrite each other.
-//! The URL policy (HTTPS plus the deployment allow-list) and the secret
-//! reference are validated before they reach this module; the stored secret
-//! reference is a name, never a value.
+//! endpoint. It holds a URL reference and an optional signing-secret reference,
+//! plus an optimistic `revision`, so two editors cannot silently overwrite each
+//! other. The URL policy (HTTPS plus the deployment allow-list) is validated on
+//! the resolved URL before it reaches this module; both stored fields are names,
+//! never values.
 
 use bergsmith_common::ids::{NotificationDestinationId, OrganizationId, PrincipalId};
 use bergsmith_common::notifications::DestinationKind;
@@ -25,8 +25,8 @@ pub struct NotificationDestination {
     pub name: String,
     /// Transport shape.
     pub kind: DestinationKind,
-    /// Where the coordinator sends.
-    pub url: String,
+    /// Name of the destination URL under `notifications.secrets_dir`.
+    pub url_ref: String,
     /// Name of the signing secret under `notifications.secrets_dir`. Present
     /// exactly for a webhook.
     pub signing_secret_ref: Option<String>,
@@ -53,8 +53,8 @@ pub struct NewNotificationDestination {
     pub name: String,
     /// Transport shape.
     pub kind: DestinationKind,
-    /// Validated destination URL.
-    pub url: String,
+    /// Destination URL reference: resolved and validated at send time.
+    pub url_ref: String,
     /// Signing-secret reference; required for a webhook, absent for Slack.
     pub signing_secret_ref: Option<String>,
     /// Whether it starts enabled.
@@ -68,8 +68,8 @@ pub struct NewNotificationDestination {
 pub struct NotificationDestinationUpdate {
     /// New name, if it changes.
     pub name: Option<String>,
-    /// New URL, if it changes.
-    pub url: Option<String>,
+    /// New URL reference, if it changes.
+    pub url_ref: Option<String>,
     /// New signing-secret reference, if it changes.
     pub signing_secret_ref: Option<String>,
     /// Whether it is enabled, if that changes.
@@ -80,7 +80,7 @@ pub struct NotificationDestinationUpdate {
 
 macro_rules! destination_columns {
     () => {
-        "id, organization_id, name, kind, url, signing_secret_ref, enabled, \
+        "id, organization_id, name, kind, url_ref, signing_secret_ref, enabled, \
          revision, created_by, created_at, updated_at"
     };
 }
@@ -91,7 +91,7 @@ struct DestinationRow {
     organization_id: uuid::Uuid,
     name: String,
     kind: String,
-    url: String,
+    url_ref: String,
     signing_secret_ref: Option<String>,
     enabled: bool,
     revision: i64,
@@ -115,7 +115,7 @@ impl TryFrom<DestinationRow> for NotificationDestination {
             organization_id: OrganizationId::from_uuid(row.organization_id),
             name: row.name,
             kind,
-            url: row.url,
+            url_ref: row.url_ref,
             signing_secret_ref: row.signing_secret_ref,
             enabled: row.enabled,
             revision: row.revision,
@@ -138,7 +138,7 @@ pub async fn create(
 ) -> Result<NotificationDestination, PersistenceError> {
     let row = sqlx::query_as::<_, DestinationRow>(concat!(
         "INSERT INTO notification_destinations
-             (id, organization_id, name, kind, url, signing_secret_ref, enabled,
+             (id, organization_id, name, kind, url_ref, signing_secret_ref, enabled,
               created_by)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING ",
@@ -148,7 +148,7 @@ pub async fn create(
     .bind(new.organization_id.as_uuid())
     .bind(&new.name)
     .bind(new.kind.as_str())
-    .bind(&new.url)
+    .bind(&new.url_ref)
     .bind(new.signing_secret_ref.as_deref())
     .bind(new.enabled)
     .bind(new.created_by.as_uuid())
@@ -255,7 +255,7 @@ pub async fn update(
     let row = sqlx::query_as::<_, DestinationRow>(concat!(
         "UPDATE notification_destinations
          SET name = COALESCE($3, name),
-             url = COALESCE($4, url),
+             url_ref = COALESCE($4, url_ref),
              signing_secret_ref = COALESCE($5, signing_secret_ref),
              enabled = COALESCE($6, enabled),
              revision = revision + 1,
@@ -267,7 +267,7 @@ pub async fn update(
     .bind(organization_id.as_uuid())
     .bind(id.as_uuid())
     .bind(update.name.as_deref())
-    .bind(update.url.as_deref())
+    .bind(update.url_ref.as_deref())
     .bind(update.signing_secret_ref.as_deref())
     .bind(update.enabled)
     .bind(update.expected_revision)

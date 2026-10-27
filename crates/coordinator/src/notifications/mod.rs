@@ -6,9 +6,13 @@
 //! - A destination URL must be HTTPS and its host must match the deployment's
 //!   allow-list, checked when a destination is written and again before every
 //!   send.
-//! - A webhook body is signed with an HMAC whose key is read from
-//!   `notifications.secrets_dir` on each send. The database, the API, and the
-//!   logs never hold the key.
+//! - A destination's URL is read from a reference file under
+//!   `notifications.secrets_dir` before a send (a Slack URL embeds a bearer
+//!   token in its path), so the database and the audit trail hold only the
+//!   reference.
+//! - A webhook body is signed with an HMAC whose key is read from the same
+//!   directory on each send. The database, the API, and the logs never hold the
+//!   key.
 //! - A payload carries identifiers and stable reason codes only: never a
 //!   credential, a plan artifact, or a table row.
 //!
@@ -55,7 +59,7 @@ impl Settings {
         &self.allow_list
     }
 
-    /// The directory holding signing secrets, if one is configured.
+    /// The directory holding secret and URL references, if one is configured.
     #[must_use]
     pub fn secrets_dir(&self) -> Option<&std::path::Path> {
         self.secrets_dir.as_deref()

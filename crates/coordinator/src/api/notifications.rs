@@ -9,10 +9,12 @@
 //! | `POST /api/v1/notifications/destinations/{id}/test` | Send one test event |
 //!
 //! Every route requires organization-wide `notifications:manage`.
-//! `signing_secret_ref` is a name under `notifications.secrets_dir`; the secret
-//! value never appears in a response, an error, or an audit record. A test
-//! send is synchronous and bounded by the configured request timeout; it does
-//! not enqueue a durable delivery.
+//! `url_ref` and `signing_secret_ref` name files under
+//! `notifications.secrets_dir`; neither the destination URL (a Slack URL embeds
+//! a bearer token in its path) nor the signing key ever appears in a response,
+//! an error, or an audit record. A test send is synchronous and bounded by the
+//! configured request timeout; it does not enqueue a durable delivery, and its
+//! audit row records the outcome whether or not the request was made.
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -32,7 +34,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::notifications::{DeliveryError, Event, ResourceRef, Target};
+use crate::notifications::{
+    Delivery, DeliveryError, Event, ResourceRef, SecretError, Target, read_secret,
+};
 
 use super::pagination::{Page, PageQuery};
 use super::{ApiError, ApiState, Caller, json_body, resources};
@@ -52,7 +56,7 @@ pub(super) struct ListDestinations {
 pub(super) struct CreateDestination {
     name: String,
     kind: String,
-    url: String,
+    url_ref: String,
     signing_secret_ref: Option<String>,
     enabled: Option<bool>,
 }
@@ -62,7 +66,7 @@ pub(super) struct CreateDestination {
 pub(super) struct UpdateDestination {
     revision: i64,
     name: Option<String>,
-    url: Option<String>,
+    url_ref: Option<String>,
     signing_secret_ref: Option<String>,
     enabled: Option<bool>,
 }
@@ -72,7 +76,7 @@ fn document(destination: &NotificationDestination) -> Value {
         "id": destination.id,
         "name": destination.name,
         "kind": destination.kind.as_str(),
-        "url": destination.url,
+        "url_ref": destination.url_ref,
         "signing_secret_ref": destination.signing_secret_ref,
         "enabled": destination.enabled,
         "revision": destination.revision,
@@ -120,22 +124,63 @@ fn validate_name(raw: &str) -> Result<String, ApiError> {
     Ok(name.to_owned())
 }
 
-fn validate_url(state: &ApiState, raw: &str) -> Result<String, ApiError> {
-    let url = DestinationUrl::parse(raw).map_err(|error| match error {
-        DestinationUrlError::NotAllowed => ApiError::permanent(
-            StatusCode::BAD_REQUEST,
-            "destination_not_allowed",
-            "add_the_host_to_notifications_allowed_hosts",
+fn not_allowed() -> ApiError {
+    ApiError::permanent(
+        StatusCode::BAD_REQUEST,
+        "destination_not_allowed",
+        "add_the_host_to_notifications_allowed_hosts",
+    )
+}
+
+fn url_reference_error(error: &SecretError) -> ApiError {
+    match error {
+        SecretError::NotConfigured => ApiError::permanent(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "notifications_secrets_dir_unconfigured",
+            "configure_notifications_secrets_dir",
         ),
-        _ => ApiError::invalid(),
-    })?;
-    url.allow(state.notifications.allow_list()).map_err(|_| {
+        SecretError::InvalidReference => ApiError::invalid(),
+        SecretError::Unavailable { .. } | SecretError::Empty => ApiError::permanent(
+            StatusCode::BAD_REQUEST,
+            "destination_url_unavailable",
+            "write_the_url_file_under_notifications_secrets_dir",
+        ),
+        SecretError::NotUtf8 | SecretError::TooLarge { .. } => ApiError::permanent(
+            StatusCode::BAD_REQUEST,
+            "destination_url_invalid",
+            "fix_the_url_in_notifications_secrets_dir",
+        ),
+    }
+}
+
+/// Resolves a URL reference and enforces the URL policy on the value.
+async fn resolve_url(state: &ApiState, raw: &str) -> Result<(SecretRef, DestinationUrl), ApiError> {
+    let reference = SecretRef::parse(raw).map_err(|_| ApiError::invalid())?;
+    let text = read_secret(state.notifications.secrets_dir(), reference.as_str())
+        .await
+        .map_err(|error| url_reference_error(&error))?;
+    let url = DestinationUrl::parse(text.expose()).map_err(|_| {
         ApiError::permanent(
             StatusCode::BAD_REQUEST,
-            "destination_not_allowed",
-            "add_the_host_to_notifications_allowed_hosts",
+            "destination_url_invalid",
+            "fix_the_url_in_notifications_secrets_dir",
         )
     })?;
+    url.allow(state.notifications.allow_list())
+        .map_err(|_| not_allowed())?;
+    Ok((reference, url))
+}
+
+/// Validates a URL reference for storage. The URL is never returned: only the
+/// reference reaches the ledger, an audit record, or a response.
+async fn validate_url_ref(state: &ApiState, raw: &str) -> Result<String, ApiError> {
+    let (reference, _) = resolve_url(state, raw).await?;
+    Ok(reference.as_str().to_owned())
+}
+
+/// Resolves a URL reference to the URL a send uses.
+async fn resolved_url(state: &ApiState, raw: &str) -> Result<String, ApiError> {
+    let (_, url) = resolve_url(state, raw).await?;
     Ok(url.as_str().to_owned())
 }
 
@@ -201,9 +246,12 @@ pub(super) async fn create(
     let body = json_body(body)?;
     let mut conn = state.database.pool().acquire().await?;
     require_notifications(&mut conn, &caller).await?;
+    // The authorization connection is released before a transaction is taken,
+    // so one request never holds two pool connections.
+    drop(conn);
     let name = validate_name(&body.name)?;
     let kind = DestinationKind::from_name(body.kind.trim()).ok_or_else(ApiError::invalid)?;
-    let url = validate_url(&state, body.url.trim())?;
+    let url_ref = validate_url_ref(&state, body.url_ref.trim()).await?;
     let signing_secret_ref = validate_secret_ref(kind, body.signing_secret_ref.as_deref())?;
     let mut tx = state.database.pool().begin().await?;
     let id = NotificationDestinationId::generate();
@@ -214,7 +262,7 @@ pub(super) async fn create(
             organization_id: caller.organization_id,
             name,
             kind,
-            url,
+            url_ref,
             signing_secret_ref,
             enabled: body.enabled.unwrap_or(true),
             created_by: caller.principal_id,
@@ -226,10 +274,11 @@ pub(super) async fn create(
         &caller,
         AuditAction::NotificationDestinationCreated,
         &id.to_string(),
+        AuditOutcome::Allowed,
         json!({
             "name": created.name,
             "kind": created.kind.as_str(),
-            "url": created.url,
+            "url_ref": created.url_ref,
             "signing_secret_ref": created.signing_secret_ref,
             "enabled": created.enabled,
             "revision": created.revision,
@@ -276,12 +325,14 @@ pub(super) async fn update(
     let mut conn = state.database.pool().acquire().await?;
     require_notifications(&mut conn, &caller).await?;
     let current = notifications::destination(&mut conn, caller.organization_id, id).await?;
+    // The authorization connection is released before a transaction is taken,
+    // so one request never holds two pool connections.
+    drop(conn);
     let name = body.name.as_deref().map(validate_name).transpose()?;
-    let url = body
-        .url
-        .as_deref()
-        .map(|url| validate_url(&state, url.trim()))
-        .transpose()?;
+    let url_ref = match body.url_ref.as_deref() {
+        Some(raw) => Some(validate_url_ref(&state, raw.trim()).await?),
+        None => None,
+    };
     let signing_secret_ref = match body.signing_secret_ref.as_deref() {
         None => None,
         Some(reference) => {
@@ -300,7 +351,7 @@ pub(super) async fn update(
         id,
         &NotificationDestinationUpdate {
             name,
-            url,
+            url_ref,
             signing_secret_ref,
             enabled: body.enabled,
             expected_revision: body.revision,
@@ -312,10 +363,11 @@ pub(super) async fn update(
         &caller,
         AuditAction::NotificationDestinationUpdated,
         &id.to_string(),
+        AuditOutcome::Allowed,
         json!({
             "name": updated.name,
             "kind": updated.kind.as_str(),
-            "url": updated.url,
+            "url_ref": updated.url_ref,
             "signing_secret_ref": updated.signing_secret_ref,
             "enabled": updated.enabled,
             "revision": updated.revision,
@@ -340,6 +392,8 @@ pub(super) async fn test(
     let mut conn = state.database.pool().acquire().await?;
     require_notifications(&mut conn, &caller).await?;
     let destination = notifications::destination(&mut conn, caller.organization_id, id).await?;
+    // Release the connection before the request, so no pool slot waits on HTTP.
+    drop(conn);
     let event = Event {
         id: Uuid::now_v7(),
         kind: "notification.test".to_owned(),
@@ -353,29 +407,79 @@ pub(super) async fn test(
         },
         reason: None,
     };
-    let target = Target {
-        kind: destination.kind,
-        url: &destination.url,
-        signing_secret_ref: destination.signing_secret_ref.as_deref(),
-    };
-    let delivery = state
-        .notifications
-        .send(&target, &event)
-        .await
-        .map_err(|error| delivery_error(&error))?;
-    record(
-        &mut conn,
-        &caller,
-        AuditAction::NotificationDestinationTested,
-        &id.to_string(),
-        json!({"status": delivery.status, "delivered": delivery.delivered}),
-    )
-    .await?;
+    let attempt = send_test(&state, &destination, &event).await;
+
+    // Every attempt is audited, including one that could not be made: the
+    // receiver may already have accepted a request whose response was lost.
+    let mut conn = state.database.pool().acquire().await?;
+    match &attempt {
+        Ok(delivery) => {
+            let detail = if delivery.delivered {
+                json!({"status": delivery.status, "delivered": true})
+            } else {
+                json!({
+                    "status": delivery.status,
+                    "delivered": false,
+                    "reason": "destination_rejected",
+                })
+            };
+            let outcome = if delivery.delivered {
+                AuditOutcome::Allowed
+            } else {
+                AuditOutcome::Failed
+            };
+            record(
+                &mut conn,
+                &caller,
+                AuditAction::NotificationDestinationTested,
+                &id.to_string(),
+                outcome,
+                detail,
+            )
+            .await?;
+        }
+        Err(error) => {
+            record(
+                &mut conn,
+                &caller,
+                AuditAction::NotificationDestinationTested,
+                &id.to_string(),
+                AuditOutcome::Failed,
+                json!({
+                    "delivered": false,
+                    "reason": error.reason,
+                    "operator_action": error.operator_action,
+                }),
+            )
+            .await?;
+        }
+    }
+
+    let delivery = attempt?;
     Ok(Json(json!({
         "delivered": delivery.delivered,
         "status": delivery.status,
         "response": delivery.response,
     })))
+}
+
+/// Resolves the destination URL reference and sends one event.
+async fn send_test(
+    state: &ApiState,
+    destination: &NotificationDestination,
+    event: &Event,
+) -> Result<Delivery, ApiError> {
+    let url = resolved_url(state, &destination.url_ref).await?;
+    let target = Target {
+        kind: destination.kind,
+        url: &url,
+        signing_secret_ref: destination.signing_secret_ref.as_deref(),
+    };
+    state
+        .notifications
+        .send(&target, event)
+        .await
+        .map_err(|error| delivery_error(&error))
 }
 
 fn delivery_error(error: &DeliveryError) -> ApiError {
@@ -405,6 +509,7 @@ async fn record(
     caller: &Caller,
     action: AuditAction,
     resource_id: &str,
+    outcome: AuditOutcome,
     detail: Value,
 ) -> Result<(), ApiError> {
     bergsmith_persistence::audit::record(
@@ -416,7 +521,7 @@ async fn record(
             action: action.as_str(),
             resource_type: "notification_destination",
             resource_id: Some(resource_id),
-            outcome: AuditOutcome::Allowed,
+            outcome,
             detail,
         },
     )

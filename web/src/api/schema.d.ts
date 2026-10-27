@@ -789,7 +789,7 @@ export interface components {
         };
         ApiError: {
             /** @enum {string} */
-            reason: "authentication_required" | "csrf_rejected" | "invalid_request" | "resource_not_found" | "permission_denied" | "idempotency_key_reused" | "ledger_unavailable" | "method_not_allowed" | "request_too_large" | "internal_error" | "catalog_credential_unavailable" | "catalog_connection_invalid" | "storage_profile_unavailable" | "storage_unavailable" | "catalog_access_denied" | "catalog_unavailable" | "table_staged" | "job_not_terminal" | "job_already_succeeded" | "table_identity_changed" | "catalog_table_missing" | "inventory_too_large" | "table_metadata_inconsistent" | "preview_capacity_exhausted" | "catalog_unsupported" | "catalog_credentials_unavailable" | "catalog_request_rejected" | "event_stream_capacity_exhausted" | "invalid_policy_parameters" | "invalid_policy_operation" | "invalid_cron_expression" | "invalid_time_zone" | "invalid_maintenance_window" | "run_budget_below_target_file_size" | "invalid_health_thresholds" | "revision_conflict" | "service_identity_not_eligible" | "resource_already_exists" | "catalog_connection_disabled" | "catalog_connection_in_use" | "catalog_connection_changed" | "capability_check_capacity_exhausted" | "catalog_response_too_large" | "table_in_use" | "catalog_namespace_not_found" | "catalog_table_not_found" | "catalog_discovery_capacity_exhausted" | "registration_too_large" | "table_identity_conflict" | "catalog_namespace_mismatch" | "catalog_page_too_large" | "registration_incomplete" | "catalog_token_too_large" | "last_administrator" | "grant_already_exists" | "destination_not_allowed" | "signing_secret_unavailable" | "notification_delivery_failed";
+            reason: "authentication_required" | "csrf_rejected" | "invalid_request" | "resource_not_found" | "permission_denied" | "idempotency_key_reused" | "ledger_unavailable" | "method_not_allowed" | "request_too_large" | "internal_error" | "catalog_credential_unavailable" | "catalog_connection_invalid" | "storage_profile_unavailable" | "storage_unavailable" | "catalog_access_denied" | "catalog_unavailable" | "table_staged" | "job_not_terminal" | "job_already_succeeded" | "table_identity_changed" | "catalog_table_missing" | "inventory_too_large" | "table_metadata_inconsistent" | "preview_capacity_exhausted" | "catalog_unsupported" | "catalog_credentials_unavailable" | "catalog_request_rejected" | "event_stream_capacity_exhausted" | "invalid_policy_parameters" | "invalid_policy_operation" | "invalid_cron_expression" | "invalid_time_zone" | "invalid_maintenance_window" | "run_budget_below_target_file_size" | "invalid_health_thresholds" | "revision_conflict" | "service_identity_not_eligible" | "resource_already_exists" | "catalog_connection_disabled" | "catalog_connection_in_use" | "catalog_connection_changed" | "capability_check_capacity_exhausted" | "catalog_response_too_large" | "table_in_use" | "catalog_namespace_not_found" | "catalog_table_not_found" | "catalog_discovery_capacity_exhausted" | "registration_too_large" | "table_identity_conflict" | "catalog_namespace_mismatch" | "catalog_page_too_large" | "registration_incomplete" | "catalog_token_too_large" | "last_administrator" | "grant_already_exists" | "destination_not_allowed" | "signing_secret_unavailable" | "notification_delivery_failed" | "destination_url_invalid" | "destination_url_unavailable" | "notifications_secrets_dir_unconfigured";
             /** @enum {string} */
             disposition: "RetrySameRequest" | "RetryTask" | "ReplanRequired" | "PermanentFailure" | "ResolvePublication";
             operator_action: string;
@@ -1880,7 +1880,6 @@ export interface components {
             name: string;
             /** @enum {string} */
             kind: "webhook" | "slack";
-            url: string;
             signing_secret_ref: string | null;
             enabled: boolean;
             revision: number;
@@ -1890,6 +1889,8 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             updated_at: string;
+            /** @description Name of the URL file under notifications.secrets_dir. The coordinator reads the URL when the destination is written and before every send; the resolved URL must be HTTPS and name a host from notifications.allowed_hosts. */
+            url_ref: string;
         };
         NotificationDestinationPage: {
             items: components["schemas"]["NotificationDestination"][];
@@ -1899,16 +1900,18 @@ export interface components {
             name: string;
             /** @enum {string} */
             kind: "webhook" | "slack";
-            url: string;
             signing_secret_ref?: string | null;
             enabled?: boolean;
+            /** @description Name of the URL file under notifications.secrets_dir. The coordinator reads the URL when the destination is written and before every send; the resolved URL must be HTTPS and name a host from notifications.allowed_hosts. */
+            url_ref: string;
         };
         UpdateNotificationDestination: {
             revision: number;
             name?: string;
-            url?: string;
             signing_secret_ref?: string;
             enabled?: boolean;
+            /** @description Name of the URL file under notifications.secrets_dir. The coordinator reads the URL when the destination is written and before every send; the resolved URL must be HTTPS and name a host from notifications.allowed_hosts. */
+            url_ref?: string;
         };
         NotificationDeliveryTest: {
             delivered: boolean;
@@ -7020,6 +7023,15 @@ export interface operations {
             };
             /** @description Method not allowed */
             405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Destination name already exists */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

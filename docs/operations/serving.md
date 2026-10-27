@@ -106,11 +106,13 @@ The JSON document is validated before any listener starts. A minimal document:
 
 `notifications.allowed_hosts` is the complete list of hosts a destination URL
 may name; an empty list allows none, and a literal link-local address is
-rejected even when listed. `notifications.secrets_dir` holds webhook signing
-secrets: a destination stores only a file name, and the file's bytes (with one
-trailing newline removed) are the HMAC key. Both are read at startup for the
-allow-list and at send time for the secret file, so a key rotation needs no
-restart while a host change does. The coordinator sends with no redirects and a
+rejected even when listed. `notifications.secrets_dir` holds the destination URL
+files and webhook signing keys: a destination stores only file names, the URL
+file's contents are the endpoint (checked when the destination is written and
+before every send), and the signing file's bytes (with one trailing newline
+removed) are the HMAC key. Both are read at startup for the allow-list and when
+needed for the files, so a key or URL rotation needs no restart while a host
+change does. The coordinator sends with no redirects and a
 bounded timeout; deployments should still restrict egress at the network layer,
 as they do for catalog connections.
 

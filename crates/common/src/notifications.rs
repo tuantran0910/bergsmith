@@ -466,8 +466,10 @@ impl DestinationUrl {
     }
 }
 
-/// A validated signing-secret reference: a bare file name under
-/// `notifications.secrets_dir`.
+/// A validated secret reference: a bare file name under
+/// `notifications.secrets_dir`. A reference names a webhook's signing key or a
+/// destination URL, so the credential-bearing value never enters PostgreSQL, an
+/// audit record, or a response.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SecretRef(String);
 
@@ -506,20 +508,20 @@ impl SecretRef {
     }
 }
 
-/// Why a signing-secret reference was rejected.
+/// Why a secret reference was rejected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SecretRefError {
     /// The name was empty or longer than [`MAX_SECRET_REF_LENGTH`].
-    #[error("a signing secret reference is 1 to {max} bytes")]
+    #[error("a secret reference is 1 to {max} bytes")]
     Length {
         /// The accepted maximum.
         max: usize,
     },
     /// The name was `.` or `..`.
-    #[error("a signing secret reference cannot be a directory")]
+    #[error("a secret reference cannot be a directory")]
     Reserved,
     /// The name contained a character outside `[A-Za-z0-9._-]`.
-    #[error("a signing secret reference uses only ASCII letters, digits, and ._-")]
+    #[error("a secret reference uses only ASCII letters, digits, and ._-")]
     Character,
 }
 
