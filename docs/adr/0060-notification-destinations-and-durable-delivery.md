@@ -109,13 +109,19 @@ ledger instead, so a staleness-driven Critical transition still alerts during
 a catalog outage. Sweep-produced events carry the job's dispatch pools, so a
 pool-filtered rule matches an overdue publication. A leader-only loop claims due rows, sends one request, and
 appends a `notification_attempts` row per try. Retries back off 30 s, 1 min,
-5 min, 15 min, and 1 h, and stop after five attempts; each step is recorded.
+5 min, and 15 min, and stop after five attempts; each step is recorded.
 The loop claims with `SELECT ... FOR UPDATE SKIP LOCKED` in one transaction,
 sends outside any transaction, then marks the row in a second transaction, so
 no database transaction spans the request. A crash after a successful send and
 before the mark produces one duplicate; that is the documented cost of
 at-least-once delivery, and receivers deduplicate on the envelope `id`.
-Delivered and exhausted rows are pruned after 30 days.
+Delivered and exhausted rows are pruned after 30 days. The log is read through
+`GET /api/v1/notifications/deliveries` newest first, keyed by `(created_at, id)`
+with state, rule, and destination filters; the
+`(organization_id, created_at DESC, id DESC)` index bounds each page; one
+delivery adds its attempt history. The administration pages read destinations, rules, and the log under
+`notifications:manage`, and attempt rows expose the status and stable reason
+only.
 
 **Rules are organization-scoped and narrow one destination.** A rule names an
 event kind, a destination, an optional connection, pool, or table filter, and

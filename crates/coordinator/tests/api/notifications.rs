@@ -1,10 +1,12 @@
 //! Notification destination administration (BS-029.T1).
 
 use super::*;
-use bergsmith_common::notifications::AllowList;
+use bergsmith_common::notifications::{AllowList, EventKind};
 use bergsmith_coordinator::notifications::{DeliveryClient, Settings};
 use bergsmith_persistence::MIGRATOR;
 use bergsmith_persistence::grants::{self, NewRoleGrant};
+use bergsmith_persistence::notifications::{self as store, DeliveryEvent};
+use chrono::Utc;
 use sqlx::postgres::PgPoolOptions;
 use std::path::{Path, PathBuf};
 
@@ -551,4 +553,252 @@ async fn one_connection_serves_creation_and_editing(pool: PgPool) {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["enabled"], false);
+}
+
+async fn stored_delivery(
+    pool: &PgPool,
+    organization: bergsmith_common::ids::OrganizationId,
+    rule: Uuid,
+    source: &str,
+    created_at: chrono::DateTime<Utc>,
+) -> Uuid {
+    let mut conn = pool.acquire().await.unwrap();
+    store::enqueue_event(
+        &mut conn,
+        &DeliveryEvent {
+            organization_id: organization,
+            event_kind: EventKind::JobFailed,
+            source_key: source.to_owned(),
+            occurred_at: created_at,
+            summary: "Job failed".to_owned(),
+            resource_kind: "job".to_owned(),
+            resource_id: Uuid::now_v7().to_string(),
+            resource_label: Some("nightly".to_owned()),
+            reason: Some("WorkerFailed".to_owned()),
+            connection_id: None,
+            table_id: None,
+            pools: Vec::new(),
+        },
+    )
+    .await
+    .unwrap();
+    drop(conn);
+    sqlx::query(
+        "UPDATE notification_deliveries SET created_at = $3
+         WHERE organization_id = $1 AND rule_id = $2 AND source_key = $4",
+    )
+    .bind(organization.as_uuid())
+    .bind(rule)
+    .bind(created_at)
+    .bind(source)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query_scalar(
+        "SELECT id FROM notification_deliveries
+         WHERE organization_id = $1 AND rule_id = $2 AND source_key = $3",
+    )
+    .bind(organization.as_uuid())
+    .bind(rule)
+    .bind(source)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn the_delivery_log_pages_filters_and_shows_attempts(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let bob = support::user(&mut conn, tenant.organization, "bob").await;
+    grants::create_grant(
+        &mut conn,
+        &NewRoleGrant {
+            id: RoleGrantId::generate(),
+            organization_id: tenant.organization,
+            principal_id: bob,
+            role: Role::Viewer,
+            scope: GrantScope::organization(),
+            granted_by: None,
+        },
+    )
+    .await
+    .unwrap();
+    let destination = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO notification_destinations
+             (id, organization_id, name, kind, url_ref, created_by)
+         VALUES ($1, $2, 'ops', 'slack', 'ops-url', $3)",
+    )
+    .bind(destination)
+    .bind(tenant.organization.as_uuid())
+    .bind(tenant.user.as_uuid())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    let rule = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO notification_rules
+             (id, organization_id, name, destination_id, event_kind, created_by)
+         VALUES ($1, $2, 'job failures', $3, 'job.failed', $4)",
+    )
+    .bind(rule)
+    .bind(tenant.organization.as_uuid())
+    .bind(destination)
+    .bind(tenant.user.as_uuid())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    drop(conn);
+
+    let now = Utc::now();
+    let first = stored_delivery(
+        &pool,
+        tenant.organization,
+        rule,
+        "event-1",
+        now - Duration::from_secs(30),
+    )
+    .await;
+    let second = stored_delivery(
+        &pool,
+        tenant.organization,
+        rule,
+        "event-2",
+        now - Duration::from_secs(20),
+    )
+    .await;
+    let third = stored_delivery(
+        &pool,
+        tenant.organization,
+        rule,
+        "event-3",
+        now - Duration::from_secs(10),
+    )
+    .await;
+    sqlx::query(
+        "UPDATE notification_deliveries
+         SET state = 'Delivered', attempts = 1, next_attempt_at = created_at,
+             updated_at = created_at
+         WHERE id = $1",
+    )
+    .bind(second)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO notification_attempts
+             (delivery_id, attempt, outcome, status, reason)
+         VALUES ($1, 1, 'Delivered', 200, NULL)",
+    )
+    .bind(second)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let browser = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+    let (status, body) = browser
+        .request(
+            "GET",
+            "/api/v1/notifications/deliveries?limit=2",
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["id"], third.to_string(), "{body}");
+    assert_eq!(items[1]["id"], second.to_string(), "{body}");
+    assert_eq!(items[0]["destination_name"], "ops");
+    assert_eq!(items[1]["state"], "delivered");
+    assert_eq!(items[1]["attempt_count"], 1);
+    let cursor = body["next_cursor"].as_str().unwrap();
+    let (status, body) = browser
+        .request(
+            "GET",
+            &format!("/api/v1/notifications/deliveries?limit=2&cursor={cursor}"),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
+    assert_eq!(body["items"][0]["id"], first.to_string());
+    assert!(body["next_cursor"].is_null());
+
+    let (status, body) = browser
+        .request(
+            "GET",
+            "/api/v1/notifications/deliveries?state=delivered",
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
+    assert_eq!(body["items"][0]["id"], second.to_string());
+
+    let (status, body) = browser
+        .request(
+            "GET",
+            &format!("/api/v1/notifications/deliveries?rule_id={rule}"),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["items"].as_array().unwrap().len(), 3);
+
+    let (status, body) = browser
+        .request(
+            "GET",
+            &format!("/api/v1/notifications/deliveries?destination_id={destination}"),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["items"].as_array().unwrap().len(), 3);
+
+    let (status, body) = browser
+        .request(
+            "GET",
+            &format!("/api/v1/notifications/deliveries/{second}"),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["attempt_count"], 1);
+    let attempts = body["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(attempts[0]["outcome"], "delivered");
+    assert_eq!(attempts[0]["status"], 200);
+    assert!(attempts[0].get("response").is_none());
+
+    let (status, _) = browser
+        .request(
+            "GET",
+            &format!("/api/v1/notifications/deliveries/{}", Uuid::now_v7()),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = browser
+        .request(
+            "GET",
+            "/api/v1/notifications/deliveries?state=unknown",
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let viewer = Browser::new(&pool, &tenant, bob, "bob").await;
+    let (status, body) = viewer
+        .request("GET", "/api/v1/notifications/deliveries", None, None)
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
 }

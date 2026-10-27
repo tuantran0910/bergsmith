@@ -22,6 +22,13 @@ const SECTION_LABELS: Record<string, string> = {
     "service-identities": "Service identities",
     users: "Users",
     workers: "Workers",
+    notifications: "Notifications",
+};
+
+/** Section children that are pages rather than resources. */
+const PAGE_LABELS: Record<string, string> = {
+    rules: "Rules",
+    deliveries: "Deliveries",
 };
 
 /** Pages that create a resource describe their purpose instead of an ID. */
@@ -108,7 +115,7 @@ export function useBreadcrumbLabel(label: string | undefined) {
 
 /** Crumbs for an address; unknown paths get none. */
 export function crumbsFor(pathname: string, resourceLabel?: string): Crumb[] {
-    const [, first, second] = pathname.split("/");
+    const [, first, second, third] = pathname.split("/");
     if (first === undefined) {
         return [];
     }
@@ -120,6 +127,24 @@ export function crumbsFor(pathname: string, resourceLabel?: string): Crumb[] {
     const section: Crumb = { label: sectionLabel };
     if (second === undefined || second === "") {
         return [overview, { ...section }];
+    }
+    const pageLabel = PAGE_LABELS[second];
+    if (pageLabel !== undefined) {
+        const trail: Crumb[] = [
+            overview,
+            { to: `/${first}`, label: section.label },
+        ];
+        if (third === undefined || third === "") {
+            return [...trail, { label: pageLabel }];
+        }
+        if (second === "deliveries") {
+            return [
+                ...trail,
+                { to: `/${first}/${second}`, label: pageLabel },
+                { label: resourceLabel ?? shortId(third), title: third },
+            ];
+        }
+        return [];
     }
     const createLabel = CREATE_LABELS[`/${first}/${second}`];
     if (createLabel !== undefined) {

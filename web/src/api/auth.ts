@@ -174,6 +174,15 @@ export function canManageSchedules(session: SessionInfo): boolean {
 }
 
 /**
+ * Whether the session can administer notification destinations, rules, and
+ * read the delivery log. Only an organization-wide grant carries
+ * `notifications:manage`.
+ */
+export function canManageNotifications(session: SessionInfo): boolean {
+    return hasOrganizationPermission(session, "notifications:manage");
+}
+
+/**
  * Whether the session can manage one connection's settings, or create a
  * connection when `id` is omitted. Creation needs an organization-wide grant;
  * editing a connection accepts a grant over that connection.

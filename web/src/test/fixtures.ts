@@ -19,6 +19,9 @@ export const POLICY_ID = "0190f3c4-0000-7000-8000-0000000000b1";
 export const SCHEDULE_ID = "0190f3c4-0000-7000-8000-0000000000d1";
 export const OCCURRENCE_ID = "0190f3c4-0000-7000-8000-0000000000d2";
 export const SERVICE_ID = "0190f3c4-0000-7000-8000-0000000000d3";
+export const DESTINATION_ID = "0190f3c4-0000-7000-8000-0000000000f1";
+export const RULE_ID = "0190f3c4-0000-7000-8000-0000000000f2";
+export const DELIVERY_ID = "0190f3c4-0000-7000-8000-0000000000f3";
 
 const ORGANIZATION: GrantScope = { catalog_connection: null, table: null };
 
@@ -750,3 +753,86 @@ export const scheduleOccurrences = schema("ScheduleOccurrencePage", {
     ],
     next_cursor: null,
 });
+
+export function notificationDestination(
+    overrides: Partial<Schemas["NotificationDestination"]> = {},
+): Schemas["NotificationDestination"] {
+    return schema("NotificationDestination", {
+        id: DESTINATION_ID,
+        name: "ops webhook",
+        kind: "webhook",
+        url_ref: "ops-url",
+        signing_secret_ref: "ops-key",
+        enabled: true,
+        revision: 1,
+        created_by: PRINCIPAL_ID,
+        created_at: "2026-10-01T00:00:00Z",
+        updated_at: "2026-10-01T00:00:00Z",
+        ...overrides,
+    });
+}
+
+export function notificationRule(
+    overrides: Partial<Schemas["NotificationRule"]> = {},
+): Schemas["NotificationRule"] {
+    return schema("NotificationRule", {
+        id: RULE_ID,
+        name: "failed jobs",
+        destination_id: DESTINATION_ID,
+        event_kind: "job.failed",
+        filter: null,
+        repeat_threshold: null,
+        enabled: true,
+        revision: 1,
+        created_by: PRINCIPAL_ID,
+        created_at: "2026-10-01T00:00:00Z",
+        updated_at: "2026-10-01T00:00:00Z",
+        ...overrides,
+    });
+}
+
+export function notificationDelivery(
+    overrides: Partial<Schemas["NotificationDelivery"]> = {},
+): Schemas["NotificationDelivery"] {
+    return schema("NotificationDelivery", {
+        id: DELIVERY_ID,
+        rule_id: RULE_ID,
+        destination_id: DESTINATION_ID,
+        destination_name: "ops webhook",
+        destination_kind: "webhook",
+        event_kind: "job.failed",
+        occurred_at: "2026-10-20T10:00:00Z",
+        summary: "Job failed after three attempts",
+        resource: {
+            kind: "job",
+            id: JOB_ID,
+            label: "nightly-compact",
+        },
+        reason: "WorkerFailed",
+        state: "pending",
+        attempt_count: 1,
+        next_attempt_at: "2026-10-20T10:00:30Z",
+        last_error: "destination_unreachable",
+        created_at: "2026-10-20T10:00:01Z",
+        updated_at: "2026-10-20T10:00:05Z",
+        ...overrides,
+    });
+}
+
+export function notificationDeliveryDetail(
+    overrides: Partial<Schemas["NotificationDeliveryDetail"]> = {},
+): Schemas["NotificationDeliveryDetail"] {
+    return schema("NotificationDeliveryDetail", {
+        ...notificationDelivery(),
+        attempts: [
+            {
+                attempt: 1,
+                finished_at: "2026-10-20T10:00:05Z",
+                outcome: "failed",
+                status: null,
+                reason: "destination_unreachable",
+            },
+        ],
+        ...overrides,
+    });
+}

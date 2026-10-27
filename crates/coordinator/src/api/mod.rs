@@ -188,6 +188,14 @@ pub fn router(state: ApiState) -> Router {
             "/api/v1/notifications/rules/{id}",
             get(notification_rules::get).patch(notification_rules::update),
         )
+        .route(
+            "/api/v1/notifications/deliveries",
+            get(notifications::list_deliveries),
+        )
+        .route(
+            "/api/v1/notifications/deliveries/{id}",
+            get(notifications::get_delivery),
+        )
         .route("/api/v1/audit", get(resources::audit))
         .route("/api/v1/workers", get(resources::workers))
         .route("/api/v1/previews", post(preview::preview))

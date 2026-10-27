@@ -1329,6 +1329,8 @@ fn openapi_documents_every_route() {
         ("/api/v1/notifications/rules", "post"),
         ("/api/v1/notifications/rules/{id}", "get"),
         ("/api/v1/notifications/rules/{id}", "patch"),
+        ("/api/v1/notifications/deliveries", "get"),
+        ("/api/v1/notifications/deliveries/{id}", "get"),
         ("/api/v1/openapi.json", "get"),
     ];
     let document: Value = serde_json::from_str(include_str!("../src/api/openapi.json")).unwrap();

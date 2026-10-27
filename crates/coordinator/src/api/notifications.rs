@@ -21,15 +21,17 @@ use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use bergsmith_common::audit::{ActorKind, AuditAction, AuditOutcome};
-use bergsmith_common::ids::NotificationDestinationId;
+use bergsmith_common::ids::{NotificationDestinationId, NotificationRuleId};
 use bergsmith_common::notifications::{
     DestinationKind, DestinationUrl, DestinationUrlError, SecretRef,
 };
 use bergsmith_common::permission::{Permission, ResourceScope};
 use bergsmith_persistence::audit::NewAuditEvent;
 use bergsmith_persistence::notifications::{
-    self, NewNotificationDestination, NotificationDestination, NotificationDestinationUpdate,
+    self, DeliveryFilter, DeliveryState, NewNotificationDestination, NotificationDestination,
+    NotificationDestinationUpdate,
 };
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -195,6 +197,133 @@ fn validate_secret_ref(
             .map(|reference| Some(reference.as_str().to_owned()))
             .map_err(|_| ApiError::invalid()),
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ListDeliveries {
+    limit: Option<usize>,
+    cursor: Option<String>,
+    state: Option<String>,
+    rule_id: Option<Uuid>,
+    destination_id: Option<Uuid>,
+}
+
+fn delivery_state(raw: &str) -> Result<DeliveryState, ApiError> {
+    match raw {
+        "pending" => Ok(DeliveryState::Pending),
+        "delivered" => Ok(DeliveryState::Delivered),
+        "exhausted" => Ok(DeliveryState::Exhausted),
+        _ => Err(ApiError::invalid()),
+    }
+}
+
+fn delivery_document(delivery: &notifications::NotificationDelivery) -> Value {
+    json!({
+        "id": delivery.id,
+        "rule_id": delivery.rule_id,
+        "destination_id": delivery.destination_id,
+        "destination_name": delivery.destination_name,
+        "destination_kind": delivery.destination_kind.as_str(),
+        "event_kind": delivery.event_kind.as_str(),
+        "occurred_at": delivery.occurred_at,
+        "summary": delivery.summary,
+        "resource": {
+            "kind": delivery.resource_kind,
+            "id": delivery.resource_id,
+            "label": delivery.resource_label,
+        },
+        "reason": delivery.reason,
+        "state": delivery.state.as_str().to_ascii_lowercase(),
+        "attempt_count": delivery.attempt_count,
+        "next_attempt_at": delivery.next_attempt_at,
+        "last_error": delivery.last_error,
+        "created_at": delivery.created_at,
+        "updated_at": delivery.updated_at,
+    })
+}
+
+/// Parses a delivery page cursor: the last row's creation instant and id.
+fn delivery_after(raw: &str) -> Result<(DateTime<Utc>, Uuid), ApiError> {
+    let (micros, id) = raw.split_once('|').ok_or_else(ApiError::invalid)?;
+    let micros: i64 = micros.parse().map_err(|_| ApiError::invalid())?;
+    let created_at = DateTime::from_timestamp_micros(micros).ok_or_else(ApiError::invalid)?;
+    let id = Uuid::parse_str(id).map_err(|_| ApiError::invalid())?;
+    Ok((created_at, id))
+}
+
+/// `GET /api/v1/notifications/deliveries`.
+pub(super) async fn list_deliveries(
+    State(state): State<ApiState>,
+    caller: Caller,
+    query: Result<Query<ListDeliveries>, axum::extract::rejection::QueryRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let query = query.map_err(|_| ApiError::invalid())?.0;
+    let page = Page::parse(
+        PageQuery::new(query.limit, query.cursor),
+        caller.organization_id,
+        caller.principal_id,
+        "notifications-deliveries",
+    )?;
+    let after = page.after.as_deref().map(delivery_after).transpose()?;
+    let filter = DeliveryFilter {
+        state: query.state.as_deref().map(delivery_state).transpose()?,
+        rule: query.rule_id.map(NotificationRuleId::from_uuid),
+        destination: query
+            .destination_id
+            .map(NotificationDestinationId::from_uuid),
+    };
+    let mut conn = state.database.pool().acquire().await?;
+    require_notifications(&mut conn, &caller).await?;
+    let rows = notifications::deliveries(
+        &mut conn,
+        caller.organization_id,
+        &filter,
+        after,
+        i64::try_from(page.limit + 1).map_err(|_| ApiError::invalid())?,
+    )
+    .await?;
+    Ok(Json(
+        page.finish(
+            rows.iter()
+                .map(|delivery| {
+                    (
+                        format!("{}|{}", delivery.created_at.timestamp_micros(), delivery.id),
+                        delivery_document(delivery),
+                    )
+                })
+                .collect(),
+        )?,
+    ))
+}
+
+/// `GET /api/v1/notifications/deliveries/{id}`.
+pub(super) async fn get_delivery(
+    State(state): State<ApiState>,
+    caller: Caller,
+    id: Result<Path<Uuid>, axum::extract::rejection::PathRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let id = id.map_err(|_| ApiError::invalid())?.0;
+    let mut conn = state.database.pool().acquire().await?;
+    require_notifications(&mut conn, &caller).await?;
+    let delivery = notifications::delivery(&mut conn, caller.organization_id, id).await?;
+    let attempts = notifications::attempts(&mut conn, caller.organization_id, id).await?;
+    let mut document = delivery_document(&delivery);
+    document["attempts"] = Value::Array(
+        attempts
+            .iter()
+            .map(|attempt| {
+                json!({
+                    "attempt": attempt.attempt,
+                    "finished_at": attempt.finished_at,
+                    "outcome": attempt.outcome.as_str().to_ascii_lowercase(),
+                    "status": attempt.status,
+                    "reason": attempt.reason,
+                })
+            })
+            .collect(),
+    );
+    Ok(Json(document))
 }
 
 /// `GET /api/v1/notifications/destinations`.
@@ -399,7 +528,7 @@ pub(super) async fn test(
     let event = Event {
         id: Uuid::now_v7(),
         kind: "notification.test".to_owned(),
-        occurred_at: chrono::Utc::now(),
+        occurred_at: Utc::now(),
         organization_id: caller.organization_id,
         summary: "Bergsmith test notification".to_owned(),
         resource: ResourceRef {
