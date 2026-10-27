@@ -4688,3 +4688,41 @@ async fn orphan_cleanup_submission_reports_its_operation(pool: PgPool) {
     assert_eq!(job["operation"], "remove_orphan_files");
     assert_eq!(job["state"], "Planning");
 }
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn canceling_a_finished_cleanup_reports_it_ended(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let id = JobId::generate();
+    bergsmith_persistence::jobs::create_job(
+        &mut conn,
+        &bergsmith_persistence::jobs::NewJob {
+            id,
+            organization_id: tenant.organization,
+            table_id: tenant.table,
+            operation: bergsmith_common::job::JobOperation::RemoveOrphanFiles,
+            retry_of: None,
+            created_by: tenant.user,
+        },
+    )
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE jobs SET state = 'Succeeded', state_revision = state_revision + 1 WHERE id = $1",
+    )
+    .bind(id.as_uuid())
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    drop(conn);
+    let admin = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+    let (status, body) = admin
+        .request("POST", &format!("/api/v1/jobs/{id}/cancel"), None, None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["cancellation"], "already_ended",
+        "cleanup never published, so it cannot be too late for a commit"
+    );
+    assert_eq!(body["state"], "Succeeded");
+}

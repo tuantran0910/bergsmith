@@ -6,7 +6,7 @@
 //! [`CancellationDisposition::TooLatePublicationStarted`].
 
 use bergsmith_common::ids::{JobId, PrincipalId};
-use bergsmith_common::job::JobState;
+use bergsmith_common::job::{JobOperation, JobState};
 use sqlx::{Connection, PgConnection};
 
 use crate::PersistenceError;
@@ -84,6 +84,11 @@ pub async fn request_cancellation(
     let mut tx = conn.begin().await?;
     let job = lock_job(&mut tx, request.job_id).await?;
     let disposition = match job.state {
+        // A cleanup publishes nothing, so its success is not a commit to be
+        // too late for; it simply ended.
+        JobState::Succeeded if job.operation == JobOperation::RemoveOrphanFiles => {
+            CancellationDisposition::AlreadyEnded(job.state)
+        }
         JobState::Succeeded => CancellationDisposition::TooLateCommitted,
         state if state.is_terminal() => CancellationDisposition::AlreadyEnded(state),
         JobState::CommitOutcomeUnknown => CancellationDisposition::PublicationUnresolved,

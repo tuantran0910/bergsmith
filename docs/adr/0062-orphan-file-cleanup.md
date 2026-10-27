@@ -151,7 +151,9 @@ publication.
 ## Implementation
 
 - `bergsmith-maintenance` holds reachability capture (bounded manifest scan),
-  the pure selection function, and `OrphanPlanDocument` with its tests.
+  the pure selection function, and `OrphanPlanDocument` with its tests. Avro
+  decoding runs on blocking tasks, so a large manifest never blocks the async
+  runtime or lease renewal.
 - Migration 0037 adds the `RemoveOrphanFiles` operation value, the `Deleting`
   job state, immutable `orphan_plans`, and `orphan_deletions` receipts.
 - `bergsmith-persistence` stores plans and receipts inside the fenced planning

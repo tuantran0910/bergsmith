@@ -22,7 +22,7 @@ use bergsmith_common::ids::{JobId, PlanId};
 use bergsmith_storage::{Backend, Location, ObjectEntry};
 use chrono::{DateTime, Utc};
 use iceberg::io::FileIO;
-use iceberg::spec::{ManifestList, TableMetadata};
+use iceberg::spec::{Manifest, ManifestList, TableMetadata};
 use serde::{Deserialize, Serialize};
 
 use crate::baseline::DATA_PATH_PROPERTY;
@@ -121,6 +121,9 @@ pub enum OrphanError {
         /// The manifest path.
         path: String,
     },
+    /// A blocking decode task could not complete.
+    #[error("decoding a manifest failed on a blocking task")]
+    Blocking(#[from] tokio::task::JoinError),
     /// One manifest list or manifest is larger than the scan may read.
     #[error("a manifest file is larger than the scan bound")]
     ScanObjectTooLarge {
@@ -294,7 +297,11 @@ impl Reachable {
             });
         }
         let bytes = input.read().await?;
-        let list = ManifestList::parse_with_version(&bytes, format_version)?;
+        // Avro decoding is CPU-bound; keep it off the runtime's async threads.
+        let list = tokio::task::spawn_blocking(move || {
+            ManifestList::parse_with_version(&bytes, format_version)
+        })
+        .await??;
         for manifest in list.entries() {
             self.manifests = self.manifests.saturating_add(1);
             if self.manifests > bounds.max_manifests {
@@ -339,7 +346,9 @@ impl Reachable {
                     limit: bounds.max_bytes,
                 });
             }
-            let loaded = manifest.load_manifest(file_io).await?;
+            let bytes = file_io.new_input(&manifest.manifest_path)?.read().await?;
+            let loaded =
+                tokio::task::spawn_blocking(move || Manifest::parse_avro(&bytes)).await??;
             for entry in loaded.entries() {
                 self.entries = self.entries.saturating_add(1);
                 if self.entries > bounds.max_entries {

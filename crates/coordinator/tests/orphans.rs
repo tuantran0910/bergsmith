@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use bergsmith_common::ids::{JobId, PlanId};
+use bergsmith_common::ids::{JobId, PlanId, RoleGrantId};
 use bergsmith_common::job::{JobOperation, JobState};
 use bergsmith_coordinator::durable_publication::PublicationConfig;
 use bergsmith_coordinator::runtime::PublicationService;
@@ -22,6 +22,7 @@ use bergsmith_fixtures::{Commit, FileSpec, Fixture, TableSpec, row};
 use bergsmith_maintenance::PlannerConfig;
 use bergsmith_maintenance::orphans::OrphanPlanDocument;
 use bergsmith_persistence::cancellation::{self, CancelJob, CancellationDisposition};
+use bergsmith_persistence::grants;
 use bergsmith_persistence::jobs::NewJob;
 use bergsmith_persistence::orphans::{self, Disposition};
 use bergsmith_persistence::scheduling::RetryPolicy;
@@ -653,6 +654,48 @@ async fn a_candidate_that_becomes_protected_is_skipped(pool: PgPool) {
         file_uri(&candidate),
         Disposition::Skipped.as_str().to_owned()
     )));
+    run.server.reset();
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_revoked_requester_stops_deletion(pool: PgPool) {
+    let mut run = setup(&pool).await;
+    let mut conn = pool.acquire().await.unwrap();
+    planner(&run, enabled(50)).pass().await.unwrap();
+    let grant: uuid::Uuid = sqlx::query_scalar(
+        "SELECT id FROM principal_role_grants
+         WHERE organization_id = $1 AND principal_id = $2 AND revoked_at IS NULL
+         LIMIT 1",
+    )
+    .bind(run.tenant.organization.as_uuid())
+    .bind(run.tenant.user.as_uuid())
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    grants::revoke_grant(
+        &mut conn,
+        run.tenant.organization,
+        RoleGrantId::from_uuid(grant),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let summary = publication(&run, enabled(50)).pass().await.unwrap();
+    assert_eq!(summary.failed, 1);
+    let job = jobs::job(&mut conn, run.tenant.organization, run.job.id)
+        .await
+        .unwrap();
+    assert_eq!(job.state, JobState::Failed);
+    assert_eq!(
+        job.state_reason.as_deref(),
+        Some("AuthorizationRevoked"),
+        "a revoked grant removes the alias before the batch can bind"
+    );
+    assert!(
+        run.orphan_data.exists(),
+        "a revoked requester removes nothing"
+    );
     run.server.reset();
 }
 

@@ -408,7 +408,7 @@ persisted. The response reports the job's `state`, `revision`,
 | `cancelling` | Cancellation won before send authorization; the job is `Cancelling` |
 | `too_late_publication_started` | A commit request was already authorized and may publish |
 | `publication_unresolved` | The commit outcome is unknown; no abort is assumed |
-| `too_late_committed` | The job published |
+| `too_late_committed` | The job published (a finished cleanup reports `already_ended`, because it never publishes) |
 | `cancelled` | The job already ended cancelled |
 | `already_ended` | The job ended another way without publishing; nothing changed |
 

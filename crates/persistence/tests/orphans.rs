@@ -8,10 +8,11 @@ use std::time::Duration;
 use bergsmith_common::ids::{JobId, PlanId};
 use bergsmith_common::job::{JobOperation, JobState};
 use bergsmith_persistence::PersistenceError;
+use bergsmith_persistence::cancellation::{self, CancelJob, CancellationDisposition};
 use bergsmith_persistence::jobs::{self, NewJob};
 use bergsmith_persistence::leadership::acquire_leadership;
 use bergsmith_persistence::orphans::{self, Disposition, NewOrphanPlan, Receipt};
-use sqlx::{PgConnection, PgPool};
+use sqlx::{Connection, PgConnection, PgPool};
 use support::{Tenant, digest, force_job_state, job, tenant};
 use uuid::Uuid;
 
@@ -251,4 +252,97 @@ async fn unresolved_publication_manifests_are_reported(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(lists, vec![path.to_owned()]);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn cancellation_of_a_finished_cleanup_is_not_a_commit_too_late_for(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = tenant(&mut conn, "acme").await;
+    let id = new_job(&mut conn, &tenant, JobOperation::RemoveOrphanFiles).await;
+    force_job_state(&mut conn, id, JobState::Succeeded).await;
+    let outcome = cancellation::request_cancellation(
+        &mut conn,
+        &CancelJob {
+            job_id: id,
+            requested_by: Some(tenant.user),
+            reason: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        outcome.disposition,
+        CancellationDisposition::AlreadyEnded(JobState::Succeeded),
+        "cleanup never publishes, so its success is not a commit"
+    );
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn authorization_proves_the_lease_after_waiting_for_the_job_lock(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = tenant(&mut conn, "acme").await;
+    let epoch = acquire_leadership(&mut conn, "test", Duration::from_secs(60))
+        .await
+        .unwrap()
+        .expect("leadership is acquired")
+        .epoch;
+    let (id, _content, _hash) = planned(&mut conn, &tenant, epoch).await;
+    orphans::begin_deletion(&mut conn, id, 1, epoch)
+        .await
+        .unwrap();
+
+    // Hold the job row so authorization has to wait, let the lease lapse while
+    // it waits, and only then release the row.
+    let mut blocker = pool.acquire().await.unwrap();
+    let mut held = blocker.begin().await.unwrap();
+    sqlx::query("SELECT id FROM jobs WHERE id = $1 FOR UPDATE")
+        .bind(id.as_uuid())
+        .fetch_one(&mut *held)
+        .await
+        .unwrap();
+    let mut lease = pool.acquire().await.unwrap();
+    let mut waiting = pool.acquire().await.unwrap();
+    let authorization =
+        tokio::spawn(async move { orphans::authorize_batch(&mut waiting, id, epoch).await });
+    wait_for_job_lock_wait(&mut lease).await;
+    sqlx::query(
+        "UPDATE coordinator_leadership
+         SET acquired_at = now() - interval '2 hours',
+             lease_expires_at = now() - interval '1 hour'",
+    )
+    .execute(&mut *lease)
+    .await
+    .unwrap();
+    held.rollback().await.unwrap();
+
+    let error = authorization.await.unwrap().unwrap_err();
+    assert!(
+        matches!(error, PersistenceError::LeadershipLost { .. }),
+        "the lease is proven after the wait, not before it: {error:?}"
+    );
+}
+
+/// Waits until a backend is blocked on a row lock.
+async fn wait_for_job_lock_wait(conn: &mut PgConnection) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar(
+                "SELECT EXISTS (
+                     SELECT 1 FROM pg_stat_activity
+                     WHERE datname = current_database()
+                       AND wait_event_type = 'Lock'
+                       AND query ILIKE '%FROM jobs%'
+                 )",
+            )
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+            if waiting {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
 }
