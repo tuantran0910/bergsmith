@@ -8,7 +8,20 @@ yanked = "deny"
 # The `paste` advisory that used to need an ignore is gone: nothing in the
 # graph matches RUSTSEC-2024-0436, and cargo-deny fails an ignore that matches
 # no crate. Add an entry here only for an advisory that is still reported.
-ignore = []
+# RUSTSEC-2026-0391, -0398, -0403, and -0410 were issued 2026-10-26 against
+# zstd 0.13.3, zstd-safe 7.3.0, and zstd-sys 2.1.1, which arrive through
+# apache-avro 0.21 under the pinned iceberg-rust revision. The patched releases
+# are zstd >= 0.14.3 and zstd-safe >= 8.2.0, but apache-avro 0.21 and 0.22 both
+# require zstd ^0.13.3, so no in-tree upgrade resolves them. -0410 affects
+# wasm32 only, and -0398 needs the `seekable` feature, which the graph does not
+# enable; -0391 and -0403 stay accepted risk until the upstream pin moves.
+# TODO(BS-020.T5): remove these ignores when apache-avro allows zstd >= 0.14.3.
+ignore = [
+    "RUSTSEC-2026-0391",
+    "RUSTSEC-2026-0398",
+    "RUSTSEC-2026-0403",
+    "RUSTSEC-2026-0410",
+]
 
 [licenses]
 confidence-threshold = 0.9
