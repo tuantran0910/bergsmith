@@ -35,6 +35,9 @@ pub enum Disposition {
     Deleted,
     /// Re-verification kept it, so nothing was removed.
     Skipped,
+    /// The object was already gone when the batch looked; an earlier attempt
+    /// may have removed it, but this receipt cannot prove that it did.
+    Absent,
 }
 
 impl Disposition {
@@ -44,6 +47,7 @@ impl Disposition {
         match self {
             Self::Deleted => "Deleted",
             Self::Skipped => "Skipped",
+            Self::Absent => "Absent",
         }
     }
 }
@@ -181,24 +185,28 @@ pub async fn begin_deletion(
     Ok(transitioned)
 }
 
-/// Records one receipt per resolved candidate, ignoring duplicates.
+/// Records one receipt per resolved candidate under the leader lease.
 ///
 /// A retry after a crash between the object delete and the receipt insert sees
 /// the same path again; `ON CONFLICT DO NOTHING` keeps the first row and lets
-/// the pass continue.
+/// the pass continue. The leadership check and the rows commit together, so a
+/// former leader cannot record deletions after it lost the lease.
 ///
 /// # Errors
 ///
-/// Returns a database error when the insert fails.
+/// Returns a database error when the insert fails and
+/// [`PersistenceError::LeadershipLost`] when the lease is gone.
 pub async fn record_receipts(
     conn: &mut PgConnection,
     job_id: JobId,
     receipts: &[Receipt<'_>],
+    epoch: i64,
 ) -> Result<(), PersistenceError> {
     if receipts.is_empty() {
         return Ok(());
     }
     let mut tx = conn.begin().await?;
+    crate::leadership::ensure_leadership(&mut tx, epoch).await?;
     for receipt in receipts {
         sqlx::query(
             "INSERT INTO orphan_deletions (job_id, path, disposition, size_bytes)

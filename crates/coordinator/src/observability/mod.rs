@@ -28,13 +28,14 @@ pub use rpc::{RpcLatency, RpcLatencyLayer, RpcMetrics};
 /// How long a readiness probe waits for PostgreSQL.
 const READINESS_TIMEOUT: Duration = Duration::from_secs(2);
 
-const ACTIVE_JOB_STATES: [&str; 7] = [
+const ACTIVE_JOB_STATES: [&str; 8] = [
     "Planning",
     "Queued",
     "Running",
     "ReadyToCommit",
     "Committing",
     "CommitOutcomeUnknown",
+    "Deleting",
     "Cancelling",
 ];
 const ENDED_JOB_STATES: [&str; 5] = ["Succeeded", "NoOp", "Cancelled", "ReplanRequired", "Failed"];

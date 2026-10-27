@@ -100,11 +100,11 @@ async fn a_plan_and_its_receipts_carry_the_job_through_deletion(pool: PgPool) {
             size_bytes: 20,
         },
     ];
-    orphans::record_receipts(&mut conn, id, &receipts)
+    orphans::record_receipts(&mut conn, id, &receipts, epoch)
         .await
         .unwrap();
     // A crash between the delete and the receipt repeats the same rows.
-    orphans::record_receipts(&mut conn, id, &receipts)
+    orphans::record_receipts(&mut conn, id, &receipts, epoch)
         .await
         .unwrap();
     assert_eq!(

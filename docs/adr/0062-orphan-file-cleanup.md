@@ -42,6 +42,8 @@ is the union of:
 - every snapshot's manifest list, every manifest it names, and every data or
   delete file in those manifests, across every snapshot the current metadata
   retains;
+- every object identity as `(backend, authority, key)`, so `s3` and `s3a`
+  spellings of one object compare equal;
 - every statistics file and partition statistics file the metadata names.
 
 Everything else under the table location is a candidate. Objects outside the
@@ -50,11 +52,13 @@ table location are never deleted, even when metadata references them.
 **Bergsmith's own tree is never a candidate.** Attempt outputs, task artifacts,
 and manifests a job is writing live under `<data-location>/bergsmith/`, where
 the data location is the table's `write.data.path` or
-`<table-location>/data`. No object under that prefix is deleted; a
-`<table-location>/bergsmith/` tree from an older layout is protected the same
-way. Files an unresolved job may publish are therefore protected twice: their
-outputs are under the Bergsmith prefix, and the deletion pass reloads table
-metadata so a commit that landed protects its files as reachable.
+`<table-location>/data`. No object whose path below the table location contains
+a `bergsmith` segment is deleted, which covers the current data location, the
+`<table-location>/bergsmith/` layout of older releases, and any data location a
+table used before `write.data.path` changed. Files an unresolved job may
+publish are therefore protected twice: their outputs are under a Bergsmith
+segment, and the deletion pass reloads table metadata so a commit that landed
+protects its files as reachable.
 
 **Only old, unreferenced objects are candidates.** The age floor is the
 stricter of `orphans.minimum_age_seconds` (default three days, matching
@@ -71,11 +75,12 @@ paths with sizes and modification times. Its hash covers the canonical typed
 form, as with compaction and expiration plans. A rerun of the planner cannot
 change what a job deletes.
 
-**Deletion re-verifies before it removes.** Each bounded batch runs in a
-fenced step: the coordinator proves it still holds the leader lease, the job is
-still `Deleting`, and no cancellation was recorded. It then reloads table
-metadata, recomputes reachability, and re-lists the table, so the modification
-time and size used for verification are current rather than planning-time
+**Deletion re-verifies before it removes.** A batch first does every read
+(catalog load, reachability, listing), then fences the destructive step: the
+coordinator proves it still holds the leader lease, the job is still
+`Deleting`, and no cancellation was recorded. The fence is as late as possible,
+and the receipts commit in a transaction that checks the lease again. The batch
+uses the fresh listing's modification time and size rather than planning-time
 values. A candidate is deleted only while it is still unreferenced, still older
 than the effective window, still the listed object (same size), still outside
 the Bergsmith prefix, and still inside the table location. Anything else is
@@ -84,7 +89,11 @@ dies between the delete and the receipt only repeats itself.
 
 **Ledger receipts make the job resumable and auditable.**
 `orphan_deletions` records one row per planned candidate with its disposition
-(`Deleted` or `Skipped`), size, and time. Completion requires a receipt for
+(`Deleted`, `Skipped`, or `Absent`), size, and time. `Deleted` means this batch
+removed the object; `Skipped` means re-verification kept it; `Absent` means the
+object was already gone, so an earlier attempt may have removed it but this
+receipt cannot prove that it did — the reclaimed-byte total counts only
+`Deleted`. Completion requires a receipt for
 every planned candidate; the job then moves to `Succeeded`. A pass is bounded
 by `orphans.max_deletions_per_pass`, so a large plan continues over several
 passes and a restart resumes where the receipts stop.
@@ -94,8 +103,12 @@ API answers 400 while it is false, and planning and the first deletion fail
 closed if it was disabled between them. Listing is bounded while it is
 consumed (`orphans.max_listed_objects`), and the scan bounds manifests, manifest
 entries, and object bytes (`orphans.max_scan_entries`,
-`orphans.max_scan_bytes`); exceeding any bound fails the job permanently with a
-typed reason instead of deleting from a partial view. A permanent failure
+`orphans.max_scan_bytes`). A manifest whose declared entry counts are missing
+cannot be bounded, so the scan refuses it. The byte bound caps allocation while
+reading, but a compressed manifest could still decode to more entries than the
+declared counts; the post-decode count check is the backstop. Exceeding any
+bound fails the job permanently with a typed reason instead of deleting from a
+partial view. A permanent failure
 during deletion ends the job `Failed` through the deletion path, so it does not
 repeat every pass.
 

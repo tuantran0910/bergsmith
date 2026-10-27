@@ -28,14 +28,16 @@ CREATE TRIGGER orphan_plans_are_immutable BEFORE UPDATE OR DELETE ON orphan_plan
     FOR EACH ROW EXECUTE FUNCTION bergsmith_reject_mutation();
 
 -- `Deleted` means the object was removed; `Skipped` means re-verification kept
--- it (it became referenced, young, or owned by Bergsmith). Either way the
--- candidate is resolved, so the job can finish once every plan candidate has
--- one row. A retry after a crash between the delete and the insert collides on
+-- it (it became referenced, young, or owned by Bergsmith); `Absent` means the
+-- object was already gone when the batch looked, so an earlier attempt may
+-- have removed it, but this receipt cannot prove that it did. Every row
+-- resolves its candidate, so the job finishes once the plan has one row per
+-- object. A retry after a crash between the delete and the insert collides on
 -- the primary key and is ignored: deleting a missing object is a no-op.
 CREATE TABLE orphan_deletions (
     job_id uuid NOT NULL REFERENCES jobs (id) ON DELETE CASCADE,
     path text NOT NULL CHECK (length(path) > 0),
-    disposition text NOT NULL CHECK (disposition IN ('Deleted', 'Skipped')),
+    disposition text NOT NULL CHECK (disposition IN ('Deleted', 'Skipped', 'Absent')),
     size_bytes bigint NOT NULL CHECK (size_bytes >= 0),
     recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (job_id, path)

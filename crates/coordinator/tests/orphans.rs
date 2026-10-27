@@ -452,6 +452,63 @@ async fn a_permanent_scan_failure_terminates_the_deleting_job(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn an_object_removed_before_the_batch_is_recorded_absent(pool: PgPool) {
+    let mut run = setup(&pool).await;
+    let mut conn = pool.acquire().await.unwrap();
+    planner(&run, enabled(50)).pass().await.unwrap();
+    // Simulate a crash between the delete and its receipt: the object is gone
+    // but the ledger never heard about it.
+    std::fs::remove_file(&run.orphan_data).unwrap();
+    publication(&run, enabled(50)).pass().await.unwrap();
+    let job = jobs::job(&mut conn, run.tenant.organization, run.job.id)
+        .await
+        .unwrap();
+    assert_eq!(job.state, JobState::Succeeded);
+    let receipts: Vec<(String, String)> =
+        sqlx::query_as("SELECT path, disposition FROM orphan_deletions WHERE job_id = $1")
+            .bind(job.id.as_uuid())
+            .fetch_all(&mut *conn)
+            .await
+            .unwrap();
+    assert!(receipts.contains(&(
+        file_uri(&run.orphan_data),
+        Disposition::Absent.as_str().to_owned()
+    )));
+    assert!(!run.orphan_metadata.exists());
+    run.server.reset();
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_former_leader_deletes_nothing(pool: PgPool) {
+    let mut run = setup(&pool).await;
+    let mut conn = pool.acquire().await.unwrap();
+    planner(&run, enabled(50)).pass().await.unwrap();
+    // Let the lease lapse and hand it to another coordinator.
+    sqlx::query(
+        "UPDATE coordinator_leadership
+         SET acquired_at = now() - interval '2 hours',
+             lease_expires_at = now() - interval '1 hour'",
+    )
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    let successor = acquire_leadership(&mut conn, "successor", Duration::from_secs(60))
+        .await
+        .unwrap()
+        .expect("the lease is free");
+    assert_ne!(successor.epoch, run.epoch);
+    let deferred = publication(&run, enabled(50)).pass().await.unwrap();
+    assert_eq!(deferred.deferred, 1);
+    let job = jobs::job(&mut conn, run.tenant.organization, run.job.id)
+        .await
+        .unwrap();
+    assert_eq!(job.state, JobState::ReadyToCommit);
+    assert!(run.orphan_data.exists());
+    assert!(run.orphan_metadata.exists());
+    run.server.reset();
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
 async fn cleanup_is_refused_when_disabled(pool: PgPool) {
     let mut run = setup(&pool).await;
     let mut conn = pool.acquire().await.unwrap();

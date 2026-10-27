@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 
 use bergsmith_common::digest::Sha256Digest;
 use bergsmith_common::ids::{JobId, PlanId};
-use bergsmith_storage::{Location, ObjectEntry};
+use bergsmith_storage::{Backend, Location, ObjectEntry};
 use chrono::{DateTime, Utc};
 use iceberg::io::FileIO;
 use iceberg::spec::{ManifestList, TableMetadata};
@@ -68,6 +68,12 @@ pub enum OrphanError {
         /// The bound the caller set.
         limit: usize,
     },
+    /// A manifest declares no entry counts, so its size cannot be bounded.
+    #[error("manifest {path} declares no entry counts")]
+    ScanUnboundedManifest {
+        /// The manifest path.
+        path: String,
+    },
     /// One manifest list or manifest is larger than the scan may read.
     #[error("a manifest file is larger than the scan bound")]
     ScanObjectTooLarge {
@@ -111,6 +117,24 @@ impl ReachabilityBounds {
     }
 }
 
+/// The identity of one stored object, independent of its URI spelling.
+///
+/// `s3` and `s3a` name the same object, and so do other scheme aliases for one
+/// backend. Reachability stores identities, so a live file written as `s3a`
+/// cannot be missed because the listing spells it `s3`.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ObjectIdentity(Backend, String, String);
+
+impl ObjectIdentity {
+    fn of(location: &Location) -> Self {
+        Self(
+            location.backend(),
+            location.authority().to_owned(),
+            location.key().to_owned(),
+        )
+    }
+}
+
 /// Every object the table still references.
 ///
 /// The set is built from the current metadata only. Metadata files named by
@@ -120,7 +144,7 @@ impl ReachabilityBounds {
 /// metadata retains.
 #[derive(Clone, Debug, Default)]
 pub struct Reachable {
-    files: BTreeSet<Location>,
+    files: BTreeSet<ObjectIdentity>,
     manifests: usize,
     entries: usize,
 }
@@ -129,7 +153,7 @@ impl Reachable {
     /// Whether `location` is referenced by the table.
     #[must_use]
     pub fn contains(&self, location: &Location) -> bool {
-        self.files.contains(location)
+        self.files.contains(&ObjectIdentity::of(location))
     }
 
     /// The number of referenced objects.
@@ -211,11 +235,18 @@ impl Reachable {
                     });
                 }
                 // The counts let a manifest be refused before it is decoded.
-                let declared = manifest
-                    .added_files_count
-                    .unwrap_or(0)
-                    .saturating_add(manifest.existing_files_count.unwrap_or(0))
-                    .saturating_add(manifest.deleted_files_count.unwrap_or(0));
+                // An older manifest without them cannot be bounded, so the
+                // scan refuses it instead of decoding an unknown-size object.
+                let (Some(added), Some(existing), Some(deleted)) = (
+                    manifest.added_files_count,
+                    manifest.existing_files_count,
+                    manifest.deleted_files_count,
+                ) else {
+                    return Err(OrphanError::ScanUnboundedManifest {
+                        path: manifest.manifest_path.clone(),
+                    });
+                };
+                let declared = added.saturating_add(existing).saturating_add(deleted);
                 if reachable
                     .entries
                     .saturating_add(usize::try_from(declared).unwrap_or(usize::MAX))
@@ -246,8 +277,8 @@ impl Reachable {
     }
 
     fn insert(&mut self, path: &str) -> Result<(), OrphanError> {
-        self.files
-            .insert(Location::parse(path).map_err(OrphanError::Location)?);
+        let location = Location::parse(path).map_err(OrphanError::Location)?;
+        self.files.insert(ObjectIdentity::of(&location));
         Ok(())
     }
 }
@@ -344,6 +375,26 @@ impl OrphanDecision {
     }
 }
 
+/// Whether `location` lies under a `bergsmith` path segment of the table.
+///
+/// A table's data location can change (`write.data.path`), and outputs written
+/// under the previous one are still Bergsmith's own. Any `bergsmith` segment
+/// below the table location therefore marks the object as protected, which
+/// also covers layouts this release does not know about. Over-retention of a
+/// user directory that happens to be named `bergsmith` is the accepted cost.
+fn is_berggsmith_owned(location: &Location, table: &Location) -> bool {
+    if !location.is_within(table) {
+        return false;
+    }
+    let key = location.key();
+    let relative = key
+        .strip_prefix(table.key())
+        .map_or(key, |rest| rest.trim_start_matches('/'));
+    relative
+        .split('/')
+        .any(|segment| segment == BERGSMITH_SEGMENT)
+}
+
 /// The Bergsmith-owned trees inside and beside a table location.
 /// The prefix checks a deletion pass applies before removing an object.
 ///
@@ -409,9 +460,10 @@ pub fn select_orphans(
         if !entry.location.is_within(&table) {
             continue;
         }
-        if bergsmith_roots
-            .iter()
-            .any(|root| entry.location.is_within(root))
+        if is_berggsmith_owned(&entry.location, &table)
+            || bergsmith_roots
+                .iter()
+                .any(|root| entry.location.is_within(root))
         {
             decision.retained_bergsmith = decision.retained_bergsmith.saturating_add(1);
             continue;
@@ -713,6 +765,57 @@ mod tests {
         assert_eq!(
             decision.candidates[0].last_modified_ms,
             now.timestamp_millis() - 10 * 86_400_000
+        );
+    }
+
+    #[test]
+    fn scheme_aliases_of_a_live_file_are_still_reachable() {
+        let now = Utc::now();
+        let mut reachable = Reachable::default();
+        reachable.insert("s3a://b/t/data/live.parquet").unwrap();
+        let listed = vec![
+            entry("s3://b/t/data/live.parquet", 90 * 86_400_000, now),
+            entry("s3a://b/t/data/other.parquet", 90 * 86_400_000, now),
+        ];
+        let decision = select_orphans(
+            &reachable,
+            &listed,
+            "s3://b/t",
+            "s3://b/t/data",
+            &policy(),
+            now,
+        )
+        .unwrap();
+        assert_eq!(decision.retained_referenced, 1);
+        assert_eq!(decision.candidates[0].path, "s3a://b/t/data/other.parquet");
+    }
+
+    #[test]
+    fn outputs_under_a_previous_data_location_are_protected() {
+        let now = Utc::now();
+        let listed = vec![
+            // The table once used `old-data`; its Bergsmith tree must survive.
+            entry(
+                "s3://b/t/old-data/bergsmith/job/attempt/out.parquet",
+                90 * 86_400_000,
+                now,
+            ),
+            entry("s3://b/t/old-data/orphan.parquet", 90 * 86_400_000, now),
+        ];
+        let decision = select_orphans(
+            &Reachable::default(),
+            &listed,
+            "s3://b/t",
+            "s3://b/t/new-data",
+            &policy(),
+            now,
+        )
+        .unwrap();
+        assert_eq!(decision.retained_bergsmith, 1);
+        assert_eq!(decision.candidates.len(), 1);
+        assert_eq!(
+            decision.candidates[0].path,
+            "s3://b/t/old-data/orphan.parquet"
         );
     }
 

@@ -843,9 +843,16 @@ pub enum PlanningError {
 impl PlanningError {
     /// Whether another pass can succeed without operator action.
     #[must_use]
-    pub const fn is_transient(&self) -> bool {
+    pub fn is_transient(&self) -> bool {
         match self {
-            Self::Persistence(_) | Self::Orphan(OrphanError::Io(_)) => true,
+            Self::Persistence(_) => true,
+            Self::Orphan(OrphanError::Io(error)) => !matches!(
+                error.kind(),
+                iceberg::ErrorKind::DataInvalid | iceberg::ErrorKind::FeatureUnsupported
+            ),
+            Self::Orphan(OrphanError::Storage(error)) => {
+                matches!(error, bergsmith_storage::StorageError::Io(_))
+            }
             // Only metadata I/O can succeed on a retry. Invalid selections,
             // duplicate files, missing sequences, oversized inventories, and
             // malformed locations/predicates are deterministic for the same
