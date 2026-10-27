@@ -376,6 +376,12 @@ impl PlannerService {
         if job.operation == JobOperation::RemoveOrphanFiles && !self.orphan.enabled {
             return Err(PlanningError::OrphanCleanupUnavailable);
         }
+        // Cleanup reads the publication ledger before the catalog, so a
+        // commit that lands while it works is protected by at least one of the
+        // two views (see `plan_orphans`).
+        if job.operation == JobOperation::RemoveOrphanFiles {
+            return self.plan_orphans(job).await;
+        }
         let binding = self
             .catalogs
             .binding_for_job(job)
@@ -383,9 +389,6 @@ impl PlannerService {
             .map_err(PlanningError::Access)?;
         if job.operation == JobOperation::ExpireSnapshots {
             return self.plan_expiration(job, &binding).await;
-        }
-        if job.operation == JobOperation::RemoveOrphanFiles {
-            return self.plan_orphans(job, &binding).await;
         }
         let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
         let policy = schedules::policy_for_job(&mut conn, job.id).await?;
@@ -530,23 +533,14 @@ impl PlannerService {
     async fn plan_orphans(
         &self,
         job: &jobs::Job,
-        binding: &TableBinding,
     ) -> Result<(PlannedWork, jobs::Job), PlanningError> {
         if !self.orphan.enabled {
             return Err(PlanningError::OrphanCleanupUnavailable);
         }
-        let baseline = OrphanBaseline::capture(
-            &binding.loaded.metadata,
-            binding.loaded.metadata_location.as_deref(),
-        )
-        .map_err(PlanningError::Plan)?;
-        let metadata_location = binding.loaded.metadata_location.as_deref().ok_or_else(|| {
-            PlanningError::Plan(PlanError::StagedTable {
-                table_uuid: binding.loaded.metadata.uuid(),
-            })
-        })?;
-        // Publication intents that may still be sent own manifests outside the
-        // current snapshots; protect them before this job names candidates.
+        // Read the ledger before the catalog. If a proposal lands in between,
+        // its files are reachable from the metadata read afterwards; if it is
+        // still unresolved, this read protects its manifests. Either way the
+        // handoff cannot drop both views.
         let unresolved = {
             let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
             orphan_plans::unresolved_manifest_lists(
@@ -557,6 +551,21 @@ impl PlannerService {
             )
             .await?
         };
+        let binding = self
+            .catalogs
+            .binding_for_job(job)
+            .await
+            .map_err(PlanningError::Access)?;
+        let baseline = OrphanBaseline::capture(
+            &binding.loaded.metadata,
+            binding.loaded.metadata_location.as_deref(),
+        )
+        .map_err(PlanningError::Plan)?;
+        let metadata_location = binding.loaded.metadata_location.as_deref().ok_or_else(|| {
+            PlanningError::Plan(PlanError::StagedTable {
+                table_uuid: binding.loaded.metadata.uuid(),
+            })
+        })?;
         let reachable = Reachable::capture(
             &binding.loaded.metadata,
             metadata_location,
@@ -586,7 +595,7 @@ impl PlannerService {
             })?;
         let policy = OrphanPolicy::new(
             self.orphan.minimum_age_seconds,
-            protection_window_ms(binding),
+            protection_window_ms(&binding),
             self.orphan.max_candidates,
         )
         .map_err(PlanningError::Orphan)?;
@@ -602,7 +611,7 @@ impl PlannerService {
         if decision.candidates.is_empty() {
             let reason = bergsmith_maintenance::NoOpReason::NoOrphanFiles;
             let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
-            let recorded = self.record_noop(&mut conn, job, reason, binding).await?;
+            let recorded = self.record_noop(&mut conn, job, reason, &binding).await?;
             return Ok((PlannedWork::NoOp(reason), recorded));
         }
         let document = OrphanPlanDocument::new(

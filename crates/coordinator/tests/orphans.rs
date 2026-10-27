@@ -603,6 +603,60 @@ async fn an_unresolved_publication_keeps_its_manifests(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_candidate_that_becomes_protected_is_skipped(pool: PgPool) {
+    let mut run = setup(&pool).await;
+    // A copy of the manifest list is an unreferenced, old metadata object, so
+    // planning names it as a candidate.
+    let candidate = unresolved_manifest_list(&run);
+    let mut conn = pool.acquire().await.unwrap();
+    planner(&run, enabled(50)).pass().await.unwrap();
+    let (content, _hash) = orphans::orphan_plan(&mut conn, run.job.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let document = OrphanPlanDocument::from_persisted(content).unwrap();
+    assert!(
+        document
+            .candidates
+            .iter()
+            .any(|planned| planned.path == file_uri(&candidate)),
+        "the unreferenced manifest list is planned for deletion"
+    );
+
+    // A proposal that appears after planning names that object, so the batch
+    // must re-verify against the ledger and skip it.
+    let pending = jobs::create_job(
+        &mut conn,
+        &NewJob {
+            id: JobId::generate(),
+            organization_id: run.tenant.organization,
+            table_id: run.tenant.table,
+            operation: JobOperation::Compact,
+            retry_of: None,
+            created_by: run.tenant.user,
+        },
+    )
+    .await
+    .unwrap();
+    force_job_state(&mut conn, pending.id, JobState::Committing).await;
+    insert_unresolved_intent(&mut conn, pending.id, &file_uri(&candidate)).await;
+
+    publication(&run, enabled(50)).pass().await.unwrap();
+    assert!(candidate.exists(), "the newly protected object survives");
+    let receipts: Vec<(String, String)> =
+        sqlx::query_as("SELECT path, disposition FROM orphan_deletions WHERE job_id = $1")
+            .bind(run.job.id.as_uuid())
+            .fetch_all(&mut *conn)
+            .await
+            .unwrap();
+    assert!(receipts.contains(&(
+        file_uri(&candidate),
+        Disposition::Skipped.as_str().to_owned()
+    )));
+    run.server.reset();
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
 async fn a_resumed_job_without_a_plan_fails(pool: PgPool) {
     let mut run = setup(&pool).await;
     let mut conn = pool.acquire().await.unwrap();

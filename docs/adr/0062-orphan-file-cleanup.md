@@ -53,16 +53,17 @@ is the union of:
 Everything else under the table location is a candidate. Objects outside the
 table location are never deleted, even when metadata references them.
 
-**Bergsmith's own tree is never a candidate.** Attempt outputs, task artifacts,
-and manifests a job is writing live under `<data-location>/bergsmith/`, where
-the data location is the table's `write.data.path` or
-`<table-location>/data`. No object whose path below the table location contains
-a `bergsmith` segment is deleted, which covers the current data location, the
-`<table-location>/bergsmith/` layout of older releases, and any data location a
-table used before `write.data.path` changed. Files an unresolved job may
-publish are therefore protected twice: their outputs are under a Bergsmith
-segment, and the deletion pass reloads table metadata so a commit that landed
-protects its files as reachable.
+**Bergsmith's own tree is never a candidate.** Attempt outputs and task
+artifacts live under `<data-location>/bergsmith/`, where the data location is
+the table's `write.data.path` or `<table-location>/data`. No object whose path
+below the table location contains a `bergsmith` segment is deleted, which
+covers the current data location, the `<table-location>/bergsmith/` layout of
+older releases, and any data location a table used before `write.data.path`
+changed. Compaction proposal manifests are different: they live under the
+table's metadata directory, so the prefix rule cannot see them. They are
+protected by name from every unresolved publication intent, and a commit that
+lands while cleanup works protects them as reachable because the ledger is read
+before the metadata.
 
 **An empty table can be cleaned too.** Selection needs the table's locations
 and metadata file, not a `main` snapshot. A table without a snapshot simply has
@@ -76,9 +77,9 @@ An object whose last-modified time is unknown is retained. The candidates are
 sorted by last-modified time and location, then truncated to
 `orphans.max_candidates` (oldest first); the rest wait for a later job.
 
-**The plan is immutable and hashed.** `OrphanPlanDocument` records the
-planning baseline (table UUID, metadata location, current snapshot), the
-effective cutoff, the listed and protected counts, and the exact candidate
+**The plan is immutable and hashed.** `OrphanPlanDocument` records the table
+identity, the metadata file, and both locations (cleanup needs no snapshot),
+the effective cutoff, the listed and protected counts, and the exact candidate
 paths with sizes and modification times. Its hash covers the canonical typed
 form, as with compaction and expiration plans. A rerun of the planner cannot
 change what a job deletes.

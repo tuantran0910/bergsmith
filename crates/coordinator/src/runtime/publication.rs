@@ -617,18 +617,9 @@ impl PublicationService {
         job: &jobs::Job,
         document: &OrphanPlanDocument,
     ) -> Result<Outcome, PublicationError> {
-        let binding = self
-            .catalogs
-            .binding_for_job(job)
-            .await
-            .map_err(PublicationError::Access)?;
-        let metadata_location = binding
-            .loaded
-            .metadata_location
-            .as_deref()
-            .ok_or(PublicationError::Proposal)?;
-        // Manifests of a publication that may still be sent are not reachable
-        // from any snapshot, so they must be protected explicitly.
+        // Read the ledger before the catalog: a proposal that lands while this
+        // batch works is either still listed here or reachable from the
+        // metadata loaded next, never neither.
         let unresolved = {
             let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
             orphan_plans::unresolved_manifest_lists(
@@ -639,6 +630,16 @@ impl PublicationService {
             )
             .await?
         };
+        let binding = self
+            .catalogs
+            .binding_for_job(job)
+            .await
+            .map_err(PublicationError::Access)?;
+        let metadata_location = binding
+            .loaded
+            .metadata_location
+            .as_deref()
+            .ok_or(PublicationError::Proposal)?;
         let reachable = Reachable::capture(
             &binding.loaded.metadata,
             metadata_location,
@@ -705,6 +706,9 @@ impl PublicationService {
                     PersistenceError::RevisionConflict { .. }
                     | PersistenceError::JobNotInState { .. },
                 ) => return Ok(Outcome::Superseded),
+                Err(PersistenceError::PermissionDenied { .. }) => {
+                    return Err(PublicationError::AuthorityRevoked);
+                }
                 Err(error) => return Err(error.into()),
             };
             let recorded = orphan_plans::recorded_paths(&mut conn, job.id).await?;
@@ -902,6 +906,9 @@ pub enum PublicationError {
     /// Orphan-file selection or deletion failed.
     #[error(transparent)]
     Orphans(#[from] OrphanError),
+    /// The job's requester may no longer act on the table.
+    #[error("the job requester is no longer authorized")]
+    AuthorityRevoked,
 }
 
 impl PublicationError {
@@ -930,6 +937,7 @@ impl PublicationError {
             ),
             Self::PlanMissing
             | Self::Proposal
+            | Self::AuthorityRevoked
             | Self::Orphans(_)
             | Self::Planning(_)
             | Self::Plan(_) => false,
@@ -964,7 +972,8 @@ impl PublicationError {
             })) => "PlanningTableMissing",
             Self::Durable(DurablePublicationError::Catalog(
                 CatalogError::Status { status: 403, .. } | CatalogError::Authentication { .. },
-            )) => "ExecutionAuthorityRevoked",
+            ))
+            | Self::AuthorityRevoked => "ExecutionAuthorityRevoked",
             Self::Durable(_) => "PublicationFailed",
             Self::PlanMissing => "PlanMissing",
             Self::Orphans(_) => "OrphanCleanupInvalid",

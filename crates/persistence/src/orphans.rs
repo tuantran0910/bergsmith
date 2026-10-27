@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 
 use bergsmith_common::ids::{JobId, OrganizationId, PlanId, TableId};
 use bergsmith_common::job::{JobOperation, JobState};
+use bergsmith_common::permission::Permission;
 use sqlx::{Connection, PgConnection};
 
 use crate::error::PersistenceError;
@@ -112,7 +113,6 @@ pub async fn create_orphan_plan(
     .execute(&mut *tx)
     .await
     .map_err(|error| PersistenceError::from_write("orphan plan", error))?;
-    crate::leadership::ensure_leadership(&mut tx, epoch).await?;
     let transitioned = jobs::transition_job_within(
         &mut tx,
         &Transition {
@@ -125,6 +125,7 @@ pub async fn create_orphan_plan(
         },
     )
     .await?;
+    crate::leadership::ensure_leadership(&mut tx, epoch).await?;
     tx.commit().await?;
     Ok(transitioned)
 }
@@ -168,7 +169,6 @@ pub async fn begin_deletion(
             operation: "begin orphan deletion",
         });
     }
-    crate::leadership::ensure_leadership(&mut tx, epoch).await?;
     let transitioned = jobs::transition_job_within(
         &mut tx,
         &Transition {
@@ -181,6 +181,7 @@ pub async fn begin_deletion(
         },
     )
     .await?;
+    crate::leadership::ensure_leadership(&mut tx, epoch).await?;
     tx.commit().await?;
     Ok(transitioned)
 }
@@ -310,7 +311,8 @@ pub async fn authorize_batch(
     epoch: i64,
 ) -> Result<Job, PersistenceError> {
     let mut tx = conn.begin().await?;
-    crate::leadership::ensure_leadership(&mut tx, epoch).await?;
+    // Lock the job before reading the lease: another transaction may hold the
+    // row past lease expiry, and the lease must be proven after the wait.
     let job = jobs::lock_job(&mut tx, job_id).await?;
     if job.state != JobState::Deleting || job.cancellation.is_some() {
         return Err(PersistenceError::JobNotInState {
@@ -319,6 +321,10 @@ pub async fn authorize_batch(
             operation: "authorize an orphan deletion batch",
         });
     }
+    // Deactivation and revocation must stop the destructive step, exactly as
+    // they stop a first publication send.
+    crate::grants::require_job_permission(&mut tx, &job, Permission::SubmitJobs).await?;
+    crate::leadership::ensure_leadership(&mut tx, epoch).await?;
     tx.commit().await?;
     Ok(job)
 }
@@ -342,7 +348,7 @@ pub async fn end_deletion(
     reason: &'static str,
 ) -> Result<Job, PersistenceError> {
     let mut tx = conn.begin().await?;
-    crate::leadership::ensure_leadership(&mut tx, epoch).await?;
+    jobs::lock_job(&mut tx, job_id).await?;
     let transitioned = jobs::transition_job_within(
         &mut tx,
         &Transition {
@@ -355,6 +361,7 @@ pub async fn end_deletion(
         },
     )
     .await?;
+    crate::leadership::ensure_leadership(&mut tx, epoch).await?;
     tx.commit().await?;
     Ok(transitioned)
 }
