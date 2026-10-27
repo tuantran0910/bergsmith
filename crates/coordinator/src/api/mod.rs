@@ -12,6 +12,7 @@ mod discovery;
 mod events;
 mod grants;
 mod maintenance;
+mod notification_rules;
 mod notifications;
 mod overview;
 mod pagination;
@@ -178,6 +179,14 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/api/v1/notifications/destinations/{id}/test",
             post(notifications::test),
+        )
+        .route(
+            "/api/v1/notifications/rules",
+            get(notification_rules::list).post(notification_rules::create),
+        )
+        .route(
+            "/api/v1/notifications/rules/{id}",
+            get(notification_rules::get).patch(notification_rules::update),
         )
         .route("/api/v1/audit", get(resources::audit))
         .route("/api/v1/workers", get(resources::workers))
