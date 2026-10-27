@@ -534,6 +534,27 @@ reason, because a request whose response was lost may still have reached the
 receiver. The test does not enqueue a durable delivery and leaves no
 delivery-log row.
 
+## Notification rules
+
+`GET /api/v1/notifications/rules` pages through the organization's rules in
+ascending identifier order, `POST` registers one, `GET .../{id}` reads one, and
+`PATCH .../{id}` edits it when the request names the revision it read. All four
+require organization-wide `notifications:manage`. A repeated name answers 409
+`resource_already_exists`.
+
+A rule names an `event_kind` (`job.failed`, `job.replan_required`,
+`publication.commit_outcome_unknown`, `schedule.occurrence_missed`,
+`table.health_critical`, or `workers.pool_without_workers`), one
+`destination_id`, and at most one filter: `{"connection_id": "<uuid>"}`,
+`{"pool": "<name>"}`, or `{"table_id": "<uuid>"}`. The destination and the
+table or connection filter must belong to the calling organization; a missing
+one answers 404. The event kind cannot change after creation. A
+`repeat_threshold` is accepted only for `job.replan_required`,
+`publication.commit_outcome_unknown`, and `schedule.occurrence_missed`, and is
+1 or more; absent means every matching event. On `PATCH`, an absent `filter` or
+`repeat_threshold` keeps the stored value, `null` clears it, and an object or
+number replaces it.
+
 ## Pagination, errors, and authentication
 
 Lists accept `limit` (default 50, maximum 100) and an opaque `cursor`. Follow

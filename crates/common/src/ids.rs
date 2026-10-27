@@ -136,6 +136,10 @@ define_id!(
     /// Identifies a notification destination.
     NotificationDestinationId
 );
+define_id!(
+    /// Identifies a notification rule.
+    NotificationRuleId
+);
 
 #[cfg(test)]
 mod tests {

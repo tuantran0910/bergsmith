@@ -16,6 +16,9 @@ mod grants_api;
 #[path = "api/job_statistics.rs"]
 mod job_statistics;
 
+#[path = "api/notification_rules.rs"]
+mod notification_rules_api;
+
 #[path = "api/notifications.rs"]
 mod notifications_api;
 
@@ -1210,6 +1213,53 @@ async fn ledger_outage_is_retryable(pool: PgPool) {
 }
 
 #[test]
+fn openapi_operation_ids_are_unique_and_rules_use_rule_schemas() {
+    let document: Value = serde_json::from_str(include_str!("../src/api/openapi.json")).unwrap();
+    let mut ids = BTreeSet::new();
+    for (path, operations) in document["paths"].as_object().unwrap() {
+        for (method, operation) in operations.as_object().unwrap() {
+            let id = operation["operationId"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{method} {path} has no operation id"));
+            assert!(
+                ids.insert(id.to_owned()),
+                "duplicate operation id {id} at {method} {path}"
+            );
+        }
+    }
+
+    let create = &document["paths"]["/api/v1/notifications/rules"]["post"];
+    assert_eq!(create["operationId"], "createNotificationRule");
+    let schema = &create["requestBody"]["content"]["application/json"]["schema"];
+    assert_eq!(
+        schema["$ref"],
+        "#/components/schemas/CreateNotificationRule"
+    );
+    check_schema(
+        &document,
+        schema,
+        &json!({
+            "name": "replans",
+            "destination_id": Uuid::now_v7().to_string(),
+            "event_kind": "job.replan_required",
+            "filter": {"pool": "default"},
+            "repeat_threshold": 3,
+        }),
+    );
+
+    let update = &document["paths"]["/api/v1/notifications/rules/{id}"]["patch"];
+    assert_eq!(update["operationId"], "updateNotificationRule");
+    assert_eq!(
+        update["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/UpdateNotificationRule"
+    );
+
+    let create_schema = &document["components"]["schemas"]["CreateNotificationRule"];
+    assert!(create_schema["properties"]["destination_id"].is_object());
+    assert!(create_schema["properties"]["url"].is_null());
+}
+
+#[test]
 fn openapi_documents_every_route() {
     // Keep in sync with `api::router`.
     const ROUTES: &[(&str, &str)] = &[
@@ -1275,6 +1325,10 @@ fn openapi_documents_every_route() {
         ("/api/v1/notifications/destinations/{id}", "get"),
         ("/api/v1/notifications/destinations/{id}", "patch"),
         ("/api/v1/notifications/destinations/{id}/test", "post"),
+        ("/api/v1/notifications/rules", "get"),
+        ("/api/v1/notifications/rules", "post"),
+        ("/api/v1/notifications/rules/{id}", "get"),
+        ("/api/v1/notifications/rules/{id}", "patch"),
         ("/api/v1/openapi.json", "get"),
     ];
     let document: Value = serde_json::from_str(include_str!("../src/api/openapi.json")).unwrap();

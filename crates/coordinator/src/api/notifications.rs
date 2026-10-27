@@ -86,7 +86,7 @@ fn document(destination: &NotificationDestination) -> Value {
     })
 }
 
-async fn require_notifications(
+pub(super) async fn require_notifications(
     conn: &mut sqlx::PgConnection,
     caller: &Caller,
 ) -> Result<(), ApiError> {
@@ -107,7 +107,7 @@ fn destination_id(
     ))
 }
 
-fn validate_name(raw: &str) -> Result<String, ApiError> {
+pub(super) fn validate_name(raw: &str) -> Result<String, ApiError> {
     let name = raw.trim();
     let mut chars = name.chars();
     let valid_start = chars
@@ -273,6 +273,7 @@ pub(super) async fn create(
         &mut tx,
         &caller,
         AuditAction::NotificationDestinationCreated,
+        "notification_destination",
         &id.to_string(),
         AuditOutcome::Allowed,
         json!({
@@ -362,6 +363,7 @@ pub(super) async fn update(
         &mut tx,
         &caller,
         AuditAction::NotificationDestinationUpdated,
+        "notification_destination",
         &id.to_string(),
         AuditOutcome::Allowed,
         json!({
@@ -432,6 +434,7 @@ pub(super) async fn test(
                 &mut conn,
                 &caller,
                 AuditAction::NotificationDestinationTested,
+                "notification_destination",
                 &id.to_string(),
                 outcome,
                 detail,
@@ -443,6 +446,7 @@ pub(super) async fn test(
                 &mut conn,
                 &caller,
                 AuditAction::NotificationDestinationTested,
+                "notification_destination",
                 &id.to_string(),
                 AuditOutcome::Failed,
                 json!({
@@ -504,10 +508,11 @@ fn delivery_error(error: &DeliveryError) -> ApiError {
     }
 }
 
-async fn record(
+pub(super) async fn record(
     conn: &mut sqlx::PgConnection,
     caller: &Caller,
     action: AuditAction,
+    resource_type: &str,
     resource_id: &str,
     outcome: AuditOutcome,
     detail: Value,
@@ -519,7 +524,7 @@ async fn record(
             actor_principal_id: Some(caller.0.principal_id),
             actor_kind: ActorKind::User,
             action: action.as_str(),
-            resource_type: "notification_destination",
+            resource_type,
             resource_id: Some(resource_id),
             outcome,
             detail,

@@ -112,6 +112,10 @@ pub enum AuditAction {
     NotificationDestinationUpdated,
     /// A test notification was sent to a destination.
     NotificationDestinationTested,
+    /// A notification rule was created.
+    NotificationRuleCreated,
+    /// A notification rule was edited, enabled, or disabled.
+    NotificationRuleUpdated,
     /// Catalog names were registered as tables.
     CatalogTablesRegistered,
     /// A table's catalog name was unregistered.
@@ -152,6 +156,8 @@ impl AuditAction {
             Self::NotificationDestinationCreated => "notification.destination_created",
             Self::NotificationDestinationUpdated => "notification.destination_updated",
             Self::NotificationDestinationTested => "notification.destination_tested",
+            Self::NotificationRuleCreated => "notification.rule_created",
+            Self::NotificationRuleUpdated => "notification.rule_updated",
             Self::CatalogCreated => "catalog.created",
             Self::CatalogUpdated => "catalog.updated",
             Self::CatalogChecked => "catalog.checked",
@@ -200,6 +206,8 @@ impl AuditAction {
         Self::NotificationDestinationCreated,
         Self::NotificationDestinationUpdated,
         Self::NotificationDestinationTested,
+        Self::NotificationRuleCreated,
+        Self::NotificationRuleUpdated,
         Self::CatalogCreated,
         Self::CatalogUpdated,
         Self::CatalogChecked,
