@@ -16,14 +16,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bergsmith_common::ids::{JobId, PlanId};
-use bergsmith_common::job::JobState;
+use bergsmith_common::job::{JobOperation, JobState};
 use bergsmith_maintenance::{
-    PlanError, PlanIds, PlanInput, PlanOutcome, PlannedTask, Planner, PlannerConfig,
+    ExpirationError, ExpirationPlanDocument, ExpirationPolicy, PlanDocument, PlanError, PlanIds,
+    PlanInput, PlanOutcome, PlannedTask, Planner, PlannerConfig, plan_expiration,
 };
+use bergsmith_persistence::expirations::{self, NewExpirationPlan};
 use bergsmith_persistence::scheduling::RetryPolicy;
 use bergsmith_persistence::{PersistenceError, jobs, schedules};
 use bergsmith_protocol::hashing::artifact_digest;
 use bergsmith_storage::Location;
+use chrono::Utc;
 use prost::Message;
 use sqlx::{Connection, PgPool};
 use tokio::time::Instant;
@@ -80,6 +83,18 @@ pub struct PlanningSummary {
     pub failed: u32,
 }
 
+/// What planning one job produced.
+enum PlannedWork {
+    /// A compaction plan whose tasks must be registered for dispatch.
+    Rewrite(Box<PlanDocument>),
+    /// A metadata-only expiration plan; the job is already `ReadyToCommit`.
+    Expiration,
+    /// No work.
+    NoOp(bergsmith_maintenance::NoOpReason),
+    /// The MVP cannot maintain the table.
+    Rejected,
+}
+
 /// Plans `Planning` jobs and registers dispatch for `Queued` ones.
 pub struct PlannerService {
     pool: PgPool,
@@ -89,6 +104,8 @@ pub struct PlannerService {
     task: TaskSettings,
     admission_max_input_bytes: u64,
     retry: RetryPolicy,
+    /// Whether the catalog's `remove-snapshots` rejects referenced snapshots.
+    expiration_ref_safety: bool,
     page: i64,
     retry_after: tokio::sync::Mutex<BTreeMap<JobId, RetryEntry>>,
     planning_cursor: std::sync::Mutex<Uuid>,
@@ -108,6 +125,10 @@ impl PlannerService {
     ///
     /// [`PlanError::InvalidConfig`] when the base planner limits or task
     /// envelope are inconsistent.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is an independent daemon dependency or safety policy"
+    )]
     pub fn new(
         pool: PgPool,
         catalogs: Arc<RuntimeCatalogs>,
@@ -116,6 +137,7 @@ impl PlannerService {
         task: TaskSettings,
         admission_max_input_bytes: u64,
         retry: RetryPolicy,
+        expiration_ref_safety: bool,
     ) -> Result<Self, PlanError> {
         config.validate()?;
         task.limits()
@@ -128,6 +150,7 @@ impl PlannerService {
             task,
             admission_max_input_bytes,
             retry,
+            expiration_ref_safety,
             page: DEFAULT_PLANNING_PAGE,
             retry_after: tokio::sync::Mutex::new(BTreeMap::new()),
             planning_cursor: std::sync::Mutex::new(Uuid::nil()),
@@ -199,7 +222,7 @@ impl PlannerService {
                 Ok((outcome, current)) => {
                     self.clear_retry(job.id).await;
                     match outcome {
-                        PlanOutcome::Planned(plan) => {
+                        PlannedWork::Rewrite(plan) => {
                             summary.planned += 1;
                             match self.register_plan(&current, &plan).await {
                                 Ok(()) => summary.registered += 1,
@@ -222,8 +245,12 @@ impl PlannerService {
                                 }
                             }
                         }
-                        PlanOutcome::NoOp(_) => summary.no_op += 1,
-                        PlanOutcome::Rejected(_) => summary.rejected += 1,
+                        PlannedWork::Expiration => summary.planned += 1,
+                        PlannedWork::NoOp(reason) => {
+                            tracing::debug!(reason = reason.as_str(), "job has no work");
+                            summary.no_op += 1;
+                        }
+                        PlannedWork::Rejected => summary.rejected += 1,
                     }
                 }
                 Err(PlanningError::Superseded) => {}
@@ -272,6 +299,10 @@ impl PlannerService {
         drop(conn);
         let mut registered = 0;
         for job in queued {
+            // Expiration plans never queue: their job is already ready to commit.
+            if job.operation != JobOperation::Compact {
+                continue;
+            }
             let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
             if bergsmith_persistence::scheduling::dispatch_registration(&mut conn, job.id)
                 .await?
@@ -306,7 +337,15 @@ impl PlannerService {
     }
 
     #[tracing::instrument(skip_all, fields(job_id = %job.id))]
-    async fn plan_job(&self, job: &jobs::Job) -> Result<(PlanOutcome, jobs::Job), PlanningError> {
+    async fn plan_job(&self, job: &jobs::Job) -> Result<(PlannedWork, jobs::Job), PlanningError> {
+        let binding = self
+            .catalogs
+            .binding_for_job(job)
+            .await
+            .map_err(PlanningError::Access)?;
+        if job.operation == JobOperation::ExpireSnapshots {
+            return self.plan_expiration(job, &binding).await;
+        }
         let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
         let policy = schedules::policy_for_job(&mut conn, job.id).await?;
         drop(conn);
@@ -319,11 +358,6 @@ impl PlannerService {
             .map_err(PlanningError::Plan)?,
             None => self.config.clone(),
         };
-        let binding = self
-            .catalogs
-            .binding_for_job(job)
-            .await
-            .map_err(PlanningError::Access)?;
         let outcome = Planner::new(config)
             .map_err(PlanningError::Plan)?
             .plan(
@@ -366,13 +400,138 @@ impl PlannerService {
         bergsmith_persistence::scheduling::check_leadership(&mut tx, self.scheduler.epoch())
             .await?;
         tx.commit().await.map_err(PersistenceError::from)?;
-        Ok((outcome, recorded))
+        let planned = match outcome {
+            PlanOutcome::Planned(document) => PlannedWork::Rewrite(document),
+            PlanOutcome::NoOp(reason) => PlannedWork::NoOp(reason),
+            PlanOutcome::Rejected(_) => PlannedWork::Rejected,
+        };
+        Ok((planned, recorded))
+    }
+
+    /// Plans a metadata-only snapshot expiration.
+    ///
+    /// The selection honors the table's properties and the connection's
+    /// protection window, and excludes every snapshot the ledger pins. An
+    /// empty selection ends the job `NoOp`.
+    async fn plan_expiration(
+        &self,
+        job: &jobs::Job,
+        binding: &TableBinding,
+    ) -> Result<(PlannedWork, jobs::Job), PlanningError> {
+        if !self.expiration_ref_safety {
+            return Err(PlanningError::ExpirationRefSafetyUnavailable);
+        }
+        let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
+        let Some(baseline) = bergsmith_maintenance::PlanningBaseline::capture(
+            &binding.loaded.metadata,
+            binding.loaded.metadata_location.as_deref(),
+        )
+        .map_err(PlanningError::Plan)?
+        else {
+            let reason = bergsmith_maintenance::NoOpReason::NoSnapshot;
+            let recorded = self
+                .record_expiration_noop(&mut conn, job, reason, binding)
+                .await?;
+            return Ok((PlannedWork::NoOp(reason), recorded));
+        };
+        let protected =
+            expirations::protected_snapshots(&mut conn, job.organization_id, job.table_id, job.id)
+                .await?;
+        let protection_ms = i64::try_from(
+            binding
+                .connection
+                .settings
+                .max_execution_seconds()
+                .saturating_add(
+                    binding
+                        .connection
+                        .settings
+                        .max_unresolved_publication_seconds(),
+                ),
+        )
+        .unwrap_or(i64::MAX / 1_000)
+        .saturating_mul(1_000);
+        let policy =
+            ExpirationPolicy::from_metadata(&binding.loaded.metadata, 1, protection_ms, protected)
+                .map_err(PlanningError::Expiration)?;
+        let decision = plan_expiration(&binding.loaded.metadata, &policy, Utc::now())
+            .map_err(PlanningError::Expiration)?;
+        if decision.remove.is_empty() {
+            let reason = bergsmith_maintenance::NoOpReason::NoExpiredSnapshots;
+            let recorded = self
+                .record_expiration_noop(&mut conn, job, reason, binding)
+                .await?;
+            return Ok((PlannedWork::NoOp(reason), recorded));
+        }
+        let document =
+            ExpirationPlanDocument::new(job.id, PlanId::generate(), baseline, &decision, &policy)
+                .map_err(PlanningError::Plan)?;
+        let content = document.to_value().map_err(PlanningError::Plan)?;
+        let hash = document
+            .content_hash()
+            .map_err(PlanningError::Plan)?
+            .to_hex();
+        let recorded = expirations::create_expiration_plan(
+            &mut conn,
+            &NewExpirationPlan {
+                id: document.plan_id,
+                job_id: job.id,
+                content: &content,
+                content_hash: &hash,
+            },
+            job.state_revision,
+            self.scheduler.epoch(),
+        )
+        .await
+        .map_err(|error| match error {
+            PersistenceError::RevisionConflict { .. } | PersistenceError::JobNotInState { .. } => {
+                PlanningError::Superseded
+            }
+            error => PlanningError::Persistence(error),
+        })?;
+        Ok((PlannedWork::Expiration, recorded))
+    }
+
+    /// Records an expiration no-op inside the fenced planning transaction.
+    async fn record_expiration_noop(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        job: &jobs::Job,
+        reason: bergsmith_maintenance::NoOpReason,
+        binding: &TableBinding,
+    ) -> Result<jobs::Job, PlanningError> {
+        let mut tx = conn.begin().await.map_err(PersistenceError::from)?;
+        let current = bergsmith_persistence::plans::lock_for_planning(
+            &mut tx,
+            job.id,
+            job.state_revision,
+            self.scheduler.epoch(),
+        )
+        .await
+        .map_err(|error| match error {
+            PersistenceError::RevisionConflict { .. } | PersistenceError::JobNotInState { .. } => {
+                PlanningError::Superseded
+            }
+            error => PlanningError::Persistence(error),
+        })?;
+        let recorded = crate::planning::record_outcome(
+            &mut tx,
+            &current,
+            &PlanOutcome::NoOp(reason),
+            execution_budget(binding),
+        )
+        .await
+        .map_err(PlanningError::Record)?;
+        bergsmith_persistence::scheduling::check_leadership(&mut tx, self.scheduler.epoch())
+            .await?;
+        tx.commit().await.map_err(PersistenceError::from)?;
+        Ok(recorded)
     }
 
     async fn register_plan(
         &self,
         job: &jobs::Job,
-        plan: &bergsmith_maintenance::PlanDocument,
+        plan: &PlanDocument,
     ) -> Result<(), RegistrationError> {
         if plan.job_id() != job.id {
             return Err(RegistrationError::Permanent("PlanJobMismatch"));
@@ -513,6 +672,12 @@ pub enum PlanningError {
     /// The plan could not be built or recorded.
     #[error(transparent)]
     Plan(#[from] PlanError),
+    /// Snapshot expiration could not be selected.
+    #[error(transparent)]
+    Expiration(#[from] ExpirationError),
+    /// The catalog has no certified protection against concurrent refs.
+    #[error("expiration requires catalog reference safety")]
+    ExpirationRefSafetyUnavailable,
     /// Recording the outcome failed.
     #[error(transparent)]
     Record(#[from] crate::planning::PlanningError),
@@ -538,11 +703,13 @@ impl PlanningError {
             Self::Record(error) => matches!(
                 error,
                 crate::planning::PlanningError::Persistence(
-                    PersistenceError::Database(_) | PersistenceError::LeadershipLost { .. }
+                    PersistenceError::Database(_)
+                        | PersistenceError::LeadershipLost { .. }
+                        | PersistenceError::SnapshotExpiring { .. }
                 )
             ),
             Self::Access(error) => error.is_transient(),
-            Self::Superseded => false,
+            Self::Expiration(_) | Self::ExpirationRefSafetyUnavailable | Self::Superseded => false,
         }
     }
 
@@ -553,6 +720,8 @@ impl PlanningError {
             Self::Persistence(_) => "PlanningLedgerUnavailable",
             Self::Plan(PlanError::InvalidConfig(_)) => "PlanningConfigurationInvalid",
             Self::Plan(_) => "PlanningFailed",
+            Self::Expiration(_) => "PlanningExpirationInvalid",
+            Self::ExpirationRefSafetyUnavailable => "ExpirationRefSafetyUnavailable",
             Self::Record(_) => "PlanningRecordFailed",
             Self::Access(error) => error.reason_code(),
             Self::Superseded => "PlanningSuperseded",
@@ -748,6 +917,7 @@ mod tests {
             },
             1024,
             RetryPolicy::default(),
+            false,
         )
         .unwrap()
     }

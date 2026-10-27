@@ -96,9 +96,16 @@ impl JobState {
     /// Returns whether the transition graph has an edge from `self` to `to`.
     const fn has_edge(self, to: Self) -> bool {
         match self {
+            // Metadata-only jobs have no tasks to run, so their plan is ready
+            // to commit as soon as it is durable.
             Self::Planning => matches!(
                 to,
-                Self::Queued | Self::NoOp | Self::ReplanRequired | Self::Failed | Self::Cancelling
+                Self::Queued
+                    | Self::ReadyToCommit
+                    | Self::NoOp
+                    | Self::ReplanRequired
+                    | Self::Failed
+                    | Self::Cancelling
             ),
             Self::Queued => matches!(
                 to,
@@ -177,6 +184,37 @@ impl fmt::Display for JobState {
     }
 }
 
+/// What a maintenance job does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum JobOperation {
+    /// Rewrite data and metadata files to reclaim space.
+    Compact,
+    /// Remove snapshots that no live plan or publication pins.
+    ExpireSnapshots,
+}
+
+impl JobOperation {
+    /// Every operation.
+    pub const ALL: [Self; 2] = [Self::Compact, Self::ExpireSnapshots];
+
+    /// Returns the persisted name of the operation.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Compact => "Compact",
+            Self::ExpireSnapshots => "ExpireSnapshots",
+        }
+    }
+
+    /// Parses a persisted name produced by [`Self::as_str`].
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|operation| operation.as_str() == name)
+    }
+}
+
 /// Publication facts that some job transitions depend on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PublicationContext {
@@ -232,6 +270,7 @@ mod tests {
     fn expected_edges() -> HashSet<(JobState, JobState)> {
         [
             (Planning, Queued),
+            (Planning, ReadyToCommit),
             (Planning, NoOp),
             (Planning, ReplanRequired),
             (Planning, Failed),
@@ -268,6 +307,18 @@ mod tests {
             assert_eq!(JobState::from_name(state.as_str()), Some(state));
         }
         assert_eq!(JobState::from_name("planning"), None);
+    }
+
+    #[test]
+    fn operation_names_are_stable() {
+        for operation in JobOperation::ALL {
+            assert_eq!(JobOperation::from_name(operation.as_str()), Some(operation));
+            let json = serde_json::to_string(&operation).unwrap();
+            assert_eq!(json, format!("\"{}\"", operation.as_str()));
+            let back: JobOperation = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, operation);
+        }
+        assert_eq!(JobOperation::from_name("compact"), None);
     }
 
     #[test]

@@ -1277,6 +1277,37 @@ describe("preview and run", () => {
         expect(await second?.json()).toEqual({ table_id: TABLE_ID });
     });
 
+    it("submits snapshot expiration as its own operation", async () => {
+        fake.on("POST", "/api/v1/jobs", () =>
+            json(
+                202,
+                schema("AcceptedJob", {
+                    operation_id: JOB_ID,
+                    job_id: JOB_ID,
+                    resource_url: `/api/v1/jobs/${JOB_ID}`,
+                }),
+            ),
+        ).on("GET", "/api/v1/jobs/{id}", () => json(200, job("Planning")));
+        const user = start(`/tables/${TABLE_ID}`);
+
+        await user.click(
+            await screen.findByRole("button", { name: "Expire snapshots" }),
+        );
+        expect(
+            await screen.findByRole("dialog", { name: "Expire snapshots" }),
+        ).toBeVisible();
+        await user.click(
+            screen.getByRole("button", { name: "Confirm expire snapshots" }),
+        );
+        expect(await screen.findByText(JOB_ID)).toBeInTheDocument();
+        expect(window.location.pathname).toBe(`/jobs/${JOB_ID}`);
+        const request = fake.sent("POST", "/api/v1/jobs")[0];
+        expect(await request?.json()).toEqual({
+            table_id: TABLE_ID,
+            operation: "expire_snapshots",
+        });
+    });
+
     it.each([
         [504, true],
         [500, false],

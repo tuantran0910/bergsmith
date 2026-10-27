@@ -99,6 +99,7 @@ async fn the_ui_api_and_auth_share_one_origin(pool: PgPool) {
             &notification_settings,
         )
         .unwrap(),
+        expiration_ref_safety: false,
     };
     let identity = IdentityState::new(database, Arc::new(provider), sessions);
 

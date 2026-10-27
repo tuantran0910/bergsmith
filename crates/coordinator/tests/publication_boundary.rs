@@ -21,7 +21,7 @@ use bergsmith_catalog::{
     CatalogConnection, CommitOutcome, PreparedCommit, RejectionKind, SnapshotEvidence, TableName,
 };
 use bergsmith_common::ids::{CatalogConnectionId, JobId, OrganizationId, PrincipalId, RoleGrantId};
-use bergsmith_common::job::JobState;
+use bergsmith_common::job::{JobOperation, JobState};
 use bergsmith_common::permission::{GrantScope, Role};
 use bergsmith_coordinator::inventory::record_observation;
 use bergsmith_coordinator::publication::{PublicationError, send_first_commit};
@@ -134,6 +134,7 @@ async fn fixture(pool: &PgPool) -> Fixture {
             id: JobId::generate(),
             organization_id: organization,
             table_id,
+            operation: JobOperation::Compact,
             retry_of: None,
             created_by,
         },

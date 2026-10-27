@@ -42,7 +42,7 @@ Update a row only when its acceptance tests pass (see the project plan §5).
 | Repartitioning | Unsupported |
 | Manifest rewrite | Later (M7) |
 | Dangling-delete removal | Later (M7) |
-| Snapshot expiration | Later (M7) |
+| Snapshot expiration | Implemented (BS-031.T1, ADR 0061): a metadata-only job publishes a standard `remove-snapshots` update under `jobs:submit`, keeping the current snapshot, every branch and tag, the table and connection retention bounds, and every snapshot pinned by a nonterminal job, expiration plan, or unresolved publication. Ambiguous outcomes resolve only by an unchanged head, all listed snapshots absent, and all protected snapshots present; no files are deleted. Selection, planning, publication, ambiguous recovery, protected-snapshot replanning, and table-scoped pin serialization pass unit, PostgreSQL, and mock-catalog tests. Expiration is disabled unless `expiration.catalog_ref_safety` attests that the catalog atomically rejects removing a referenced snapshot |
 | Orphan file cleanup | Later (M7) |
 
 ## Concurrency

@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use bergsmith_catalog::{Baseline, CatalogError};
 use bergsmith_common::ids::JobId;
-use bergsmith_common::job::JobState;
+use bergsmith_common::job::{JobOperation, JobState};
 use bergsmith_maintenance::PlanningBaseline;
 use bergsmith_persistence::scheduling::RetryPolicy;
 use bergsmith_persistence::{PersistenceError, jobs, publications};
@@ -65,6 +65,8 @@ pub struct PublicationService {
     cursor: std::sync::Mutex<Uuid>,
     intent_cursor: std::sync::Mutex<Uuid>,
     statistics: Option<Arc<StatisticsCollector>>,
+    /// Whether the catalog's `remove-snapshots` rejects referenced snapshots.
+    expiration_ref_safety: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -82,6 +84,7 @@ impl PublicationService {
         epoch: i64,
         config: PublicationConfig,
         retry: RetryPolicy,
+        expiration_ref_safety: bool,
     ) -> Self {
         Self {
             pool,
@@ -94,6 +97,7 @@ impl PublicationService {
             cursor: std::sync::Mutex::new(Uuid::nil()),
             intent_cursor: std::sync::Mutex::new(Uuid::nil()),
             statistics: None,
+            expiration_ref_safety,
         }
     }
 
@@ -266,6 +270,13 @@ impl PublicationService {
 
     #[tracing::instrument(skip_all, fields(job_id = %job.id))]
     async fn resume_intent(&self, job: &jobs::Job) -> Result<Outcome, PublicationError> {
+        if job.operation == JobOperation::ExpireSnapshots && !self.expiration_ref_safety {
+            // No send was authorized: the intent is durable but unsent, so a
+            // restart with the guarantee disabled can fail it safely.
+            self.stop(job, JobState::Failed, "ExpirationRefSafetyUnavailable")
+                .await?;
+            return Ok(Outcome::Failed);
+        }
         let connection = {
             let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
             self.catalogs
@@ -279,7 +290,12 @@ impl PublicationService {
             .await
             .map_err(PublicationError::Access)?;
         let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
-        match durable_publication::publish(&mut conn, job, self.epoch, &catalog).await {
+        let published = if job.operation == JobOperation::ExpireSnapshots {
+            durable_publication::publish_expiration(&mut conn, job, self.epoch, &catalog).await
+        } else {
+            durable_publication::publish(&mut conn, job, self.epoch, &catalog).await
+        };
+        match published {
             Ok(job) => Ok(match job.state {
                 JobState::Succeeded => Outcome::Published,
                 JobState::CommitOutcomeUnknown => Outcome::Unresolved,
@@ -305,6 +321,14 @@ impl PublicationService {
 
     #[tracing::instrument(skip_all, fields(job_id = %job.id))]
     async fn publish_job(&self, job: &jobs::Job) -> Result<Outcome, PublicationError> {
+        if job.operation == JobOperation::ExpireSnapshots {
+            if !self.expiration_ref_safety {
+                self.stop(job, JobState::Failed, "ExpirationRefSafetyUnavailable")
+                    .await?;
+                return Ok(Outcome::Failed);
+            }
+            return self.publish_expiration_job(job).await;
+        }
         let binding = self
             .catalogs
             .binding_for_job(job)
@@ -386,6 +410,92 @@ impl PublicationService {
                     job_id = %job.id,
                     reason_code = "PublicationOutcomeUnknown",
                     "publication left for scheduler recovery"
+                );
+                match error {
+                    DurablePublicationError::Catalog(_) => Ok(Outcome::Unresolved),
+                    _ => Err(PublicationError::Durable(error)),
+                }
+            }
+        }
+    }
+
+    /// Prepares and sends one metadata-only expiration commit.
+    async fn publish_expiration_job(&self, job: &jobs::Job) -> Result<Outcome, PublicationError> {
+        let binding = self
+            .catalogs
+            .binding_for_job(job)
+            .await
+            .map_err(PublicationError::Access)?;
+        let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
+        let plan = durable_publication::load_expiration_plan(&mut conn, job.id)
+            .await
+            .map_err(PublicationError::Durable)?;
+        let captured = PlanningBaseline::capture(
+            &binding.loaded.metadata,
+            binding.loaded.metadata_location.as_deref(),
+        )?;
+        if captured.as_ref() != Some(&plan.baseline) {
+            drop(conn);
+            self.stop(job, JobState::ReplanRequired, "PublicationBaselineChanged")
+                .await?;
+            return Ok(Outcome::Replanned);
+        }
+        let baseline = Baseline::new(&binding.loaded, binding.store.file_io().clone())
+            .map_err(|_| PublicationError::Proposal)?;
+        let prepared = durable_publication::prepare_expiration(
+            &mut conn,
+            job,
+            self.epoch,
+            binding.connection.id,
+            &baseline,
+            &plan,
+        )
+        .await;
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(DurablePublicationError::ProtectedSnapshot(_)) => {
+                drop(conn);
+                self.stop(job, JobState::ReplanRequired, "ExpirationProtectedSnapshot")
+                    .await?;
+                return Ok(Outcome::Replanned);
+            }
+            Err(DurablePublicationError::Persistence(
+                PersistenceError::JobNotInState { .. } | PersistenceError::RevisionConflict { .. },
+            )) => return Ok(Outcome::Superseded),
+            Err(error) => return Err(PublicationError::Durable(error)),
+        };
+        if prepared.state != JobState::Committing {
+            return Ok(match prepared.state {
+                JobState::Succeeded => Outcome::Published,
+                JobState::Failed => Outcome::Failed,
+                JobState::ReplanRequired => Outcome::Replanned,
+                JobState::CommitOutcomeUnknown => Outcome::Unresolved,
+                _ => Outcome::Superseded,
+            });
+        }
+        match durable_publication::publish_expiration(
+            &mut conn,
+            &prepared,
+            self.epoch,
+            &binding.catalog,
+        )
+        .await
+        {
+            Ok(job) => Ok(match job.state {
+                JobState::Succeeded => Outcome::Published,
+                JobState::CommitOutcomeUnknown => Outcome::Unresolved,
+                JobState::ReplanRequired => Outcome::Replanned,
+                JobState::Failed | JobState::Cancelled => Outcome::Failed,
+                _ => Outcome::Superseded,
+            }),
+            Err(DurablePublicationError::Persistence(
+                PersistenceError::JobNotInState { .. } | PersistenceError::RevisionConflict { .. },
+            )) => Ok(Outcome::Superseded),
+            Err(error) => {
+                tracing::warn!(
+                    job_id = %job.id,
+                    reason_code = "ExpirationOutcomeUnknown",
+                    "expiration publication left for recovery"
                 );
                 match error {
                     DurablePublicationError::Catalog(_) => Ok(Outcome::Unresolved),

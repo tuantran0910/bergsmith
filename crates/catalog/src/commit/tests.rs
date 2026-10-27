@@ -600,3 +600,31 @@ fn data_files_go_under_the_table_unless_write_data_path_says_otherwise() {
         Err(crate::CatalogError::InvalidLocation(_))
     ));
 }
+
+#[tokio::test]
+async fn a_literal_update_commit_asserts_exactly_the_baseline_requirements() {
+    let store = store();
+    let metadata = empty_table();
+    let baseline = baseline(&store, &metadata);
+    let snapshot_ids = vec![7_i64, 9];
+
+    let request = baseline
+        .commit_with_updates(vec![iceberg::TableUpdate::RemoveSnapshots {
+            snapshot_ids: snapshot_ids.clone(),
+        }])
+        .unwrap();
+    let decoded = request.decode().unwrap();
+
+    assert_eq!(
+        decoded.requirements,
+        baseline.requirements().to_vec(),
+        "a literal-update commit must assert the baseline requirements"
+    );
+    assert!(
+        decoded.updates.iter().any(|update| matches!(
+            update,
+            iceberg::TableUpdate::RemoveSnapshots { snapshot_ids: ids } if ids == &snapshot_ids
+        )),
+        "the request must carry the exact snapshot ids"
+    );
+}

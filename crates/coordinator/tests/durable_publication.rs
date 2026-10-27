@@ -1537,6 +1537,7 @@ async fn the_runtime_retries_a_401_before_authorizing_an_intent(pool: PgPool) {
         run.epoch,
         publication::PublicationConfig::default(),
         RetryPolicy::default(),
+        false,
     );
     run.load.remove_async().await;
     let rejected = run

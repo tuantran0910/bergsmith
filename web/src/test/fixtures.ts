@@ -555,6 +555,7 @@ export function job(state: JobState, overrides: Partial<Job> = {}): Job {
         table_id: TABLE_ID,
         table_aliases: table.aliases,
         state,
+        operation: "compact",
         revision: 1,
         state_reason: null,
         retry_of_job_id: null,

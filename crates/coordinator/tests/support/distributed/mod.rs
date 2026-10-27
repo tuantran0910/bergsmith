@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bergsmith_common::ids::{JobId, PlanId, PrincipalId};
-use bergsmith_common::job::JobState;
+use bergsmith_common::job::{JobOperation, JobState};
 use bergsmith_coordinator::{planning, scheduling::Scheduler, workers::TaskOffer};
 use bergsmith_fixtures::{Commit, FileSpec, Fixture, TableSpec, Value, row};
 use bergsmith_maintenance::{
@@ -301,6 +301,7 @@ impl Harness {
                 id: JobId::generate(),
                 organization_id: self.tenant.organization,
                 table_id: self.tenant.table,
+                operation: JobOperation::Compact,
                 retry_of: Some(self.job),
                 created_by: self.tenant.user,
             },

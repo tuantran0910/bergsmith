@@ -17,7 +17,7 @@ use bergsmith_catalog::{ObservedTable, TableName};
 use bergsmith_common::ids::{
     CatalogConnectionId, JobId, OrganizationId, PlanId, PrincipalId, RoleGrantId,
 };
-use bergsmith_common::job::JobState;
+use bergsmith_common::job::{JobOperation, JobState};
 use bergsmith_common::permission::{GrantScope, Role};
 use bergsmith_common::task::TaskState;
 use bergsmith_coordinator::inventory::record_observation;
@@ -132,6 +132,7 @@ async fn job(conn: &mut PgConnection, fixture: &Fixture) -> Job {
             id: JobId::generate(),
             organization_id: organization,
             table_id,
+            operation: JobOperation::Compact,
             retry_of: None,
             created_by,
         },

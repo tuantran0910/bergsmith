@@ -65,6 +65,7 @@ export function JobsPage() {
                                     </TableHead>
                                     <TableHead>Execution</TableHead>
                                     <TableHead>Publication</TableHead>
+                                    <TableHead>Operation</TableHead>
                                     <TableHead>State</TableHead>
                                     <TableHead>Requested by</TableHead>
                                     <TableHead className="pr-4">
@@ -123,6 +124,11 @@ export function JobsPage() {
                                             <StatusBadge
                                                 status={publicationStatus(job)}
                                             />
+                                        </TableCell>
+                                        <TableCell className="text-muted-foreground">
+                                            {job.operation === "compact"
+                                                ? "Compaction"
+                                                : "Snapshot expiration"}
                                         </TableCell>
                                         <TableCell className="text-muted-foreground">
                                             {job.state}

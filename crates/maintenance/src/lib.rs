@@ -18,6 +18,7 @@ mod eligibility;
 mod error;
 mod execution_io;
 mod executor;
+mod expiration;
 mod health;
 mod hex;
 mod inventory;
@@ -42,6 +43,10 @@ pub use definition::{
 pub use eligibility::{KeyProblem, Rejection, SkipReason};
 pub use error::PlanError;
 pub use executor::{ExecutionInput, Executor, ExecutorError, NativeExecutor, PreparedScan};
+pub use expiration::{
+    EXPIRATION_PLAN_VERSION, ExpirationDecision, ExpirationError, ExpirationPlanDocument,
+    ExpirationPolicy, RetentionReason, plan_expiration,
+};
 pub use health::{
     AssessmentState, Finding, HealthError, HealthState, Recommendation, RecommendationAction,
     Severity, TableHealth, ThresholdSource, evaluate, recommend,

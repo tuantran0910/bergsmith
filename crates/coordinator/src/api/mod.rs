@@ -70,6 +70,8 @@ pub struct ApiState {
     pub discovery: CatalogDiscovery,
     /// Sends notification test deliveries within the deployment's allow-list.
     pub notifications: crate::notifications::DeliveryClient,
+    /// Whether the catalog rejects removal of a referenced snapshot atomically.
+    pub expiration_ref_safety: bool,
 }
 
 /// Builds the `/api/v1` resource router, including its `OpenAPI` document.

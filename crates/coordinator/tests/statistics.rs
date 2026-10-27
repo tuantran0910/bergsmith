@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use bergsmith_catalog::{ObservedTable, TableName};
 use bergsmith_common::ids::{CatalogConnectionId, JobId, OrganizationId, PrincipalId, RoleGrantId};
+use bergsmith_common::job::JobOperation;
 use bergsmith_common::permission::{GrantScope, Role};
 use bergsmith_coordinator::inventory::record_observation;
 use bergsmith_coordinator::runtime::catalogs::RuntimeCatalogs;
@@ -512,6 +513,7 @@ async fn a_published_table_is_sampled_on_demand(pool: PgPool) {
             id: JobId::generate(),
             organization_id: tenant.organization,
             table_id: tenant.table,
+            operation: JobOperation::Compact,
             retry_of: None,
             created_by: tenant.user,
         },

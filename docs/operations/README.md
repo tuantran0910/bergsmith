@@ -43,7 +43,11 @@ job that wrote them is `Committing` or `CommitOutcomeUnknown`.
   the production acceptance run ([support matrix](../support-matrix.md)).
 - Connections with an external `credential_ref` fail until the runtime
   resolves credential references ([api.md](api.md)).
-- Broader maintenance (snapshot expiration, orphan cleanup, manifest rewrite,
-  dangling-delete removal) is not available. Notifications are delivered from
-  rules, but their administration and delivery-log pages are not yet in the UI.
+- Snapshot expiration is available as a manual job (`operation:
+  "expire_snapshots"` or the table page's action). It removes only snapshot
+  entries and never deletes files; it keeps the current snapshot, refs, the
+  execution and unresolved-publication window, and every ledger-pinned
+  snapshot. Orphan cleanup, manifest rewrite, and dangling-delete removal are
+  not available. Frequency and retention parameters for scheduled expiration
+  are not yet configurable.
 - Kubernetes and Helm are planned for M8.

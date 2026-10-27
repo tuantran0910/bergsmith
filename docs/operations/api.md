@@ -41,7 +41,7 @@ as `x-csrf-token`. All responses use `Cache-Control: no-store`.
 | `GET /api/v1/catalogs/{id}/statistics` | Totals over the newest sample of every visible table on one connection; 404 when the connection is not visible |
 | `GET /api/v1/statistics` | The same totals over every table the caller may view in the organization |
 | `GET /api/v1/jobs`, `GET /api/v1/jobs/{id}` | Authorized job state, revision, requester and their display name, the table's caller-visible aliases, cancellation/publication boundary, retry link, and the `trigger` (finding kind and severity) that admitted it, or null |
-| `POST /api/v1/jobs` | Idempotent durable submission; returns 202 with job and operation IDs and Location |
+| `POST /api/v1/jobs` | Idempotent durable submission of `compact` (default) or `expire_snapshots`; returns 202 with job and operation IDs and Location |
 | `POST /api/v1/jobs/{id}/cancel` | Record a cancellation request and report what it achieved |
 | `POST /api/v1/jobs/{id}/retry` | Create a fresh-plan retry of a terminal job; 202 with the new job |
 | `POST /api/v1/previews` | Assess a table without creating work |
@@ -319,6 +319,42 @@ undecodable bodies, and upstream 5xx responses are 503 `RetrySameRequest`.
 Server-side preview failures are logged with the table, the reason, a sanitized
 error kind, and an upstream HTTP status when there was one — never the
 catalog's message, URLs, table locations, or Iceberg error text.
+
+## Job operations
+
+`POST /api/v1/jobs` requires `jobs:submit` on the table and an `Idempotency-Key`.
+The body is `{"table_id": "<uuid>"}` for compaction or
+`{"table_id": "<uuid>", "operation": "expire_snapshots"}` for snapshot
+expiration; an unknown operation answers 400. Expiration also requires
+`expiration.catalog_ref_safety`, because a catalog must atomically refuse to
+remove a snapshot that a concurrently created branch or tag references;
+otherwise the request answers 400 `expiration_ref_safety_unavailable`. A
+prepared expiration whose first send was never authorized fails with
+`ExpirationRefSafetyUnavailable` if the coordinator restarts without the
+guarantee; an authorized send is never resent.
+A submission that omits `operation` keeps the pre-expiration canonical
+representation for idempotency, so a retry with an original compaction key
+still replays the original job. Every job document reports
+`operation` as `compact` or `expire_snapshots`, and a retry copies the source's
+operation.
+
+Snapshot expiration is metadata-only. The planner selects snapshot entries
+older than both `history.expire.max-snapshot-age-ms` and the connection's
+`max_execution_seconds + max_unresolved_publication_seconds` window, keeping
+the current snapshot, every branch and tag head, the table's
+`history.expire.min-snapshots-to-keep` per branch, and every snapshot that a
+nonterminal job, an expiration plan, or an unresolved publication pins.
+Nothing is removed when the selection is empty: the job ends `NoOp` with
+`no_expired_snapshots`.
+
+A successful expiration publishes the standard `remove-snapshots` update
+through the same table barrier, send authorization, and audit path as a rewrite.
+It deletes no data, manifest, or manifest-list files; those become orphan
+candidates for the separate cleanup work. If the commit response is lost, the
+job stays `CommitOutcomeUnknown` until the table shows an unchanged `main` head,
+every listed snapshot absent, and every pinned snapshot present, or an operator
+attests non-publication. A snapshot pinned after planning causes
+`ReplanRequired` with `ExpirationProtectedSnapshot`.
 
 ## Job statistics
 

@@ -120,6 +120,33 @@ impl Baseline {
         CommitRequest::encode(&self.name, self.identifier(), requirements, updates)
     }
 
+    /// Builds a commit from updates derived from this baseline, without
+    /// running a transaction.
+    ///
+    /// The request asserts exactly [`requirements`](Self::requirements), so
+    /// the catalog applies `updates` only if the table is still this
+    /// baseline. Callers MUST derive every update from this exact baseline
+    /// metadata; an update computed from a reloaded or newer table can
+    /// disagree with the asserted requirements and be rejected, or worse,
+    /// commit a change the baseline never described. Use
+    /// [`prepare_with`](Self::prepare_with) when iceberg-rust's actions can
+    /// derive the updates.
+    ///
+    /// # Errors
+    ///
+    /// [`ProposalError::Encode`] when the request does not serialize.
+    pub fn commit_with_updates(
+        &self,
+        updates: Vec<iceberg::TableUpdate>,
+    ) -> Result<CommitRequest, ProposalError> {
+        CommitRequest::encode(
+            &self.name,
+            self.identifier(),
+            self.requirements.clone(),
+            updates,
+        )
+    }
+
     /// Runs `apply` against the baseline and returns the updates and the
     /// merged requirements.
     pub(crate) async fn capture(

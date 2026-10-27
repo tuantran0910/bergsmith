@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use bergsmith_catalog::{ObservedTable, TableName};
 use bergsmith_common::ids::JobId;
-use bergsmith_common::job::JobState;
+use bergsmith_common::job::{JobOperation, JobState};
 use bergsmith_coordinator::inventory::record_observation;
 use bergsmith_coordinator::runtime::catalogs::RuntimeCatalogs;
 use bergsmith_coordinator::runtime::config::RuntimeProfiles;
@@ -66,6 +66,7 @@ async fn running_work_can_load_a_table_through_its_only_disabled_alias(pool: PgP
             id: JobId::generate(),
             organization_id: tenant.organization,
             table_id,
+            operation: JobOperation::Compact,
             retry_of: None,
             created_by: tenant.user,
         },
@@ -147,6 +148,7 @@ async fn a_paused_connection_is_not_chosen_over_one_that_allows_maintenance(pool
             id: JobId::generate(),
             organization_id: tenant.organization,
             table_id,
+            operation: JobOperation::Compact,
             retry_of: None,
             created_by: tenant.user,
         },

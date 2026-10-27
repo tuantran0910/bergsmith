@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use bergsmith_catalog::{ObservedTable, TableName};
 use bergsmith_common::ids::{CatalogConnectionId, JobId, OrganizationId, PrincipalId, RoleGrantId};
-use bergsmith_common::job::JobState;
+use bergsmith_common::job::{JobOperation, JobState};
 use bergsmith_common::permission::{GrantScope, Role};
 use bergsmith_coordinator::inventory::record_observation;
 use bergsmith_coordinator::runtime::catalogs::{RuntimeCatalogs, RuntimeWorkerAccess};
@@ -185,6 +185,7 @@ async fn a_planning_pass_prefers_enabled_connections_and_registers_dispatch(pool
             id: JobId::generate(),
             organization_id: organization,
             table_id,
+            operation: JobOperation::Compact,
             retry_of: None,
             created_by,
         },
@@ -227,6 +228,7 @@ async fn a_planning_pass_prefers_enabled_connections_and_registers_dispatch(pool
         },
         64 * 1024 * 1024 * 1024,
         RetryPolicy::default(),
+        false,
     )
     .unwrap();
 
@@ -362,6 +364,7 @@ async fn a_scheduled_job_is_planned_with_its_policy_budget(pool: PgPool) {
             id: JobId::generate(),
             organization_id: organization,
             table_id,
+            operation: JobOperation::Compact,
             retry_of: None,
             created_by: service,
         },
@@ -447,6 +450,7 @@ async fn a_scheduled_job_is_planned_with_its_policy_budget(pool: PgPool) {
         },
         1024 * 1024 * 1024,
         RetryPolicy::default(),
+        false,
     )
     .unwrap();
     let summary = planner.pass().await.unwrap();
@@ -462,4 +466,181 @@ async fn a_scheduled_job_is_planned_with_its_policy_budget(pool: PgPool) {
     assert_eq!(config.min_input_files, 3);
     assert_eq!(config.max_job_input_bytes, 1024 * 1024 * 1024);
     assert_eq!(config.max_group_input_bytes, 1024 * 1024 * 1024);
+}
+
+async fn expiration_fixture() -> bergsmith_fixtures::Fixture {
+    let schema = Schema::builder()
+        .with_fields([Arc::new(NestedField::required(
+            1,
+            "id",
+            Type::Primitive(PrimitiveType::Long),
+        ))])
+        .build()
+        .unwrap();
+    TableSpec::new(schema)
+        .commit(Commit::new().file(FileSpec::data("old", [row![1 => 0_i64]])))
+        .commit(Commit::new().file(FileSpec::data("new", [row![1 => 1_i64]])))
+        .generate()
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn an_expiration_job_becomes_ready_to_commit_without_a_dispatch(pool: PgPool) {
+    let fixture = expiration_fixture().await;
+    let mut server = mockito::Server::new_async().await;
+    server
+        .mock("GET", "/v1/config")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"defaults":{},"overrides":{}}"#)
+        .create_async()
+        .await;
+    let metadata = serde_json::to_value(fixture.metadata()).unwrap();
+    let body = serde_json::json!({
+        "metadata-location": fixture.metadata_location(),
+        "metadata": metadata,
+        "config": {}
+    });
+    server
+        .mock("GET", "/v1/namespaces/db/tables/events")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(body.to_string())
+        .create_async()
+        .await;
+
+    let mut conn = pool.acquire().await.unwrap();
+    let organization = OrganizationId::generate();
+    tenancy::create_organization(
+        &mut conn,
+        &NewOrganization {
+            id: organization,
+            slug: format!("acme-{organization}"),
+            display_name: "Acme".to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+    let connection = CatalogConnectionId::generate();
+    tenancy::create_catalog_connection(
+        &mut conn,
+        &NewCatalogConnection {
+            id: connection,
+            organization_id: organization,
+            name: "main".to_owned(),
+            uri: server.url(),
+            warehouse: None,
+            credential_ref: None,
+        },
+    )
+    .await
+    .unwrap();
+    let observed = ObservedTable {
+        name: TableName {
+            namespace: vec!["db".to_owned()],
+            name: "events".to_owned(),
+        },
+        table_uuid: fixture.metadata().uuid(),
+        location: Location::parse(fixture.metadata().location()).unwrap(),
+    };
+    let table_id = record_observation(&mut conn, organization, connection, &observed)
+        .await
+        .unwrap();
+    let created_by = PrincipalId::generate();
+    tenancy::create_principal(
+        &mut conn,
+        &NewPrincipal {
+            id: created_by,
+            organization_id: organization,
+            kind: PrincipalKind::User,
+            issuer: "https://idp.example".to_owned(),
+            subject: format!("planner-{created_by}"),
+            display_name: "Planner".to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+    grants::create_grant(
+        &mut conn,
+        &NewRoleGrant {
+            id: RoleGrantId::generate(),
+            organization_id: organization,
+            principal_id: created_by,
+            role: Role::Administrator,
+            scope: GrantScope::organization(),
+            granted_by: None,
+        },
+    )
+    .await
+    .unwrap();
+    let job = jobs::create_job(
+        &mut conn,
+        &NewJob {
+            id: JobId::generate(),
+            organization_id: organization,
+            table_id,
+            operation: JobOperation::ExpireSnapshots,
+            retry_of: None,
+            created_by,
+        },
+    )
+    .await
+    .unwrap();
+    let epoch = runtime_epoch(&mut conn).await;
+    drop(conn);
+
+    let mut settings =
+        DatabaseConfig::new(bergsmith_persistence::DatabaseUrl::new(database_url(&pool)));
+    settings.max_connections = 1;
+    let database = Database::connect(&settings).await.unwrap();
+    let profiles = RuntimeProfiles {
+        default: StorageProfiles::new([StorageProfile::LocalFs]),
+        connections: std::collections::BTreeMap::new(),
+    };
+    let catalogs = Arc::new(RuntimeCatalogs::new(database, profiles));
+    let access = Arc::new(RuntimeWorkerAccess::new(catalogs.clone()));
+    let worker =
+        WorkerService::new(pool.clone(), epoch, WorkerConfig::default(), access.clone()).unwrap();
+    let scheduler = Arc::new(Scheduler::new(worker, access, SchedulerConfig::default()).unwrap());
+    let planner = PlannerService::new(
+        pool.clone(),
+        catalogs,
+        scheduler,
+        PlannerConfig::default(),
+        TaskSettings {
+            pool: "default".into(),
+            capability: "native-v1".into(),
+            memory_bytes: 1_073_741_824,
+            cpu_millis: 1_000,
+            max_duration_seconds: 180,
+            max_output_bytes: 4_294_967_296,
+        },
+        64 * 1024 * 1024 * 1024,
+        RetryPolicy::default(),
+        true,
+    )
+    .unwrap();
+
+    let summary = planner.pass().await.unwrap();
+    assert_eq!(summary.planned, 1);
+    assert_eq!(summary.registered, 0);
+    let current = jobs::job(&mut pool.acquire().await.unwrap(), organization, job.id)
+        .await
+        .unwrap();
+    assert_eq!(current.state, JobState::ReadyToCommit);
+    let plans: i64 = sqlx::query_scalar("SELECT count(*) FROM expiration_plans WHERE job_id = $1")
+        .bind(job.id.as_uuid())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(plans, 1);
+    let specs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM dispatch_specs d JOIN tasks t ON t.id=d.task_id WHERE t.job_id=$1",
+    )
+    .bind(job.id.as_uuid())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(specs, 0);
 }

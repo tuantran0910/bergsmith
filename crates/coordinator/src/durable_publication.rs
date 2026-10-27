@@ -12,13 +12,15 @@ use bergsmith_catalog::{
 };
 use bergsmith_common::digest::Sha256Digest;
 use bergsmith_common::ids::{CatalogConnectionId, JobId, PublicationId};
-use bergsmith_common::job::JobState;
-use bergsmith_maintenance::PlanningBaseline;
+use bergsmith_common::job::{JobOperation, JobState};
+use bergsmith_maintenance::{ExpirationPlanDocument, PlanningBaseline};
 use bergsmith_persistence::cancellation::SendAuthorization;
 use bergsmith_persistence::jobs::Job;
 use bergsmith_persistence::{PersistenceError, jobs, publications};
 use bergsmith_storage::{Location, ObjectStore};
+use iceberg::TableUpdate;
 use iceberg::spec::{DataContentType, FormatVersion, ManifestList};
+
 use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
 use uuid::Uuid;
@@ -53,6 +55,9 @@ pub enum DurablePublicationError {
     /// Encoding durable evidence failed.
     #[error("publication evidence encoding failed")]
     Encoding(#[from] serde_json::Error),
+    /// A ledger-protected snapshot appeared in the expiration set.
+    #[error("expiration for job {0} would remove a protected snapshot")]
+    ProtectedSnapshot(JobId),
     /// Bounded object metadata verification exceeded its deadline.
     #[error("publication preparation timed out")]
     Timeout,
@@ -73,6 +78,29 @@ struct Evidence {
     receipts: Vec<(String, String)>,
     // No catalog has been certified for replay yet. Persist this policy explicitly.
     idempotency_key: Option<Uuid>,
+}
+
+/// Evidence for a metadata-only `remove-snapshots` commit.
+///
+/// There is no proposed snapshot to find. Recovery instead requires the same
+/// `main` head, every listed snapshot absent, and every protected snapshot
+/// present (ADR 0061).
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExpirationEvidence {
+    catalog_connection_id: CatalogConnectionId,
+    table_uuid: Uuid,
+    namespace: Vec<String>,
+    table_name: String,
+    baseline_snapshot_id: i64,
+    remove: Vec<i64>,
+    protected: Vec<i64>,
+}
+
+/// The connection field shared by rewrite and expiration intents.
+#[derive(Deserialize)]
+struct IntentConnection {
+    catalog_connection_id: CatalogConnectionId,
 }
 
 /// Bounds for publication preparation, applied to each storage step separately.
@@ -235,6 +263,279 @@ pub async fn prepare_publication_with(
     }
 }
 
+/// Prepares and persists a metadata-only expiration intent, then enters `Committing`.
+///
+/// The ledger-protected set is re-read here: a job that pinned a snapshot
+/// after planning must not have it removed. A non-empty intersection ends in
+/// `ReplanRequired` at the caller.
+///
+/// # Errors
+///
+/// Returns an invalid baseline, a newly protected snapshot, a stale revision,
+/// lost leadership, or a table barrier conflict without sending anything.
+pub async fn prepare_expiration(
+    conn: &mut PgConnection,
+    job: &Job,
+    epoch: i64,
+    catalog_connection_id: CatalogConnectionId,
+    baseline: &Baseline,
+    plan: &ExpirationPlanDocument,
+) -> Result<Job, DurablePublicationError> {
+    publications::validate_destination(
+        conn,
+        job.id,
+        &bergsmith_persistence::tables::TableAlias {
+            connection_id: catalog_connection_id,
+            namespace: baseline.name().namespace.clone(),
+            name: baseline.name().name.clone(),
+        },
+        baseline.metadata().uuid(),
+    )
+    .await?;
+    let baseline_snapshot_id = baseline
+        .main_snapshot()
+        .ok_or(ProposalError::NoMainSnapshot)?
+        .snapshot_id();
+    let request = baseline.commit_with_updates(vec![TableUpdate::RemoveSnapshots {
+        snapshot_ids: plan.remove.clone(),
+    }])?;
+    let evidence = ExpirationEvidence {
+        catalog_connection_id,
+        table_uuid: baseline.metadata().uuid(),
+        namespace: baseline.name().namespace.clone(),
+        table_name: baseline.name().name.clone(),
+        baseline_snapshot_id,
+        remove: plan.remove.clone(),
+        protected: plan.protected.clone(),
+    };
+    let intent = publications::Intent {
+        job_id: job.id,
+        publication_id: PublicationId::generate(),
+        content: serde_json::to_value(evidence)?,
+        request_body: request.body().to_vec(),
+        request_hash: request.sha256().to_hex(),
+    };
+    match publications::create_expiration_intent(
+        conn,
+        &intent,
+        job.state_revision,
+        epoch,
+        &plan.remove,
+    )
+    .await
+    {
+        Ok(job) => Ok(job),
+        Err(PersistenceError::SnapshotPinned { .. }) => {
+            Err(DurablePublicationError::ProtectedSnapshot(job.id))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Reads and verifies one job's immutable expiration plan.
+///
+/// # Errors
+///
+/// [`DurablePublicationError::InvalidIntent`] when the row is missing or its
+/// hash does not match the stored content.
+pub async fn load_expiration_plan(
+    conn: &mut PgConnection,
+    job_id: JobId,
+) -> Result<ExpirationPlanDocument, DurablePublicationError> {
+    let Some((content, hash)) =
+        bergsmith_persistence::expirations::expiration_plan(conn, job_id).await?
+    else {
+        return Err(DurablePublicationError::InvalidIntent(job_id));
+    };
+    let plan = ExpirationPlanDocument::from_persisted(content)
+        .map_err(|_| DurablePublicationError::InvalidIntent(job_id))?;
+    if plan
+        .content_hash()
+        .map_err(|_| DurablePublicationError::InvalidIntent(job_id))?
+        .to_hex()
+        != hash
+    {
+        return Err(DurablePublicationError::InvalidIntent(job_id));
+    }
+    Ok(plan)
+}
+
+/// Reads the persisted expiration intent and its exact request.
+async fn load_expiration(
+    conn: &mut PgConnection,
+    job_id: JobId,
+) -> Result<(CommitRequest, ExpirationEvidence), DurablePublicationError> {
+    let intent = publications::intent(conn, job_id).await?;
+    let evidence: ExpirationEvidence = serde_json::from_value(intent.content)?;
+    let request = CommitRequest::from_persisted(
+        TableName {
+            namespace: evidence.namespace.clone(),
+            name: evidence.table_name.clone(),
+        },
+        intent.request_body,
+    );
+    if request.sha256().to_hex() != intent.request_hash {
+        return Err(DurablePublicationError::InvalidIntent(job_id));
+    }
+    Ok((request, evidence))
+}
+
+/// Sends the persisted expiration request once after authorization.
+///
+/// # Errors
+///
+/// Authorization, catalog, or database errors preserve the intent and barrier.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one audited metadata publication path: reload, send, and outcome mapping"
+)]
+pub async fn publish_expiration(
+    conn: &mut PgConnection,
+    job: &Job,
+    epoch: i64,
+    catalog: &CatalogConnection,
+) -> Result<Job, DurablePublicationError> {
+    let (request, _) = load_expiration(conn, job.id).await?;
+    let current = jobs::job(conn, job.organization_id, job.id).await?;
+    if current.publication_started_at.is_some() {
+        return Err(PersistenceError::PublicationAlreadyAuthorized { job: job.id }.into());
+    }
+    if current.state != JobState::Committing {
+        return Err(PersistenceError::JobNotInState {
+            job: current.id,
+            state: current.state,
+            operation: "publish an expiration intent",
+        }
+        .into());
+    }
+    let plan = load_expiration_plan(conn, job.id).await?;
+    let loaded = catalog.load_table(request.table(), false).await?;
+    let observed = PlanningBaseline::capture(&loaded.metadata, loaded.metadata_location.as_deref())
+        .map_err(ResultError::from)?;
+    if observed.as_ref() != Some(&plan.baseline) {
+        return Ok(publications::resolve(
+            conn,
+            current.id,
+            current.state_revision,
+            epoch,
+            JobState::ReplanRequired,
+            "PublicationBaselineChanged",
+            false,
+        )
+        .await?);
+    }
+    let sent = send_first_commit(
+        conn,
+        SendAuthorization {
+            job_id: job.id,
+            expected_revision: job.state_revision,
+            coordinator_epoch: epoch,
+        },
+        catalog,
+        &request,
+        None,
+    )
+    .await;
+    let (to, reason, proof) = match sent {
+        Ok(sent) => match sent.outcome {
+            CommitOutcome::Committed(_) => {
+                record_publication_decision(
+                    conn,
+                    job,
+                    bergsmith_common::audit::AuditAction::JobPublished,
+                    bergsmith_common::audit::AuditOutcome::Allowed,
+                    "CommitConfirmed",
+                )
+                .await;
+                (JobState::Succeeded, "CommitConfirmed", false)
+            }
+            CommitOutcome::Unknown(_) => (
+                JobState::CommitOutcomeUnknown,
+                "CommitOutcomeUnknown",
+                false,
+            ),
+            CommitOutcome::Rejected(rejection) => {
+                let state = if matches!(
+                    rejection.kind,
+                    bergsmith_catalog::RejectionKind::RequirementFailed
+                        | bergsmith_catalog::RejectionKind::NotFound
+                ) {
+                    JobState::ReplanRequired
+                } else {
+                    JobState::Failed
+                };
+                (state, "CommitRejected", true)
+            }
+        },
+        Err(PublicationError::NotAuthorized(PersistenceError::PermissionDenied { .. })) => {
+            let resolved = Box::pin(publications::resolve_authorization_denied(
+                conn,
+                job.id,
+                job.state_revision,
+                epoch,
+            ))
+            .await?;
+            record_publication_decision(
+                conn,
+                job,
+                bergsmith_common::audit::AuditAction::JobPublicationDenied,
+                bergsmith_common::audit::AuditOutcome::Denied,
+                "AuthorizationRevoked",
+            )
+            .await;
+            return Ok(match resolved {
+                Some(resolved) => resolved,
+                None => jobs::job(conn, job.organization_id, job.id).await?,
+            });
+        }
+        Err(PublicationError::NotAuthorized(PersistenceError::MaintenancePolicyDisabled {
+            ..
+        })) => {
+            let reason = "PolicyDisabled";
+            let resolved = Box::pin(publications::resolve_publication_denied(
+                conn,
+                job.id,
+                job.state_revision,
+                epoch,
+                reason,
+            ))
+            .await?;
+            record_publication_decision(
+                conn,
+                job,
+                bergsmith_common::audit::AuditAction::JobPublicationDenied,
+                bergsmith_common::audit::AuditOutcome::Denied,
+                reason,
+            )
+            .await;
+            return Ok(match resolved {
+                Some(resolved) => resolved,
+                None => jobs::job(conn, job.organization_id, job.id).await?,
+            });
+        }
+        Err(PublicationError::NotAuthorized(error)) => return Err(error.into()),
+        Err(PublicationError::NotPrepared(error)) => return Err(error.into()),
+        Err(PublicationError::NotSent { .. }) => (JobState::Failed, "CommitNotSent", true),
+    };
+    let current = jobs::job(conn, job.organization_id, job.id).await?;
+    if current.state.is_terminal() {
+        return Ok(current);
+    }
+    if current.state == to {
+        return Ok(current);
+    }
+    Ok(publications::resolve(
+        conn,
+        current.id,
+        current.state_revision,
+        epoch,
+        to,
+        reason,
+        proof,
+    )
+    .await?)
+}
+
 /// Restores the exact request and expected snapshot from the immutable intent.
 ///
 /// # Errors
@@ -277,8 +578,10 @@ pub async fn publication_connection(
     job_id: JobId,
 ) -> Result<CatalogConnectionId, DurablePublicationError> {
     let intent = publications::intent(conn, job_id).await?;
-    let evidence: Evidence = serde_json::from_value(intent.content)?;
-    Ok(evidence.catalog_connection_id)
+    // Rewrite and expiration evidence share this one field; parsing only it
+    // keeps recovery independent of the operation's own shape.
+    let intent: IntentConnection = serde_json::from_value(intent.content)?;
+    Ok(intent.catalog_connection_id)
 }
 
 /// Sends the persisted request once after authorization and durably records its outcome.
@@ -493,7 +796,10 @@ pub async fn reconcile(
     }
     let (state, reason) = match observe(conn, job.id, catalog).await? {
         SnapshotEvidence::Published { .. } => (JobState::Succeeded, "SnapshotEvidenceMatched"),
-        SnapshotEvidence::Absent => (JobState::CommitOutcomeUnknown, "SnapshotEvidenceAbsent"),
+        SnapshotEvidence::ExpirationApplied => (JobState::Succeeded, "ExpirationEvidenceMatched"),
+        SnapshotEvidence::Absent | SnapshotEvidence::ExpirationPending => {
+            (JobState::CommitOutcomeUnknown, "SnapshotEvidenceAbsent")
+        }
         SnapshotEvidence::Mismatch(_) => {
             (JobState::CommitOutcomeUnknown, "SnapshotEvidenceMismatch")
         }
@@ -549,7 +855,7 @@ pub async fn attest_non_publication(
     }
     let snapshot_matched = matches!(
         observe(conn, job.id, catalog).await?,
-        SnapshotEvidence::Published { .. }
+        SnapshotEvidence::Published { .. } | SnapshotEvidence::ExpirationApplied
     );
     Ok(publications::attest_non_publication(
         conn,
@@ -565,13 +871,41 @@ pub async fn attest_non_publication(
     .await?)
 }
 
-/// Reads retained snapshot evidence for a job's immutable intent.
+/// Reads retained evidence for a job's immutable intent.
 async fn observe(
     conn: &mut PgConnection,
-    job: JobId,
+    job_id: JobId,
     catalog: &CatalogConnection,
 ) -> Result<SnapshotEvidence, DurablePublicationError> {
-    let prepared = load_prepared(conn, job).await?;
+    let job = jobs::job_by_id(conn, job_id).await?;
+    if job.operation == JobOperation::ExpireSnapshots {
+        let (request, evidence) = load_expiration(conn, job_id).await?;
+        let loaded = catalog.load_table(request.table(), false).await?;
+        if loaded.metadata.uuid() != evidence.table_uuid {
+            return Ok(SnapshotEvidence::Mismatch(
+                bergsmith_catalog::EvidenceMismatch::TableUuid(loaded.metadata.uuid()),
+            ));
+        }
+        if loaded.metadata.current_snapshot_id() != Some(evidence.baseline_snapshot_id) {
+            return Ok(SnapshotEvidence::ExpirationPending);
+        }
+        if evidence
+            .remove
+            .iter()
+            .any(|snapshot_id| loaded.metadata.snapshot_by_id(*snapshot_id).is_some())
+        {
+            return Ok(SnapshotEvidence::ExpirationPending);
+        }
+        if evidence
+            .protected
+            .iter()
+            .any(|snapshot_id| loaded.metadata.snapshot_by_id(*snapshot_id).is_none())
+        {
+            return Ok(SnapshotEvidence::ExpirationPending);
+        }
+        return Ok(SnapshotEvidence::ExpirationApplied);
+    }
+    let prepared = load_prepared(conn, job_id).await?;
     Ok(catalog
         .snapshot_evidence(prepared.request.table(), &prepared.expected)
         .await?)

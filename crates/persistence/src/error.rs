@@ -54,6 +54,18 @@ pub enum PersistenceError {
         /// The check constraint that was violated.
         constraint: String,
     },
+    /// Another job pinned a snapshot an expiration intended to remove.
+    #[error("snapshot {snapshot_id} is pinned by another job")]
+    SnapshotPinned {
+        /// The snapshot the ledger still protects.
+        snapshot_id: i64,
+    },
+    /// A plan baseline names a snapshot an expiration has already prepared.
+    #[error("snapshot {snapshot_id} is being expired")]
+    SnapshotExpiring {
+        /// The snapshot a pending expiration will remove.
+        snapshot_id: i64,
+    },
     /// No row exists with the requested key.
     #[error("{entity} {id} was not found")]
     NotFound {

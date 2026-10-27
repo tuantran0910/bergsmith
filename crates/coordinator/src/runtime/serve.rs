@@ -359,6 +359,7 @@ async fn start(
         checks: CapabilityChecker::default(),
         discovery: CatalogDiscovery::new(catalogs.clone(), DiscoveryLimits::default()),
         notifications,
+        expiration_ref_safety: config.expiration.catalog_ref_safety,
     };
     let identity = IdentityState::new(database.clone(), Arc::new(provider), sessions);
 
@@ -395,6 +396,7 @@ async fn start(
         config.task.clone(),
         scheduler_config.max_job_input_bytes,
         scheduler_config.retry,
+        config.expiration.catalog_ref_safety,
     )
     .map_err(|error| {
         ServeError::Database(PersistenceError::InvalidValue {
@@ -413,6 +415,7 @@ async fn start(
             })
         })?,
         scheduler_config.retry,
+        config.expiration.catalog_ref_safety,
     );
     let statistics = Arc::new(StatisticsCollector::new(
         database.pool().clone(),

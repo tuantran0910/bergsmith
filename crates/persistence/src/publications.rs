@@ -191,8 +191,57 @@ pub async fn create_intent(
     epoch: i64,
     receipts: &[AcceptedReceipt],
 ) -> Result<Job, PersistenceError> {
+    create_intent_inner(conn, intent, expected_revision, epoch, receipts, None).await
+}
+
+/// Creates an expiration intent under the table planning lock, rechecking pins.
+///
+/// The final pin query and the intent insert share one transaction and the
+/// table's planning advisory lock, so a plan persisted after preparation
+/// cannot be missed (ADR 0061).
+///
+/// # Errors
+///
+/// [`PersistenceError::SnapshotPinned`] when a listed snapshot is pinned by
+/// another live job, and the errors of [`create_intent`].
+pub async fn create_expiration_intent(
+    conn: &mut PgConnection,
+    intent: &Intent,
+    expected_revision: i64,
+    epoch: i64,
+    remove: &[i64],
+) -> Result<Job, PersistenceError> {
+    create_intent_inner(conn, intent, expected_revision, epoch, &[], Some(remove)).await
+}
+
+async fn create_intent_inner(
+    conn: &mut PgConnection,
+    intent: &Intent,
+    expected_revision: i64,
+    epoch: i64,
+    receipts: &[AcceptedReceipt],
+    remove: Option<&[i64]>,
+) -> Result<Job, PersistenceError> {
     let mut tx = conn.begin().await?;
     let job = lock_job(&mut tx, intent.job_id).await?;
+    if let Some(remove) = remove {
+        crate::plans::lock_table_planning(&mut tx, job.table_id).await?;
+        let protected = crate::expirations::protected_snapshots(
+            &mut tx,
+            job.organization_id,
+            job.table_id,
+            job.id,
+        )
+        .await?;
+        if let Some(snapshot_id) = remove
+            .iter()
+            .find(|snapshot_id| protected.contains(snapshot_id))
+        {
+            return Err(PersistenceError::SnapshotPinned {
+                snapshot_id: *snapshot_id,
+            });
+        }
+    }
     crate::scheduling::authorize_publication(&mut tx, &job).await?;
     ensure_leadership(&mut tx, epoch).await?;
     if job.state_revision != expected_revision {
