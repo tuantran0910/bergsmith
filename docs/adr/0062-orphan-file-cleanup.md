@@ -44,7 +44,11 @@ is the union of:
   retains;
 - every object identity as `(backend, authority, key)`, so `s3` and `s3a`
   spellings of one object compare equal;
-- every statistics file and partition statistics file the metadata names.
+- every statistics file and partition statistics file the metadata names;
+- every manifest list, manifest, and data file named by a rewrite publication
+  intent whose job is `ReadyToCommit`, `Committing`, or
+  `CommitOutcomeUnknown`. Those manifests live under the metadata directory and
+  no snapshot references them, so reachability alone cannot see them.
 
 Everything else under the table location is a candidate. Objects outside the
 table location are never deleted, even when metadata references them.
@@ -59,6 +63,10 @@ table used before `write.data.path` changed. Files an unresolved job may
 publish are therefore protected twice: their outputs are under a Bergsmith
 segment, and the deletion pass reloads table metadata so a commit that landed
 protects its files as reachable.
+
+**An empty table can be cleaned too.** Selection needs the table's locations
+and metadata file, not a `main` snapshot. A table without a snapshot simply has
+no snapshot-reachable files, and abandoned objects still become candidates.
 
 **Only old, unreferenced objects are candidates.** The age floor is the
 stricter of `orphans.minimum_age_seconds` (default three days, matching
@@ -104,9 +112,10 @@ closed if it was disabled between them. Listing is bounded while it is
 consumed (`orphans.max_listed_objects`), and the scan bounds manifests, manifest
 entries, and object bytes (`orphans.max_scan_entries`,
 `orphans.max_scan_bytes`). A manifest whose declared entry counts are missing
-cannot be bounded, so the scan refuses it. The byte bound caps allocation while
-reading, but a compressed manifest could still decode to more entries than the
-declared counts; the post-decode count check is the backstop. Exceeding any
+cannot be bounded, so the scan refuses it. Before a manifest is decoded its
+object is stat-ed, so an understated length in the manifest list cannot bypass
+`orphans.max_scan_bytes`. A compressed manifest could still decode to more
+entries than the declared counts; the post-decode count check is the backstop. Exceeding any
 bound fails the job permanently with a typed reason instead of deleting from a
 partial view. A permanent failure
 during deletion ends the job `Failed` through the deletion path, so it does not

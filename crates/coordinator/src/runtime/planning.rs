@@ -18,7 +18,8 @@ use std::time::Duration;
 use bergsmith_common::ids::{JobId, PlanId};
 use bergsmith_common::job::{JobOperation, JobState};
 use bergsmith_maintenance::orphans::{
-    OrphanError, OrphanPlanDocument, OrphanPolicy, ReachabilityBounds, Reachable, select_orphans,
+    OrphanBaseline, OrphanError, OrphanPlanDocument, OrphanPolicy, ReachabilityBounds, Reachable,
+    select_orphans,
 };
 use bergsmith_maintenance::{
     ExpirationError, ExpirationPlanDocument, ExpirationPolicy, PlanDocument, PlanError, PlanIds,
@@ -534,25 +535,32 @@ impl PlannerService {
         if !self.orphan.enabled {
             return Err(PlanningError::OrphanCleanupUnavailable);
         }
-        let Some(baseline) = bergsmith_maintenance::PlanningBaseline::capture(
+        let baseline = OrphanBaseline::capture(
             &binding.loaded.metadata,
             binding.loaded.metadata_location.as_deref(),
         )
-        .map_err(PlanningError::Plan)?
-        else {
-            let reason = bergsmith_maintenance::NoOpReason::NoSnapshot;
-            let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
-            let recorded = self.record_noop(&mut conn, job, reason, binding).await?;
-            return Ok((PlannedWork::NoOp(reason), recorded));
-        };
+        .map_err(PlanningError::Plan)?;
         let metadata_location = binding.loaded.metadata_location.as_deref().ok_or_else(|| {
             PlanningError::Plan(PlanError::StagedTable {
                 table_uuid: binding.loaded.metadata.uuid(),
             })
         })?;
+        // Publication intents that may still be sent own manifests outside the
+        // current snapshots; protect them before this job names candidates.
+        let unresolved = {
+            let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
+            orphan_plans::unresolved_manifest_lists(
+                &mut conn,
+                job.organization_id,
+                job.table_id,
+                job.id,
+            )
+            .await?
+        };
         let reachable = Reachable::capture(
             &binding.loaded.metadata,
             metadata_location,
+            &unresolved,
             binding.store.file_io(),
             ReachabilityBounds::new(
                 self.orphan.max_scan_entries,
@@ -586,7 +594,7 @@ impl PlannerService {
             &reachable,
             &listed,
             binding.loaded.metadata.location(),
-            baseline.data_location(),
+            &baseline.data_location,
             &policy,
             Utc::now(),
         )

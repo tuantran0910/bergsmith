@@ -859,77 +859,9 @@ export interface components {
         };
         ApiError: {
             /** @enum {string} */
-            reason:
-                | "authentication_required"
-                | "csrf_rejected"
-                | "invalid_request"
-                | "resource_not_found"
-                | "permission_denied"
-                | "idempotency_key_reused"
-                | "ledger_unavailable"
-                | "method_not_allowed"
-                | "request_too_large"
-                | "internal_error"
-                | "catalog_credential_unavailable"
-                | "catalog_connection_invalid"
-                | "storage_profile_unavailable"
-                | "storage_unavailable"
-                | "catalog_access_denied"
-                | "catalog_unavailable"
-                | "table_staged"
-                | "job_not_terminal"
-                | "job_already_succeeded"
-                | "table_identity_changed"
-                | "catalog_table_missing"
-                | "inventory_too_large"
-                | "table_metadata_inconsistent"
-                | "preview_capacity_exhausted"
-                | "catalog_unsupported"
-                | "catalog_credentials_unavailable"
-                | "catalog_request_rejected"
-                | "event_stream_capacity_exhausted"
-                | "invalid_policy_parameters"
-                | "invalid_policy_operation"
-                | "invalid_cron_expression"
-                | "invalid_time_zone"
-                | "invalid_maintenance_window"
-                | "run_budget_below_target_file_size"
-                | "invalid_health_thresholds"
-                | "revision_conflict"
-                | "service_identity_not_eligible"
-                | "resource_already_exists"
-                | "catalog_connection_disabled"
-                | "catalog_connection_in_use"
-                | "catalog_connection_changed"
-                | "capability_check_capacity_exhausted"
-                | "catalog_response_too_large"
-                | "table_in_use"
-                | "catalog_namespace_not_found"
-                | "catalog_table_not_found"
-                | "catalog_discovery_capacity_exhausted"
-                | "registration_too_large"
-                | "table_identity_conflict"
-                | "catalog_namespace_mismatch"
-                | "catalog_page_too_large"
-                | "registration_incomplete"
-                | "catalog_token_too_large"
-                | "last_administrator"
-                | "grant_already_exists"
-                | "destination_not_allowed"
-                | "signing_secret_unavailable"
-                | "notification_delivery_failed"
-                | "destination_url_invalid"
-                | "destination_url_unavailable"
-                | "notifications_secrets_dir_unconfigured"
-                | "expiration_ref_safety_unavailable"
-                | "orphan_cleanup_unavailable";
+            reason: "authentication_required" | "csrf_rejected" | "invalid_request" | "resource_not_found" | "permission_denied" | "idempotency_key_reused" | "ledger_unavailable" | "method_not_allowed" | "request_too_large" | "internal_error" | "catalog_credential_unavailable" | "catalog_connection_invalid" | "storage_profile_unavailable" | "storage_unavailable" | "catalog_access_denied" | "catalog_unavailable" | "table_staged" | "job_not_terminal" | "job_already_succeeded" | "table_identity_changed" | "catalog_table_missing" | "inventory_too_large" | "table_metadata_inconsistent" | "preview_capacity_exhausted" | "catalog_unsupported" | "catalog_credentials_unavailable" | "catalog_request_rejected" | "event_stream_capacity_exhausted" | "invalid_policy_parameters" | "invalid_policy_operation" | "invalid_cron_expression" | "invalid_time_zone" | "invalid_maintenance_window" | "run_budget_below_target_file_size" | "invalid_health_thresholds" | "revision_conflict" | "service_identity_not_eligible" | "resource_already_exists" | "catalog_connection_disabled" | "catalog_connection_in_use" | "catalog_connection_changed" | "capability_check_capacity_exhausted" | "catalog_response_too_large" | "table_in_use" | "catalog_namespace_not_found" | "catalog_table_not_found" | "catalog_discovery_capacity_exhausted" | "registration_too_large" | "table_identity_conflict" | "catalog_namespace_mismatch" | "catalog_page_too_large" | "registration_incomplete" | "catalog_token_too_large" | "last_administrator" | "grant_already_exists" | "destination_not_allowed" | "signing_secret_unavailable" | "notification_delivery_failed" | "destination_url_invalid" | "destination_url_unavailable" | "notifications_secrets_dir_unconfigured" | "expiration_ref_safety_unavailable" | "orphan_cleanup_unavailable";
             /** @enum {string} */
-            disposition:
-                | "RetrySameRequest"
-                | "RetryTask"
-                | "ReplanRequired"
-                | "PermanentFailure"
-                | "ResolvePublication";
+            disposition: "RetrySameRequest" | "RetryTask" | "ReplanRequired" | "PermanentFailure" | "ResolvePublication";
             operator_action: string;
         };
         AuditEvent: {
@@ -961,12 +893,7 @@ export interface components {
             /** Format: int64 */
             files_removed: number;
             /** @enum {string} */
-            disposition:
-                | "admitted"
-                | "no_benefit"
-                | "deferred_job_input"
-                | "deferred_job_files"
-                | "deferred_duration";
+            disposition: "admitted" | "no_benefit" | "deferred_job_input" | "deferred_job_files" | "deferred_duration";
         };
         CancelJobRequest: {
             reason?: string | null;
@@ -975,30 +902,11 @@ export interface components {
             /** Format: uuid */
             job_id: string;
             /** @enum {string} */
-            state:
-                | "Planning"
-                | "Queued"
-                | "Running"
-                | "ReadyToCommit"
-                | "Committing"
-                | "CommitOutcomeUnknown"
-                | "Deleting"
-                | "Cancelling"
-                | "Succeeded"
-                | "NoOp"
-                | "Cancelled"
-                | "ReplanRequired"
-                | "Failed";
+            state: "Planning" | "Queued" | "Running" | "ReadyToCommit" | "Committing" | "CommitOutcomeUnknown" | "Deleting" | "Cancelling" | "Succeeded" | "NoOp" | "Cancelled" | "ReplanRequired" | "Failed";
             /** Format: int64 */
             revision: number;
             /** @enum {string} */
-            cancellation:
-                | "cancelling"
-                | "too_late_publication_started"
-                | "publication_unresolved"
-                | "too_late_committed"
-                | "cancelled"
-                | "already_ended";
+            cancellation: "cancelling" | "too_late_publication_started" | "publication_unresolved" | "too_late_committed" | "cancelled" | "already_ended";
             cancellation_requested: boolean;
             publication_started: boolean;
         };
@@ -1141,20 +1049,7 @@ export interface components {
             table_id: string;
             table_aliases: components["schemas"]["TableAlias"][];
             /** @enum {string} */
-            state:
-                | "Planning"
-                | "Queued"
-                | "Running"
-                | "ReadyToCommit"
-                | "Committing"
-                | "CommitOutcomeUnknown"
-                | "Deleting"
-                | "Cancelling"
-                | "Succeeded"
-                | "NoOp"
-                | "Cancelled"
-                | "ReplanRequired"
-                | "Failed";
+            state: "Planning" | "Queued" | "Running" | "ReadyToCommit" | "Committing" | "CommitOutcomeUnknown" | "Deleting" | "Cancelling" | "Succeeded" | "NoOp" | "Cancelled" | "ReplanRequired" | "Failed";
             /** Format: int64 */
             revision: number;
             state_reason: string | null;
@@ -1181,43 +1076,10 @@ export interface components {
             /** Format: int64 */
             sequence: number;
             /** @enum {string} */
-            kind:
-                | "created"
-                | "transitioned"
-                | "cancellation_requested"
-                | "publication_authorized";
-            from_state:
-                | (
-                      | "Planning"
-                      | "Queued"
-                      | "Running"
-                      | "ReadyToCommit"
-                      | "Committing"
-                      | "CommitOutcomeUnknown"
-                      | "Deleting"
-                      | "Cancelling"
-                      | "Succeeded"
-                      | "NoOp"
-                      | "Cancelled"
-                      | "ReplanRequired"
-                      | "Failed"
-                  )
-                | null;
+            kind: "created" | "transitioned" | "cancellation_requested" | "publication_authorized";
+            from_state: ("Planning" | "Queued" | "Running" | "ReadyToCommit" | "Committing" | "CommitOutcomeUnknown" | "Deleting" | "Cancelling" | "Succeeded" | "NoOp" | "Cancelled" | "ReplanRequired" | "Failed") | null;
             /** @enum {string} */
-            to_state:
-                | "Planning"
-                | "Queued"
-                | "Running"
-                | "ReadyToCommit"
-                | "Committing"
-                | "CommitOutcomeUnknown"
-                | "Deleting"
-                | "Cancelling"
-                | "Succeeded"
-                | "NoOp"
-                | "Cancelled"
-                | "ReplanRequired"
-                | "Failed";
+            to_state: "Planning" | "Queued" | "Running" | "ReadyToCommit" | "Committing" | "CommitOutcomeUnknown" | "Deleting" | "Cancelling" | "Succeeded" | "NoOp" | "Cancelled" | "ReplanRequired" | "Failed";
             /** Format: int64 */
             state_revision: number;
             reason: string | null;
@@ -1374,14 +1236,7 @@ export interface components {
         };
         Rejection: {
             /** @enum {string} */
-            reason:
-                | "format_version"
-                | "sorted_table"
-                | "encrypted"
-                | "write_format"
-                | "non_parquet_file"
-                | "equality_key"
-                | "void_spec_equality_delete";
+            reason: "format_version" | "sorted_table" | "encrypted" | "write_format" | "non_parquet_file" | "equality_key" | "void_spec_equality_delete";
             detail: string;
             path: string | null;
             version: number | null;
@@ -1596,8 +1451,7 @@ export interface components {
             /** Format: uuid */
             principal_id: string;
             /** @enum {string} */
-            role:
-                "Viewer" | "Operator" | "Administrator" | "MaintenanceService";
+            role: "Viewer" | "Operator" | "Administrator" | "MaintenanceService";
             scope?: components["schemas"]["GrantScope"];
         };
         RoleGrant: {
@@ -1610,8 +1464,7 @@ export interface components {
             /** @description Organization, a connection name, or a table name through an alias the caller can see. Null when no visible name exists; never used for authorization. */
             scope_name?: string | null;
             /** @enum {string} */
-            role:
-                "Viewer" | "Operator" | "Administrator" | "MaintenanceService";
+            role: "Viewer" | "Operator" | "Administrator" | "MaintenanceService";
             scope: components["schemas"]["GrantScope"];
             granted_by?: string | null;
             /** Format: date-time */
@@ -1890,12 +1743,7 @@ export interface components {
              * @description The job's terminal state.
              * @enum {string}
              */
-            state:
-                | "Succeeded"
-                | "NoOp"
-                | "Cancelled"
-                | "ReplanRequired"
-                | "Failed";
+            state: "Succeeded" | "NoOp" | "Cancelled" | "ReplanRequired" | "Failed";
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -1998,11 +1846,7 @@ export interface components {
             /** Format: uuid */
             table_id: string;
             /** @enum {string} */
-            state:
-                | "Committing"
-                | "CommitOutcomeUnknown"
-                | "ReplanRequired"
-                | "Failed";
+            state: "Committing" | "CommitOutcomeUnknown" | "ReplanRequired" | "Failed";
             /** @enum {string} */
             reason: "unresolved_publication" | "replan_required" | "failed";
             /** @description Seconds since the publication was authorized, or since the job ended. */
@@ -2027,39 +1871,26 @@ export interface components {
             confirmed_at: string | null;
         };
         /** @description Where the finding's thresholds came from: the documented defaults, or the policy that supplied them. */
-        HealthThresholdSource:
-            | {
-                  /** @enum {string} */
-                  kind: "defaults";
-              }
-            | {
-                  /** @enum {string} */
-                  kind: "policy";
-                  /** Format: uuid */
-                  policy_id: string;
-                  policy_name: string;
-              };
+        HealthThresholdSource: {
+            /** @enum {string} */
+            kind: "defaults";
+        } | {
+            /** @enum {string} */
+            kind: "policy";
+            /** Format: uuid */
+            policy_id: string;
+            policy_name: string;
+        };
         /** @description One finding at warning or worse, with the measurement and the bound it crossed. */
         TableHealthFinding: {
             /** @enum {string} */
-            kind:
-                | "small_files"
-                | "delete_pressure"
-                | "snapshot_backlog"
-                | "manifest_fragmentation"
-                | "partition_skew"
-                | "stale_statistics";
+            kind: "small_files" | "delete_pressure" | "snapshot_backlog" | "manifest_fragmentation" | "partition_skew" | "stale_statistics";
             /** @enum {string} */
             severity: "warning" | "critical";
             measured: string;
             threshold: string;
             /** @enum {string} */
-            unit:
-                | "bytes"
-                | "per_mille"
-                | "snapshots"
-                | "files_per_manifest"
-                | "seconds";
+            unit: "bytes" | "per_mille" | "snapshots" | "files_per_manifest" | "seconds";
             reason: string;
             source: components["schemas"]["HealthThresholdSource"];
         };
@@ -2079,27 +1910,15 @@ export interface components {
         /** @description The action that resolves one finding. An advisory recommendation carries only the reason; an actionable one carries the preview and the planner's estimate when the caller may submit jobs and says so when it may not. */
         TableHealthRecommendation: {
             /** @enum {string} */
-            kind:
-                | "small_files"
-                | "delete_pressure"
-                | "snapshot_backlog"
-                | "manifest_fragmentation"
-                | "partition_skew"
-                | "stale_statistics";
+            kind: "small_files" | "delete_pressure" | "snapshot_backlog" | "manifest_fragmentation" | "partition_skew" | "stale_statistics";
             /** @enum {string} */
-            action:
-                | "compaction"
-                | "delete_cleanup"
-                | "snapshot_expiration"
-                | "manifest_rewrite"
-                | "resample";
+            action: "compaction" | "delete_cleanup" | "snapshot_expiration" | "manifest_rewrite" | "resample";
             advisory: boolean;
             reason: string | null;
             preview: components["schemas"]["TableRecommendationPreview"] | null;
             outcome: ("planned" | "no_op" | "rejected") | null;
             no_op_reason: ("no_snapshot" | "no_beneficial_work") | null;
-            estimate:
-                components["schemas"]["TableRecommendationEstimate"] | null;
+            estimate: components["schemas"]["TableRecommendationEstimate"] | null;
             /**
              * @description Whether the catalog assessment (preview, outcome, estimate) is included: `included` for an actionable recommendation the caller may assess, `requires_jobs_submit` when it is actionable but the caller lacks `jobs:submit`, and `not_applicable` for an advisory recommendation that has no assessment to include.
              * @enum {string}
@@ -2136,13 +1955,7 @@ export interface components {
         /** @description A health condition that allows a schedule to admit maintenance. */
         HealthTrigger: {
             /** @enum {string} */
-            kind:
-                | "small_files"
-                | "delete_pressure"
-                | "snapshot_backlog"
-                | "manifest_fragmentation"
-                | "partition_skew"
-                | "stale_statistics";
+            kind: "small_files" | "delete_pressure" | "snapshot_backlog" | "manifest_fragmentation" | "partition_skew" | "stale_statistics";
             /** @enum {string} */
             severity: "warning" | "critical";
         };
@@ -2205,13 +2018,7 @@ export interface components {
             /** Format: uuid */
             destination_id: string;
             /** @enum {string} */
-            event_kind:
-                | "job.failed"
-                | "job.replan_required"
-                | "publication.commit_outcome_unknown"
-                | "schedule.occurrence_missed"
-                | "table.health_critical"
-                | "workers.pool_without_workers";
+            event_kind: "job.failed" | "job.replan_required" | "publication.commit_outcome_unknown" | "schedule.occurrence_missed" | "table.health_critical" | "workers.pool_without_workers";
             filter: components["schemas"]["NotificationRuleFilter"] | null;
             repeat_threshold: number | null;
             enabled: boolean;
@@ -2228,13 +2035,7 @@ export interface components {
             /** Format: uuid */
             destination_id: string;
             /** @enum {string} */
-            event_kind:
-                | "job.failed"
-                | "job.replan_required"
-                | "publication.commit_outcome_unknown"
-                | "schedule.occurrence_missed"
-                | "table.health_critical"
-                | "workers.pool_without_workers";
+            event_kind: "job.failed" | "job.replan_required" | "publication.commit_outcome_unknown" | "schedule.occurrence_missed" | "table.health_critical" | "workers.pool_without_workers";
             filter?: components["schemas"]["NotificationRuleFilter"] | null;
             repeat_threshold?: number | null;
             enabled?: boolean;

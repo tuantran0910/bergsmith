@@ -171,3 +171,29 @@ describe("orphan cleanup", () => {
         }
     });
 });
+
+describe("orphan cleanup labels", () => {
+    const expected: Partial<Record<JobState, string>> = {
+        Planning: "Planning cleanup",
+        ReadyToCommit: "Plan ready",
+        Deleting: "Deleting unreferenced files",
+        Succeeded: "Files removed",
+        NoOp: "No orphan files",
+        Cancelled: "Stopped: cancelled",
+        Failed: "Failed",
+    };
+    it("describes cleanup in its own terms", () => {
+        for (const [state, label] of Object.entries(expected) as [
+            JobState,
+            string,
+        ][]) {
+            expect(
+                executionStatus({
+                    state,
+                    operation: "remove_orphan_files",
+                    publication_started: false,
+                }).label,
+            ).toBe(label);
+        }
+    });
+});

@@ -32,8 +32,43 @@ export function isTerminal(state: JobState): boolean {
 
 type Boundary = Pick<Job, "state" | "publication_started" | "operation">;
 
-/** Where the rewrite work stands. */
+/** Where the job's work stands, in the operation's own terms. */
 export function executionStatus(job: Boundary): StatusLine {
+    if (job.operation === "remove_orphan_files") {
+        switch (job.state) {
+            case "Planning":
+            case "Queued":
+                return { label: "Planning cleanup", tone: "progress" };
+            case "ReadyToCommit":
+                return { label: "Plan ready", tone: "progress" };
+            case "Deleting":
+                return {
+                    label: "Deleting unreferenced files",
+                    tone: "progress",
+                };
+            case "Committing":
+            case "CommitOutcomeUnknown":
+                return {
+                    label: "Deleting unreferenced files",
+                    tone: "progress",
+                };
+            case "Cancelling":
+                return {
+                    label: "Stopping after cancellation",
+                    tone: "warning",
+                };
+            case "Succeeded":
+                return { label: "Files removed", tone: "ok" };
+            case "NoOp":
+                return { label: "No orphan files", tone: "neutral" };
+            case "Cancelled":
+                return { label: "Stopped: cancelled", tone: "neutral" };
+            case "ReplanRequired":
+                return { label: "Stopped: replan required", tone: "error" };
+            case "Failed":
+                return { label: "Failed", tone: "error" };
+        }
+    }
     switch (job.state) {
         case "Planning":
             return { label: "Planning", tone: "progress" };

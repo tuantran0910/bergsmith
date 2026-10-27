@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use bergsmith_common::ids::JobId;
+use bergsmith_common::ids::{JobId, PlanId};
 use bergsmith_common::job::{JobOperation, JobState};
 use bergsmith_coordinator::durable_publication::PublicationConfig;
 use bergsmith_coordinator::runtime::PublicationService;
@@ -22,6 +22,7 @@ use bergsmith_fixtures::{Commit, FileSpec, Fixture, TableSpec, row};
 use bergsmith_maintenance::PlannerConfig;
 use bergsmith_maintenance::orphans::OrphanPlanDocument;
 use bergsmith_persistence::cancellation::{self, CancelJob, CancellationDisposition};
+use bergsmith_persistence::jobs::NewJob;
 use bergsmith_persistence::orphans::{self, Disposition};
 use bergsmith_persistence::scheduling::RetryPolicy;
 use bergsmith_persistence::{
@@ -32,6 +33,7 @@ use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
 use mockito::{Server, ServerGuard};
 use serde_json::json;
 use sqlx::{ConnectOptions, PgPool};
+use support::{digest, force_job_state};
 
 const TABLE_PATH: &str = "/v1/namespaces/db/tables/t";
 
@@ -145,7 +147,7 @@ async fn setup(pool: &PgPool) -> Run {
     .id;
     let job = jobs::create_job(
         &mut conn,
-        &jobs::NewJob {
+        &NewJob {
             id: JobId::generate(),
             organization_id: tenant.organization,
             table_id: tenant.table,
@@ -271,6 +273,56 @@ fn file_uri(path: &Path) -> String {
 
 fn local_path(uri: &str) -> PathBuf {
     PathBuf::from(uri.strip_prefix("file://").unwrap_or(uri))
+}
+
+/// Copies the fixture's manifest list to an old, unreferenced file in the
+/// metadata directory, standing in for a proposal that never landed.
+fn unresolved_manifest_list(run: &Run) -> PathBuf {
+    let metadata = run.fixture.root().join("metadata");
+    let source = std::fs::read_dir(&metadata)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("avro"))
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("snap-"))
+        })
+        .expect("the fixture writes a manifest list");
+    let copy = metadata.join("unresolved-proposal.avro");
+    std::fs::copy(source, &copy).unwrap();
+    let two_days_ago = SystemTime::now() - Duration::from_secs(2 * 24 * 60 * 60);
+    std::fs::File::options()
+        .write(true)
+        .open(&copy)
+        .unwrap()
+        .set_modified(two_days_ago)
+        .unwrap();
+    copy
+}
+
+async fn insert_unresolved_intent(conn: &mut sqlx::PgConnection, job: JobId, manifest_list: &str) {
+    sqlx::query("INSERT INTO publications (id, job_id) VALUES ($1, $2)")
+        .bind(uuid::Uuid::now_v7())
+        .bind(job.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO publication_intents
+             (job_id, publication_id, content, request_body, request_hash)
+         SELECT $1, id, $2, $3, $4 FROM publications WHERE job_id = $1",
+    )
+    .bind(job.as_uuid())
+    .bind(serde_json::json!({ "manifest_list": manifest_list }))
+    .bind(Vec::<u8>::new())
+    .bind(digest('d'))
+    .execute(&mut *conn)
+    .await
+    .unwrap();
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
@@ -505,6 +557,92 @@ async fn a_former_leader_deletes_nothing(pool: PgPool) {
     assert_eq!(job.state, JobState::ReadyToCommit);
     assert!(run.orphan_data.exists());
     assert!(run.orphan_metadata.exists());
+    run.server.reset();
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn an_unresolved_publication_keeps_its_manifests(pool: PgPool) {
+    let mut run = setup(&pool).await;
+    let list = unresolved_manifest_list(&run);
+    let mut conn = pool.acquire().await.unwrap();
+    let pending = jobs::create_job(
+        &mut conn,
+        &NewJob {
+            id: JobId::generate(),
+            organization_id: run.tenant.organization,
+            table_id: run.tenant.table,
+            operation: JobOperation::Compact,
+            retry_of: None,
+            created_by: run.tenant.user,
+        },
+    )
+    .await
+    .unwrap();
+    force_job_state(&mut conn, pending.id, JobState::Committing).await;
+    insert_unresolved_intent(&mut conn, pending.id, &file_uri(&list)).await;
+
+    planner(&run, enabled(50)).pass().await.unwrap();
+    let (content, _hash) = orphans::orphan_plan(&mut conn, run.job.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let document = OrphanPlanDocument::from_persisted(content).unwrap();
+    assert!(
+        document
+            .candidates
+            .iter()
+            .all(|candidate| candidate.path != file_uri(&list)),
+        "the unresolved proposal's manifest list is protected"
+    );
+    publication(&run, enabled(50)).pass().await.unwrap();
+    assert!(
+        list.exists(),
+        "the unresolved proposal's manifest list survives cleanup"
+    );
+    run.server.reset();
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_resumed_job_without_a_plan_fails(pool: PgPool) {
+    let mut run = setup(&pool).await;
+    let mut conn = pool.acquire().await.unwrap();
+    force_job_state(&mut conn, run.job.id, JobState::Deleting).await;
+    let summary = publication(&run, enabled(50)).pass().await.unwrap();
+    assert_eq!(summary.failed, 1);
+    let job = jobs::job(&mut conn, run.tenant.organization, run.job.id)
+        .await
+        .unwrap();
+    assert_eq!(job.state, JobState::Failed);
+    assert_eq!(job.state_reason.as_deref(), Some("PlanMissing"));
+    run.server.reset();
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn an_undecodable_plan_fails_instead_of_looping(pool: PgPool) {
+    let mut run = setup(&pool).await;
+    let mut conn = pool.acquire().await.unwrap();
+    force_job_state(&mut conn, run.job.id, JobState::ReadyToCommit).await;
+    sqlx::query(
+        "INSERT INTO orphan_plans (id, job_id, content, content_hash) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(PlanId::generate().as_uuid())
+    .bind(run.job.id.as_uuid())
+    .bind(serde_json::json!({}))
+    .bind(digest('e'))
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    let summary = publication(&run, enabled(50)).pass().await.unwrap();
+    assert_eq!(summary.failed, 1);
+    let job = jobs::job(&mut conn, run.tenant.organization, run.job.id)
+        .await
+        .unwrap();
+    assert_eq!(job.state, JobState::Failed);
+    assert_eq!(
+        job.state_reason.as_deref(),
+        Some("PublicationPlanInvalid"),
+        "a corrupt plan terminates the job instead of looping"
+    );
     run.server.reset();
 }
 

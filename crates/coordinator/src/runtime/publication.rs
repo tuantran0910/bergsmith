@@ -16,7 +16,8 @@ use bergsmith_common::ids::JobId;
 use bergsmith_common::job::{JobOperation, JobState};
 use bergsmith_maintenance::PlanningBaseline;
 use bergsmith_maintenance::orphans::{
-    OrphanError, OrphanPlanDocument, OrphanPolicy, ReachabilityBounds, Reachable,
+    CandidateVerdict, OrphanError, OrphanPlanDocument, OrphanPolicy, ReachabilityBounds, Reachable,
+    verify_candidate,
 };
 use bergsmith_persistence::orphans::{self as orphan_plans, Disposition, Receipt};
 use bergsmith_persistence::scheduling::RetryPolicy;
@@ -560,43 +561,53 @@ impl PublicationService {
     /// Executes one bounded orphan-deletion batch (ADR 0062).
     ///
     /// The first pass moves the job from `ReadyToCommit` to `Deleting`; the
-    /// batch itself loads the catalog, proves what the table references, and
-    /// lists the table before it fences the destructive step on the leader
-    /// lease. Receipts make the batch resumable.
+    /// batch itself loads the catalog, proves what the table and every
+    /// unresolved publication reference, and lists the table before it fences
+    /// the destructive step on the leader lease. Connections are acquired per
+    /// step, so one pool connection is enough.
     async fn publish_orphan_job(&self, job: &jobs::Job) -> Result<Outcome, PublicationError> {
         if !self.orphan.enabled {
             self.terminate_orphan(job, JobState::Failed, "OrphanCleanupUnavailable")
                 .await?;
             return Ok(Outcome::Failed);
         }
-        let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
-        let (content, stored_hash) = orphan_plans::orphan_plan(&mut conn, job.id)
-            .await?
-            .ok_or(PublicationError::PlanMissing)?;
-        let document = OrphanPlanDocument::from_persisted(content)?;
-        if document.job_id != job.id || document.content_hash()?.to_hex() != stored_hash {
-            return Err(PublicationError::PlanMissing);
-        }
-        if job.state == JobState::ReadyToCommit {
-            match orphan_plans::begin_deletion(&mut conn, job.id, job.state_revision, self.epoch)
-                .await
-            {
-                Ok(_) => {}
-                Err(
-                    PersistenceError::RevisionConflict { .. }
-                    | PersistenceError::JobNotInState { .. },
-                ) => return Ok(Outcome::Superseded),
-                Err(error) => return Err(error.into()),
+        let document = {
+            let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
+            let (content, stored_hash) = orphan_plans::orphan_plan(&mut conn, job.id)
+                .await?
+                .ok_or(PublicationError::PlanMissing)?;
+            let document = OrphanPlanDocument::from_persisted(content)?;
+            if document.job_id != job.id || document.content_hash()?.to_hex() != stored_hash {
+                return Err(PublicationError::PlanMissing);
             }
-        }
-        self.delete_orphan_batch(job, &document, &mut conn).await
+            if job.state == JobState::ReadyToCommit {
+                match orphan_plans::begin_deletion(
+                    &mut conn,
+                    job.id,
+                    job.state_revision,
+                    self.epoch,
+                )
+                .await
+                {
+                    Ok(_) => {}
+                    Err(
+                        PersistenceError::RevisionConflict { .. }
+                        | PersistenceError::JobNotInState { .. },
+                    ) => return Ok(Outcome::Superseded),
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            document
+        };
+        self.delete_orphan_batch(job, &document).await
     }
 
     /// Deletes one bounded batch and records a receipt per resolved candidate.
     ///
     /// Everything that only reads the table (catalog load, reachability,
     /// listing) happens before the batch is authorized, so the destructive
-    /// step is fenced as late as possible.
+    /// step is fenced as late as possible. No pool connection is held across
+    /// those reads or across the deletes.
     #[expect(
         clippy::too_many_lines,
         reason = "one batch keeps re-verification, receipts, and completion in one durable step"
@@ -605,7 +616,6 @@ impl PublicationService {
         &self,
         job: &jobs::Job,
         document: &OrphanPlanDocument,
-        conn: &mut sqlx::PgConnection,
     ) -> Result<Outcome, PublicationError> {
         let binding = self
             .catalogs
@@ -617,9 +627,22 @@ impl PublicationService {
             .metadata_location
             .as_deref()
             .ok_or(PublicationError::Proposal)?;
+        // Manifests of a publication that may still be sent are not reachable
+        // from any snapshot, so they must be protected explicitly.
+        let unresolved = {
+            let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
+            orphan_plans::unresolved_manifest_lists(
+                &mut conn,
+                job.organization_id,
+                job.table_id,
+                job.id,
+            )
+            .await?
+        };
         let reachable = Reachable::capture(
             &binding.loaded.metadata,
             metadata_location,
+            &unresolved,
             binding.store.file_io(),
             ReachabilityBounds::new(
                 self.orphan.max_scan_entries,
@@ -674,14 +697,19 @@ impl PublicationService {
         // Fence the irreversible step as late as possible: this proves the
         // lease, the `Deleting` state, and the absence of cancellation, and
         // returns the revision the batch completes at.
-        let job = match orphan_plans::authorize_batch(conn, job.id, self.epoch).await {
-            Ok(job) => job,
-            Err(
-                PersistenceError::RevisionConflict { .. } | PersistenceError::JobNotInState { .. },
-            ) => return Ok(Outcome::Superseded),
-            Err(error) => return Err(error.into()),
+        let (job, recorded) = {
+            let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
+            let job = match orphan_plans::authorize_batch(&mut conn, job.id, self.epoch).await {
+                Ok(job) => job,
+                Err(
+                    PersistenceError::RevisionConflict { .. }
+                    | PersistenceError::JobNotInState { .. },
+                ) => return Ok(Outcome::Superseded),
+                Err(error) => return Err(error.into()),
+            };
+            let recorded = orphan_plans::recorded_paths(&mut conn, job.id).await?;
+            (job, recorded)
         };
-        let recorded = orphan_plans::recorded_paths(conn, job.id).await?;
         let mut receipts = Vec::new();
         let mut resolved = 0usize;
         for candidate in &document.candidates {
@@ -693,30 +721,19 @@ impl PublicationService {
             }
             let location = Location::parse(&candidate.path).map_err(OrphanError::Location)?;
             let fresh = current.get(&location);
-            let protected = !location.is_within(&table)
-                || prefixes.iter().any(|prefix| location.is_within(prefix))
-                || reachable.contains(&location);
-            let disposition = if protected {
-                Disposition::Skipped
-            } else {
-                match fresh {
-                    // The object is gone. An earlier attempt may have removed
-                    // it before the receipt was written, and this batch cannot
-                    // prove which, so the receipt says exactly that.
-                    None => Disposition::Absent,
-                    Some((size, Some(modified)))
-                        if *size == candidate.size_bytes && *modified <= cutoff_ms =>
-                    {
-                        binding
-                            .store
-                            .delete(&location)
-                            .await
-                            .map_err(OrphanError::Storage)?;
-                        Disposition::Deleted
-                    }
-                    // Replaced, or younger than the window: keep it.
-                    Some(_) => Disposition::Skipped,
+            let disposition = match verify_candidate(
+                candidate, &location, fresh, &reachable, &prefixes, &table, cutoff_ms,
+            ) {
+                CandidateVerdict::Delete => {
+                    binding
+                        .store
+                        .delete(&location)
+                        .await
+                        .map_err(OrphanError::Storage)?;
+                    Disposition::Deleted
                 }
+                CandidateVerdict::Skip => Disposition::Skipped,
+                CandidateVerdict::Absent => Disposition::Absent,
             };
             receipts.push(Receipt {
                 path: &candidate.path,
@@ -725,12 +742,13 @@ impl PublicationService {
             });
             resolved = resolved.saturating_add(1);
         }
-        orphan_plans::record_receipts(conn, job.id, &receipts, self.epoch).await?;
-        let (count, _bytes) = orphan_plans::receipt_totals(conn, job.id).await?;
+        let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
+        orphan_plans::record_receipts(&mut conn, job.id, &receipts, self.epoch).await?;
+        let (count, _bytes) = orphan_plans::receipt_totals(&mut conn, job.id).await?;
         if u64::try_from(count).unwrap_or(u64::MAX)
             >= u64::try_from(document.candidates.len()).unwrap_or(u64::MAX)
         {
-            self.end_orphan(conn, &job, JobState::Succeeded, "OrphanFilesRemoved")
+            self.end_orphan(&mut conn, &job, JobState::Succeeded, "OrphanFilesRemoved")
                 .await?;
         }
         Ok(Outcome::Cleaned)

@@ -8,7 +8,7 @@
 
 use std::collections::BTreeSet;
 
-use bergsmith_common::ids::{JobId, PlanId};
+use bergsmith_common::ids::{JobId, OrganizationId, PlanId, TableId};
 use bergsmith_common::job::{JobOperation, JobState};
 use sqlx::{Connection, PgConnection};
 
@@ -183,6 +183,38 @@ pub async fn begin_deletion(
     .await?;
     tx.commit().await?;
     Ok(transitioned)
+}
+
+/// Manifest lists named by publication intents that may still be sent.
+///
+/// A rewrite intent is persisted before send authorization. Its manifests live
+/// under the table's metadata directory and nothing in the current snapshot
+/// references them, so cleanup must protect them explicitly until the job
+/// leaves `ReadyToCommit`, `Committing`, or `CommitOutcomeUnknown`.
+///
+/// # Errors
+///
+/// Returns a database error when the query fails.
+pub async fn unresolved_manifest_lists(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    table_id: TableId,
+    exclude_job: JobId,
+) -> Result<Vec<String>, PersistenceError> {
+    let lists: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT i.content ->> 'manifest_list'
+         FROM publication_intents i
+         JOIN jobs j ON j.id = i.job_id
+         WHERE j.organization_id = $1 AND j.table_identity_id = $2 AND j.id <> $3
+           AND j.state IN ('ReadyToCommit', 'Committing', 'CommitOutcomeUnknown')
+           AND jsonb_typeof(i.content -> 'manifest_list') = 'string'",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(table_id.as_uuid())
+    .bind(exclude_job.as_uuid())
+    .fetch_all(conn)
+    .await?;
+    Ok(lists)
 }
 
 /// Records one receipt per resolved candidate under the leader lease.

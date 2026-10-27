@@ -25,8 +25,55 @@ use iceberg::io::FileIO;
 use iceberg::spec::{ManifestList, TableMetadata};
 use serde::{Deserialize, Serialize};
 
-use crate::baseline::PlanningBaseline;
+use crate::baseline::DATA_PATH_PROPERTY;
 use crate::error::PlanError;
+
+/// The table state an orphan plan was built from.
+///
+/// Cleanup does not need a `main` snapshot: an empty table can still hold
+/// abandoned files. The baseline therefore records the table identity, the
+/// metadata file, and both locations, all of which exist without a snapshot.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrphanBaseline {
+    /// The Iceberg `table-uuid`.
+    pub table_uuid: uuid::Uuid,
+    /// Where the current metadata was read from.
+    pub metadata_location: String,
+    /// The table's `location`.
+    pub location: String,
+    /// `write.data.path`, or `<location>/data`.
+    pub data_location: String,
+}
+
+impl OrphanBaseline {
+    /// Captures the table locations and the metadata file.
+    ///
+    /// # Errors
+    ///
+    /// [`PlanError::Location`] when the table or data location is not a valid
+    /// storage location, and [`PlanError::StagedTable`] when the catalog
+    /// returned no metadata file.
+    pub fn capture(
+        metadata: &TableMetadata,
+        metadata_location: Option<&str>,
+    ) -> Result<Self, PlanError> {
+        let metadata_location = metadata_location.ok_or(PlanError::StagedTable {
+            table_uuid: metadata.uuid(),
+        })?;
+        let location = Location::parse(metadata.location())?;
+        let data_location = match metadata.properties().get(DATA_PATH_PROPERTY) {
+            Some(path) => Location::parse(path)?,
+            None => location.child("data")?,
+        };
+        Ok(Self {
+            table_uuid: metadata.uuid(),
+            metadata_location: metadata_location.to_owned(),
+            location: location.to_string(),
+            data_location: data_location.to_string(),
+        })
+    }
+}
 
 /// The hash domain of an orphan plan document.
 const ORPHAN_PLAN_DOMAIN: &[u8] = b"bergsmith.maintenance.v1.OrphanPlan";
@@ -193,6 +240,7 @@ impl Reachable {
     pub async fn capture(
         metadata: &TableMetadata,
         metadata_location: &str,
+        unresolved_manifest_lists: &[String],
         file_io: &FileIO,
         bounds: ReachabilityBounds,
     ) -> Result<Self, OrphanError> {
@@ -208,9 +256,82 @@ impl Reachable {
             reachable.insert(&statistics.statistics_path)?;
         }
         for snapshot in metadata.snapshots() {
-            let manifest_list = snapshot.manifest_list();
-            reachable.insert(manifest_list)?;
-            let input = file_io.new_input(manifest_list)?;
+            reachable
+                .scan_manifest_list(
+                    snapshot.manifest_list(),
+                    metadata.format_version(),
+                    file_io,
+                    bounds,
+                )
+                .await?;
+        }
+        // A publication that never landed still owns the manifests its
+        // persisted intent names; they live under the metadata directory and
+        // nothing in the current snapshot references them.
+        for manifest_list in unresolved_manifest_lists {
+            reachable
+                .scan_manifest_list(manifest_list, metadata.format_version(), file_io, bounds)
+                .await?;
+        }
+        Ok(reachable)
+    }
+
+    /// Reads one manifest list and everything it references.
+    async fn scan_manifest_list(
+        &mut self,
+        manifest_list: &str,
+        format_version: iceberg::spec::FormatVersion,
+        file_io: &FileIO,
+        bounds: ReachabilityBounds,
+    ) -> Result<(), OrphanError> {
+        self.insert(manifest_list)?;
+        let input = file_io.new_input(manifest_list)?;
+        let size = input.metadata().await?.size;
+        if size > bounds.max_bytes {
+            return Err(OrphanError::ScanObjectTooLarge {
+                size,
+                limit: bounds.max_bytes,
+            });
+        }
+        let bytes = input.read().await?;
+        let list = ManifestList::parse_with_version(&bytes, format_version)?;
+        for manifest in list.entries() {
+            self.manifests = self.manifests.saturating_add(1);
+            if self.manifests > bounds.max_manifests {
+                return Err(OrphanError::ScanTooLarge {
+                    manifests: self.manifests,
+                    entries: self.entries,
+                });
+            }
+            // The counts let a manifest be refused before it is decoded. An
+            // older manifest without them cannot be bounded, so the scan
+            // refuses it instead of decoding an unknown-size object.
+            let (Some(added), Some(existing), Some(deleted)) = (
+                manifest.added_files_count,
+                manifest.existing_files_count,
+                manifest.deleted_files_count,
+            ) else {
+                return Err(OrphanError::ScanUnboundedManifest {
+                    path: manifest.manifest_path.clone(),
+                });
+            };
+            let declared = added.saturating_add(existing).saturating_add(deleted);
+            if self
+                .entries
+                .saturating_add(usize::try_from(declared).unwrap_or(usize::MAX))
+                > bounds.max_entries
+            {
+                return Err(OrphanError::ScanTooLarge {
+                    manifests: self.manifests,
+                    entries: self
+                        .entries
+                        .saturating_add(usize::try_from(declared).unwrap_or(usize::MAX)),
+                });
+            }
+            self.insert(&manifest.manifest_path)?;
+            // The declared length is only a hint. Stat the object so the read
+            // that follows cannot exceed the byte bound.
+            let input = file_io.new_input(&manifest.manifest_path)?;
             let size = input.metadata().await?.size;
             if size > bounds.max_bytes {
                 return Err(OrphanError::ScanObjectTooLarge {
@@ -218,62 +339,19 @@ impl Reachable {
                     limit: bounds.max_bytes,
                 });
             }
-            let bytes = input.read().await?;
-            let list = ManifestList::parse_with_version(&bytes, metadata.format_version())?;
-            for manifest in list.entries() {
-                reachable.manifests = reachable.manifests.saturating_add(1);
-                if reachable.manifests > bounds.max_manifests {
+            let loaded = manifest.load_manifest(file_io).await?;
+            for entry in loaded.entries() {
+                self.entries = self.entries.saturating_add(1);
+                if self.entries > bounds.max_entries {
                     return Err(OrphanError::ScanTooLarge {
-                        manifests: reachable.manifests,
-                        entries: reachable.entries,
+                        manifests: self.manifests,
+                        entries: self.entries,
                     });
                 }
-                if u64::try_from(manifest.manifest_length).unwrap_or(u64::MAX) > bounds.max_bytes {
-                    return Err(OrphanError::ScanObjectTooLarge {
-                        size: u64::try_from(manifest.manifest_length).unwrap_or(u64::MAX),
-                        limit: bounds.max_bytes,
-                    });
-                }
-                // The counts let a manifest be refused before it is decoded.
-                // An older manifest without them cannot be bounded, so the
-                // scan refuses it instead of decoding an unknown-size object.
-                let (Some(added), Some(existing), Some(deleted)) = (
-                    manifest.added_files_count,
-                    manifest.existing_files_count,
-                    manifest.deleted_files_count,
-                ) else {
-                    return Err(OrphanError::ScanUnboundedManifest {
-                        path: manifest.manifest_path.clone(),
-                    });
-                };
-                let declared = added.saturating_add(existing).saturating_add(deleted);
-                if reachable
-                    .entries
-                    .saturating_add(usize::try_from(declared).unwrap_or(usize::MAX))
-                    > bounds.max_entries
-                {
-                    return Err(OrphanError::ScanTooLarge {
-                        manifests: reachable.manifests,
-                        entries: reachable
-                            .entries
-                            .saturating_add(usize::try_from(declared).unwrap_or(usize::MAX)),
-                    });
-                }
-                reachable.insert(&manifest.manifest_path)?;
-                let loaded = manifest.load_manifest(file_io).await?;
-                for entry in loaded.entries() {
-                    reachable.entries = reachable.entries.saturating_add(1);
-                    if reachable.entries > bounds.max_entries {
-                        return Err(OrphanError::ScanTooLarge {
-                            manifests: reachable.manifests,
-                            entries: reachable.entries,
-                        });
-                    }
-                    reachable.insert(entry.data_file().file_path())?;
-                }
+                self.insert(entry.data_file().file_path())?;
             }
         }
-        Ok(reachable)
+        Ok(())
     }
 
     fn insert(&mut self, path: &str) -> Result<(), OrphanError> {
@@ -423,6 +501,58 @@ fn bergsmith_roots(table: &Location, data_location: &str) -> Result<Vec<Location
     Ok(roots)
 }
 
+/// What one deletion check decided for a planned object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CandidateVerdict {
+    /// The object is still unreferenced, old, and unchanged.
+    Delete,
+    /// The object became referenced, young, replaced, or protected.
+    Skip,
+    /// The object was already gone when the batch looked.
+    Absent,
+}
+
+impl CandidateVerdict {
+    /// Whether the verdict resolves the candidate without deleting it.
+    #[must_use]
+    pub const fn is_resolved_without_deletion(self) -> bool {
+        matches!(self, Self::Skip | Self::Absent)
+    }
+}
+
+/// Re-checks one planned candidate against the current table and listing.
+///
+/// Planning and deletion share this predicate, so a batch applies exactly the
+/// rules the immutable plan was selected with. `fresh` is the object as the
+/// current listing sees it: a missing entry means the object is gone, a
+/// different size means it is not the object the plan named, and an unknown
+/// modification time cannot prove age.
+#[must_use]
+pub fn verify_candidate(
+    candidate: &OrphanCandidate,
+    location: &Location,
+    fresh: Option<&(u64, Option<i64>)>,
+    reachable: &Reachable,
+    prefixes: &[Location],
+    table: &Location,
+    cutoff_ms: i64,
+) -> CandidateVerdict {
+    if !location.is_within(table)
+        || prefixes.iter().any(|prefix| location.is_within(prefix))
+        || is_berggsmith_owned(location, table)
+        || reachable.contains(location)
+    {
+        return CandidateVerdict::Skip;
+    }
+    match fresh {
+        None => CandidateVerdict::Absent,
+        Some((size, Some(modified))) if *size == candidate.size_bytes && *modified <= cutoff_ms => {
+            CandidateVerdict::Delete
+        }
+        Some(_) => CandidateVerdict::Skip,
+    }
+}
+
 /// Selects deletable objects from a listing.
 ///
 /// `listed` must come from [`ObjectStore::list`] over the table location, so
@@ -460,32 +590,43 @@ pub fn select_orphans(
         if !entry.location.is_within(&table) {
             continue;
         }
-        if is_berggsmith_owned(&entry.location, &table)
-            || bergsmith_roots
-                .iter()
-                .any(|root| entry.location.is_within(root))
-        {
-            decision.retained_bergsmith = decision.retained_bergsmith.saturating_add(1);
-            continue;
-        }
-        if reachable.contains(&entry.location) {
-            decision.retained_referenced = decision.retained_referenced.saturating_add(1);
-            continue;
-        }
         let Some(last_modified_ms) = entry.last_modified_ms else {
             // An unknown time cannot prove age, so the object survives.
             decision.retained_young = decision.retained_young.saturating_add(1);
             continue;
         };
-        if last_modified_ms > cutoff_ms {
-            decision.retained_young = decision.retained_young.saturating_add(1);
-            continue;
-        }
-        candidates.push(OrphanCandidate {
+        let candidate = OrphanCandidate {
             path: entry.location.to_string(),
             size_bytes: entry.size,
             last_modified_ms,
-        });
+        };
+        let verdict = verify_candidate(
+            &candidate,
+            &entry.location,
+            Some(&(entry.size, entry.last_modified_ms)),
+            reachable,
+            &bergsmith_roots,
+            &table,
+            cutoff_ms,
+        );
+        match verdict {
+            CandidateVerdict::Delete => candidates.push(candidate),
+            CandidateVerdict::Skip => {
+                if is_berggsmith_owned(&entry.location, &table)
+                    || bergsmith_roots
+                        .iter()
+                        .any(|root| entry.location.is_within(root))
+                {
+                    decision.retained_bergsmith = decision.retained_bergsmith.saturating_add(1);
+                } else if reachable.contains(&entry.location) {
+                    decision.retained_referenced = decision.retained_referenced.saturating_add(1);
+                } else {
+                    decision.retained_young = decision.retained_young.saturating_add(1);
+                }
+            }
+            // A listed entry always exists, so this arm is unreachable.
+            CandidateVerdict::Absent => {}
+        }
     }
     // The plan keeps the oldest objects first, so a bounded job reclaims the
     // most valuable space and later runs continue where this one stopped.
@@ -521,7 +662,7 @@ pub struct OrphanPlanDocument {
     /// The plan's identifier.
     pub plan_id: PlanId,
     /// The table state the selection was made from.
-    pub baseline: PlanningBaseline,
+    pub baseline: OrphanBaseline,
     /// The table location the listing covered.
     pub table_location: String,
     /// The data location whose `bergsmith/` tree is protected.
@@ -548,13 +689,13 @@ impl OrphanPlanDocument {
     pub fn new(
         job_id: JobId,
         plan_id: PlanId,
-        baseline: PlanningBaseline,
+        baseline: OrphanBaseline,
         table_location: &str,
         listed_objects: u64,
         reachable: &Reachable,
         decision: &OrphanDecision,
     ) -> Result<Self, PlanError> {
-        let baseline_data_location = baseline.data_location().to_owned();
+        let baseline_data_location = baseline.data_location.clone();
         if decision.candidates.windows(2).any(|pair| {
             (pair[0].last_modified_ms, &pair[0].path) >= (pair[1].last_modified_ms, &pair[1].path)
         }) {
@@ -652,6 +793,15 @@ mod tests {
 
     fn policy() -> OrphanPolicy {
         OrphanPolicy::new(3 * 24 * 60 * 60, 0, 100).unwrap()
+    }
+
+    fn baseline() -> OrphanBaseline {
+        OrphanBaseline {
+            table_uuid: uuid::Uuid::nil(),
+            metadata_location: "s3://b/t/metadata/v1.metadata.json".to_owned(),
+            location: "s3://b/t".to_owned(),
+            data_location: "s3://b/t/data".to_owned(),
+        }
     }
 
     #[test]
@@ -766,6 +916,100 @@ mod tests {
             decision.candidates[0].last_modified_ms,
             now.timestamp_millis() - 10 * 86_400_000
         );
+    }
+
+    #[test]
+    fn deletion_verdicts_follow_the_plan_rules() {
+        let now = Utc::now();
+        let table = location("s3://b/t");
+        let prefixes = protected_prefixes("s3://b/t", "s3://b/t/data").unwrap();
+        let candidate = OrphanCandidate {
+            path: "s3://b/t/data/old.parquet".to_owned(),
+            size_bytes: 10,
+            last_modified_ms: now.timestamp_millis() - 90 * 86_400_000,
+        };
+        let location = location(&candidate.path);
+        let stale = now.timestamp_millis() - 86_400_000;
+        let fresh = (10, Some(candidate.last_modified_ms));
+
+        assert_eq!(
+            verify_candidate(
+                &candidate,
+                &location,
+                Some(&fresh),
+                &Reachable::default(),
+                &prefixes,
+                &table,
+                stale,
+            ),
+            CandidateVerdict::Delete
+        );
+        assert_eq!(
+            verify_candidate(
+                &candidate,
+                &location,
+                Some(&fresh),
+                &Reachable::default(),
+                &prefixes,
+                &table,
+                candidate.last_modified_ms - 1,
+            ),
+            CandidateVerdict::Skip,
+            "an object inside the window is kept"
+        );
+        assert_eq!(
+            verify_candidate(
+                &candidate,
+                &location,
+                Some(&(11, Some(candidate.last_modified_ms))),
+                &Reachable::default(),
+                &prefixes,
+                &table,
+                stale,
+            ),
+            CandidateVerdict::Skip,
+            "a different size is not the object the plan named"
+        );
+        let mut reachable = Reachable::default();
+        reachable.insert(&candidate.path).unwrap();
+        assert_eq!(
+            verify_candidate(
+                &candidate,
+                &location,
+                Some(&fresh),
+                &reachable,
+                &prefixes,
+                &table,
+                stale
+            ),
+            CandidateVerdict::Skip,
+            "a newly referenced object is kept"
+        );
+        assert_eq!(
+            verify_candidate(
+                &candidate,
+                &location,
+                None,
+                &Reachable::default(),
+                &prefixes,
+                &table,
+                stale,
+            ),
+            CandidateVerdict::Absent
+        );
+        assert_eq!(
+            verify_candidate(
+                &candidate,
+                &location,
+                Some(&fresh),
+                &Reachable::default(),
+                &prefixes,
+                &table,
+                stale,
+            ),
+            CandidateVerdict::Delete
+        );
+        assert!(CandidateVerdict::Absent.is_resolved_without_deletion());
     }
 
     #[test]
@@ -920,7 +1164,7 @@ mod tests {
             now,
         )
         .unwrap();
-        let baseline = PlanningBaseline::for_tests();
+        let baseline = baseline();
         let job_id = JobId::generate();
         let plan_id = PlanId::generate();
         let document = OrphanPlanDocument::new(
@@ -962,7 +1206,7 @@ mod tests {
             OrphanPlanDocument::new(
                 JobId::generate(),
                 PlanId::generate(),
-                PlanningBaseline::for_tests(),
+                baseline(),
                 "s3://b/t",
                 2,
                 &Reachable::default(),

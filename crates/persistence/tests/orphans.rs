@@ -12,7 +12,8 @@ use bergsmith_persistence::jobs::{self, NewJob};
 use bergsmith_persistence::leadership::acquire_leadership;
 use bergsmith_persistence::orphans::{self, Disposition, NewOrphanPlan, Receipt};
 use sqlx::{PgConnection, PgPool};
-use support::{Tenant, digest, job, tenant};
+use support::{Tenant, digest, force_job_state, job, tenant};
+use uuid::Uuid;
 
 async fn new_job(conn: &mut PgConnection, tenant: &Tenant, operation: JobOperation) -> JobId {
     let id = JobId::generate();
@@ -191,4 +192,63 @@ async fn deletion_only_begins_from_ready_to_commit(pool: PgPool) {
             ..
         }
     ));
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn unresolved_publication_manifests_are_reported(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = tenant(&mut conn, "acme").await;
+    let pending = job(&mut conn, &tenant).await;
+    let landed = job(&mut conn, &tenant).await;
+    let path = "s3://b/t/metadata/proposal.avro";
+    for (id, state, content) in [
+        (
+            pending,
+            JobState::Committing,
+            serde_json::json!({"manifest_list": path}),
+        ),
+        (
+            landed,
+            JobState::Succeeded,
+            serde_json::json!({"manifest_list": "s3://b/t/metadata/old.avro"}),
+        ),
+        // An expiration intent has no manifest list and contributes nothing.
+        (
+            job(&mut conn, &tenant).await,
+            JobState::Committing,
+            serde_json::json!({"baseline_snapshot_id": "1"}),
+        ),
+    ] {
+        force_job_state(&mut conn, id, state).await;
+        let publication = Uuid::now_v7();
+        sqlx::query("INSERT INTO publications (id, job_id) VALUES ($1, $2)")
+            .bind(publication)
+            .bind(id.as_uuid())
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO publication_intents
+                 (job_id, publication_id, content, request_body, request_hash)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(id.as_uuid())
+        .bind(publication)
+        .bind(&content)
+        .bind(Vec::<u8>::new())
+        .bind(digest('c'))
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    }
+
+    let lists = orphans::unresolved_manifest_lists(
+        &mut conn,
+        tenant.organization,
+        tenant.table,
+        JobId::generate(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(lists, vec![path.to_owned()]);
 }

@@ -113,9 +113,11 @@ impl AccessError {
             Self::NoAlias(_)
             | Self::IdentityChanged { .. }
             | Self::Profile(_)
-            | Self::Storage(_)
             | Self::CredentialUnavailable(_)
             | Self::InvalidConnection(_, _) => false,
+            // A storage read can recover on its own; a malformed listing or an
+            // oversized one cannot.
+            Self::Storage(error) => matches!(error, StorageError::Io(_)),
         }
     }
 

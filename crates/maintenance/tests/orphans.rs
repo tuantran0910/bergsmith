@@ -23,6 +23,7 @@ async fn every_live_file_is_reachable_and_only_stale_unreachable_objects_are_can
     let reachable = Reachable::capture(
         fixture.metadata(),
         fixture.metadata_location(),
+        &[],
         fixture.file_io(),
         bounds,
     )
@@ -87,6 +88,7 @@ async fn the_scan_bound_fails_instead_of_truncating() {
     let error = Reachable::capture(
         fixture.metadata(),
         fixture.metadata_location(),
+        &[],
         fixture.file_io(),
         bounds,
     )
