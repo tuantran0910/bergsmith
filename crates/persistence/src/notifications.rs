@@ -8,12 +8,12 @@
 //! never values.
 
 use bergsmith_common::ids::{
-    CatalogConnectionId, NotificationDestinationId, NotificationRuleId, OrganizationId,
+    CatalogConnectionId, JobId, NotificationDestinationId, NotificationRuleId, OrganizationId,
     PrincipalId, TableId,
 };
 use bergsmith_common::notifications::{DestinationKind, EventKind};
 use chrono::{DateTime, Utc};
-use sqlx::PgConnection;
+use sqlx::{Connection, PgConnection};
 
 use crate::PersistenceError;
 
@@ -742,4 +742,494 @@ async fn revision_or_missing_rule(
             id: id.to_string(),
         }),
     }
+}
+
+/// One event about to be matched against the organization's rules.
+#[derive(Clone, Debug)]
+pub struct DeliveryEvent {
+    /// Owning organization.
+    pub organization_id: OrganizationId,
+    /// Event kind the rules must name.
+    pub event_kind: EventKind,
+    /// Stable identity of the source event, unique per rule.
+    pub source_key: String,
+    /// When it happened.
+    pub occurred_at: DateTime<Utc>,
+    /// One sentence for a human.
+    pub summary: String,
+    /// Resource type the event is about.
+    pub resource_kind: String,
+    /// Durable resource identifier.
+    pub resource_id: String,
+    /// Human label, when one exists.
+    pub resource_label: Option<String>,
+    /// Stable reason code, when one exists.
+    pub reason: Option<String>,
+    /// Connection dimension, for a connection-filtered rule.
+    pub connection_id: Option<CatalogConnectionId>,
+    /// Table dimension, for a table-filtered rule.
+    pub table_id: Option<TableId>,
+    /// Worker-pool dimensions the event carries, for pool-filtered rules.
+    pub pools: Vec<String>,
+}
+
+/// Appends one delivery per matching enabled rule, in the caller's transaction.
+///
+/// A rule with a repeat threshold counts distinct source keys for the event's
+/// table (or resource) and fires when the count reaches the threshold; later
+/// matching events keep firing until the counter has been quiet for 24 hours,
+/// when it starts over. A replayed source key never advances the counter.
+///
+/// # Errors
+///
+/// Database errors.
+pub async fn enqueue_event(
+    conn: &mut PgConnection,
+    event: &DeliveryEvent,
+) -> Result<u64, PersistenceError> {
+    let rules: Vec<(uuid::Uuid, Option<i32>)> = sqlx::query_as(
+        "SELECT r.id, r.repeat_threshold
+         FROM notification_rules r
+         JOIN notification_destinations d
+           ON d.organization_id = r.organization_id AND d.id = r.destination_id
+         WHERE r.organization_id = $1 AND r.enabled AND d.enabled AND r.event_kind = $2
+           AND (r.catalog_connection_id IS NULL
+                OR r.catalog_connection_id = $3
+                OR ($5::uuid IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM table_aliases a
+                    WHERE a.organization_id = r.organization_id
+                      AND a.table_identity_id = $5
+                      AND a.catalog_connection_id = r.catalog_connection_id)))
+           AND (r.table_identity_id IS NULL OR r.table_identity_id = $5)
+           AND (r.worker_pool IS NULL OR r.worker_pool = ANY($4))
+         ORDER BY r.id",
+    )
+    .bind(event.organization_id.as_uuid())
+    .bind(event.event_kind.as_str())
+    .bind(event.connection_id.map(|id| *id.as_uuid()))
+    .bind(&event.pools)
+    .bind(event.table_id.map(|id| *id.as_uuid()))
+    .fetch_all(&mut *conn)
+    .await?;
+    let counter_key = event
+        .table_id
+        .map_or_else(|| event.resource_id.clone(), |table| table.to_string());
+    let mut inserted: u64 = 0;
+    for (rule_id, threshold) in rules {
+        if let Some(limit) = threshold {
+            // Record the source first: a replay must not advance the counter.
+            let counted = sqlx::query(
+                "INSERT INTO notification_rule_events
+                     (organization_id, rule_id, source_key, occurred_at)
+                 VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (organization_id, rule_id, source_key) DO NOTHING",
+            )
+            .bind(event.organization_id.as_uuid())
+            .bind(rule_id)
+            .bind(&event.source_key)
+            .bind(event.occurred_at)
+            .execute(&mut *conn)
+            .await?
+            .rows_affected();
+            if counted == 0 {
+                continue;
+            }
+            let occurrences: i32 = sqlx::query_scalar(
+                "INSERT INTO notification_rule_counters
+                     (organization_id, rule_id, counter_key, occurrences, last_occurred_at)
+                 VALUES ($1, $2, $3, 1, clock_timestamp())
+                 ON CONFLICT (organization_id, rule_id, counter_key) DO UPDATE
+                 SET occurrences = CASE
+                         WHEN notification_rule_counters.last_occurred_at
+                              < clock_timestamp() - interval '24 hours'
+                         THEN 1
+                         ELSE notification_rule_counters.occurrences + 1
+                     END,
+                     last_occurred_at = clock_timestamp()
+                 RETURNING occurrences",
+            )
+            .bind(event.organization_id.as_uuid())
+            .bind(rule_id)
+            .bind(&counter_key)
+            .fetch_one(&mut *conn)
+            .await?;
+            if occurrences < limit {
+                continue;
+            }
+        }
+        inserted += sqlx::query(
+            "INSERT INTO notification_deliveries
+                 (id, organization_id, rule_id, destination_id, event_kind,
+                  source_key, occurred_at, summary, resource_kind, resource_id,
+                  resource_label, reason)
+             SELECT gen_random_uuid(), $1, r.id, r.destination_id, $2, $3, $4,
+                    $5, $6, $7, $8, $9
+             FROM notification_rules r
+             WHERE r.organization_id = $1 AND r.id = $10
+             ON CONFLICT (organization_id, rule_id, source_key) DO NOTHING",
+        )
+        .bind(event.organization_id.as_uuid())
+        .bind(event.event_kind.as_str())
+        .bind(&event.source_key)
+        .bind(event.occurred_at)
+        .bind(&event.summary)
+        .bind(&event.resource_kind)
+        .bind(&event.resource_id)
+        .bind(event.resource_label.as_deref())
+        .bind(event.reason.as_deref())
+        .bind(rule_id)
+        .execute(&mut *conn)
+        .await?
+        .rows_affected();
+    }
+    Ok(inserted)
+}
+
+/// One claimed delivery, joined with its destination.
+#[derive(Clone, Debug)]
+pub struct ClaimedDelivery {
+    /// Delivery identifier, which is also the envelope identifier.
+    pub id: uuid::Uuid,
+    /// Owning organization.
+    pub organization_id: OrganizationId,
+    /// Event kind.
+    pub event_kind: EventKind,
+    /// When the event happened.
+    pub occurred_at: DateTime<Utc>,
+    /// One sentence for a human.
+    pub summary: String,
+    /// Resource type.
+    pub resource_kind: String,
+    /// Resource identifier.
+    pub resource_id: String,
+    /// Resource label.
+    pub resource_label: Option<String>,
+    /// Stable reason code.
+    pub reason: Option<String>,
+    /// Attempts already recorded.
+    pub attempts: i32,
+    /// Destination identifier, for the pre-send eligibility check.
+    pub destination_id: NotificationDestinationId,
+    /// Destination transport shape.
+    pub destination_kind: DestinationKind,
+    /// Destination URL reference.
+    pub url_ref: String,
+    /// Signing-secret reference.
+    pub signing_secret_ref: Option<String>,
+    /// Whether the destination is still enabled.
+    pub destination_enabled: bool,
+    /// The claim this sender owns; a completion must present it.
+    pub claim_token: uuid::Uuid,
+}
+
+#[derive(sqlx::FromRow)]
+struct ClaimedRow {
+    id: uuid::Uuid,
+    organization_id: uuid::Uuid,
+    event_kind: String,
+    occurred_at: DateTime<Utc>,
+    summary: String,
+    resource_kind: String,
+    resource_id: String,
+    resource_label: Option<String>,
+    reason: Option<String>,
+    attempts: i32,
+    destination_id: uuid::Uuid,
+    kind: String,
+    url_ref: String,
+    signing_secret_ref: Option<String>,
+    enabled: bool,
+    claim_token: uuid::Uuid,
+}
+
+/// Claims up to `limit` due deliveries, expiring stale claims.
+///
+/// # Errors
+///
+/// Database errors, including an unknown persisted event or destination kind.
+pub async fn claim_due(
+    conn: &mut PgConnection,
+    limit: i64,
+) -> Result<Vec<ClaimedDelivery>, PersistenceError> {
+    let rows: Vec<ClaimedRow> = sqlx::query_as(
+        "WITH due AS (
+             SELECT d2.id
+             FROM notification_deliveries d2
+             WHERE d2.state = 'Pending'
+               AND d2.next_attempt_at <= statement_timestamp()
+               AND (d2.claimed_until IS NULL
+                    OR d2.claimed_until <= statement_timestamp())
+             ORDER BY d2.next_attempt_at
+             LIMIT $1
+             FOR UPDATE SKIP LOCKED)
+         UPDATE notification_deliveries d
+         SET claimed_until = clock_timestamp() + interval '60 seconds',
+             claim_token = gen_random_uuid(),
+             updated_at = clock_timestamp()
+         FROM notification_destinations n, due
+         WHERE d.id = due.id
+           AND n.organization_id = d.organization_id
+           AND n.id = d.destination_id
+         RETURNING d.id, d.organization_id, d.event_kind, d.occurred_at,
+                   d.summary, d.resource_kind, d.resource_id, d.resource_label,
+                   d.reason, d.attempts, d.destination_id, n.kind, n.url_ref,
+                   n.signing_secret_ref, n.enabled, d.claim_token",
+    )
+    .bind(limit)
+    .fetch_all(&mut *conn)
+    .await?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(ClaimedDelivery {
+                id: row.id,
+                organization_id: OrganizationId::from_uuid(row.organization_id),
+                event_kind: EventKind::from_name(&row.event_kind).ok_or_else(|| {
+                    PersistenceError::CorruptValue {
+                        entity: "notification delivery",
+                        value: format!("unknown event kind {}", row.event_kind),
+                    }
+                })?,
+                occurred_at: row.occurred_at,
+                summary: row.summary,
+                resource_kind: row.resource_kind,
+                resource_id: row.resource_id,
+                resource_label: row.resource_label,
+                reason: row.reason,
+                attempts: row.attempts,
+                destination_id: NotificationDestinationId::from_uuid(row.destination_id),
+                destination_kind: DestinationKind::from_name(&row.kind).ok_or_else(|| {
+                    PersistenceError::CorruptValue {
+                        entity: "notification destination",
+                        value: format!("unknown kind {}", row.kind),
+                    }
+                })?,
+                url_ref: row.url_ref,
+                signing_secret_ref: row.signing_secret_ref,
+                destination_enabled: row.enabled,
+                claim_token: row.claim_token,
+            })
+        })
+        .collect()
+}
+
+/// How one send finished.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeliveryOutcome {
+    /// A 2xx response.
+    Delivered,
+    /// The destination answered with a non-2xx status.
+    Rejected,
+    /// The request could not be completed.
+    Failed,
+}
+
+impl DeliveryOutcome {
+    /// The stable name persisted in PostgreSQL.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Delivered => "Delivered",
+            Self::Rejected => "Rejected",
+            Self::Failed => "Failed",
+        }
+    }
+}
+
+/// One attempt's result and the delivery's next state.
+pub struct DeliveryReport<'a> {
+    /// What the send produced.
+    pub outcome: DeliveryOutcome,
+    /// The HTTP status, when a response arrived.
+    pub status: Option<u16>,
+    /// Stable failure code, when the send failed.
+    pub reason: Option<&'a str>,
+    /// The delivery's next state.
+    pub state: &'a str,
+    /// When to retry, for a pending delivery.
+    pub next_attempt_at: Option<DateTime<Utc>>,
+}
+
+/// Records one attempt and the delivery's next state, atomically.
+///
+/// The completion applies only while `claim_token` still owns the delivery in
+/// `Pending`; a stale sender returns `Ok(false)` and changes nothing. The
+/// attempt insert commits or rolls back with the delivery update.
+///
+/// # Errors
+///
+/// Database errors.
+pub async fn record_delivery(
+    conn: &mut PgConnection,
+    id: uuid::Uuid,
+    claim_token: uuid::Uuid,
+    report: &DeliveryReport<'_>,
+) -> Result<bool, PersistenceError> {
+    let mut tx = conn.begin().await?;
+    let attempt: Option<i32> = sqlx::query_scalar(
+        "UPDATE notification_deliveries
+         SET attempts = attempts + 1,
+             state = $2,
+             next_attempt_at = COALESCE($3, next_attempt_at),
+             claimed_until = NULL,
+             last_error = $4,
+             updated_at = clock_timestamp()
+         WHERE id = $1 AND claim_token = $5 AND state = 'Pending'
+         RETURNING attempts",
+    )
+    .bind(id)
+    .bind(report.state)
+    .bind(report.next_attempt_at)
+    .bind(report.reason)
+    .bind(claim_token)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(attempt) = attempt else {
+        tx.rollback().await?;
+        return Ok(false);
+    };
+    // Only the status and a stable reason are kept: a response body can echo
+    // a credential from the destination path.
+    sqlx::query(
+        "INSERT INTO notification_attempts
+             (delivery_id, attempt, outcome, status, reason)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(id)
+    .bind(attempt)
+    .bind(report.outcome.as_str())
+    .bind(report.status.map(i32::from))
+    .bind(report.reason)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
+/// Deletes delivered and exhausted deliveries older than `before`.
+///
+/// # Errors
+///
+/// Database errors.
+pub async fn prune_deliveries(
+    conn: &mut PgConnection,
+    before: DateTime<Utc>,
+) -> Result<u64, PersistenceError> {
+    let deleted = sqlx::query(
+        "DELETE FROM notification_deliveries
+         WHERE state IN ('Delivered', 'Exhausted') AND updated_at < $1",
+    )
+    .bind(before)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected();
+    sqlx::query("DELETE FROM notification_rule_events WHERE occurred_at < $1")
+        .bind(before)
+        .execute(&mut *conn)
+        .await?;
+    Ok(deleted)
+}
+
+/// A commit outcome still unknown past its connection's bound.
+#[derive(Clone, Debug)]
+pub struct OverdueUnknown {
+    /// Owning organization.
+    pub organization_id: OrganizationId,
+    /// Job whose outcome is unknown.
+    pub job_id: JobId,
+    /// Table the job maintains.
+    pub table_id: TableId,
+    /// Connection whose bound passed.
+    pub connection_id: CatalogConnectionId,
+    /// Dispatch pools of the job's tasks, for pool-filtered rules.
+    pub pools: Vec<String>,
+}
+
+/// Finds unknown commit outcomes older than their connection's bound, in
+/// deterministic order.
+///
+/// # Errors
+///
+/// Database errors.
+pub async fn overdue_unknown_publications(
+    conn: &mut PgConnection,
+) -> Result<Vec<OverdueUnknown>, PersistenceError> {
+    let rows: Vec<(uuid::Uuid, uuid::Uuid, uuid::Uuid, uuid::Uuid, Vec<String>)> = sqlx::query_as(
+        "SELECT j.organization_id, j.id, j.table_identity_id,
+                    (i.content->>'catalog_connection_id')::uuid,
+                    COALESCE(array_agg(DISTINCT ds.pool)
+                             FILTER (WHERE ds.pool IS NOT NULL), ARRAY[]::text[])
+             FROM jobs j
+             JOIN publication_intents i ON i.job_id = j.id
+             JOIN catalog_connections c
+               ON c.organization_id = j.organization_id
+              AND c.id = (i.content->>'catalog_connection_id')::uuid
+             LEFT JOIN tasks t ON t.job_id = j.id
+             LEFT JOIN dispatch_specs ds ON ds.task_id = t.id
+             WHERE j.state = 'CommitOutcomeUnknown'
+               AND j.publication_started_at IS NOT NULL
+               AND j.publication_started_at
+                   < clock_timestamp()
+                     - make_interval(secs => c.max_unresolved_publication_seconds)
+             GROUP BY j.organization_id, j.id, j.table_identity_id,
+                      (i.content->>'catalog_connection_id')
+             ORDER BY j.organization_id, j.id",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(organization_id, job_id, table_id, connection_id, pools)| OverdueUnknown {
+                organization_id: OrganizationId::from_uuid(organization_id),
+                job_id: JobId::from_uuid(job_id),
+                table_id: TableId::from_uuid(table_id),
+                connection_id: CatalogConnectionId::from_uuid(connection_id),
+                pools,
+            },
+        )
+        .collect())
+}
+
+/// A worker pool with pending work and no live session.
+#[derive(Clone, Debug)]
+pub struct PoolGap {
+    /// Owning organization.
+    pub organization_id: OrganizationId,
+    /// Pool name.
+    pub pool: String,
+}
+
+/// Finds pools that have pending tasks and no live, non-draining session.
+///
+/// # Errors
+///
+/// Database errors.
+pub async fn pools_without_workers(
+    conn: &mut PgConnection,
+) -> Result<Vec<PoolGap>, PersistenceError> {
+    let rows: Vec<(uuid::Uuid, String)> = sqlx::query_as(
+        "SELECT DISTINCT j.organization_id, ds.pool
+         FROM tasks t
+         JOIN jobs j ON j.id = t.job_id
+         JOIN dispatch_specs ds ON ds.task_id = t.id
+         WHERE t.state IN ('Pending', 'RetryWaiting')
+           AND j.state NOT IN ('Succeeded', 'NoOp', 'Cancelled', 'ReplanRequired', 'Failed')
+           AND NOT EXISTS (
+               SELECT 1 FROM worker_sessions w
+               WHERE w.organization_id = j.organization_id
+                 AND w.pool = ds.pool
+                 AND w.lease_expires_at > clock_timestamp()
+                 AND NOT w.draining
+                 AND NOT w.superseded)
+         ORDER BY j.organization_id, ds.pool",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(organization_id, pool)| PoolGap {
+            organization_id: OrganizationId::from_uuid(organization_id),
+            pool,
+        })
+        .collect())
 }

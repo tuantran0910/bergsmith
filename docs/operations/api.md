@@ -551,7 +551,10 @@ table or connection filter must belong to the calling organization; a missing
 one answers 404. The event kind cannot change after creation. A
 `repeat_threshold` is accepted only for `job.replan_required`,
 `publication.commit_outcome_unknown`, and `schedule.occurrence_missed`, and is
-1 or more; absent means every matching event. On `PATCH`, an absent `filter` or
+1 or more; absent means every matching event. A threshold counts distinct
+source events per rule and table (or resource); once the count reaches it,
+later matching events also notify until the counter has been quiet for 24
+hours. A replayed source event does not advance the counter. On `PATCH`, an absent `filter` or
 `repeat_threshold` keeps the stored value, `null` clears it, and an object or
 number replaces it.
 

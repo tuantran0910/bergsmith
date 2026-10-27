@@ -17,9 +17,11 @@ use std::time::Duration;
 
 use bergsmith_catalog::TableName;
 use bergsmith_common::ids::{CatalogConnectionId, OrganizationId, TableId};
-use bergsmith_maintenance::{StatisticsConfig, TableSample, snapshot_history};
+use bergsmith_common::notifications::EventKind;
+use bergsmith_maintenance::{HealthState, StatisticsConfig, TableSample, snapshot_history};
 use bergsmith_persistence::PersistenceError;
 use bergsmith_persistence::jobs::Job;
+use bergsmith_persistence::notifications::{DeliveryEvent, enqueue_event};
 use bergsmith_persistence::statistics::{
     self, DueTable, MaintenanceRoute, NewTableSample, NewTableSnapshot,
 };
@@ -197,15 +199,22 @@ impl StatisticsCollector {
         // attempt, including the fallback to another alias.
         let gates: Gates = Arc::new(Mutex::new(BTreeMap::new()));
         let concurrency = self.settings.max_concurrent_connections.max(1);
-        let results: Vec<Result<SampleOutcome, SampleError>> = futures::stream::iter(due)
+        let results: Vec<(
+            (OrganizationId, TableId),
+            Result<SampleOutcome, SampleError>,
+        )> = futures::stream::iter(due)
             .map(|table| {
                 let gates = Arc::clone(&gates);
-                async move { self.sample_due(&table, now, &gates).await }
+                async move {
+                    let key = (table.organization_id, table.table_id);
+                    (key, self.sample_due(&table, now, &gates).await)
+                }
             })
             .buffer_unordered(concurrency)
             .collect()
             .await;
-        for result in results {
+        let mut failed = Vec::new();
+        for (key, result) in results {
             match result {
                 Ok(SampleOutcome::Sampled) => summary.sampled += 1,
                 Ok(SampleOutcome::Unchanged) => summary.unchanged += 1,
@@ -220,10 +229,39 @@ impl StatisticsCollector {
                         error = %error,
                         "table statistics sample failed"
                     );
+                    failed.push(key);
                 }
             }
         }
+        // A collection failure must not hide a time-driven transition: assess
+        // the retained ledger so staleness can still turn a table Critical.
+        for (organization_id, table_id) in failed {
+            if let Err(error) = self
+                .assess_retained_health(organization_id, table_id, now)
+                .await
+            {
+                warn!(%error, "retained health assessment failed");
+            }
+        }
         Ok(summary)
+    }
+
+    /// Assesses a table from the retained ledger when collection failed.
+    async fn assess_retained_health(
+        &self,
+        organization_id: OrganizationId,
+        table_id: TableId,
+        at: DateTime<Utc>,
+    ) -> Result<(), PersistenceError> {
+        let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
+        let Some(sample) = statistics::latest(&mut conn, organization_id, table_id).await? else {
+            return Ok(());
+        };
+        let connection = sample.catalog_connection_id;
+        let mut tx = conn.begin().await.map_err(PersistenceError::from)?;
+        enqueue_health_transition(&mut tx, organization_id, table_id, connection, at).await?;
+        tx.commit().await.map_err(PersistenceError::from)?;
+        Ok(())
     }
 
     /// Samples one table now, as after a publication, through the same alias
@@ -366,6 +404,7 @@ impl StatisticsCollector {
                 sample.metadata_location == metadata_location
                     && sample.sample_version >= statistics::SAMPLE_VERSION
             }) {
+                let mut tx = conn.begin().await.map_err(PersistenceError::from)?;
                 // The counters are unchanged, so there is no new sample. The
                 // snapshot ledger can still be behind — a table sampled before
                 // this ledger existed, or rows removed with retention — and
@@ -378,7 +417,7 @@ impl StatisticsCollector {
                     .map(|snapshot| snapshot.snapshot_id());
                 let recorded = match current {
                     Some(snapshot_id) => {
-                        statistics::has_snapshot(&mut conn, organization_id, table_id, snapshot_id)
+                        statistics::has_snapshot(&mut tx, organization_id, table_id, snapshot_id)
                             .await?
                     }
                     None => true,
@@ -386,19 +425,23 @@ impl StatisticsCollector {
                 if !recorded {
                     let rows = snapshot_rows(binding, &self.settings.sample)?;
                     if window_holds(&rows, current) {
-                        statistics::record_snapshots(
-                            &mut conn,
-                            organization_id,
-                            table_id,
-                            &rows,
-                            at,
-                        )
-                        .await?;
+                        statistics::record_snapshots(&mut tx, organization_id, table_id, &rows, at)
+                            .await?;
                     }
                 }
                 // The counters are unchanged, but the table's freshness is
-                // not: this pass read the metadata successfully.
-                statistics::record_check(&mut conn, organization_id, table_id, at).await?;
+                // not: this pass read the metadata successfully. Health can
+                // still change (a threshold edit), so assess it here too.
+                statistics::record_check(&mut tx, organization_id, table_id, at).await?;
+                enqueue_health_transition(
+                    &mut tx,
+                    organization_id,
+                    table_id,
+                    binding.connection.id,
+                    at,
+                )
+                .await?;
+                tx.commit().await.map_err(PersistenceError::from)?;
                 return Ok(SampleOutcome::Unchanged);
             }
         }
@@ -445,9 +488,61 @@ impl StatisticsCollector {
         statistics::record(&mut tx, organization_id, table_id, &new).await?;
         statistics::record_check(&mut tx, organization_id, table_id, at).await?;
         statistics::record_snapshots(&mut tx, organization_id, table_id, &rows, at).await?;
+        enqueue_health_transition(
+            &mut tx,
+            organization_id,
+            table_id,
+            binding.connection.id,
+            at,
+        )
+        .await?;
         tx.commit().await.map_err(PersistenceError::from)?;
         Ok(SampleOutcome::Sampled)
     }
+}
+
+/// Enqueues a `table.health_critical` event when the newest sample evaluates
+/// Critical, in the caller's transaction.
+async fn enqueue_health_transition(
+    conn: &mut sqlx::PgConnection,
+    organization_id: OrganizationId,
+    table_id: TableId,
+    connection_id: CatalogConnectionId,
+    at: DateTime<Utc>,
+) -> Result<(), PersistenceError> {
+    let assessments = crate::health::assess(conn, organization_id, &[table_id], at).await?;
+    let state = assessments
+        .get(&table_id)
+        .and_then(crate::health::Assessment::state);
+    let entered = statistics::record_health_state(
+        conn,
+        organization_id,
+        table_id,
+        state.map(HealthState::as_str),
+        at,
+    )
+    .await?;
+    if entered {
+        enqueue_event(
+            conn,
+            &DeliveryEvent {
+                organization_id,
+                event_kind: EventKind::TableCritical,
+                source_key: crate::notifications::delivery::table_source_key(table_id, at),
+                occurred_at: at,
+                summary: format!("Table {table_id} is critically unhealthy"),
+                resource_kind: "table".to_owned(),
+                resource_id: table_id.to_string(),
+                resource_label: None,
+                reason: Some("TableCritical".to_owned()),
+                connection_id: Some(connection_id),
+                table_id: Some(table_id),
+                pools: Vec::new(),
+            },
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// Whether the bounded window still holds `current`.

@@ -6,9 +6,10 @@ Rust, then publishes the result through standard Iceberg REST conditional
 commits.
 
 **Status:** native execution, distributed recovery, identity and authorization,
-the browser UI, scheduling, statistics, and table health with health-triggered
-schedules are merged. The M5 production acceptance gate, selective concurrency
-(M6), and M7–M8 work remain; end-to-end certification is pending. See
+the browser UI, scheduling, statistics, table health with health-triggered
+schedules, and durable notification delivery are merged. The M5 production
+acceptance gate, selective concurrency (M6), and M7–M8 work remain;
+end-to-end certification is pending. See
 [`docs/support-matrix.md`](docs/support-matrix.md).
 
 ## How it works

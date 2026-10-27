@@ -44,5 +44,6 @@ job that wrote them is `Committing` or `CommitOutcomeUnknown`.
 - Connections with an external `credential_ref` fail until the runtime
   resolves credential references ([api.md](api.md)).
 - Broader maintenance (snapshot expiration, orphan cleanup, manifest rewrite,
-  dangling-delete removal) and notifications are not available.
+  dangling-delete removal) is not available. Notifications are delivered from
+  rules, but their administration and delivery-log pages are not yet in the UI.
 - Kubernetes and Helm are planned for M8.

@@ -87,7 +87,27 @@ for the delivery log.
 
 **Delivery is a PostgreSQL outbox, at least once.** A rule match appends a
 `notification_deliveries` row in the same transaction as the event that
-triggered it. A leader-only loop claims due rows, sends one request, and
+triggered it. Attempts keep the outcome, HTTP status, and a stable reason only;
+a response body is never stored, because a destination can echo a credential
+from its URL path in an error page. An event whose condition is an age, such as a commit outcome
+unknown past the connection's bound, or a sampled condition, such as a pool
+without live workers, is observed by the delivery loop and enqueued through the
+same outbox; its source key carries an hourly bucket so it repeats while the
+condition holds. The overdue sweep ages a publication by its captured
+`publication_started_at` and connection, not the job row's last update.
+
+Each claim carries a token, and only the current claim may record a completion,
+so an expired sender cannot overwrite a terminal result. The loop claims one
+row immediately before its send, which keeps a claim from expiring behind
+another request. The claim's due predicate uses one statement timestamp, so it
+is an index range bound rather than a scan of future retries. The collector assesses on every pass, including a pass whose
+metadata is unchanged, because a policy threshold edit can change the verdict;
+it persists the last observed health state and enqueues
+`table.health_critical` only on entry into Critical; recovery lets a later
+entry alert again. When collection fails, the loop assesses the retained
+ledger instead, so a staleness-driven Critical transition still alerts during
+a catalog outage. Sweep-produced events carry the job's dispatch pools, so a
+pool-filtered rule matches an overdue publication. A leader-only loop claims due rows, sends one request, and
 appends a `notification_attempts` row per try. Retries back off 30 s, 1 min,
 5 min, 15 min, and 1 h, and stop after five attempts; each step is recorded.
 The loop claims with `SELECT ... FOR UPDATE SKIP LOCKED` in one transaction,
@@ -100,7 +120,11 @@ Delivered and exhausted rows are pruned after 30 days.
 **Rules are organization-scoped and narrow one destination.** A rule names an
 event kind, a destination, an optional connection, pool, or table filter, and
 an optional repeat threshold; `ReplanRequired` and missed occurrences are the
-kinds that need one. Rules have an optimistic revision and an `enabled` flag.
+kinds that need one. A threshold counts distinct source events per rule and
+table (or resource); once the count reaches it, later matching events also
+notify until the counter has been quiet for 24 hours. A replayed source event
+never advances the counter. Rules have an optimistic
+revision and an `enabled` flag.
 
 **Administration is `notifications:manage`, held by Administrator.** Creating,
 editing, testing, and disabling destinations and rules, and reading the

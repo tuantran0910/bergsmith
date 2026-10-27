@@ -116,6 +116,15 @@ change does. The coordinator sends with no redirects and a
 bounded timeout; deployments should still restrict egress at the network layer,
 as they do for catalog connections.
 
+The leader runs the delivery loop every
+`notifications.delivery_interval_millis` (default 15000). A rule match writes a
+delivery row in the transaction that records the event. The loop claims due
+rows with `SKIP LOCKED`, sends outside any database transaction, and records the
+attempt. Failures retry after 30 seconds, 1 minute, 5 minutes, and 15 minutes,
+and stop after five attempts; delivered and exhausted rows are pruned after 30
+days. A crash after a successful send and before the mark can duplicate one
+delivery, which receivers deduplicate on the envelope id.
+
 The OIDC issuer is used for discovery from the coordinator and must be the
 same string the browser receives in the ID token. In a container, make that
 hostname resolve both from the browser and from the coordinator (the

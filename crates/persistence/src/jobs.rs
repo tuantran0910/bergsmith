@@ -3,6 +3,7 @@
 use bergsmith_common::health::{FindingKind, HealthTrigger, Severity};
 use bergsmith_common::ids::{JobId, OrganizationId, PrincipalId, TableId};
 use bergsmith_common::job::{JobState, PublicationContext};
+use bergsmith_common::notifications::EventKind;
 use chrono::{DateTime, Utc};
 use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
@@ -668,8 +669,59 @@ pub async fn transition_job(
             .execute(&mut *tx)
             .await?;
     }
+    enqueue_job_outcome(&mut tx, &job, transition.reason.as_deref()).await?;
     tx.commit().await?;
     Ok(job)
+}
+
+/// Enqueues the notification event for a terminal failure or replan, in the
+/// caller's transaction, with the job's dispatch pools as dimensions.
+async fn enqueue_job_outcome(
+    conn: &mut PgConnection,
+    job: &Job,
+    reason: Option<&str>,
+) -> Result<(), PersistenceError> {
+    if !matches!(job.state, JobState::Failed | JobState::ReplanRequired) {
+        return Ok(());
+    }
+    let event_kind = if job.state == JobState::Failed {
+        EventKind::JobFailed
+    } else {
+        EventKind::ReplanRequired
+    };
+    let pools: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT ds.pool
+         FROM tasks t JOIN dispatch_specs ds ON ds.task_id = t.id
+         WHERE t.job_id = $1
+         ORDER BY ds.pool",
+    )
+    .bind(job.id.as_uuid())
+    .fetch_all(&mut *conn)
+    .await?;
+    crate::notifications::enqueue_event(
+        conn,
+        &crate::notifications::DeliveryEvent {
+            organization_id: job.organization_id,
+            event_kind,
+            source_key: format!("job:{}:{}", job.id, job.state_revision),
+            occurred_at: job.updated_at,
+            summary: format!(
+                "Job {} reached {}: {}",
+                job.id,
+                job.state.as_str(),
+                reason.unwrap_or("no reason")
+            ),
+            resource_kind: "job".to_owned(),
+            resource_id: job.id.to_string(),
+            resource_label: None,
+            reason: reason.map(str::to_owned),
+            connection_id: None,
+            table_id: Some(job.table_id),
+            pools,
+        },
+    )
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]
