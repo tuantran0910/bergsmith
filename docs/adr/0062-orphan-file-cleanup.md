@@ -108,19 +108,36 @@ by `orphans.max_deletions_per_pass`, so a large plan continues over several
 passes and a restart resumes where the receipts stop.
 
 **Deletion is off by default.** `orphans.enabled` must be set: the submission
-API answers 400 while it is false, and planning and the first deletion fail
-closed if it was disabled between them. Listing is bounded while it is
-consumed (`orphans.max_listed_objects`), and the scan bounds manifests, manifest
-entries, and object bytes (`orphans.max_scan_entries`,
-`orphans.max_scan_bytes`). A manifest whose declared entry counts are missing
+and retry APIs answer 400 while it is false, and planning and every deletion
+pass fail the job closed if it was disabled since, so the switch stops a
+running cleanup rather than pausing it. Listing is bounded while it is
+consumed (`orphans.max_listed_objects`), and the scan bounds distinct
+manifests, manifest entries, and object bytes (`orphans.max_scan_manifests`,
+`orphans.max_scan_entries`, `orphans.max_scan_bytes`). Snapshots carry most
+earlier manifests forward, so the scan reads each distinct manifest list and
+manifest once and counts its entries once; otherwise the cost, and the bound,
+would grow with the square of the retained snapshots. A manifest whose declared entry counts are missing
 cannot be bounded, so the scan refuses it. Before a manifest is decoded its
 object is stat-ed, so an understated length in the manifest list cannot bypass
-`orphans.max_scan_bytes`. A compressed manifest could still decode to more
-entries than the declared counts; the post-decode count check is the backstop. Exceeding any
-bound fails the job permanently with a typed reason instead of deleting from a
-partial view. A permanent failure
-during deletion ends the job `Failed` through the deletion path, so it does not
-repeat every pass.
+`orphans.max_scan_bytes`. The read is limited to the stat-ed size, so an object replaced between
+the stat and the read cannot exceed the bound either. A compressed manifest
+could still decode to more entries than the declared counts; the post-decode
+count check is the backstop. Exceeding any bound fails the job permanently
+with a typed reason instead of deleting from a partial view. Every storage
+step has a deadline (`orphans.operation_timeout_seconds`): one manifest read,
+the listing, and each delete; a missed deadline is retried like any
+transient storage failure. A permanent failure during deletion ends the job
+`Failed` through the deletion path, so it does not repeat every pass.
+
+**A failed delete keeps its evidence and is bounded.** A batch deletes a few
+objects at a time and stops after a group in which a delete failed, but it
+still records the receipts the batch earned, so an object it removed is never
+later reported as merely `Absent`. Storage reports a refused delete (a
+permission or object lock) the same way as an outage, so a failed delete is
+retried; a pass that removes something resets the count, and five consecutive
+passes that fail to delete with no progress end the job `Failed` with
+`OrphanDeleteFailed`. Without the bound, one object storage refuses would
+keep the job `Deleting`, rescanning the table, forever.
 
 **Cancellation stays provable.** A deletion may be cancelled before it starts
 or between batches; already-removed objects were unreferenced, so the job

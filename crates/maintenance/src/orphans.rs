@@ -87,62 +87,54 @@ pub const ORPHAN_PLAN_VERSION: u32 = 1;
 /// The path segment Bergsmith owns inside a table location.
 const BERGSMITH_SEGMENT: &str = "bergsmith";
 
-impl OrphanError {
-    /// Whether another attempt can succeed without an operator.
-    ///
-    /// A corrupt manifest, an unsupported feature, a bound violation, or a
-    /// malformed path cannot improve on retry; a storage read or an object
-    /// store call can.
-    #[must_use]
-    pub fn is_transient(&self) -> bool {
-        match self {
-            Self::Io(error) => !matches!(
-                error.kind(),
-                iceberg::ErrorKind::DataInvalid | iceberg::ErrorKind::FeatureUnsupported
-            ),
-            Self::Storage(error) => matches!(error, bergsmith_storage::StorageError::Io(_)),
-            Self::InvalidPolicy
-            | Self::Location(_)
-            | Self::ListingTooLarge { .. }
-            | Self::ScanUnboundedManifest { .. }
-            | Self::ScanObjectTooLarge { .. }
-            | Self::ScanTooLarge { .. }
-            | Self::Blocking(_) => false,
-        }
-    }
+/// A bounded storage step of orphan cleanup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OrphanStep {
+    /// Reading one manifest list or manifest.
+    Scan,
+    /// Listing the table location.
+    List,
+    /// Deleting one planned object.
+    Delete,
+}
 
-    /// A stable reason for job state and operator logs.
-    #[must_use]
-    pub const fn reason_code(&self) -> &'static str {
-        match self {
-            Self::InvalidPolicy => "OrphanBoundsInvalid",
-            Self::Location(_) => "OrphanLocationInvalid",
-            Self::Io(_) => "OrphanMetadataReadFailed",
-            Self::Storage(_) => "OrphanStorageFailed",
-            Self::Blocking(_) => "OrphanDecodeFailed",
-            Self::ListingTooLarge { .. } => "OrphanListingTooLarge",
-            Self::ScanUnboundedManifest { .. } => "OrphanManifestUnbounded",
-            Self::ScanObjectTooLarge { .. } => "OrphanObjectTooLarge",
-            Self::ScanTooLarge { .. } => "OrphanScanTooLarge",
-        }
+impl std::fmt::Display for OrphanStep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Scan => "scan",
+            Self::List => "list",
+            Self::Delete => "delete",
+        })
     }
 }
 
-/// An invalid orphan policy.
+/// Why orphan selection, the reachability scan, or a deletion failed.
 #[derive(Debug, thiserror::Error)]
 pub enum OrphanError {
     /// A bound is zero, so no plan could ever be built.
     #[error("the orphan clean-up bounds must be positive")]
     InvalidPolicy,
-    /// A path named by table metadata is not a valid storage location.
-    #[error("table metadata names an invalid location")]
+    /// A table, metadata, or planned path is not a valid storage location.
+    #[error("orphan cleanup met an invalid storage location")]
     Location(#[source] bergsmith_storage::LocationError),
     /// Reading the metadata, manifest list, or manifest failed.
     #[error("reading table metadata failed")]
     Io(#[from] iceberg::Error),
-    /// A storage listing or delete failed.
+    /// A storage listing failed.
     #[error(transparent)]
     Storage(#[from] bergsmith_storage::StorageError),
+    /// Deleting one planned object failed.
+    ///
+    /// Retried on later passes; a deletion that keeps failing without
+    /// progress ends the job (see the coordinator's attempt bound).
+    #[error("deleting a planned object failed")]
+    Delete(#[source] bergsmith_storage::StorageError),
+    /// A storage step did not finish within its deadline.
+    #[error("orphan cleanup step {step} timed out")]
+    TimedOut {
+        /// The step that timed out.
+        step: OrphanStep,
+    },
     /// The reachability scan exceeds its bound, so the view is incomplete.
     #[error(
         "the reachability scan exceeded its bound with {manifests} manifests and {entries} entries"
@@ -176,6 +168,83 @@ pub enum OrphanError {
         /// The bound the caller set.
         limit: u64,
     },
+}
+
+impl OrphanError {
+    /// Whether another attempt can succeed without an operator.
+    ///
+    /// A corrupt manifest, an unsupported feature, a bound violation, or a
+    /// malformed path cannot improve on retry; a storage read, an object
+    /// store call, or a timed-out step can.
+    #[must_use]
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Self::Io(error) => !matches!(
+                error.kind(),
+                iceberg::ErrorKind::DataInvalid | iceberg::ErrorKind::FeatureUnsupported
+            ),
+            Self::Storage(error) | Self::Delete(error) => {
+                matches!(error, bergsmith_storage::StorageError::Io(_))
+            }
+            Self::TimedOut { .. } => true,
+            Self::InvalidPolicy
+            | Self::Location(_)
+            | Self::ListingTooLarge { .. }
+            | Self::ScanUnboundedManifest { .. }
+            | Self::ScanObjectTooLarge { .. }
+            | Self::ScanTooLarge { .. }
+            | Self::Blocking(_) => false,
+        }
+    }
+
+    /// A stable reason for job state and operator logs.
+    #[must_use]
+    pub const fn reason_code(&self) -> &'static str {
+        match self {
+            Self::InvalidPolicy => "OrphanBoundsInvalid",
+            Self::Location(_) => "OrphanLocationInvalid",
+            Self::Io(_) => "OrphanMetadataReadFailed",
+            Self::Storage(_) => "OrphanStorageFailed",
+            Self::Delete(_) => "OrphanDeleteFailed",
+            Self::TimedOut { .. } => "OrphanStepTimedOut",
+            Self::Blocking(_) => "OrphanDecodeFailed",
+            Self::ListingTooLarge { .. } => "OrphanListingTooLarge",
+            Self::ScanUnboundedManifest { .. } => "OrphanManifestUnbounded",
+            Self::ScanObjectTooLarge { .. } => "OrphanObjectTooLarge",
+            Self::ScanTooLarge { .. } => "OrphanScanTooLarge",
+        }
+    }
+
+    /// The safe numeric fields a failure carries, for structured logs.
+    ///
+    /// Paths and third-party error chains stay out of logs.
+    #[must_use]
+    pub fn diagnostics(&self) -> OrphanDiagnostics {
+        match self {
+            Self::ScanObjectTooLarge { size, limit } => OrphanDiagnostics {
+                size: Some(*size),
+                limit: Some(*limit),
+                ..OrphanDiagnostics::default()
+            },
+            Self::ScanTooLarge { manifests, entries } => OrphanDiagnostics {
+                manifests: Some(*manifests),
+                entries: Some(*entries),
+                ..OrphanDiagnostics::default()
+            },
+            Self::ListingTooLarge { limit } => OrphanDiagnostics {
+                limit: u64::try_from(*limit).ok(),
+                ..OrphanDiagnostics::default()
+            },
+            Self::InvalidPolicy
+            | Self::Location(_)
+            | Self::Io(_)
+            | Self::Storage(_)
+            | Self::Delete(_)
+            | Self::TimedOut { .. }
+            | Self::Blocking(_)
+            | Self::ScanUnboundedManifest { .. } => OrphanDiagnostics::default(),
+        }
+    }
 }
 
 /// The age and size rules applied to one table's listing.
@@ -256,6 +325,8 @@ pub struct OrphanDecision {
     pub deferred: u64,
     /// Listed objects kept because they are too young.
     pub retained_young: u64,
+    /// Listed objects kept because the listing reports no modification time.
+    pub retained_unknown_age: u64,
     /// Listed objects kept because the table references them.
     pub retained_referenced: u64,
     /// Listed objects kept because Bergsmith owns their prefix.
@@ -277,7 +348,7 @@ impl OrphanDecision {
 /// below the table location therefore marks the object as protected, which
 /// also covers layouts this release does not know about. Over-retention of a
 /// user directory that happens to be named `bergsmith` is the accepted cost.
-fn is_berggsmith_owned(location: &Location, table: &Location) -> bool {
+fn is_bergsmith_owned(location: &Location, table: &Location) -> bool {
     if !location.is_within(table) {
         return false;
     }
@@ -290,8 +361,12 @@ fn is_berggsmith_owned(location: &Location, table: &Location) -> bool {
         .any(|segment| segment == BERGSMITH_SEGMENT)
 }
 
-/// The Bergsmith-owned trees inside and beside a table location.
-/// The prefix checks a deletion pass applies before removing an object.
+/// The Bergsmith-owned roots a deletion pass checks besides the segment rule.
+///
+/// For a data location inside the table, the segment rule already covers
+/// `<data-location>/bergsmith/`. The roots also cover a data location whose
+/// `bergsmith/` tree sits above or beside the table location, which the
+/// segment rule cannot see because it only inspects the path below the table.
 ///
 /// # Errors
 ///
@@ -331,37 +406,6 @@ pub struct OrphanDiagnostics {
     pub entries: Option<usize>,
 }
 
-impl OrphanError {
-    /// The safe numeric fields a failure carries, for structured logs.
-    ///
-    /// Paths and third-party error chains stay out of logs.
-    #[must_use]
-    pub fn diagnostics(&self) -> OrphanDiagnostics {
-        match self {
-            Self::ScanObjectTooLarge { size, limit } => OrphanDiagnostics {
-                size: Some(*size),
-                limit: Some(*limit),
-                ..OrphanDiagnostics::default()
-            },
-            Self::ScanTooLarge { manifests, entries } => OrphanDiagnostics {
-                manifests: Some(*manifests),
-                entries: Some(*entries),
-                ..OrphanDiagnostics::default()
-            },
-            Self::ListingTooLarge { limit } => OrphanDiagnostics {
-                limit: u64::try_from(*limit).ok(),
-                ..OrphanDiagnostics::default()
-            },
-            Self::InvalidPolicy
-            | Self::Location(_)
-            | Self::Io(_)
-            | Self::Storage(_)
-            | Self::Blocking(_)
-            | Self::ScanUnboundedManifest { .. } => OrphanDiagnostics::default(),
-        }
-    }
-}
-
 /// The table, ledger, and window a deletion check applies.
 #[derive(Clone, Copy, Debug)]
 pub struct CandidateCheck<'a> {
@@ -386,6 +430,16 @@ pub enum CandidateVerdict {
     Absent,
 }
 
+/// Whether Bergsmith owns `location`: a `bergsmith` segment below the table, or
+/// one of the protected roots.
+fn is_protected(location: &Location, check: &CandidateCheck<'_>) -> bool {
+    is_bergsmith_owned(location, check.table)
+        || check
+            .prefixes
+            .iter()
+            .any(|prefix| location.is_within(prefix))
+}
+
 /// Re-checks one planned candidate against the current table and listing.
 ///
 /// Planning and deletion share this predicate, so a batch applies exactly the
@@ -403,11 +457,7 @@ pub fn verify_candidate(
         return CandidateVerdict::Skip;
     };
     if !location.is_within(check.table)
-        || check
-            .prefixes
-            .iter()
-            .any(|prefix| location.is_within(prefix))
-        || is_berggsmith_owned(&location, check.table)
+        || is_protected(&location, check)
         || check.reachable.contains(&location)
     {
         return CandidateVerdict::Skip;
@@ -474,7 +524,7 @@ pub fn select_orphans(
         }
         let Some(last_modified_ms) = entry.last_modified_ms else {
             // An unknown time cannot prove age, so the object survives.
-            decision.retained_young = decision.retained_young.saturating_add(1);
+            decision.retained_unknown_age = decision.retained_unknown_age.saturating_add(1);
             continue;
         };
         let candidate = OrphanCandidate {
@@ -486,11 +536,7 @@ pub fn select_orphans(
         match verdict {
             CandidateVerdict::Delete => candidates.push(candidate),
             CandidateVerdict::Skip => {
-                if is_berggsmith_owned(&entry.location, &table)
-                    || bergsmith_roots
-                        .iter()
-                        .any(|root| entry.location.is_within(root))
-                {
+                if is_protected(&entry.location, &check) {
                     decision.retained_bergsmith = decision.retained_bergsmith.saturating_add(1);
                 } else if reachable.contains(&entry.location) {
                     decision.retained_referenced = decision.retained_referenced.saturating_add(1);
@@ -748,7 +794,8 @@ mod tests {
         )
         .unwrap();
         assert!(decision.candidates.is_empty());
-        assert_eq!(decision.retained_young, 1);
+        assert_eq!(decision.retained_unknown_age, 1);
+        assert_eq!(decision.retained_young, 0);
     }
 
     #[test]

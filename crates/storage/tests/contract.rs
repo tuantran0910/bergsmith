@@ -12,7 +12,8 @@
 use std::collections::BTreeMap;
 
 use bergsmith_storage::{
-    CredentialCell, Location, ObjectStore, S3Profile, StorageCredential, StorageProfile,
+    CredentialCell, Location, ObjectStore, S3Profile, StorageCredential, StorageError,
+    StorageProfile,
 };
 use bytes::Bytes;
 use uuid::Uuid;
@@ -168,6 +169,25 @@ async fn listing_compares_whole_segments(fixture: Fixture) {
     assert_eq!(listed, [("job/a.parquet".to_owned(), 1)]);
 }
 
+async fn a_bounded_listing_refuses_more_than_its_limit(fixture: Fixture) {
+    for name in ["a", "b", "c"] {
+        fixture.put(&format!("job/{name}.parquet"), name).await;
+    }
+    let prefix = fixture.at("job");
+
+    let at_limit = fixture
+        .store
+        .list_bounded(&prefix, 3)
+        .await
+        .expect("a listing at its bound succeeds");
+    assert_eq!(at_limit.len(), 3);
+    let over = fixture.store.list_bounded(&prefix, 2).await;
+    assert!(
+        matches!(over, Err(StorageError::ListingTooLarge { limit: 2 })),
+        "a listing past its bound fails instead of truncating: {over:?}"
+    );
+}
+
 async fn listing_an_empty_prefix_returns_nothing(fixture: Fixture) {
     assert!(fixture.listed("missing").await.is_empty());
 }
@@ -235,6 +255,11 @@ macro_rules! contract_suite {
             #[tokio::test]
             async fn listing_compares_whole_segments() {
                 super::listing_compares_whole_segments($backend()).await;
+            }
+
+            #[tokio::test]
+            async fn a_bounded_listing_refuses_more_than_its_limit() {
+                super::a_bounded_listing_refuses_more_than_its_limit($backend()).await;
             }
 
             #[tokio::test]

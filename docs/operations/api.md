@@ -337,22 +337,32 @@ A submission that omits `operation` keeps the pre-expiration canonical
 representation for idempotency, so a retry with an original compaction key
 still replays the original job. Every job document reports
 `operation` as `compact`, `expire_snapshots`, or `remove_orphan_files`, and a
-retry copies the source's operation.
+retry copies the source's operation. A retry is refused with the same 400 as
+a submission while its operation is unavailable
+(`expiration_ref_safety_unavailable` or `orphan_cleanup_unavailable`).
 
 Orphan cleanup requires `orphans.enabled`; otherwise the request answers 400
 `orphan_cleanup_unavailable` and no job is created. It is coordinator-only and
 publishes nothing: the planner lists the table location, proves what the
 current metadata still references, and stores an immutable plan of objects to
 remove. The coordinator then deletes them in bounded passes from `Deleting`,
-re-checking every object against freshly loaded metadata first. Nothing under
-`<table-location>/bergsmith/`, nothing referenced by the table, and nothing
-younger than the larger of `orphans.minimum_age_seconds` and the connection's
+re-checking every object against freshly loaded metadata first. Nothing below
+the table location under a `bergsmith` path segment (which covers
+`<data-location>/bergsmith/` and older layouts), nothing referenced by the
+table or an unresolved publication, and nothing younger than the larger of
+`orphans.minimum_age_seconds` and the connection's
 `max_execution_seconds + max_unresolved_publication_seconds` window is ever
-deleted. A scan or listing beyond `orphans.max_scan_entries`,
-`orphans.max_scan_bytes`, or `orphans.max_listed_objects` fails the job instead
-of deleting from a partial view. Each batch re-lists the table, so a candidate
-that became referenced, young, or a different size is recorded as skipped
-rather than deleted.
+deleted. A scan or listing beyond `orphans.max_scan_manifests`,
+`orphans.max_scan_entries`, `orphans.max_scan_bytes`, or
+`orphans.max_listed_objects` fails the job instead of deleting from a partial
+view; a manifest shared by several snapshots is read and counted once. Each
+batch re-lists the table, so a candidate that became referenced, young, or a
+different size is recorded as skipped rather than deleted. Every storage step
+has the `orphans.operation_timeout_seconds` deadline. A delete that keeps
+failing with nothing else removed ends the job `Failed` with
+`OrphanDeleteFailed` after five consecutive passes; the objects already
+deleted keep their receipts. Turning `orphans.enabled` off fails a planned or
+`Deleting` cleanup at its next pass with `OrphanCleanupUnavailable`.
 
 Snapshot expiration is metadata-only. The planner selects snapshot entries
 older than both `history.expire.max-snapshot-age-ms` and the connection's

@@ -1308,6 +1308,76 @@ describe("preview and run", () => {
         });
     });
 
+    it("submits orphan cleanup as its own operation", async () => {
+        fake.on("POST", "/api/v1/jobs", () =>
+            json(
+                202,
+                schema("AcceptedJob", {
+                    operation_id: JOB_ID,
+                    job_id: JOB_ID,
+                    resource_url: `/api/v1/jobs/${JOB_ID}`,
+                }),
+            ),
+        ).on("GET", "/api/v1/jobs/{id}", () =>
+            json(200, job("Planning", { operation: "remove_orphan_files" })),
+        );
+        const user = start(`/tables/${TABLE_ID}`);
+
+        await user.click(
+            await screen.findByRole("button", { name: "Remove orphan files" }),
+        );
+        const dialog = await screen.findByRole("dialog", {
+            name: "Remove orphan files",
+        });
+        expect(dialog).toHaveTextContent("This cannot be undone");
+        await user.click(
+            screen.getByRole("button", {
+                name: "Confirm remove orphan files",
+            }),
+        );
+        expect(await screen.findByText(JOB_ID)).toBeInTheDocument();
+        expect(window.location.pathname).toBe(`/jobs/${JOB_ID}`);
+        const request = fake.sent("POST", "/api/v1/jobs")[0];
+        expect(await request?.json()).toEqual({
+            table_id: TABLE_ID,
+            operation: "remove_orphan_files",
+        });
+    });
+
+    it("explains a disabled orphan cleanup in the dialog", async () => {
+        fake.on("POST", "/api/v1/jobs", () =>
+            apiError(
+                400,
+                "orphan_cleanup_unavailable",
+                "PermanentFailure",
+                "enable_orphan_cleanup_in_the_deployment_configuration",
+            ),
+        );
+        const user = start(`/tables/${TABLE_ID}`);
+
+        await user.click(
+            await screen.findByRole("button", { name: "Remove orphan files" }),
+        );
+        await user.click(
+            await screen.findByRole("button", {
+                name: "Confirm remove orphan files",
+            }),
+        );
+        const dialog = screen.getByRole("dialog", {
+            name: "Remove orphan files",
+        });
+        expect(
+            await within(dialog).findByText("Orphan cleanup unavailable"),
+        ).toBeVisible();
+        expect(dialog).toHaveTextContent(
+            "Next step: Enable orphan cleanup in the deployment configuration.",
+        );
+        expect(window.location.pathname).toBe(`/tables/${TABLE_ID}`);
+        expect(
+            screen.getByRole("button", { name: "Confirm remove orphan files" }),
+        ).toBeEnabled();
+    });
+
     it.each([
         [504, true],
         [500, false],
@@ -1388,6 +1458,20 @@ describe("preview and run", () => {
 });
 
 describe("job progress", () => {
+    it("labels a cleanup in its own terms and never as a commit", async () => {
+        fake.on("GET", "/api/v1/jobs/{id}", () =>
+            json(200, job("Deleting", { operation: "remove_orphan_files" })),
+        );
+        start(`/jobs/${JOB_ID}`);
+
+        expect(
+            await screen.findByText("Deleting unreferenced files"),
+        ).toBeInTheDocument();
+        expect(screen.getByText("Not applicable")).toBeInTheDocument();
+        expect(screen.queryByText("Confirmed")).not.toBeInTheDocument();
+        expect(screen.queryByText("Commit authorized")).not.toBeInTheDocument();
+    });
+
     it("separates execution from publication as events arrive, then closes", async () => {
         // The job resource follows the events, as the ledger would.
         let current = job("Running");

@@ -6,10 +6,11 @@
 //! runtime thread.
 
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use bergsmith_storage::{Backend, Location};
-use iceberg::io::FileIO;
-use iceberg::spec::{Manifest, ManifestList, TableMetadata};
+use iceberg::io::{FileIO, FileRead};
+use iceberg::spec::{Manifest, ManifestFile, ManifestList, TableMetadata};
 
 use super::OrphanError;
 
@@ -19,6 +20,7 @@ pub struct ReachabilityBounds {
     manifests: usize,
     entries: usize,
     bytes: u64,
+    read_timeout: Duration,
 }
 
 impl ReachabilityBounds {
@@ -26,19 +28,21 @@ impl ReachabilityBounds {
     ///
     /// # Errors
     ///
-    /// [`OrphanError::InvalidPolicy`] when either bound is zero.
+    /// [`OrphanError::InvalidPolicy`] when any bound is zero.
     pub fn new(
         max_manifests: usize,
         max_entries: usize,
         max_bytes: u64,
+        read_timeout: Duration,
     ) -> Result<Self, OrphanError> {
-        if max_manifests == 0 || max_entries == 0 || max_bytes == 0 {
+        if max_manifests == 0 || max_entries == 0 || max_bytes == 0 || read_timeout.is_zero() {
             return Err(OrphanError::InvalidPolicy);
         }
         Ok(Self {
             manifests: max_manifests,
             entries: max_entries,
             bytes: max_bytes,
+            read_timeout,
         })
     }
 
@@ -58,6 +62,12 @@ impl ReachabilityBounds {
     #[must_use]
     pub const fn max_bytes(&self) -> u64 {
         self.bytes
+    }
+
+    /// The deadline for reading one manifest list or manifest.
+    #[must_use]
+    pub const fn read_timeout(&self) -> Duration {
+        self.read_timeout
     }
 }
 
@@ -90,6 +100,8 @@ impl ObjectIdentity {
 #[derive(Clone, Debug, Default)]
 pub struct Reachable {
     files: BTreeSet<ObjectIdentity>,
+    /// Manifest lists and manifests already read, so shared ones are read once.
+    scanned: BTreeSet<ObjectIdentity>,
     manifests: usize,
     entries: usize,
 }
@@ -113,13 +125,13 @@ impl Reachable {
         self.files.is_empty()
     }
 
-    /// The number of manifests read.
+    /// The number of distinct manifests read.
     #[must_use]
     pub const fn manifests(&self) -> usize {
         self.manifests
     }
 
-    /// The number of manifest entries read.
+    /// The number of manifest entries read, counting each manifest once.
     #[must_use]
     pub const fn entries(&self) -> usize {
         self.entries
@@ -135,6 +147,7 @@ impl Reachable {
     /// [`OrphanError::Location`] for a malformed path in metadata,
     /// [`OrphanError::Io`] when reading a manifest list or manifest fails,
     /// [`OrphanError::Blocking`] when a decode task cannot complete,
+    /// [`OrphanError::TimedOut`] when one read misses the read deadline,
     /// [`OrphanError::ScanUnboundedManifest`] when a manifest declares no entry
     /// counts, and [`OrphanError::ScanTooLarge`] or
     /// [`OrphanError::ScanObjectTooLarge`] when `bounds` is exceeded.
@@ -177,7 +190,12 @@ impl Reachable {
         Ok(reachable)
     }
 
-    /// Reads one manifest list and everything it references.
+    /// Reads one manifest list and every manifest it names that this scan
+    /// has not read yet.
+    ///
+    /// Snapshots carry most earlier manifests forward, so a manifest is read
+    /// and counted once per scan, however many manifest lists name it. A
+    /// manifest list already read (two intents naming one list) is skipped.
     async fn scan_manifest_list(
         &mut self,
         manifest_list: &str,
@@ -185,22 +203,19 @@ impl Reachable {
         file_io: &FileIO,
         bounds: ReachabilityBounds,
     ) -> Result<(), OrphanError> {
-        self.insert(manifest_list)?;
-        let input = file_io.new_input(manifest_list)?;
-        let size = input.metadata().await?.size;
-        if size > bounds.max_bytes() {
-            return Err(OrphanError::ScanObjectTooLarge {
-                size,
-                limit: bounds.max_bytes(),
-            });
+        if !self.mark_scanned(manifest_list)? {
+            return Ok(());
         }
-        let bytes = input.read().await?;
+        let bytes = read_bounded(file_io, manifest_list, bounds).await?;
         // Avro decoding is CPU-bound; keep it off the runtime's async threads.
         let list = tokio::task::spawn_blocking(move || {
             ManifestList::parse_with_version(&bytes, format_version)
         })
         .await??;
         for manifest in list.entries() {
+            if !self.mark_scanned(&manifest.manifest_path)? {
+                continue;
+            }
             self.manifests = self.manifests.saturating_add(1);
             if self.manifests > bounds.max_manifests() {
                 return Err(OrphanError::ScanTooLarge {
@@ -208,43 +223,15 @@ impl Reachable {
                     entries: self.entries,
                 });
             }
-            // The counts let a manifest be refused before it is decoded. An
-            // older manifest without them cannot be bounded, so the scan
-            // refuses it instead of decoding an unknown-size object.
-            let (Some(added), Some(existing), Some(deleted)) = (
-                manifest.added_files_count,
-                manifest.existing_files_count,
-                manifest.deleted_files_count,
-            ) else {
-                return Err(OrphanError::ScanUnboundedManifest {
-                    path: manifest.manifest_path.clone(),
-                });
-            };
-            let declared = added.saturating_add(existing).saturating_add(deleted);
-            if self
-                .entries
-                .saturating_add(usize::try_from(declared).unwrap_or(usize::MAX))
-                > bounds.max_entries()
-            {
+            let declared = declared_entries(manifest)?;
+            let projected = self.entries.saturating_add(declared);
+            if projected > bounds.max_entries() {
                 return Err(OrphanError::ScanTooLarge {
                     manifests: self.manifests,
-                    entries: self
-                        .entries
-                        .saturating_add(usize::try_from(declared).unwrap_or(usize::MAX)),
+                    entries: projected,
                 });
             }
-            self.insert(&manifest.manifest_path)?;
-            // The declared length is only a hint. Stat the object so the read
-            // that follows cannot exceed the byte bound.
-            let input = file_io.new_input(&manifest.manifest_path)?;
-            let size = input.metadata().await?.size;
-            if size > bounds.max_bytes() {
-                return Err(OrphanError::ScanObjectTooLarge {
-                    size,
-                    limit: bounds.max_bytes(),
-                });
-            }
-            let bytes = file_io.new_input(&manifest.manifest_path)?.read().await?;
+            let bytes = read_bounded(file_io, &manifest.manifest_path, bounds).await?;
             let loaded =
                 tokio::task::spawn_blocking(move || Manifest::parse_avro(&bytes)).await??;
             for entry in loaded.entries() {
@@ -261,9 +248,118 @@ impl Reachable {
         Ok(())
     }
 
+    /// Protects `path` and records it as read; `false` when it was already
+    /// read by this scan.
+    fn mark_scanned(&mut self, path: &str) -> Result<bool, OrphanError> {
+        let location = Location::parse(path).map_err(OrphanError::Location)?;
+        let identity = ObjectIdentity::of(&location);
+        self.files.insert(identity.clone());
+        Ok(self.scanned.insert(identity))
+    }
+
     pub(crate) fn insert(&mut self, path: &str) -> Result<(), OrphanError> {
         let location = Location::parse(path).map_err(OrphanError::Location)?;
         self.files.insert(ObjectIdentity::of(&location));
         Ok(())
+    }
+}
+
+/// The entry count a manifest declares, so it can be refused before decoding.
+///
+/// An older manifest without the counts cannot be bounded, so the scan refuses
+/// it instead of decoding an object of unknown size.
+fn declared_entries(manifest: &ManifestFile) -> Result<usize, OrphanError> {
+    let (Some(added), Some(existing), Some(deleted)) = (
+        manifest.added_files_count,
+        manifest.existing_files_count,
+        manifest.deleted_files_count,
+    ) else {
+        return Err(OrphanError::ScanUnboundedManifest {
+            path: manifest.manifest_path.clone(),
+        });
+    };
+    Ok(
+        usize::try_from(added.saturating_add(existing).saturating_add(deleted))
+            .unwrap_or(usize::MAX),
+    )
+}
+
+/// Reads a whole manifest list or manifest, refusing one above the byte bound.
+///
+/// The declared length in a manifest list is only a hint, so the object is
+/// stat-ed first. The read is then limited to the stat-ed size, so an object
+/// replaced between the two calls cannot push the read past the bound; a
+/// truncated read fails to decode instead. The stat and the read together
+/// must finish within the bounds' read deadline.
+async fn read_bounded(
+    file_io: &FileIO,
+    path: &str,
+    bounds: ReachabilityBounds,
+) -> Result<bytes::Bytes, OrphanError> {
+    let read = async {
+        let input = file_io.new_input(path)?;
+        let size = input.metadata().await?.size;
+        if size > bounds.max_bytes() {
+            return Err(OrphanError::ScanObjectTooLarge {
+                size,
+                limit: bounds.max_bytes(),
+            });
+        }
+        Ok(input.reader().await?.read(0..size).await?)
+    };
+    tokio::time::timeout(bounds.read_timeout(), read)
+        .await
+        .map_err(|_| OrphanError::TimedOut {
+            step: super::OrphanStep::Scan,
+        })?
+}
+
+#[cfg(test)]
+mod tests {
+    use iceberg::spec::ManifestContentType;
+
+    use super::*;
+
+    fn manifest(counts: [Option<u32>; 3]) -> ManifestFile {
+        ManifestFile {
+            manifest_path: "s3://b/t/metadata/m.avro".to_owned(),
+            manifest_length: 1,
+            partition_spec_id: 0,
+            content: ManifestContentType::Data,
+            sequence_number: 1,
+            min_sequence_number: 1,
+            added_snapshot_id: 1,
+            added_files_count: counts[0],
+            existing_files_count: counts[1],
+            deleted_files_count: counts[2],
+            added_rows_count: None,
+            existing_rows_count: None,
+            deleted_rows_count: None,
+            partitions: None,
+            key_metadata: None,
+            first_row_id: None,
+        }
+    }
+
+    #[test]
+    fn a_manifest_without_declared_counts_is_refused() {
+        for counts in [
+            [None, Some(1), Some(1)],
+            [Some(1), None, Some(1)],
+            [Some(1), Some(1), None],
+        ] {
+            assert!(matches!(
+                declared_entries(&manifest(counts)),
+                Err(OrphanError::ScanUnboundedManifest { path }) if path.ends_with("m.avro")
+            ));
+        }
+        assert_eq!(
+            declared_entries(&manifest([Some(2), Some(3), Some(4)])).unwrap(),
+            9
+        );
+        assert_eq!(
+            declared_entries(&manifest([Some(u32::MAX), Some(u32::MAX), Some(1)])).unwrap(),
+            usize::try_from(u32::MAX).unwrap()
+        );
     }
 }

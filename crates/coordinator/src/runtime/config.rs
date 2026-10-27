@@ -114,7 +114,11 @@ pub struct OrphanSettings {
     /// The most objects one listing may return.
     #[serde(default = "default_orphan_max_listed_objects")]
     pub max_listed_objects: usize,
-    /// The most manifest entries, and manifests, one reachability scan reads.
+    /// The most distinct manifests one reachability scan reads.
+    #[serde(default = "default_orphan_max_scan_manifests")]
+    pub max_scan_manifests: usize,
+    /// The most manifest entries one reachability scan reads, counting each
+    /// distinct manifest once.
     #[serde(default = "default_orphan_max_scan_entries")]
     pub max_scan_entries: usize,
     /// The largest manifest list or manifest one scan reads, in bytes.
@@ -126,6 +130,10 @@ pub struct OrphanSettings {
     /// The most objects one deletion pass resolves.
     #[serde(default = "default_orphan_max_deletions_per_pass")]
     pub max_deletions_per_pass: usize,
+    /// The deadline in seconds for one storage step: reading one manifest
+    /// list or manifest, listing the table, or deleting one object.
+    #[serde(default = "default_orphan_operation_timeout_seconds")]
+    pub operation_timeout_seconds: u64,
 }
 
 impl Default for OrphanSettings {
@@ -134,10 +142,12 @@ impl Default for OrphanSettings {
             enabled: false,
             minimum_age_seconds: default_orphan_minimum_age_seconds(),
             max_listed_objects: default_orphan_max_listed_objects(),
+            max_scan_manifests: default_orphan_max_scan_manifests(),
             max_scan_entries: default_orphan_max_scan_entries(),
             max_scan_bytes: default_orphan_max_scan_bytes(),
             max_candidates: default_orphan_max_candidates(),
             max_deletions_per_pass: default_orphan_max_deletions_per_pass(),
+            operation_timeout_seconds: default_orphan_operation_timeout_seconds(),
         }
     }
 }
@@ -160,6 +170,11 @@ impl OrphanSettings {
                 "orphans.max_listed_objects must be between 1 and 10000000".into(),
             ));
         }
+        if !(1..=1_000_000).contains(&self.max_scan_manifests) {
+            return Err(ConfigError::Invalid(
+                "orphans.max_scan_manifests must be between 1 and 1000000".into(),
+            ));
+        }
         if !(1..=10_000_000).contains(&self.max_scan_entries) {
             return Err(ConfigError::Invalid(
                 "orphans.max_scan_entries must be between 1 and 10000000".into(),
@@ -180,6 +195,11 @@ impl OrphanSettings {
                 "orphans.max_deletions_per_pass must be between 1 and 1000000".into(),
             ));
         }
+        if !(1..=3_600).contains(&self.operation_timeout_seconds) {
+            return Err(ConfigError::Invalid(
+                "orphans.operation_timeout_seconds must be between 1 and 3600".into(),
+            ));
+        }
         if self.max_deletions_per_pass > self.max_candidates {
             return Err(ConfigError::Invalid(
                 "orphans.max_deletions_per_pass must not exceed orphans.max_candidates".into(),
@@ -189,10 +209,12 @@ impl OrphanSettings {
             enabled: self.enabled,
             minimum_age_seconds: self.minimum_age_seconds,
             max_listed_objects: self.max_listed_objects,
+            max_scan_manifests: self.max_scan_manifests,
             max_scan_entries: self.max_scan_entries,
             max_scan_bytes: self.max_scan_bytes,
             max_candidates: self.max_candidates,
             max_deletions_per_pass: self.max_deletions_per_pass,
+            operation_timeout_seconds: self.operation_timeout_seconds,
         })
     }
 }
@@ -203,6 +225,10 @@ const fn default_orphan_minimum_age_seconds() -> u64 {
 
 const fn default_orphan_max_listed_objects() -> usize {
     1_000_000
+}
+
+const fn default_orphan_max_scan_manifests() -> usize {
+    100_000
 }
 
 const fn default_orphan_max_scan_entries() -> usize {
@@ -221,16 +247,22 @@ const fn default_orphan_max_deletions_per_pass() -> usize {
     500
 }
 
+const fn default_orphan_operation_timeout_seconds() -> u64 {
+    120
+}
+
 /// Validated orphan-file cleanup settings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OrphanConfig {
     enabled: bool,
     minimum_age_seconds: u64,
     max_listed_objects: usize,
+    max_scan_manifests: usize,
     max_scan_entries: usize,
     max_scan_bytes: u64,
     max_candidates: usize,
     max_deletions_per_pass: usize,
+    operation_timeout_seconds: u64,
 }
 
 impl OrphanConfig {
@@ -252,7 +284,13 @@ impl OrphanConfig {
         self.max_listed_objects
     }
 
-    /// The most manifest entries, and manifests, one scan reads.
+    /// The most distinct manifests one scan reads.
+    #[must_use]
+    pub const fn max_scan_manifests(&self) -> usize {
+        self.max_scan_manifests
+    }
+
+    /// The most manifest entries one scan reads.
     #[must_use]
     pub const fn max_scan_entries(&self) -> usize {
         self.max_scan_entries
@@ -275,6 +313,34 @@ impl OrphanConfig {
     pub const fn max_deletions_per_pass(&self) -> usize {
         self.max_deletions_per_pass
     }
+
+    /// The deadline for one storage step.
+    #[must_use]
+    pub const fn operation_timeout(&self) -> Duration {
+        Duration::from_secs(self.operation_timeout_seconds)
+    }
+
+    /// The reachability bounds a planning or deletion pass scans with.
+    ///
+    /// # Errors
+    ///
+    /// [`OrphanError::InvalidPolicy`] when a bound is zero, which validated
+    /// settings never produce.
+    ///
+    /// [`OrphanError::InvalidPolicy`]: bergsmith_maintenance::orphans::OrphanError::InvalidPolicy
+    pub fn reachability_bounds(
+        &self,
+    ) -> Result<
+        bergsmith_maintenance::orphans::ReachabilityBounds,
+        bergsmith_maintenance::orphans::OrphanError,
+    > {
+        bergsmith_maintenance::orphans::ReachabilityBounds::new(
+            self.max_scan_manifests,
+            self.max_scan_entries,
+            self.max_scan_bytes,
+            self.operation_timeout(),
+        )
+    }
 }
 
 impl Default for OrphanConfig {
@@ -283,10 +349,12 @@ impl Default for OrphanConfig {
             enabled: false,
             minimum_age_seconds: default_orphan_minimum_age_seconds(),
             max_listed_objects: default_orphan_max_listed_objects(),
+            max_scan_manifests: default_orphan_max_scan_manifests(),
             max_scan_entries: default_orphan_max_scan_entries(),
             max_scan_bytes: default_orphan_max_scan_bytes(),
             max_candidates: default_orphan_max_candidates(),
             max_deletions_per_pass: default_orphan_max_deletions_per_pass(),
+            operation_timeout_seconds: default_orphan_operation_timeout_seconds(),
         }
     }
 }
@@ -1147,6 +1215,7 @@ impl CoordinatorConfig {
     /// [`ConfigError`] naming the first problem.
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.database.url()?;
+        self.orphans.cleanup()?;
         if self.http.bind.is_empty() {
             return Err(ConfigError::Invalid("http.bind must not be empty".into()));
         }
@@ -1544,6 +1613,74 @@ mod tests {
         value["storage"]["connections"] =
             serde_json::json!({ "not-a-uuid": [{ "kind": "local_fs" }] });
         assert!(parse(value).is_err());
+    }
+
+    #[test]
+    fn orphan_cleanup_is_off_by_default_with_documented_bounds() {
+        let config = parse(minimal()).unwrap();
+        let cleanup = config.orphans.cleanup().unwrap();
+        assert_eq!(cleanup, OrphanConfig::default());
+        assert!(!cleanup.enabled());
+        assert_eq!(cleanup.minimum_age_seconds(), 259_200);
+        assert_eq!(cleanup.max_listed_objects(), 1_000_000);
+        assert_eq!(cleanup.max_scan_manifests(), 100_000);
+        assert_eq!(cleanup.max_scan_entries(), 500_000);
+        assert_eq!(cleanup.max_scan_bytes(), 64 * 1024 * 1024);
+        assert_eq!(cleanup.max_candidates(), 10_000);
+        assert_eq!(cleanup.max_deletions_per_pass(), 500);
+        assert_eq!(cleanup.operation_timeout(), Duration::from_secs(120));
+        assert!(cleanup.reachability_bounds().is_ok());
+    }
+
+    #[test]
+    fn orphan_bounds_are_checked_at_each_edge() {
+        let accepts = |field: &str, value: serde_json::Value| {
+            let mut config = minimal();
+            config["orphans"] = serde_json::json!({ field: value });
+            parse(config).is_ok()
+        };
+        for (field, low, high) in [
+            ("max_listed_objects", 1_u64, 10_000_000_u64),
+            ("max_scan_manifests", 1, 1_000_000),
+            ("max_scan_entries", 1, 10_000_000),
+            ("max_scan_bytes", 1, 1_073_741_824),
+            ("operation_timeout_seconds", 1, 3_600),
+        ] {
+            assert!(!accepts(field, serde_json::json!(0)), "{field} = 0");
+            assert!(accepts(field, serde_json::json!(low)), "{field} = {low}");
+            assert!(accepts(field, serde_json::json!(high)), "{field} = {high}");
+            assert!(
+                !accepts(field, serde_json::json!(high + 1)),
+                "{field} = {}",
+                high + 1
+            );
+        }
+        assert!(accepts("minimum_age_seconds", serde_json::json!(0)));
+        assert!(accepts(
+            "minimum_age_seconds",
+            serde_json::json!(31_536_000)
+        ));
+        assert!(!accepts(
+            "minimum_age_seconds",
+            serde_json::json!(31_536_001)
+        ));
+        assert!(!accepts("unknown", serde_json::json!(true)));
+
+        // The candidate and per-pass bounds are checked together.
+        let bounded = |candidates: u64, per_pass: u64| {
+            let mut config = minimal();
+            config["orphans"] = serde_json::json!({
+                "max_candidates": candidates,
+                "max_deletions_per_pass": per_pass,
+            });
+            parse(config).is_ok()
+        };
+        assert!(bounded(1, 1));
+        assert!(bounded(1_000_000, 1_000_000));
+        assert!(!bounded(0, 1));
+        assert!(!bounded(1_000_001, 1));
+        assert!(!bounded(10, 0));
+        assert!(!bounded(10, 11), "a pass may not exceed the plan");
     }
 
     #[test]

@@ -50,7 +50,9 @@ job that wrote them is `Committing` or `CommitOutcomeUnknown`.
   snapshot. Orphan-file cleanup is available as a manual job
   (`operation: "remove_orphan_files"` or the table page's action) once
   `orphans.enabled` is set; it deletes only objects no retained snapshot
-  references and never touches `<data-location>/bergsmith/`. Manifest rewrite
+  references and never touches anything under a `bergsmith` path segment
+  below the table location, which includes `<data-location>/bergsmith/`.
+  Manifest rewrite
   and dangling-delete removal are not available. Frequency and retention parameters for scheduled expiration
   are not yet configurable.
 - Kubernetes and Helm are planned for M8.

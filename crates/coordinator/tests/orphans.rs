@@ -91,10 +91,12 @@ fn enabled(pass: usize) -> OrphanConfig {
         // minimum age would keep them.
         minimum_age_seconds: 0,
         max_listed_objects: 10_000,
+        max_scan_manifests: 1_000,
         max_scan_entries: 100_000,
         max_scan_bytes: 64 * 1024 * 1024,
         max_candidates: 100,
         max_deletions_per_pass: pass,
+        operation_timeout_seconds: 30,
     }
     .cleanup()
     .unwrap()
@@ -231,18 +233,26 @@ async fn setup(pool: &PgPool) -> Run {
 }
 
 fn publication(run: &Run, orphan: OrphanConfig) -> PublicationService {
+    publication_with_retry(run, orphan, RetryPolicy::default())
+}
+
+fn publication_with_retry(
+    run: &Run,
+    orphan: OrphanConfig,
+    retry: RetryPolicy,
+) -> PublicationService {
     PublicationService::new(
         run.pool.clone(),
         run.catalogs.clone(),
         run.epoch,
         PublicationConfig::default(),
-        RetryPolicy::default(),
+        retry,
         false,
         orphan,
     )
 }
 
-fn planner(run: &Run, orphan: OrphanConfig) -> PlannerService {
+fn scheduler(run: &Run) -> Arc<Scheduler> {
     let access = Arc::new(RuntimeWorkerAccess::new(run.catalogs.clone()));
     let worker = WorkerService::new(
         run.pool.clone(),
@@ -251,11 +261,14 @@ fn planner(run: &Run, orphan: OrphanConfig) -> PlannerService {
         access.clone(),
     )
     .unwrap();
-    let scheduler = Arc::new(Scheduler::new(worker, access, SchedulerConfig::default()).unwrap());
+    Arc::new(Scheduler::new(worker, access, SchedulerConfig::default()).unwrap())
+}
+
+fn planner(run: &Run, orphan: OrphanConfig) -> PlannerService {
     PlannerService::new(
         run.pool.clone(),
         run.catalogs.clone(),
-        scheduler,
+        scheduler(run),
         PlannerConfig::default(),
         task_settings(),
         64 * 1024 * 1024 * 1024,
@@ -489,6 +502,181 @@ async fn a_cancellation_between_batches_stops_deletion(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(job.state, JobState::Cancelling);
+
+    // A cleanup never starts publication, so the scheduler ends it.
+    scheduler(&run).reconcile().await.unwrap();
+    let job = jobs::job(&mut conn, run.tenant.organization, run.job.id)
+        .await
+        .unwrap();
+    assert_eq!(job.state, JobState::Cancelled);
+    assert_eq!(job.state_reason.as_deref(), Some("CancellationRequested"));
+    assert_eq!(
+        orphans::receipt_totals(&mut conn, job.id).await.unwrap().0,
+        1,
+        "the receipt of the batch that ran is kept"
+    );
+    assert!(run.orphan_metadata.exists());
+    run.server.reset();
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn disabling_cleanup_after_planning_fails_the_job_without_deleting(pool: PgPool) {
+    let mut run = setup(&pool).await;
+    let mut conn = pool.acquire().await.unwrap();
+    planner(&run, enabled(50)).pass().await.unwrap();
+    let job = jobs::job(&mut conn, run.tenant.organization, run.job.id)
+        .await
+        .unwrap();
+    assert_eq!(job.state, JobState::ReadyToCommit);
+
+    let failed = publication(&run, OrphanConfig::default())
+        .pass()
+        .await
+        .unwrap();
+    assert_eq!(failed.failed, 1);
+    let job = jobs::job(&mut conn, run.tenant.organization, run.job.id)
+        .await
+        .unwrap();
+    assert_eq!(job.state, JobState::Failed);
+    assert_eq!(
+        job.state_reason.as_deref(),
+        Some("OrphanCleanupUnavailable")
+    );
+    assert!(
+        run.orphan_data.exists(),
+        "a disabled cleanup deletes nothing"
+    );
+    assert!(run.orphan_metadata.exists());
+    assert_eq!(
+        orphans::receipt_totals(&mut conn, job.id).await.unwrap().0,
+        0
+    );
+    run.server.reset();
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_listing_beyond_its_bound_fails_planning(pool: PgPool) {
+    let mut run = setup(&pool).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let narrow = OrphanSettings {
+        enabled: true,
+        minimum_age_seconds: 0,
+        max_listed_objects: 1,
+        max_candidates: 100,
+        max_deletions_per_pass: 50,
+        ..OrphanSettings::default()
+    }
+    .cleanup()
+    .unwrap();
+    planner(&run, narrow).pass().await.unwrap();
+    let job = jobs::job(&mut conn, run.tenant.organization, run.job.id)
+        .await
+        .unwrap();
+    assert_eq!(job.state, JobState::Failed);
+    assert_eq!(job.state_reason.as_deref(), Some("OrphanListingTooLarge"));
+    assert!(
+        orphans::orphan_plan(&mut conn, job.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "a truncated listing never becomes a plan"
+    );
+    assert!(run.orphan_data.exists());
+    run.server.reset();
+}
+
+/// Makes `directory` read-only, so deleting an object inside it fails.
+fn lock(directory: &Path, locked: bool) {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = if locked { 0o555 } else { 0o755 };
+    std::fs::set_permissions(directory, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_delete_that_keeps_failing_keeps_its_progress_and_fails_the_job(pool: PgPool) {
+    let mut run = setup(&pool).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let directory = run.fixture.root().join("data/locked");
+    std::fs::create_dir_all(&directory).unwrap();
+    let stuck = directory.join("stuck.parquet");
+    write_older(
+        &stuck,
+        b"stuck",
+        SystemTime::now() - Duration::from_secs(2 * 24 * 60 * 60),
+    );
+    planner(&run, enabled(50)).pass().await.unwrap();
+    let job = jobs::job(&mut conn, run.tenant.organization, run.job.id)
+        .await
+        .unwrap();
+    assert_eq!(job.state, JobState::ReadyToCommit);
+    lock(&directory, true);
+    // The test relies on file permissions, which a privileged user ignores.
+    assert!(
+        std::fs::write(directory.join("probe"), b"").is_err(),
+        "run the test as an unprivileged user"
+    );
+
+    // One retry window of a millisecond keeps the attempts quick.
+    let service = publication_with_retry(
+        &run,
+        enabled(50),
+        RetryPolicy {
+            base_millis: 1,
+            max_millis: 1,
+        },
+    );
+    let first = service.pass().await.unwrap();
+    assert_eq!(first.deferred, 1, "a failed delete is retried: {first:?}");
+    let job = jobs::job(&mut conn, run.tenant.organization, run.job.id)
+        .await
+        .unwrap();
+    assert_eq!(job.state, JobState::Deleting);
+    let receipts: Vec<(String, String)> = sqlx::query_as(
+        "SELECT path, disposition FROM orphan_deletions WHERE job_id = $1 ORDER BY path",
+    )
+    .bind(job.id.as_uuid())
+    .fetch_all(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(
+        receipts,
+        [
+            (
+                file_uri(&run.orphan_data),
+                Disposition::Deleted.as_str().to_owned()
+            ),
+            (
+                file_uri(&run.orphan_metadata),
+                Disposition::Deleted.as_str().to_owned()
+            ),
+        ],
+        "deletes that succeeded before the failure keep their receipts"
+    );
+    assert!(!run.orphan_data.exists());
+    assert!(stuck.exists());
+
+    // Without progress, the attempts are bounded and the job fails.
+    let mut passes = 0;
+    let job = loop {
+        service.pass().await.unwrap();
+        let job = jobs::job(&mut conn, run.tenant.organization, run.job.id)
+            .await
+            .unwrap();
+        if job.state != JobState::Deleting {
+            break job;
+        }
+        passes += 1;
+        assert!(passes < 10_000, "the job must not stay Deleting");
+    };
+    lock(&directory, false);
+    assert_eq!(job.state, JobState::Failed);
+    assert_eq!(job.state_reason.as_deref(), Some("OrphanDeleteFailed"));
+    assert!(stuck.exists());
+    assert_eq!(
+        orphans::receipt_totals(&mut conn, job.id).await.unwrap().0,
+        2,
+        "the refused object never receives a receipt"
+    );
     run.server.reset();
 }
 

@@ -16,8 +16,8 @@ use bergsmith_common::ids::JobId;
 use bergsmith_common::job::{JobOperation, JobState};
 use bergsmith_maintenance::PlanningBaseline;
 use bergsmith_maintenance::orphans::{
-    CandidateCheck, CandidateVerdict, OrphanError, OrphanPlanDocument, OrphanPolicy,
-    ReachabilityBounds, Reachable, verify_candidate,
+    CandidateCheck, CandidateVerdict, OrphanError, OrphanPlanDocument, OrphanPolicy, OrphanStep,
+    Reachable, verify_candidate,
 };
 use bergsmith_persistence::orphans::{self as orphan_plans, Disposition, Receipt};
 use bergsmith_persistence::scheduling::RetryPolicy;
@@ -33,6 +33,15 @@ use crate::runtime::catalogs::{AccessError, RuntimeCatalogs};
 use crate::runtime::config::OrphanConfig;
 use crate::runtime::planning::DEFAULT_PLANNING_PAGE;
 use crate::runtime::statistics::StatisticsCollector;
+
+/// Orphan deletes that run at once within one batch.
+const ORPHAN_DELETE_CONCURRENCY: usize = 8;
+
+/// Consecutive failed orphan-deletion passes, with no object removed, after
+/// which the job fails instead of retrying. A delete that storage keeps
+/// refusing (a permission or object lock) cannot succeed on its own, and the
+/// job would otherwise stay `Deleting` and rescan the table forever.
+const ORPHAN_DELETE_ATTEMPTS: u32 = 5;
 
 /// What one publication pass did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -225,13 +234,10 @@ impl PublicationService {
                         reason_code = error.reason_code(),
                         "publication resume failed permanently"
                     );
-                    if job.operation == JobOperation::RemoveOrphanFiles {
-                        self.terminate_orphan(&job, error.terminal_state(), error.reason_code())
-                            .await?;
-                    } else {
-                        self.stop(&job, error.terminal_state(), error.reason_code())
-                            .await?;
-                    }
+                    // Cleanup never writes a publication intent, so only
+                    // commit jobs resume here.
+                    self.stop(&job, error.terminal_state(), error.reason_code())
+                        .await?;
                     summary.failed += 1;
                 }
             }
@@ -289,8 +295,29 @@ impl PublicationService {
                         self.refresh_statistics(&job);
                     }
                 }
+                Err(error)
+                    if job.operation == JobOperation::RemoveOrphanFiles
+                        && error.is_orphan_delete_failure()
+                        && self.defer(job.id).await >= ORPHAN_DELETE_ATTEMPTS =>
+                {
+                    tracing::error!(
+                        job_id = %job.id,
+                        reason_code = error.reason_code(),
+                        attempts = ORPHAN_DELETE_ATTEMPTS,
+                        "orphan deletion keeps failing without progress"
+                    );
+                    self.clear_retry(job.id).await;
+                    self.terminate_orphan(&job, JobState::Failed, error.reason_code())
+                        .await?;
+                    summary.failed += 1;
+                }
                 Err(error) if error.is_transient() => {
-                    self.defer(job.id).await;
+                    // A failed delete already deferred itself in the guard.
+                    if !(job.operation == JobOperation::RemoveOrphanFiles
+                        && error.is_orphan_delete_failure())
+                    {
+                        self.defer(job.id).await;
+                    }
                     summary.deferred += 1;
                     tracing::warn!(
                         job_id = %job.id,
@@ -612,7 +639,12 @@ impl PublicationService {
     /// Everything that only reads the table (catalog load, reachability,
     /// listing) happens before the batch is authorized, so the destructive
     /// step is fenced as late as possible. No pool connection is held across
-    /// those reads or across the deletes.
+    /// those reads or across the deletes. Every storage step has a deadline.
+    ///
+    /// Deletes run [`ORPHAN_DELETE_CONCURRENCY`] at a time. When one fails, the
+    /// batch stops after its group and still records the receipts it earned,
+    /// so an object this batch removed is never later reported as merely
+    /// absent.
     #[expect(
         clippy::too_many_lines,
         reason = "one batch keeps re-verification, receipts, and completion in one durable step"
@@ -650,11 +682,7 @@ impl PublicationService {
             metadata_location,
             &unresolved,
             binding.store.file_io(),
-            ReachabilityBounds::new(
-                self.orphan.max_scan_entries(),
-                self.orphan.max_scan_entries(),
-                self.orphan.max_scan_bytes(),
-            )?,
+            self.orphan.reachability_bounds()?,
         )
         .await?;
         let table =
@@ -666,16 +694,22 @@ impl PublicationService {
         // A fresh listing supplies the current modification time and size: the
         // plan's values are from planning and may name an object that was
         // replaced since.
-        let listed = binding
-            .store
-            .list_bounded(&table, self.orphan.max_listed_objects())
-            .await
-            .map_err(|error| match error {
-                bergsmith_storage::StorageError::ListingTooLarge { limit } => {
-                    PublicationError::Orphans(OrphanError::ListingTooLarge { limit })
-                }
-                error => PublicationError::Orphans(OrphanError::Storage(error)),
-            })?;
+        let listed = tokio::time::timeout(
+            self.orphan.operation_timeout(),
+            binding
+                .store
+                .list_bounded(&table, self.orphan.max_listed_objects()),
+        )
+        .await
+        .map_err(|_| OrphanError::TimedOut {
+            step: OrphanStep::List,
+        })?
+        .map_err(|error| match error {
+            bergsmith_storage::StorageError::ListingTooLarge { limit } => {
+                OrphanError::ListingTooLarge { limit }
+            }
+            error => OrphanError::Storage(error),
+        })?;
         let current: BTreeMap<String, ObjectEntry> = listed
             .into_iter()
             .map(|entry| (entry.location.to_string(), entry))
@@ -705,32 +739,31 @@ impl PublicationService {
             let recorded = orphan_plans::recorded_paths(&mut conn, job.id).await?;
             (job, recorded)
         };
+        let check = CandidateCheck {
+            table: &table,
+            prefixes: &prefixes,
+            reachable: &reachable,
+            cutoff_ms,
+        };
         let mut receipts = Vec::new();
-        let mut resolved = 0usize;
-        for candidate in document.candidates() {
-            if resolved >= self.orphan.max_deletions_per_pass() {
-                break;
-            }
-            if recorded.contains(&candidate.path) {
-                continue;
-            }
-            let location = Location::parse(&candidate.path).map_err(OrphanError::Location)?;
-            let check = CandidateCheck {
-                table: &table,
-                prefixes: &prefixes,
-                reachable: &reachable,
-                cutoff_ms,
-            };
+        let mut deletions = Vec::new();
+        for candidate in document
+            .candidates()
+            .iter()
+            .filter(|candidate| !recorded.contains(&candidate.path))
+            .take(self.orphan.max_deletions_per_pass())
+        {
             let disposition =
                 match verify_candidate(candidate, current.get(&candidate.path), &check) {
-                    CandidateVerdict::Delete => {
-                        binding
-                            .store
-                            .delete(&location)
-                            .await
-                            .map_err(OrphanError::Storage)?;
-                        Disposition::Deleted
-                    }
+                    CandidateVerdict::Delete => match Location::parse(&candidate.path) {
+                        Ok(location) => {
+                            deletions.push((candidate, location));
+                            continue;
+                        }
+                        // `verify_candidate` parsed the path already; an
+                        // unparsable one is never deleted.
+                        Err(_) => Disposition::Skipped,
+                    },
                     CandidateVerdict::Skip => Disposition::Skipped,
                     CandidateVerdict::Absent => Disposition::Absent,
                 };
@@ -739,10 +772,51 @@ impl PublicationService {
                 disposition,
                 size_bytes: candidate.size_bytes,
             });
-            resolved = resolved.saturating_add(1);
+        }
+        let mut failure = None;
+        let mut deleted = 0_usize;
+        for group in deletions.chunks(ORPHAN_DELETE_CONCURRENCY) {
+            let results = futures::future::join_all(group.iter().map(|(_, location)| {
+                tokio::time::timeout(
+                    self.orphan.operation_timeout(),
+                    binding.store.delete(location),
+                )
+            }))
+            .await;
+            for ((candidate, _), result) in group.iter().zip(results) {
+                match result {
+                    Ok(Ok(())) => {
+                        deleted = deleted.saturating_add(1);
+                        receipts.push(Receipt {
+                            path: &candidate.path,
+                            disposition: Disposition::Deleted,
+                            size_bytes: candidate.size_bytes,
+                        });
+                    }
+                    Ok(Err(error)) => {
+                        failure.get_or_insert(OrphanError::Delete(error));
+                    }
+                    Err(_) => {
+                        failure.get_or_insert(OrphanError::TimedOut {
+                            step: OrphanStep::Delete,
+                        });
+                    }
+                }
+            }
+            if failure.is_some() {
+                break;
+            }
         }
         let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
         orphan_plans::record_receipts(&mut conn, job.id, &receipts, self.epoch).await?;
+        if let Some(error) = failure {
+            // Progress resets the attempt bound: only a delete that keeps
+            // failing with nothing else left to remove ends the job.
+            if deleted > 0 {
+                self.clear_retry(job.id).await;
+            }
+            return Err(error.into());
+        }
         let (count, _bytes) = orphan_plans::receipt_totals(&mut conn, job.id).await?;
         if u64::try_from(count).unwrap_or(u64::MAX)
             >= u64::try_from(document.candidates().len()).unwrap_or(u64::MAX)
@@ -828,7 +902,9 @@ impl PublicationService {
         Ok(())
     }
 
-    async fn defer(&self, job: JobId) {
+    /// Delays `job`'s next attempt and returns how many consecutive attempts
+    /// have now failed.
+    async fn defer(&self, job: JobId) -> u32 {
         let mut retries = self.retry_after.lock().await;
         let attempt = retries
             .get(&job)
@@ -848,6 +924,7 @@ impl PublicationService {
                 attempt,
             },
         );
+        attempt
     }
 
     async fn clear_retry(&self, job: JobId) {
@@ -930,6 +1007,23 @@ impl PublicationError {
             | Self::Planning(_)
             | Self::Plan(_) => false,
         }
+    }
+
+    /// Whether an orphan delete failed or timed out after the batch fence.
+    ///
+    /// Such a failure is retried, but only a bounded number of times in
+    /// a row without progress.
+    #[must_use]
+    pub const fn is_orphan_delete_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::Orphans(
+                OrphanError::Delete(_)
+                    | OrphanError::TimedOut {
+                        step: OrphanStep::Delete
+                    }
+            )
+        )
     }
 
     /// The terminal state a permanent failure should record.

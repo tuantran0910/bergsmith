@@ -4664,6 +4664,45 @@ async fn orphan_cleanup_is_refused_when_disabled(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn retrying_a_cleanup_is_refused_while_cleanup_is_disabled(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let source = JobId::generate();
+    bergsmith_persistence::jobs::create_job(
+        &mut conn,
+        &bergsmith_persistence::jobs::NewJob {
+            id: source,
+            organization_id: tenant.organization,
+            table_id: tenant.table,
+            operation: bergsmith_common::job::JobOperation::RemoveOrphanFiles,
+            retry_of: None,
+            created_by: tenant.user,
+        },
+    )
+    .await
+    .unwrap();
+    support::force_job_state(&mut conn, source, JobState::Failed).await;
+    drop(conn);
+    let browser = Browser::without_orphans(&pool, &tenant, tenant.user, "alice").await;
+    let (status, body) = browser
+        .request(
+            "POST",
+            &format!("/api/v1/jobs/{source}/retry"),
+            None,
+            Some("retry-orphans-off"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["reason"], "orphan_cleanup_unavailable");
+    let retries: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE retry_of_job_id = $1")
+        .bind(source.as_uuid())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(retries, 0, "a refused retry creates no job");
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
 async fn orphan_cleanup_submission_reports_its_operation(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let tenant = support::tenant(&mut conn, "acme").await;

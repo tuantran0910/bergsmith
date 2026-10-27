@@ -18,7 +18,7 @@ use std::time::Duration;
 use bergsmith_common::ids::{JobId, PlanId};
 use bergsmith_common::job::{JobOperation, JobState};
 use bergsmith_maintenance::orphans::{
-    OrphanBaseline, OrphanError, OrphanPlanDocument, OrphanPolicy, ReachabilityBounds, Reachable,
+    OrphanBaseline, OrphanError, OrphanPlanDocument, OrphanPolicy, OrphanStep, Reachable,
     select_orphans,
 };
 use bergsmith_maintenance::{
@@ -356,9 +356,6 @@ impl PlannerService {
 
     #[tracing::instrument(skip_all, fields(job_id = %job.id))]
     async fn plan_job(&self, job: &jobs::Job) -> Result<(PlannedWork, jobs::Job), PlanningError> {
-        if job.operation == JobOperation::RemoveOrphanFiles && !self.orphan.enabled() {
-            return Err(PlanningError::OrphanCleanupUnavailable);
-        }
         // Cleanup reads the publication ledger before the catalog, so a
         // commit that lands while it works is protected by at least one of the
         // two views (see `plan_orphans`).
@@ -554,28 +551,33 @@ impl PlannerService {
             metadata_location,
             &unresolved,
             binding.store.file_io(),
-            ReachabilityBounds::new(
-                self.orphan.max_scan_entries(),
-                self.orphan.max_scan_entries(),
-                self.orphan.max_scan_bytes(),
-            )
-            .map_err(PlanningError::Orphan)?,
+            self.orphan
+                .reachability_bounds()
+                .map_err(PlanningError::Orphan)?,
         )
         .await
         .map_err(PlanningError::Orphan)?;
         let table = Location::parse(binding.loaded.metadata.location())
             .map_err(OrphanError::Location)
             .map_err(PlanningError::Orphan)?;
-        let listed = binding
-            .store
-            .list_bounded(&table, self.orphan.max_listed_objects())
-            .await
-            .map_err(|error| match error {
-                bergsmith_storage::StorageError::ListingTooLarge { .. } => {
-                    PlanningError::OrphanListingTooLarge
-                }
-                error => PlanningError::Access(AccessError::Storage(error)),
-            })?;
+        let listed = tokio::time::timeout(
+            self.orphan.operation_timeout(),
+            binding
+                .store
+                .list_bounded(&table, self.orphan.max_listed_objects()),
+        )
+        .await
+        .map_err(|_| {
+            PlanningError::Orphan(OrphanError::TimedOut {
+                step: OrphanStep::List,
+            })
+        })?
+        .map_err(|error| match error {
+            bergsmith_storage::StorageError::ListingTooLarge { .. } => {
+                PlanningError::OrphanListingTooLarge
+            }
+            error => PlanningError::Access(AccessError::Storage(error)),
+        })?;
         let policy = OrphanPolicy::new(
             self.orphan.minimum_age_seconds(),
             binding.protection_window_ms(),

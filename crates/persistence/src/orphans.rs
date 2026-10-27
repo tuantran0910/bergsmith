@@ -238,22 +238,32 @@ pub async fn record_receipts(
     if receipts.is_empty() {
         return Ok(());
     }
+    let paths: Vec<&str> = receipts.iter().map(|receipt| receipt.path).collect();
+    let dispositions: Vec<&str> = receipts
+        .iter()
+        .map(|receipt| receipt.disposition.as_str())
+        .collect();
+    let sizes: Vec<i64> = receipts
+        .iter()
+        .map(|receipt| i64::try_from(receipt.size_bytes).unwrap_or(i64::MAX))
+        .collect();
     let mut tx = conn.begin().await?;
     crate::leadership::ensure_leadership(&mut tx, epoch).await?;
-    for receipt in receipts {
-        sqlx::query(
-            "INSERT INTO orphan_deletions (job_id, path, disposition, size_bytes)
-             VALUES ($1, $2, $3, $4)
-             ON CONFLICT (job_id, path) DO NOTHING",
-        )
-        .bind(job_id.as_uuid())
-        .bind(receipt.path)
-        .bind(receipt.disposition.as_str())
-        .bind(i64::try_from(receipt.size_bytes).unwrap_or(i64::MAX))
-        .execute(&mut *tx)
-        .await
-        .map_err(|error| PersistenceError::from_write("orphan deletion receipt", error))?;
-    }
+    // One statement per batch: the receipts of a pass share one round trip.
+    sqlx::query(
+        "INSERT INTO orphan_deletions (job_id, path, disposition, size_bytes)
+         SELECT $1, receipt.path, receipt.disposition, receipt.size_bytes
+         FROM UNNEST($2::text[], $3::text[], $4::bigint[])
+             AS receipt (path, disposition, size_bytes)
+         ON CONFLICT (job_id, path) DO NOTHING",
+    )
+    .bind(job_id.as_uuid())
+    .bind(&paths)
+    .bind(&dispositions)
+    .bind(&sizes)
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| PersistenceError::from_write("orphan deletion receipt", error))?;
     tx.commit().await?;
     Ok(())
 }
