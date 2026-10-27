@@ -12,6 +12,7 @@ mod discovery;
 mod events;
 mod grants;
 mod maintenance;
+mod notifications;
 mod overview;
 mod pagination;
 mod preview;
@@ -66,6 +67,8 @@ pub struct ApiState {
     pub checks: CapabilityChecker,
     /// Browses catalogs and loads the tables an operator registers.
     pub discovery: CatalogDiscovery,
+    /// Sends notification test deliveries within the deployment's allow-list.
+    pub notifications: crate::notifications::DeliveryClient,
 }
 
 /// Builds the `/api/v1` resource router, including its `OpenAPI` document.
@@ -163,6 +166,18 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/api/v1/service-identities/{id}/tokens/{token}/rotate",
             post(service_identities::rotate),
+        )
+        .route(
+            "/api/v1/notifications/destinations",
+            get(notifications::list).post(notifications::create),
+        )
+        .route(
+            "/api/v1/notifications/destinations/{id}",
+            get(notifications::get).patch(notifications::update),
+        )
+        .route(
+            "/api/v1/notifications/destinations/{id}/test",
+            post(notifications::test),
         )
         .route("/api/v1/audit", get(resources::audit))
         .route("/api/v1/workers", get(resources::workers))

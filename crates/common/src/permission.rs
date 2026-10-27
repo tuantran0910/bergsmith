@@ -31,6 +31,9 @@ pub enum Permission {
     ManageSchedules,
     /// Register worker pools and rotate worker credentials.
     ManageWorkers,
+    /// Create, edit, test, or disable notification destinations and rules,
+    /// and read the delivery log.
+    ManageNotifications,
     /// Grant and revoke roles.
     ManageGrants,
     /// Read the organization's audit log.
@@ -49,6 +52,7 @@ impl Permission {
         Self::ManageConnections,
         Self::ManageSchedules,
         Self::ManageWorkers,
+        Self::ManageNotifications,
         Self::ManageGrants,
         Self::ViewAudit,
     ];
@@ -66,6 +70,7 @@ impl Permission {
             Self::ManageConnections => "connections:manage",
             Self::ManageSchedules => "schedules:manage",
             Self::ManageWorkers => "workers:manage",
+            Self::ManageNotifications => "notifications:manage",
             Self::ManageGrants => "grants:manage",
             Self::ViewAudit => "audit:read",
         }
@@ -90,6 +95,7 @@ impl Permission {
             Self::ManageConnections
             | Self::ManageSchedules
             | Self::ManageWorkers
+            | Self::ManageNotifications
             | Self::ManageGrants
             | Self::ViewAudit => &[Role::Administrator],
         }

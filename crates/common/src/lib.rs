@@ -12,6 +12,7 @@ pub mod disposition;
 pub mod health;
 pub mod ids;
 pub mod job;
+pub mod notifications;
 pub mod permission;
 pub mod policy;
 pub mod schedule;

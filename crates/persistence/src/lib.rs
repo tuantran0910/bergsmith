@@ -19,6 +19,7 @@ pub mod jobs;
 pub mod leadership;
 pub mod maintenance;
 pub mod metrics;
+pub mod notifications;
 pub mod occurrences;
 pub mod overview;
 pub mod plans;

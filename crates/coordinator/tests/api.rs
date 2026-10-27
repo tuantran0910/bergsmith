@@ -16,6 +16,9 @@ mod grants_api;
 #[path = "api/job_statistics.rs"]
 mod job_statistics;
 
+#[path = "api/notifications.rs"]
+mod notifications_api;
+
 #[path = "api/overview.rs"]
 mod overview;
 
@@ -98,6 +101,17 @@ fn discovery(pool: &PgPool) -> CatalogDiscovery {
     )
 }
 
+/// An API state whose notification allow-list is empty: every test delivery is
+/// refused before any request, so route tests never touch the network.
+fn notifications() -> bergsmith_coordinator::notifications::DeliveryClient {
+    let settings = bergsmith_coordinator::notifications::Settings::new(
+        bergsmith_common::notifications::AllowList::new(Vec::<String>::new()).unwrap(),
+        None,
+        Duration::from_secs(5),
+    );
+    bergsmith_coordinator::notifications::DeliveryClient::new(&settings).unwrap()
+}
+
 #[derive(Clone)]
 struct Browser {
     router: Router,
@@ -122,7 +136,16 @@ impl Browser {
         subject: &str,
         previews: CatalogPreviewer,
     ) -> Self {
-        Self::with_state(pool, tenant, principal, subject, previews, event_hub()).await
+        Self::with_state(
+            pool,
+            tenant,
+            principal,
+            subject,
+            previews,
+            event_hub(),
+            notifications(),
+        )
+        .await
     }
 
     async fn with_events(
@@ -132,7 +155,35 @@ impl Browser {
         subject: &str,
         events: JobEventHub,
     ) -> Self {
-        Self::with_state(pool, tenant, principal, subject, previewer(), events).await
+        Self::with_state(
+            pool,
+            tenant,
+            principal,
+            subject,
+            previewer(),
+            events,
+            notifications(),
+        )
+        .await
+    }
+
+    async fn with_notifications(
+        pool: &PgPool,
+        tenant: &support::Tenant,
+        principal: PrincipalId,
+        subject: &str,
+        notifications: bergsmith_coordinator::notifications::DeliveryClient,
+    ) -> Self {
+        Self::with_state(
+            pool,
+            tenant,
+            principal,
+            subject,
+            previewer(),
+            event_hub(),
+            notifications,
+        )
+        .await
     }
 
     async fn with_state(
@@ -142,6 +193,7 @@ impl Browser {
         subject: &str,
         previews: CatalogPreviewer,
         events: JobEventHub,
+        notifications: bergsmith_coordinator::notifications::DeliveryClient,
     ) -> Self {
         let config = SessionConfig {
             secure: false,
@@ -174,6 +226,7 @@ impl Browser {
                     ..CapabilityCheckLimits::default()
                 }),
                 discovery: discovery(pool),
+                notifications,
             }),
             cookie: format!("{}={}", config.cookie_name, issued.token.expose()),
             csrf: issued.csrf.expose().into(),
@@ -225,6 +278,7 @@ fn router_with(pool: &PgPool, config: SessionConfig) -> Router {
         events: event_hub(),
         checks: CapabilityChecker::default(),
         discovery: discovery(pool),
+        notifications: notifications(),
     })
 }
 
@@ -1216,6 +1270,11 @@ fn openapi_documents_every_route() {
             "/api/v1/service-identities/{id}/tokens/{token}/rotate",
             "post",
         ),
+        ("/api/v1/notifications/destinations", "get"),
+        ("/api/v1/notifications/destinations", "post"),
+        ("/api/v1/notifications/destinations/{id}", "get"),
+        ("/api/v1/notifications/destinations/{id}", "patch"),
+        ("/api/v1/notifications/destinations/{id}/test", "post"),
         ("/api/v1/openapi.json", "get"),
     ];
     let document: Value = serde_json::from_str(include_str!("../src/api/openapi.json")).unwrap();

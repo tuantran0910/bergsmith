@@ -83,6 +83,11 @@ async fn the_ui_api_and_auth_share_one_origin(pool: PgPool) {
             connections: std::collections::BTreeMap::new(),
         },
     ));
+    let notification_settings = bergsmith_coordinator::notifications::Settings::new(
+        bergsmith_common::notifications::AllowList::new(Vec::<String>::new()).unwrap(),
+        None,
+        std::time::Duration::from_secs(5),
+    );
     let api = ApiState {
         database: database.clone(),
         sessions: sessions.clone(),
@@ -90,6 +95,10 @@ async fn the_ui_api_and_auth_share_one_origin(pool: PgPool) {
         events,
         checks: CapabilityChecker::default(),
         discovery: CatalogDiscovery::new(catalogs, DiscoveryLimits::default()),
+        notifications: bergsmith_coordinator::notifications::DeliveryClient::new(
+            &notification_settings,
+        )
+        .unwrap(),
     };
     let identity = IdentityState::new(database, Arc::new(provider), sessions);
 
