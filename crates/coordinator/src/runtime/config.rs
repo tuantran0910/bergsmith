@@ -224,20 +224,57 @@ const fn default_orphan_max_deletions_per_pass() -> usize {
 /// Validated orphan-file cleanup settings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OrphanConfig {
+    enabled: bool,
+    minimum_age_seconds: u64,
+    max_listed_objects: usize,
+    max_scan_entries: usize,
+    max_scan_bytes: u64,
+    max_candidates: usize,
+    max_deletions_per_pass: usize,
+}
+
+impl OrphanConfig {
     /// Whether cleanup may run.
-    pub enabled: bool,
+    #[must_use]
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+
     /// The minimum object age in seconds.
-    pub minimum_age_seconds: u64,
+    #[must_use]
+    pub const fn minimum_age_seconds(&self) -> u64 {
+        self.minimum_age_seconds
+    }
+
     /// The most objects one listing may return.
-    pub max_listed_objects: usize,
+    #[must_use]
+    pub const fn max_listed_objects(&self) -> usize {
+        self.max_listed_objects
+    }
+
     /// The most manifest entries, and manifests, one scan reads.
-    pub max_scan_entries: usize,
+    #[must_use]
+    pub const fn max_scan_entries(&self) -> usize {
+        self.max_scan_entries
+    }
+
     /// The largest manifest list or manifest one scan reads, in bytes.
-    pub max_scan_bytes: u64,
+    #[must_use]
+    pub const fn max_scan_bytes(&self) -> u64 {
+        self.max_scan_bytes
+    }
+
     /// The most candidates one plan may carry.
-    pub max_candidates: usize,
+    #[must_use]
+    pub const fn max_candidates(&self) -> usize {
+        self.max_candidates
+    }
+
     /// The most objects one deletion pass resolves.
-    pub max_deletions_per_pass: usize,
+    #[must_use]
+    pub const fn max_deletions_per_pass(&self) -> usize {
+        self.max_deletions_per_pass
+    }
 }
 
 impl Default for OrphanConfig {

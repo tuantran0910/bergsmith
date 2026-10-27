@@ -15,18 +15,19 @@
 //! reachability scan or listing that exceeds its bound fails the plan instead
 //! of deleting from an incomplete view.
 
-use std::collections::BTreeSet;
-
 use bergsmith_common::digest::Sha256Digest;
 use bergsmith_common::ids::{JobId, PlanId};
-use bergsmith_storage::{Backend, Location, ObjectEntry};
+use bergsmith_storage::{Location, ObjectEntry};
 use chrono::{DateTime, Utc};
-use iceberg::io::FileIO;
-use iceberg::spec::{Manifest, ManifestList, TableMetadata};
+use iceberg::spec::TableMetadata;
 use serde::{Deserialize, Serialize};
 
 use crate::baseline::DATA_PATH_PROPERTY;
+
+mod reachable;
+
 use crate::error::PlanError;
+pub use reachable::{ReachabilityBounds, Reachable};
 
 /// The table state an orphan plan was built from.
 ///
@@ -84,6 +85,47 @@ pub const ORPHAN_PLAN_VERSION: u32 = 1;
 /// The path segment Bergsmith owns inside a table location.
 const BERGSMITH_SEGMENT: &str = "bergsmith";
 
+impl OrphanError {
+    /// Whether another attempt can succeed without an operator.
+    ///
+    /// A corrupt manifest, an unsupported feature, a bound violation, or a
+    /// malformed path cannot improve on retry; a storage read or an object
+    /// store call can.
+    #[must_use]
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Self::Io(error) => !matches!(
+                error.kind(),
+                iceberg::ErrorKind::DataInvalid | iceberg::ErrorKind::FeatureUnsupported
+            ),
+            Self::Storage(error) => matches!(error, bergsmith_storage::StorageError::Io(_)),
+            Self::InvalidPolicy
+            | Self::Location(_)
+            | Self::ListingTooLarge { .. }
+            | Self::ScanUnboundedManifest { .. }
+            | Self::ScanObjectTooLarge { .. }
+            | Self::ScanTooLarge { .. }
+            | Self::Blocking(_) => false,
+        }
+    }
+
+    /// A stable reason for job state and operator logs.
+    #[must_use]
+    pub const fn reason_code(&self) -> &'static str {
+        match self {
+            Self::InvalidPolicy => "OrphanBoundsInvalid",
+            Self::Location(_) => "OrphanLocationInvalid",
+            Self::Io(_) => "OrphanMetadataReadFailed",
+            Self::Storage(_) => "OrphanStorageFailed",
+            Self::Blocking(_) => "OrphanDecodeFailed",
+            Self::ListingTooLarge { .. } => "OrphanListingTooLarge",
+            Self::ScanUnboundedManifest { .. } => "OrphanManifestUnbounded",
+            Self::ScanObjectTooLarge { .. } => "OrphanObjectTooLarge",
+            Self::ScanTooLarge { .. } => "OrphanScanTooLarge",
+        }
+    }
+}
+
 /// An invalid orphan policy.
 #[derive(Debug, thiserror::Error)]
 pub enum OrphanError {
@@ -132,242 +174,6 @@ pub enum OrphanError {
         /// The bound the caller set.
         limit: u64,
     },
-}
-
-/// The bounds of one reachability scan.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ReachabilityBounds {
-    /// The most manifests one scan reads.
-    pub max_manifests: usize,
-    /// The most manifest entries one scan reads.
-    pub max_entries: usize,
-    /// The largest manifest list or manifest one scan reads, in bytes.
-    pub max_bytes: u64,
-}
-
-impl ReachabilityBounds {
-    /// Builds bounds from an operation's configuration.
-    ///
-    /// # Errors
-    ///
-    /// [`OrphanError::InvalidPolicy`] when either bound is zero.
-    pub fn new(
-        max_manifests: usize,
-        max_entries: usize,
-        max_bytes: u64,
-    ) -> Result<Self, OrphanError> {
-        if max_manifests == 0 || max_entries == 0 || max_bytes == 0 {
-            return Err(OrphanError::InvalidPolicy);
-        }
-        Ok(Self {
-            max_manifests,
-            max_entries,
-            max_bytes,
-        })
-    }
-}
-
-/// The identity of one stored object, independent of its URI spelling.
-///
-/// `s3` and `s3a` name the same object, and so do other scheme aliases for one
-/// backend. Reachability stores identities, so a live file written as `s3a`
-/// cannot be missed because the listing spells it `s3`.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct ObjectIdentity(Backend, String, String);
-
-impl ObjectIdentity {
-    fn of(location: &Location) -> Self {
-        Self(
-            location.backend(),
-            location.authority().to_owned(),
-            location.key().to_owned(),
-        )
-    }
-}
-
-/// Every object the table still references.
-///
-/// The set is built from the current metadata only. Metadata files named by
-/// `metadata-log` are protected, but the files those older versions reference
-/// are not: this release cannot parse an older metadata file, so it matches
-/// Iceberg's own orphan-file action, which also protects only what the current
-/// metadata retains.
-#[derive(Clone, Debug, Default)]
-pub struct Reachable {
-    files: BTreeSet<ObjectIdentity>,
-    manifests: usize,
-    entries: usize,
-}
-
-impl Reachable {
-    /// Whether `location` is referenced by the table.
-    #[must_use]
-    pub fn contains(&self, location: &Location) -> bool {
-        self.files.contains(&ObjectIdentity::of(location))
-    }
-
-    /// The number of referenced objects.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.files.len()
-    }
-
-    /// Whether nothing is referenced.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.files.is_empty()
-    }
-
-    /// The number of manifests read.
-    #[must_use]
-    pub const fn manifests(&self) -> usize {
-        self.manifests
-    }
-
-    /// The number of manifest entries read.
-    #[must_use]
-    pub const fn entries(&self) -> usize {
-        self.entries
-    }
-
-    /// Captures the referenced objects of `metadata` and its manifests.
-    ///
-    /// `metadata_location` is the file the catalog returned; it is protected
-    /// together with every metadata file named by `metadata-log`.
-    ///
-    /// # Errors
-    ///
-    /// [`OrphanError::Location`] for a malformed path in metadata,
-    /// [`OrphanError::Io`] when reading a manifest list or manifest fails, and
-    /// [`OrphanError::ScanTooLarge`] when `bounds` is exceeded.
-    pub async fn capture(
-        metadata: &TableMetadata,
-        metadata_location: &str,
-        unresolved_manifest_lists: &[String],
-        file_io: &FileIO,
-        bounds: ReachabilityBounds,
-    ) -> Result<Self, OrphanError> {
-        let mut reachable = Self::default();
-        reachable.insert(metadata_location)?;
-        for log in metadata.metadata_log() {
-            reachable.insert(&log.metadata_file)?;
-        }
-        for statistics in metadata.statistics_iter() {
-            reachable.insert(&statistics.statistics_path)?;
-        }
-        for statistics in metadata.partition_statistics_iter() {
-            reachable.insert(&statistics.statistics_path)?;
-        }
-        for snapshot in metadata.snapshots() {
-            reachable
-                .scan_manifest_list(
-                    snapshot.manifest_list(),
-                    metadata.format_version(),
-                    file_io,
-                    bounds,
-                )
-                .await?;
-        }
-        // A publication that never landed still owns the manifests its
-        // persisted intent names; they live under the metadata directory and
-        // nothing in the current snapshot references them.
-        for manifest_list in unresolved_manifest_lists {
-            reachable
-                .scan_manifest_list(manifest_list, metadata.format_version(), file_io, bounds)
-                .await?;
-        }
-        Ok(reachable)
-    }
-
-    /// Reads one manifest list and everything it references.
-    async fn scan_manifest_list(
-        &mut self,
-        manifest_list: &str,
-        format_version: iceberg::spec::FormatVersion,
-        file_io: &FileIO,
-        bounds: ReachabilityBounds,
-    ) -> Result<(), OrphanError> {
-        self.insert(manifest_list)?;
-        let input = file_io.new_input(manifest_list)?;
-        let size = input.metadata().await?.size;
-        if size > bounds.max_bytes {
-            return Err(OrphanError::ScanObjectTooLarge {
-                size,
-                limit: bounds.max_bytes,
-            });
-        }
-        let bytes = input.read().await?;
-        // Avro decoding is CPU-bound; keep it off the runtime's async threads.
-        let list = tokio::task::spawn_blocking(move || {
-            ManifestList::parse_with_version(&bytes, format_version)
-        })
-        .await??;
-        for manifest in list.entries() {
-            self.manifests = self.manifests.saturating_add(1);
-            if self.manifests > bounds.max_manifests {
-                return Err(OrphanError::ScanTooLarge {
-                    manifests: self.manifests,
-                    entries: self.entries,
-                });
-            }
-            // The counts let a manifest be refused before it is decoded. An
-            // older manifest without them cannot be bounded, so the scan
-            // refuses it instead of decoding an unknown-size object.
-            let (Some(added), Some(existing), Some(deleted)) = (
-                manifest.added_files_count,
-                manifest.existing_files_count,
-                manifest.deleted_files_count,
-            ) else {
-                return Err(OrphanError::ScanUnboundedManifest {
-                    path: manifest.manifest_path.clone(),
-                });
-            };
-            let declared = added.saturating_add(existing).saturating_add(deleted);
-            if self
-                .entries
-                .saturating_add(usize::try_from(declared).unwrap_or(usize::MAX))
-                > bounds.max_entries
-            {
-                return Err(OrphanError::ScanTooLarge {
-                    manifests: self.manifests,
-                    entries: self
-                        .entries
-                        .saturating_add(usize::try_from(declared).unwrap_or(usize::MAX)),
-                });
-            }
-            self.insert(&manifest.manifest_path)?;
-            // The declared length is only a hint. Stat the object so the read
-            // that follows cannot exceed the byte bound.
-            let input = file_io.new_input(&manifest.manifest_path)?;
-            let size = input.metadata().await?.size;
-            if size > bounds.max_bytes {
-                return Err(OrphanError::ScanObjectTooLarge {
-                    size,
-                    limit: bounds.max_bytes,
-                });
-            }
-            let bytes = file_io.new_input(&manifest.manifest_path)?.read().await?;
-            let loaded =
-                tokio::task::spawn_blocking(move || Manifest::parse_avro(&bytes)).await??;
-            for entry in loaded.entries() {
-                self.entries = self.entries.saturating_add(1);
-                if self.entries > bounds.max_entries {
-                    return Err(OrphanError::ScanTooLarge {
-                        manifests: self.manifests,
-                        entries: self.entries,
-                    });
-                }
-                self.insert(entry.data_file().file_path())?;
-            }
-        }
-        Ok(())
-    }
-
-    fn insert(&mut self, path: &str) -> Result<(), OrphanError> {
-        let location = Location::parse(path).map_err(OrphanError::Location)?;
-        self.files.insert(ObjectIdentity::of(&location));
-        Ok(())
-    }
 }
 
 /// The age and size rules applied to one table's listing.
@@ -510,6 +316,19 @@ fn bergsmith_roots(table: &Location, data_location: &str) -> Result<Vec<Location
     Ok(roots)
 }
 
+/// The table, ledger, and window a deletion check applies.
+#[derive(Clone, Copy, Debug)]
+pub struct CandidateCheck<'a> {
+    /// The table location every object must stay inside.
+    pub table: &'a Location,
+    /// Bergsmith-owned prefixes that are never deleted.
+    pub prefixes: &'a [Location],
+    /// The objects the table and unresolved publications still reference.
+    pub reachable: &'a Reachable,
+    /// The newest modification time a candidate may have.
+    pub cutoff_ms: i64,
+}
+
 /// What one deletion check decided for a planned object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CandidateVerdict {
@@ -519,14 +338,6 @@ pub enum CandidateVerdict {
     Skip,
     /// The object was already gone when the batch looked.
     Absent,
-}
-
-impl CandidateVerdict {
-    /// Whether the verdict resolves the candidate without deleting it.
-    #[must_use]
-    pub const fn is_resolved_without_deletion(self) -> bool {
-        matches!(self, Self::Skip | Self::Absent)
-    }
 }
 
 /// Re-checks one planned candidate against the current table and listing.
@@ -539,23 +350,30 @@ impl CandidateVerdict {
 #[must_use]
 pub fn verify_candidate(
     candidate: &OrphanCandidate,
-    location: &Location,
-    fresh: Option<&(u64, Option<i64>)>,
-    reachable: &Reachable,
-    prefixes: &[Location],
-    table: &Location,
-    cutoff_ms: i64,
+    fresh: Option<&ObjectEntry>,
+    check: &CandidateCheck<'_>,
 ) -> CandidateVerdict {
-    if !location.is_within(table)
-        || prefixes.iter().any(|prefix| location.is_within(prefix))
-        || is_berggsmith_owned(location, table)
-        || reachable.contains(location)
+    let Ok(location) = Location::parse(&candidate.path) else {
+        return CandidateVerdict::Skip;
+    };
+    if !location.is_within(check.table)
+        || check
+            .prefixes
+            .iter()
+            .any(|prefix| location.is_within(prefix))
+        || is_berggsmith_owned(&location, check.table)
+        || check.reachable.contains(&location)
     {
         return CandidateVerdict::Skip;
     }
     match fresh {
         None => CandidateVerdict::Absent,
-        Some((size, Some(modified))) if *size == candidate.size_bytes && *modified <= cutoff_ms => {
+        Some(entry)
+            if entry.size == candidate.size_bytes
+                && entry
+                    .last_modified_ms
+                    .is_some_and(|modified| modified <= check.cutoff_ms) =>
+        {
             CandidateVerdict::Delete
         }
         Some(_) => CandidateVerdict::Skip,
@@ -594,6 +412,12 @@ pub fn select_orphans(
         cutoff_ms,
         ..OrphanDecision::default()
     };
+    let check = CandidateCheck {
+        table: &table,
+        prefixes: &bergsmith_roots,
+        reachable,
+        cutoff_ms,
+    };
     let mut candidates = Vec::new();
     for entry in listed {
         if !entry.location.is_within(&table) {
@@ -609,15 +433,7 @@ pub fn select_orphans(
             size_bytes: entry.size,
             last_modified_ms,
         };
-        let verdict = verify_candidate(
-            &candidate,
-            &entry.location,
-            Some(&(entry.size, entry.last_modified_ms)),
-            reachable,
-            &bergsmith_roots,
-            &table,
-            cutoff_ms,
-        );
+        let verdict = verify_candidate(&candidate, Some(entry), &check);
         match verdict {
             CandidateVerdict::Delete => candidates.push(candidate),
             CandidateVerdict::Skip => {
@@ -664,28 +480,15 @@ pub fn select_orphans(
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OrphanPlanDocument {
-    /// The document layout version; always [`ORPHAN_PLAN_VERSION`].
-    pub version: u32,
-    /// The job, which must be in `Planning` when the document is stored.
-    pub job_id: JobId,
-    /// The plan's identifier.
-    pub plan_id: PlanId,
-    /// The table state the selection was made from.
-    pub baseline: OrphanBaseline,
-    /// The table location the listing covered.
-    pub table_location: String,
-    /// The data location whose `bergsmith/` tree is protected.
-    pub data_location: String,
-    /// The effective timestamp cutoff, in milliseconds since the Unix epoch.
-    pub cutoff_ms: i64,
-    /// The number of listed objects the selection considered.
-    pub listed_objects: u64,
-    /// The number of referenced objects the reachability scan found.
-    pub referenced_objects: u64,
-    /// Objects to delete, oldest first, then by path.
-    pub candidates: Vec<OrphanCandidate>,
-    /// Candidates beyond the bound that wait for a later job.
-    pub deferred: u64,
+    version: u32,
+    job_id: JobId,
+    plan_id: PlanId,
+    baseline: OrphanBaseline,
+    cutoff_ms: i64,
+    listed_objects: u64,
+    referenced_objects: u64,
+    candidates: Vec<OrphanCandidate>,
+    deferred: u64,
 }
 
 impl OrphanPlanDocument {
@@ -699,12 +502,10 @@ impl OrphanPlanDocument {
         job_id: JobId,
         plan_id: PlanId,
         baseline: OrphanBaseline,
-        table_location: &str,
         listed_objects: u64,
         reachable: &Reachable,
         decision: &OrphanDecision,
     ) -> Result<Self, PlanError> {
-        let baseline_data_location = baseline.data_location.clone();
         if decision.candidates.windows(2).any(|pair| {
             (pair[0].last_modified_ms, &pair[0].path) >= (pair[1].last_modified_ms, &pair[1].path)
         }) {
@@ -717,14 +518,36 @@ impl OrphanPlanDocument {
             job_id,
             plan_id,
             baseline,
-            table_location: table_location.to_owned(),
-            data_location: baseline_data_location.clone(),
             cutoff_ms: decision.cutoff_ms,
             listed_objects,
             referenced_objects: u64::try_from(reachable.len()).unwrap_or(u64::MAX),
             candidates: decision.candidates.clone(),
             deferred: decision.deferred,
         })
+    }
+
+    /// The job the plan belongs to.
+    #[must_use]
+    pub const fn job_id(&self) -> JobId {
+        self.job_id
+    }
+
+    /// The plan's identifier.
+    #[must_use]
+    pub const fn plan_id(&self) -> PlanId {
+        self.plan_id
+    }
+
+    /// Objects to delete, oldest first.
+    #[must_use]
+    pub fn candidates(&self) -> &[OrphanCandidate] {
+        &self.candidates
+    }
+
+    /// The data location whose `bergsmith/` tree is protected.
+    #[must_use]
+    pub fn data_location(&self) -> &str {
+        &self.baseline.data_location
     }
 
     /// The canonical JSON of the document.
@@ -937,88 +760,56 @@ mod tests {
             size_bytes: 10,
             last_modified_ms: now.timestamp_millis() - 90 * 86_400_000,
         };
-        let location = location(&candidate.path);
+        let entry = ObjectEntry {
+            location: location(&candidate.path),
+            size: 10,
+            last_modified_ms: Some(candidate.last_modified_ms),
+        };
         let stale = now.timestamp_millis() - 86_400_000;
-        let fresh = (10, Some(candidate.last_modified_ms));
-
+        let check = CandidateCheck {
+            table: &table,
+            prefixes: &prefixes,
+            reachable: &Reachable::default(),
+            cutoff_ms: stale,
+        };
         assert_eq!(
-            verify_candidate(
-                &candidate,
-                &location,
-                Some(&fresh),
-                &Reachable::default(),
-                &prefixes,
-                &table,
-                stale,
-            ),
+            verify_candidate(&candidate, Some(&entry), &check),
             CandidateVerdict::Delete
         );
+
+        let inside_window = CandidateCheck {
+            cutoff_ms: candidate.last_modified_ms - 1,
+            ..check
+        };
         assert_eq!(
-            verify_candidate(
-                &candidate,
-                &location,
-                Some(&fresh),
-                &Reachable::default(),
-                &prefixes,
-                &table,
-                candidate.last_modified_ms - 1,
-            ),
+            verify_candidate(&candidate, Some(&entry), &inside_window),
             CandidateVerdict::Skip,
             "an object inside the window is kept"
         );
+        let replaced = ObjectEntry {
+            size: 11,
+            ..entry.clone()
+        };
         assert_eq!(
-            verify_candidate(
-                &candidate,
-                &location,
-                Some(&(11, Some(candidate.last_modified_ms))),
-                &Reachable::default(),
-                &prefixes,
-                &table,
-                stale,
-            ),
+            verify_candidate(&candidate, Some(&replaced), &check),
             CandidateVerdict::Skip,
             "a different size is not the object the plan named"
         );
         let mut reachable = Reachable::default();
         reachable.insert(&candidate.path).unwrap();
+        let referenced = CandidateCheck {
+            reachable: &reachable,
+            ..check
+        };
         assert_eq!(
-            verify_candidate(
-                &candidate,
-                &location,
-                Some(&fresh),
-                &reachable,
-                &prefixes,
-                &table,
-                stale
-            ),
+            verify_candidate(&candidate, Some(&entry), &referenced),
             CandidateVerdict::Skip,
             "a newly referenced object is kept"
         );
         assert_eq!(
-            verify_candidate(
-                &candidate,
-                &location,
-                None,
-                &Reachable::default(),
-                &prefixes,
-                &table,
-                stale,
-            ),
+            verify_candidate(&candidate, None, &check),
             CandidateVerdict::Absent
         );
-        assert_eq!(
-            verify_candidate(
-                &candidate,
-                &location,
-                Some(&fresh),
-                &Reachable::default(),
-                &prefixes,
-                &table,
-                stale,
-            ),
-            CandidateVerdict::Delete
-        );
-        assert!(CandidateVerdict::Absent.is_resolved_without_deletion());
     }
 
     #[test]
@@ -1180,7 +971,6 @@ mod tests {
             job_id,
             plan_id,
             baseline.clone(),
-            "s3://b/t",
             1,
             &Reachable::default(),
             &decision,
@@ -1216,7 +1006,6 @@ mod tests {
                 JobId::generate(),
                 PlanId::generate(),
                 baseline(),
-                "s3://b/t",
                 2,
                 &Reachable::default(),
                 &decision,

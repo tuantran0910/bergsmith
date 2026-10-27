@@ -303,7 +303,8 @@ pub async fn receipt_totals(
 /// # Errors
 ///
 /// [`PersistenceError::JobNotInState`] when the job is no longer `Deleting` or
-/// a cancellation was recorded, and
+/// a cancellation was recorded, [`PersistenceError::PermissionDenied`] when the
+/// requester may no longer act on the table, and
 /// [`PersistenceError::LeadershipLost`] when the lease is gone.
 pub async fn authorize_batch(
     conn: &mut PgConnection,

@@ -28,7 +28,8 @@ pub enum JobState {
     Deleting,
     /// Cancellation won before send authorization; dispatch and acceptance are fenced.
     Cancelling,
-    /// The exact proposal is proven published.
+    /// The job's authorized side effect is complete: the exact proposal is
+    /// proven published, or an orphan cleanup resolved every planned object.
     Succeeded,
     /// Planning found no eligible or beneficial work.
     NoOp,

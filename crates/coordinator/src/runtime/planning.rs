@@ -50,28 +50,6 @@ fn execution_budget(binding: &TableBinding) -> Duration {
     Duration::from_secs(binding.connection.settings.max_execution_seconds())
 }
 
-/// The connection's execution and publication protection window in
-/// milliseconds.
-///
-/// Files and snapshots a connection promises to keep readable for this long
-/// are never aged out sooner, by expiration or by orphan cleanup.
-fn protection_window_ms(binding: &TableBinding) -> i64 {
-    i64::try_from(
-        binding
-            .connection
-            .settings
-            .max_execution_seconds()
-            .saturating_add(
-                binding
-                    .connection
-                    .settings
-                    .max_unresolved_publication_seconds(),
-            ),
-    )
-    .unwrap_or(i64::MAX / 1_000)
-    .saturating_mul(1_000)
-}
-
 /// Caps a task's duration with the time left in the job's execution budget.
 ///
 /// The coordinator's own limit stays authoritative: a connection may ask for a
@@ -373,7 +351,7 @@ impl PlannerService {
 
     #[tracing::instrument(skip_all, fields(job_id = %job.id))]
     async fn plan_job(&self, job: &jobs::Job) -> Result<(PlannedWork, jobs::Job), PlanningError> {
-        if job.operation == JobOperation::RemoveOrphanFiles && !self.orphan.enabled {
+        if job.operation == JobOperation::RemoveOrphanFiles && !self.orphan.enabled() {
             return Err(PlanningError::OrphanCleanupUnavailable);
         }
         // Cleanup reads the publication ledger before the catalog, so a
@@ -479,7 +457,7 @@ impl PlannerService {
         let protected =
             expirations::protected_snapshots(&mut conn, job.organization_id, job.table_id, job.id)
                 .await?;
-        let protection_ms = protection_window_ms(binding);
+        let protection_ms = binding.protection_window_ms();
         let policy =
             ExpirationPolicy::from_metadata(&binding.loaded.metadata, 1, protection_ms, protected)
                 .map_err(PlanningError::Expiration)?;
@@ -534,7 +512,7 @@ impl PlannerService {
         &self,
         job: &jobs::Job,
     ) -> Result<(PlannedWork, jobs::Job), PlanningError> {
-        if !self.orphan.enabled {
+        if !self.orphan.enabled() {
             return Err(PlanningError::OrphanCleanupUnavailable);
         }
         // Read the ledger before the catalog. If a proposal lands in between,
@@ -572,9 +550,9 @@ impl PlannerService {
             &unresolved,
             binding.store.file_io(),
             ReachabilityBounds::new(
-                self.orphan.max_scan_entries,
-                self.orphan.max_scan_entries,
-                self.orphan.max_scan_bytes,
+                self.orphan.max_scan_entries(),
+                self.orphan.max_scan_entries(),
+                self.orphan.max_scan_bytes(),
             )
             .map_err(PlanningError::Orphan)?,
         )
@@ -585,7 +563,7 @@ impl PlannerService {
             .map_err(PlanningError::Orphan)?;
         let listed = binding
             .store
-            .list_bounded(&table, self.orphan.max_listed_objects)
+            .list_bounded(&table, self.orphan.max_listed_objects())
             .await
             .map_err(|error| match error {
                 bergsmith_storage::StorageError::ListingTooLarge { .. } => {
@@ -594,9 +572,9 @@ impl PlannerService {
                 error => PlanningError::Access(AccessError::Storage(error)),
             })?;
         let policy = OrphanPolicy::new(
-            self.orphan.minimum_age_seconds,
-            protection_window_ms(&binding),
-            self.orphan.max_candidates,
+            self.orphan.minimum_age_seconds(),
+            binding.protection_window_ms(),
+            self.orphan.max_candidates(),
         )
         .map_err(PlanningError::Orphan)?;
         let decision = select_orphans(
@@ -618,7 +596,6 @@ impl PlannerService {
             job.id,
             PlanId::generate(),
             baseline,
-            binding.loaded.metadata.location(),
             u64::try_from(listed.len()).unwrap_or(u64::MAX),
             &reachable,
             &decision,
@@ -633,7 +610,7 @@ impl PlannerService {
         let recorded = orphan_plans::create_orphan_plan(
             &mut conn,
             &NewOrphanPlan {
-                id: document.plan_id,
+                id: document.plan_id(),
                 job_id: job.id,
                 content: &content,
                 content_hash: &hash,
@@ -897,14 +874,14 @@ impl PlanningError {
 
     /// A stable reason for job state and logs.
     #[must_use]
-    pub const fn reason_code(&self) -> &'static str {
+    pub fn reason_code(&self) -> &'static str {
         match self {
             Self::Persistence(_) => "PlanningLedgerUnavailable",
             Self::Plan(PlanError::InvalidConfig(_)) => "PlanningConfigurationInvalid",
             Self::Plan(_) => "PlanningFailed",
             Self::Expiration(_) => "PlanningExpirationInvalid",
             Self::ExpirationRefSafetyUnavailable => "ExpirationRefSafetyUnavailable",
-            Self::Orphan(_) => "PlanningOrphansInvalid",
+            Self::Orphan(error) => error.reason_code(),
             Self::OrphanCleanupUnavailable => "OrphanCleanupUnavailable",
             Self::OrphanListingTooLarge => "OrphanListingTooLarge",
             Self::Record(_) => "PlanningRecordFailed",

@@ -49,6 +49,29 @@ pub struct TableBinding {
     pub data_location: Location,
 }
 
+impl TableBinding {
+    /// The execution plus unresolved-publication protection window in
+    /// milliseconds.
+    ///
+    /// Files and snapshots a connection promises to keep readable for this
+    /// long are never aged out sooner, by expiration or orphan cleanup.
+    #[must_use]
+    pub fn protection_window_ms(&self) -> i64 {
+        i64::try_from(
+            self.connection
+                .settings
+                .max_execution_seconds()
+                .saturating_add(
+                    self.connection
+                        .settings
+                        .max_unresolved_publication_seconds(),
+                ),
+        )
+        .unwrap_or(i64::MAX / 1_000)
+        .saturating_mul(1_000)
+    }
+}
+
 /// Why the runtime could not resolve a table.
 #[derive(Debug, thiserror::Error)]
 pub enum AccessError {

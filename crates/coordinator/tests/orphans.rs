@@ -1,5 +1,9 @@
 //! BS-031.T2: orphan-file cleanup planning and bounded deletion (ADR 0062).
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "acceptance fixtures fail the test on setup errors"
+)]
 
 #[path = "../../persistence/tests/support/mod.rs"]
 mod support;
@@ -14,7 +18,9 @@ use bergsmith_common::job::{JobOperation, JobState};
 use bergsmith_coordinator::durable_publication::PublicationConfig;
 use bergsmith_coordinator::runtime::PublicationService;
 use bergsmith_coordinator::runtime::catalogs::{RuntimeCatalogs, RuntimeWorkerAccess};
-use bergsmith_coordinator::runtime::config::{OrphanConfig, RuntimeProfiles, TaskSettings};
+use bergsmith_coordinator::runtime::config::{
+    OrphanConfig, OrphanSettings, RuntimeProfiles, TaskSettings,
+};
 use bergsmith_coordinator::runtime::planning::PlannerService;
 use bergsmith_coordinator::scheduling::{Scheduler, SchedulerConfig};
 use bergsmith_coordinator::workers::{WorkerConfig, WorkerService};
@@ -79,7 +85,7 @@ async fn fixture() -> Fixture {
 }
 
 fn enabled(pass: usize) -> OrphanConfig {
-    OrphanConfig {
+    OrphanSettings {
         enabled: true,
         // The test writes its orphans just before the pass, so any positive
         // minimum age would keep them.
@@ -90,6 +96,8 @@ fn enabled(pass: usize) -> OrphanConfig {
         max_candidates: 100,
         max_deletions_per_pass: pass,
     }
+    .cleanup()
+    .unwrap()
 }
 
 fn task_settings() -> TaskSettings {
@@ -346,7 +354,7 @@ async fn a_cleanup_plan_deletes_only_the_unreferenced_objects(pool: PgPool) {
         .expect("an orphan plan is recorded");
     let document = OrphanPlanDocument::from_persisted(content).unwrap();
     let mut candidates: Vec<String> = document
-        .candidates
+        .candidates()
         .iter()
         .map(|candidate| candidate.path.clone())
         .collect();
@@ -489,17 +497,24 @@ async fn a_permanent_scan_failure_terminates_the_deleting_job(pool: PgPool) {
     let mut run = setup(&pool).await;
     let mut conn = pool.acquire().await.unwrap();
     planner(&run, enabled(50)).pass().await.unwrap();
-    let too_small = OrphanConfig {
+    let too_small = OrphanSettings {
+        enabled: true,
         max_scan_bytes: 1,
-        ..enabled(50)
-    };
+        ..OrphanSettings::default()
+    }
+    .cleanup()
+    .unwrap();
     let failed = publication(&run, too_small).pass().await.unwrap();
     assert_eq!(failed.failed, 1);
     let job = jobs::job(&mut conn, run.tenant.organization, run.job.id)
         .await
         .unwrap();
     assert_eq!(job.state, JobState::Failed);
-    assert_eq!(job.state_reason.as_deref(), Some("OrphanCleanupInvalid"));
+    assert_eq!(
+        job.state_reason.as_deref(),
+        Some("OrphanObjectTooLarge"),
+        "the failure names the bound that was crossed"
+    );
     assert!(run.orphan_data.exists(), "a failed pass deletes nothing");
     run.server.reset();
 }
@@ -580,6 +595,13 @@ async fn an_unresolved_publication_keeps_its_manifests(pool: PgPool) {
     .await
     .unwrap();
     force_job_state(&mut conn, pending.id, JobState::Committing).await;
+    // A send-authorized intent is still protected, and the publication pass
+    // does not resume it, so the fixture cannot be failed as unrelated work.
+    sqlx::query("UPDATE jobs SET publication_started_at = now() WHERE id = $1")
+        .bind(pending.id.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
     insert_unresolved_intent(&mut conn, pending.id, &file_uri(&list)).await;
 
     planner(&run, enabled(50)).pass().await.unwrap();
@@ -590,7 +612,7 @@ async fn an_unresolved_publication_keeps_its_manifests(pool: PgPool) {
     let document = OrphanPlanDocument::from_persisted(content).unwrap();
     assert!(
         document
-            .candidates
+            .candidates()
             .iter()
             .all(|candidate| candidate.path != file_uri(&list)),
         "the unresolved proposal's manifest list is protected"
@@ -599,6 +621,14 @@ async fn an_unresolved_publication_keeps_its_manifests(pool: PgPool) {
     assert!(
         list.exists(),
         "the unresolved proposal's manifest list survives cleanup"
+    );
+    assert_eq!(
+        jobs::job(&mut conn, run.tenant.organization, pending.id)
+            .await
+            .unwrap()
+            .state,
+        JobState::Committing,
+        "the fixture proposal is not touched by the cleanup lane"
     );
     run.server.reset();
 }
@@ -618,7 +648,7 @@ async fn a_candidate_that_becomes_protected_is_skipped(pool: PgPool) {
     let document = OrphanPlanDocument::from_persisted(content).unwrap();
     assert!(
         document
-            .candidates
+            .candidates()
             .iter()
             .any(|planned| planned.path == file_uri(&candidate)),
         "the unreferenced manifest list is planned for deletion"
@@ -640,6 +670,11 @@ async fn a_candidate_that_becomes_protected_is_skipped(pool: PgPool) {
     .await
     .unwrap();
     force_job_state(&mut conn, pending.id, JobState::Committing).await;
+    sqlx::query("UPDATE jobs SET publication_started_at = now() WHERE id = $1")
+        .bind(pending.id.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
     insert_unresolved_intent(&mut conn, pending.id, &file_uri(&candidate)).await;
 
     publication(&run, enabled(50)).pass().await.unwrap();
@@ -654,6 +689,14 @@ async fn a_candidate_that_becomes_protected_is_skipped(pool: PgPool) {
         file_uri(&candidate),
         Disposition::Skipped.as_str().to_owned()
     )));
+    assert_eq!(
+        jobs::job(&mut conn, run.tenant.organization, pending.id)
+            .await
+            .unwrap()
+            .state,
+        JobState::Committing,
+        "the fixture proposal is not touched by the cleanup lane"
+    );
     run.server.reset();
 }
 

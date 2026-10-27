@@ -16,13 +16,13 @@ use bergsmith_common::ids::JobId;
 use bergsmith_common::job::{JobOperation, JobState};
 use bergsmith_maintenance::PlanningBaseline;
 use bergsmith_maintenance::orphans::{
-    CandidateVerdict, OrphanError, OrphanPlanDocument, OrphanPolicy, ReachabilityBounds, Reachable,
-    verify_candidate,
+    CandidateCheck, CandidateVerdict, OrphanError, OrphanPlanDocument, OrphanPolicy,
+    ReachabilityBounds, Reachable, verify_candidate,
 };
 use bergsmith_persistence::orphans::{self as orphan_plans, Disposition, Receipt};
 use bergsmith_persistence::scheduling::RetryPolicy;
 use bergsmith_persistence::{PersistenceError, jobs, publications};
-use bergsmith_storage::Location;
+use bergsmith_storage::{Location, ObjectEntry};
 use chrono::Utc;
 use sqlx::PgPool;
 use tokio::time::Instant;
@@ -566,7 +566,7 @@ impl PublicationService {
     /// the destructive step on the leader lease. Connections are acquired per
     /// step, so one pool connection is enough.
     async fn publish_orphan_job(&self, job: &jobs::Job) -> Result<Outcome, PublicationError> {
-        if !self.orphan.enabled {
+        if !self.orphan.enabled() {
             self.terminate_orphan(job, JobState::Failed, "OrphanCleanupUnavailable")
                 .await?;
             return Ok(Outcome::Failed);
@@ -577,7 +577,7 @@ impl PublicationService {
                 .await?
                 .ok_or(PublicationError::PlanMissing)?;
             let document = OrphanPlanDocument::from_persisted(content)?;
-            if document.job_id != job.id || document.content_hash()?.to_hex() != stored_hash {
+            if document.job_id() != job.id || document.content_hash()?.to_hex() != stored_hash {
                 return Err(PublicationError::PlanMissing);
             }
             if job.state == JobState::ReadyToCommit {
@@ -646,9 +646,9 @@ impl PublicationService {
             &unresolved,
             binding.store.file_io(),
             ReachabilityBounds::new(
-                self.orphan.max_scan_entries,
-                self.orphan.max_scan_entries,
-                self.orphan.max_scan_bytes,
+                self.orphan.max_scan_entries(),
+                self.orphan.max_scan_entries(),
+                self.orphan.max_scan_bytes(),
             )?,
         )
         .await?;
@@ -656,14 +656,14 @@ impl PublicationService {
             Location::parse(binding.loaded.metadata.location()).map_err(OrphanError::Location)?;
         let prefixes = bergsmith_maintenance::orphans::protected_prefixes(
             binding.loaded.metadata.location(),
-            &document.data_location,
+            document.data_location(),
         )?;
         // A fresh listing supplies the current modification time and size: the
         // plan's values are from planning and may name an object that was
         // replaced since.
         let listed = binding
             .store
-            .list_bounded(&table, self.orphan.max_listed_objects)
+            .list_bounded(&table, self.orphan.max_listed_objects())
             .await
             .map_err(|error| match error {
                 bergsmith_storage::StorageError::ListingTooLarge { limit } => {
@@ -671,28 +671,14 @@ impl PublicationService {
                 }
                 error => PublicationError::Orphans(OrphanError::Storage(error)),
             })?;
-        let current: BTreeMap<Location, (u64, Option<i64>)> = listed
+        let current: BTreeMap<String, ObjectEntry> = listed
             .into_iter()
-            .map(|entry| (entry.location, (entry.size, entry.last_modified_ms)))
+            .map(|entry| (entry.location.to_string(), entry))
             .collect();
-        let protection_ms = i64::try_from(
-            binding
-                .connection
-                .settings
-                .max_execution_seconds()
-                .saturating_add(
-                    binding
-                        .connection
-                        .settings
-                        .max_unresolved_publication_seconds(),
-                ),
-        )
-        .unwrap_or(i64::MAX / 1_000)
-        .saturating_mul(1_000);
         let policy = OrphanPolicy::new(
-            self.orphan.minimum_age_seconds,
-            protection_ms,
-            self.orphan.max_candidates,
+            self.orphan.minimum_age_seconds(),
+            binding.protection_window_ms(),
+            self.orphan.max_candidates(),
         )?;
         let cutoff_ms = policy.cutoff_ms(Utc::now());
         // Fence the irreversible step as late as possible: this proves the
@@ -716,29 +702,33 @@ impl PublicationService {
         };
         let mut receipts = Vec::new();
         let mut resolved = 0usize;
-        for candidate in &document.candidates {
-            if resolved >= self.orphan.max_deletions_per_pass {
+        for candidate in document.candidates() {
+            if resolved >= self.orphan.max_deletions_per_pass() {
                 break;
             }
             if recorded.contains(&candidate.path) {
                 continue;
             }
             let location = Location::parse(&candidate.path).map_err(OrphanError::Location)?;
-            let fresh = current.get(&location);
-            let disposition = match verify_candidate(
-                candidate, &location, fresh, &reachable, &prefixes, &table, cutoff_ms,
-            ) {
-                CandidateVerdict::Delete => {
-                    binding
-                        .store
-                        .delete(&location)
-                        .await
-                        .map_err(OrphanError::Storage)?;
-                    Disposition::Deleted
-                }
-                CandidateVerdict::Skip => Disposition::Skipped,
-                CandidateVerdict::Absent => Disposition::Absent,
+            let check = CandidateCheck {
+                table: &table,
+                prefixes: &prefixes,
+                reachable: &reachable,
+                cutoff_ms,
             };
+            let disposition =
+                match verify_candidate(candidate, current.get(&candidate.path), &check) {
+                    CandidateVerdict::Delete => {
+                        binding
+                            .store
+                            .delete(&location)
+                            .await
+                            .map_err(OrphanError::Storage)?;
+                        Disposition::Deleted
+                    }
+                    CandidateVerdict::Skip => Disposition::Skipped,
+                    CandidateVerdict::Absent => Disposition::Absent,
+                };
             receipts.push(Receipt {
                 path: &candidate.path,
                 disposition,
@@ -750,7 +740,7 @@ impl PublicationService {
         orphan_plans::record_receipts(&mut conn, job.id, &receipts, self.epoch).await?;
         let (count, _bytes) = orphan_plans::receipt_totals(&mut conn, job.id).await?;
         if u64::try_from(count).unwrap_or(u64::MAX)
-            >= u64::try_from(document.candidates.len()).unwrap_or(u64::MAX)
+            >= u64::try_from(document.candidates().len()).unwrap_or(u64::MAX)
         {
             self.end_orphan(&mut conn, &job, JobState::Succeeded, "OrphanFilesRemoved")
                 .await?;
@@ -958,7 +948,7 @@ impl PublicationError {
 
     /// A stable reason for logs and job state.
     #[must_use]
-    pub const fn reason_code(&self) -> &'static str {
+    pub fn reason_code(&self) -> &'static str {
         match self {
             Self::Persistence(_) => "PublicationLedgerUnavailable",
             Self::Planning(_) | Self::Plan(_) => "PublicationPlanInvalid",
@@ -976,7 +966,7 @@ impl PublicationError {
             | Self::AuthorityRevoked => "ExecutionAuthorityRevoked",
             Self::Durable(_) => "PublicationFailed",
             Self::PlanMissing => "PlanMissing",
-            Self::Orphans(_) => "OrphanCleanupInvalid",
+            Self::Orphans(error) => error.reason_code(),
             Self::Proposal => "PublicationProposalInvalid",
         }
     }
