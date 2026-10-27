@@ -348,9 +348,11 @@ re-checking every object against freshly loaded metadata first. Nothing under
 `<table-location>/bergsmith/`, nothing referenced by the table, and nothing
 younger than the larger of `orphans.minimum_age_seconds` and the connection's
 `max_execution_seconds + max_unresolved_publication_seconds` window is ever
-deleted. A scan or listing beyond `orphans.max_scan_entries` or
-`orphans.max_listed_objects` fails the job instead of deleting from a partial
-view, and a candidate that became referenced or young is recorded as skipped.
+deleted. A scan or listing beyond `orphans.max_scan_entries`,
+`orphans.max_scan_bytes`, or `orphans.max_listed_objects` fails the job instead
+of deleting from a partial view. Each batch re-lists the table, so a candidate
+that became referenced, young, or a different size is recorded as skipped
+rather than deleted.
 
 Snapshot expiration is metadata-only. The planner selects snapshot entries
 older than both `history.expire.max-snapshot-age-ms` and the connection's

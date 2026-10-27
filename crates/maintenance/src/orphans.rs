@@ -35,7 +35,7 @@ const ORPHAN_PLAN_DOMAIN: &[u8] = b"bergsmith.maintenance.v1.OrphanPlan";
 pub const ORPHAN_PLAN_VERSION: u32 = 1;
 
 /// The path segment Bergsmith owns inside a table location.
-const BERSMITH_SEGMENT: &str = "bergsmith";
+const BERGSMITH_SEGMENT: &str = "bergsmith";
 
 /// An invalid orphan policy.
 #[derive(Debug, thiserror::Error)]
@@ -49,6 +49,9 @@ pub enum OrphanError {
     /// Reading the metadata, manifest list, or manifest failed.
     #[error("reading table metadata failed")]
     Io(#[from] iceberg::Error),
+    /// A storage listing or delete failed.
+    #[error(transparent)]
+    Storage(#[from] bergsmith_storage::StorageError),
     /// The reachability scan exceeds its bound, so the view is incomplete.
     #[error(
         "the reachability scan exceeded its bound with {manifests} manifests and {entries} entries"
@@ -59,6 +62,20 @@ pub enum OrphanError {
         /// Manifest entries read before the bound was crossed.
         entries: usize,
     },
+    /// The listing crossed the caller's bound.
+    #[error("the table lists more objects than orphan cleanup may examine")]
+    ListingTooLarge {
+        /// The bound the caller set.
+        limit: usize,
+    },
+    /// One manifest list or manifest is larger than the scan may read.
+    #[error("a manifest file is larger than the scan bound")]
+    ScanObjectTooLarge {
+        /// The object's size in bytes.
+        size: u64,
+        /// The bound the caller set.
+        limit: u64,
+    },
 }
 
 /// The bounds of one reachability scan.
@@ -68,6 +85,8 @@ pub struct ReachabilityBounds {
     pub max_manifests: usize,
     /// The most manifest entries one scan reads.
     pub max_entries: usize,
+    /// The largest manifest list or manifest one scan reads, in bytes.
+    pub max_bytes: u64,
 }
 
 impl ReachabilityBounds {
@@ -76,13 +95,18 @@ impl ReachabilityBounds {
     /// # Errors
     ///
     /// [`OrphanError::InvalidPolicy`] when either bound is zero.
-    pub fn new(max_manifests: usize, max_entries: usize) -> Result<Self, OrphanError> {
-        if max_manifests == 0 || max_entries == 0 {
+    pub fn new(
+        max_manifests: usize,
+        max_entries: usize,
+        max_bytes: u64,
+    ) -> Result<Self, OrphanError> {
+        if max_manifests == 0 || max_entries == 0 || max_bytes == 0 {
             return Err(OrphanError::InvalidPolicy);
         }
         Ok(Self {
             max_manifests,
             max_entries,
+            max_bytes,
         })
     }
 }
@@ -162,7 +186,15 @@ impl Reachable {
         for snapshot in metadata.snapshots() {
             let manifest_list = snapshot.manifest_list();
             reachable.insert(manifest_list)?;
-            let bytes = file_io.new_input(manifest_list)?.read().await?;
+            let input = file_io.new_input(manifest_list)?;
+            let size = input.metadata().await?.size;
+            if size > bounds.max_bytes {
+                return Err(OrphanError::ScanObjectTooLarge {
+                    size,
+                    limit: bounds.max_bytes,
+                });
+            }
+            let bytes = input.read().await?;
             let list = ManifestList::parse_with_version(&bytes, metadata.format_version())?;
             for manifest in list.entries() {
                 reachable.manifests = reachable.manifests.saturating_add(1);
@@ -170,6 +202,30 @@ impl Reachable {
                     return Err(OrphanError::ScanTooLarge {
                         manifests: reachable.manifests,
                         entries: reachable.entries,
+                    });
+                }
+                if u64::try_from(manifest.manifest_length).unwrap_or(u64::MAX) > bounds.max_bytes {
+                    return Err(OrphanError::ScanObjectTooLarge {
+                        size: u64::try_from(manifest.manifest_length).unwrap_or(u64::MAX),
+                        limit: bounds.max_bytes,
+                    });
+                }
+                // The counts let a manifest be refused before it is decoded.
+                let declared = manifest
+                    .added_files_count
+                    .unwrap_or(0)
+                    .saturating_add(manifest.existing_files_count.unwrap_or(0))
+                    .saturating_add(manifest.deleted_files_count.unwrap_or(0));
+                if reachable
+                    .entries
+                    .saturating_add(usize::try_from(declared).unwrap_or(usize::MAX))
+                    > bounds.max_entries
+                {
+                    return Err(OrphanError::ScanTooLarge {
+                        manifests: reachable.manifests,
+                        entries: reachable
+                            .entries
+                            .saturating_add(usize::try_from(declared).unwrap_or(usize::MAX)),
                     });
                 }
                 reachable.insert(&manifest.manifest_path)?;
@@ -288,28 +344,61 @@ impl OrphanDecision {
     }
 }
 
+/// The Bergsmith-owned trees inside and beside a table location.
+/// The prefix checks a deletion pass applies before removing an object.
+///
+/// # Errors
+///
+/// [`OrphanError::Location`] when either location is invalid.
+pub fn protected_prefixes(
+    table_location: &str,
+    data_location: &str,
+) -> Result<Vec<Location>, OrphanError> {
+    let table = Location::parse(table_location).map_err(OrphanError::Location)?;
+    bergsmith_roots(&table, data_location)
+}
+
+fn bergsmith_roots(table: &Location, data_location: &str) -> Result<Vec<Location>, OrphanError> {
+    let data = Location::parse(data_location).map_err(OrphanError::Location)?;
+    let mut roots = vec![
+        table
+            .child(BERGSMITH_SEGMENT)
+            .map_err(OrphanError::Location)?,
+        data.child(BERGSMITH_SEGMENT)
+            .map_err(OrphanError::Location)?,
+    ];
+    roots.sort_unstable();
+    roots.dedup();
+    Ok(roots)
+}
+
 /// Selects deletable objects from a listing.
 ///
 /// `listed` must come from [`ObjectStore::list`] over the table location, so
 /// every entry is inside it. Entries that do not belong to the table are
 /// ignored, which keeps the function safe if a caller passes a wider listing.
 ///
+/// Bergsmith writes its attempt outputs and artifacts under
+/// `<data-location>/bergsmith/`, where the data location is the table's
+/// `write.data.path` or `<table-location>/data`. Both that tree and a
+/// `<table-location>/bergsmith/` tree are protected, so neither a custom data
+/// path nor an older layout can lose outputs to cleanup.
+///
 /// [`ObjectStore::list`]: bergsmith_storage::ObjectStore::list
 ///
 /// # Errors
 ///
-/// [`OrphanError::Location`] when `table_location` is not a valid location.
+/// [`OrphanError::Location`] when a location argument is not valid.
 pub fn select_orphans(
     reachable: &Reachable,
     listed: &[ObjectEntry],
     table_location: &str,
+    data_location: &str,
     policy: &OrphanPolicy,
     now: DateTime<Utc>,
 ) -> Result<OrphanDecision, OrphanError> {
     let table = Location::parse(table_location).map_err(OrphanError::Location)?;
-    let bergsmith = table
-        .child(BERSMITH_SEGMENT)
-        .map_err(OrphanError::Location)?;
+    let bergsmith_roots = bergsmith_roots(&table, data_location)?;
     let cutoff_ms = policy.cutoff_ms(now);
     let mut decision = OrphanDecision {
         cutoff_ms,
@@ -320,7 +409,10 @@ pub fn select_orphans(
         if !entry.location.is_within(&table) {
             continue;
         }
-        if entry.location.is_within(&bergsmith) {
+        if bergsmith_roots
+            .iter()
+            .any(|root| entry.location.is_within(root))
+        {
             decision.retained_bergsmith = decision.retained_bergsmith.saturating_add(1);
             continue;
         }
@@ -343,7 +435,11 @@ pub fn select_orphans(
             last_modified_ms,
         });
     }
-    candidates.sort_unstable();
+    // The plan keeps the oldest objects first, so a bounded job reclaims the
+    // most valuable space and later runs continue where this one stopped.
+    candidates.sort_unstable_by(|left, right| {
+        (left.last_modified_ms, &left.path).cmp(&(right.last_modified_ms, &right.path))
+    });
     if candidates.len() > policy.max_candidates {
         decision.deferred =
             u64::try_from(candidates.len() - policy.max_candidates).unwrap_or(u64::MAX);
@@ -376,6 +472,8 @@ pub struct OrphanPlanDocument {
     pub baseline: PlanningBaseline,
     /// The table location the listing covered.
     pub table_location: String,
+    /// The data location whose `bergsmith/` tree is protected.
+    pub data_location: String,
     /// The effective timestamp cutoff, in milliseconds since the Unix epoch.
     pub cutoff_ms: i64,
     /// The number of listed objects the selection considered.
@@ -404,11 +502,10 @@ impl OrphanPlanDocument {
         reachable: &Reachable,
         decision: &OrphanDecision,
     ) -> Result<Self, PlanError> {
-        if decision
-            .candidates
-            .windows(2)
-            .any(|pair| pair[0] >= pair[1])
-        {
+        let baseline_data_location = baseline.data_location().to_owned();
+        if decision.candidates.windows(2).any(|pair| {
+            (pair[0].last_modified_ms, &pair[0].path) >= (pair[1].last_modified_ms, &pair[1].path)
+        }) {
             return Err(PlanError::InvalidConfig(
                 "orphan candidates must be ordered and unique".to_owned(),
             ));
@@ -419,6 +516,7 @@ impl OrphanPlanDocument {
             plan_id,
             baseline,
             table_location: table_location.to_owned(),
+            data_location: baseline_data_location.clone(),
             cutoff_ms: decision.cutoff_ms,
             listed_objects,
             referenced_objects: u64::try_from(reachable.len()).unwrap_or(u64::MAX),
@@ -533,7 +631,15 @@ mod tests {
             ),
             entry("s3://b/t/metadata/v2.json", 90 * 86_400_000, now),
         ];
-        let decision = select_orphans(&reachable, &listed, "s3://b/t", &policy(), now).unwrap();
+        let decision = select_orphans(
+            &reachable,
+            &listed,
+            "s3://b/t",
+            "s3://b/t/data",
+            &policy(),
+            now,
+        )
+        .unwrap();
         assert_eq!(decision.candidates.len(), 1);
         assert_eq!(decision.candidates[0].path, "s3://b/t/data/orphan.parquet");
         assert_eq!(decision.retained_referenced, 2);
@@ -549,8 +655,15 @@ mod tests {
             size: 1,
             last_modified_ms: None,
         }];
-        let decision =
-            select_orphans(&Reachable::default(), &listed, "s3://b/t", &policy(), now).unwrap();
+        let decision = select_orphans(
+            &Reachable::default(),
+            &listed,
+            "s3://b/t",
+            "s3://b/t/data",
+            &policy(),
+            now,
+        )
+        .unwrap();
         assert!(decision.candidates.is_empty());
         assert_eq!(decision.retained_young, 1);
     }
@@ -562,8 +675,15 @@ mod tests {
             entry("s3://other/t/data/x.parquet", 90 * 86_400_000, now),
             entry("s3://b/t-other/data/x.parquet", 90 * 86_400_000, now),
         ];
-        let decision =
-            select_orphans(&Reachable::default(), &listed, "s3://b/t", &policy(), now).unwrap();
+        let decision = select_orphans(
+            &Reachable::default(),
+            &listed,
+            "s3://b/t",
+            "s3://b/t/data",
+            &policy(),
+            now,
+        )
+        .unwrap();
         assert!(decision.candidates.is_empty());
         assert_eq!(decision.retained_young, 0);
     }
@@ -579,13 +699,79 @@ mod tests {
             })
             .collect();
         let bounded = OrphanPolicy::new(86_400, 0, 2).unwrap();
-        let decision =
-            select_orphans(&Reachable::default(), &listed, "s3://b/t", &bounded, now).unwrap();
+        let decision = select_orphans(
+            &Reachable::default(),
+            &listed,
+            "s3://b/t",
+            "s3://b/t/data",
+            &bounded,
+            now,
+        )
+        .unwrap();
         assert_eq!(decision.candidates.len(), 2);
         assert_eq!(decision.deferred, 3);
         assert_eq!(
             decision.candidates[0].last_modified_ms,
             now.timestamp_millis() - 10 * 86_400_000
+        );
+    }
+
+    #[test]
+    fn the_oldest_candidates_survive_the_bound_even_when_paths_sort_elsewhere() {
+        let now = Utc::now();
+        let listed = vec![
+            ObjectEntry {
+                location: location("s3://b/t/data/a.parquet"),
+                size: 1,
+                last_modified_ms: Some(now.timestamp_millis() - 10 * 86_400_000),
+            },
+            ObjectEntry {
+                location: location("s3://b/t/data/z.parquet"),
+                size: 1,
+                last_modified_ms: Some(now.timestamp_millis() - 90 * 86_400_000),
+            },
+        ];
+        let bounded = OrphanPolicy::new(86_400, 0, 1).unwrap();
+        let decision = select_orphans(
+            &Reachable::default(),
+            &listed,
+            "s3://b/t",
+            "s3://b/t/data",
+            &bounded,
+            now,
+        )
+        .unwrap();
+        assert_eq!(
+            decision.candidates[0].path, "s3://b/t/data/z.parquet",
+            "the bound keeps the oldest object, not the first path"
+        );
+    }
+
+    #[test]
+    fn a_custom_data_location_bergsmith_tree_is_protected() {
+        let now = Utc::now();
+        let listed = vec![
+            entry(
+                "s3://b/t/custom-data/bergsmith/job/attempt/out.parquet",
+                90 * 86_400_000,
+                now,
+            ),
+            entry("s3://b/t/custom-data/orphan.parquet", 90 * 86_400_000, now),
+        ];
+        let decision = select_orphans(
+            &Reachable::default(),
+            &listed,
+            "s3://b/t",
+            "s3://b/t/custom-data",
+            &policy(),
+            now,
+        )
+        .unwrap();
+        assert_eq!(decision.retained_bergsmith, 1);
+        assert_eq!(decision.candidates.len(), 1);
+        assert_eq!(
+            decision.candidates[0].path, "s3://b/t/custom-data/orphan.parquet",
+            "outputs under a custom data path are never candidates"
         );
     }
 
@@ -596,10 +782,24 @@ mod tests {
             entry("s3://b/t/data/b.parquet", 10 * 86_400_000, now),
             entry("s3://b/t/data/a.parquet", 10 * 86_400_000, now),
         ];
-        let first =
-            select_orphans(&Reachable::default(), &listed, "s3://b/t", &policy(), now).unwrap();
-        let second =
-            select_orphans(&Reachable::default(), &listed, "s3://b/t", &policy(), now).unwrap();
+        let first = select_orphans(
+            &Reachable::default(),
+            &listed,
+            "s3://b/t",
+            "s3://b/t/data",
+            &policy(),
+            now,
+        )
+        .unwrap();
+        let second = select_orphans(
+            &Reachable::default(),
+            &listed,
+            "s3://b/t",
+            "s3://b/t/data",
+            &policy(),
+            now,
+        )
+        .unwrap();
         assert_eq!(first, second);
         assert_eq!(first.candidates[0].path, "s3://b/t/data/a.parquet");
     }
@@ -608,8 +808,15 @@ mod tests {
     fn the_plan_document_is_stable_and_hash_bound() {
         let now = Utc::now();
         let listed = vec![entry("s3://b/t/data/a.parquet", 90 * 86_400_000, now)];
-        let decision =
-            select_orphans(&Reachable::default(), &listed, "s3://b/t", &policy(), now).unwrap();
+        let decision = select_orphans(
+            &Reachable::default(),
+            &listed,
+            "s3://b/t",
+            "s3://b/t/data",
+            &policy(),
+            now,
+        )
+        .unwrap();
         let baseline = PlanningBaseline::for_tests();
         let job_id = JobId::generate();
         let plan_id = PlanId::generate();

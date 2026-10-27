@@ -18,7 +18,7 @@ async fn every_live_file_is_reachable_and_only_stale_unreachable_objects_are_can
         .await
         .unwrap();
     let table = Location::parse(fixture.metadata().location()).unwrap();
-    let bounds = ReachabilityBounds::new(1_000, 100_000).unwrap();
+    let bounds = ReachabilityBounds::new(1_000, 100_000, 64 * 1024 * 1024).unwrap();
 
     let reachable = Reachable::capture(
         fixture.metadata(),
@@ -52,6 +52,7 @@ async fn every_live_file_is_reachable_and_only_stale_unreachable_objects_are_can
         &reachable,
         &listed,
         fixture.metadata().location(),
+        &format!("{}/data", fixture.metadata().location()),
         &policy,
         Utc::now(),
     )
@@ -63,6 +64,7 @@ async fn every_live_file_is_reachable_and_only_stale_unreachable_objects_are_can
         &Reachable::default(),
         &listed,
         fixture.metadata().location(),
+        &format!("{}/data", fixture.metadata().location()),
         &policy,
         distant,
     )
@@ -79,9 +81,9 @@ async fn the_scan_bound_fails_instead_of_truncating() {
         .generate()
         .await
         .unwrap();
-    assert!(ReachabilityBounds::new(1, 0).is_err());
+    assert!(ReachabilityBounds::new(1, 0, 1).is_err());
 
-    let bounds = ReachabilityBounds::new(1, 1_000).unwrap();
+    let bounds = ReachabilityBounds::new(1, 1_000, 64 * 1024 * 1024).unwrap();
     let error = Reachable::capture(
         fixture.metadata(),
         fixture.metadata_location(),

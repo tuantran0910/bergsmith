@@ -117,6 +117,9 @@ pub struct OrphanSettings {
     /// The most manifest entries, and manifests, one reachability scan reads.
     #[serde(default = "default_orphan_max_scan_entries")]
     pub max_scan_entries: usize,
+    /// The largest manifest list or manifest one scan reads, in bytes.
+    #[serde(default = "default_orphan_max_scan_bytes")]
+    pub max_scan_bytes: u64,
     /// The most candidates one plan may carry.
     #[serde(default = "default_orphan_max_candidates")]
     pub max_candidates: usize,
@@ -132,6 +135,7 @@ impl Default for OrphanSettings {
             minimum_age_seconds: default_orphan_minimum_age_seconds(),
             max_listed_objects: default_orphan_max_listed_objects(),
             max_scan_entries: default_orphan_max_scan_entries(),
+            max_scan_bytes: default_orphan_max_scan_bytes(),
             max_candidates: default_orphan_max_candidates(),
             max_deletions_per_pass: default_orphan_max_deletions_per_pass(),
         }
@@ -161,6 +165,11 @@ impl OrphanSettings {
                 "orphans.max_scan_entries must be between 1 and 10000000".into(),
             ));
         }
+        if !(1..=1_073_741_824).contains(&self.max_scan_bytes) {
+            return Err(ConfigError::Invalid(
+                "orphans.max_scan_bytes must be between 1 and 1073741824".into(),
+            ));
+        }
         if !(1..=1_000_000).contains(&self.max_candidates) {
             return Err(ConfigError::Invalid(
                 "orphans.max_candidates must be between 1 and 1000000".into(),
@@ -181,6 +190,7 @@ impl OrphanSettings {
             minimum_age_seconds: self.minimum_age_seconds,
             max_listed_objects: self.max_listed_objects,
             max_scan_entries: self.max_scan_entries,
+            max_scan_bytes: self.max_scan_bytes,
             max_candidates: self.max_candidates,
             max_deletions_per_pass: self.max_deletions_per_pass,
         })
@@ -197,6 +207,10 @@ const fn default_orphan_max_listed_objects() -> usize {
 
 const fn default_orphan_max_scan_entries() -> usize {
     500_000
+}
+
+const fn default_orphan_max_scan_bytes() -> u64 {
+    64 * 1024 * 1024
 }
 
 const fn default_orphan_max_candidates() -> usize {
@@ -218,6 +232,8 @@ pub struct OrphanConfig {
     pub max_listed_objects: usize,
     /// The most manifest entries, and manifests, one scan reads.
     pub max_scan_entries: usize,
+    /// The largest manifest list or manifest one scan reads, in bytes.
+    pub max_scan_bytes: u64,
     /// The most candidates one plan may carry.
     pub max_candidates: usize,
     /// The most objects one deletion pass resolves.
@@ -231,6 +247,7 @@ impl Default for OrphanConfig {
             minimum_age_seconds: default_orphan_minimum_age_seconds(),
             max_listed_objects: default_orphan_max_listed_objects(),
             max_scan_entries: default_orphan_max_scan_entries(),
+            max_scan_bytes: default_orphan_max_scan_bytes(),
             max_candidates: default_orphan_max_candidates(),
             max_deletions_per_pass: default_orphan_max_deletions_per_pass(),
         }

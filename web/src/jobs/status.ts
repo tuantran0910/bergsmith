@@ -30,7 +30,7 @@ export function isTerminal(state: JobState): boolean {
     return TERMINAL.has(state);
 }
 
-type Boundary = Pick<Job, "state" | "publication_started">;
+type Boundary = Pick<Job, "state" | "publication_started" | "operation">;
 
 /** Where the rewrite work stands. */
 export function executionStatus(job: Boundary): StatusLine {
@@ -63,6 +63,11 @@ export function executionStatus(job: Boundary): StatusLine {
 
 /** Whether the exact catalog publication happened. */
 export function publicationStatus(job: Boundary): StatusLine {
+    if (job.operation === "remove_orphan_files") {
+        // Cleanup removes unreferenced objects and never commits, so there is
+        // nothing to confirm or resolve.
+        return { label: "Not applicable", tone: "neutral" };
+    }
     switch (job.state) {
         case "Succeeded":
             return { label: "Confirmed", tone: "ok" };

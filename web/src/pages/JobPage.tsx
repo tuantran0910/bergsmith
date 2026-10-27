@@ -169,8 +169,9 @@ function JobDetail({ job }: { job: Job }) {
                           : "The rewrite work that workers do."}
                 </Lane>
                 <Lane title="Publication" status={publicationStatus(job)}>
-                    The catalog commit. Only a confirmed publication changed the
-                    table.
+                    {job.operation === "remove_orphan_files"
+                        ? "Not used: cleanup deletes storage objects and never commits."
+                        : "The catalog commit. Only a confirmed publication changed the table."}
                 </Lane>
             </div>
 

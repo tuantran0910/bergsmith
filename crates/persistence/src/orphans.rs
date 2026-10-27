@@ -108,7 +108,8 @@ pub async fn create_orphan_plan(
     .execute(&mut *tx)
     .await
     .map_err(|error| PersistenceError::from_write("orphan plan", error))?;
-    let transitioned = jobs::transition_job(
+    crate::leadership::ensure_leadership(&mut tx, epoch).await?;
+    let transitioned = jobs::transition_job_within(
         &mut tx,
         &Transition {
             job_id: job.id,
@@ -120,7 +121,6 @@ pub async fn create_orphan_plan(
         },
     )
     .await?;
-    crate::leadership::ensure_leadership(&mut tx, epoch).await?;
     tx.commit().await?;
     Ok(transitioned)
 }
@@ -164,7 +164,8 @@ pub async fn begin_deletion(
             operation: "begin orphan deletion",
         });
     }
-    let transitioned = jobs::transition_job(
+    crate::leadership::ensure_leadership(&mut tx, epoch).await?;
+    let transitioned = jobs::transition_job_within(
         &mut tx,
         &Transition {
             job_id,
@@ -176,7 +177,6 @@ pub async fn begin_deletion(
         },
     )
     .await?;
-    crate::leadership::ensure_leadership(&mut tx, epoch).await?;
     tx.commit().await?;
     Ok(transitioned)
 }
@@ -253,34 +253,68 @@ pub async fn receipt_totals(
     .await?)
 }
 
-/// Finishes a deletion as `Succeeded` under the leader lease.
+/// Fences one deletion batch under the leader lease.
+///
+/// Deletion is irreversible, so a resumed pass must prove it still holds the
+/// lease and that nobody cancelled or ended the job since the page was read.
+/// The returned job carries the revision the batch is allowed to complete at.
+///
+/// # Errors
+///
+/// [`PersistenceError::JobNotInState`] when the job is no longer `Deleting` or
+/// a cancellation was recorded, and
+/// [`PersistenceError::LeadershipLost`] when the lease is gone.
+pub async fn authorize_batch(
+    conn: &mut PgConnection,
+    job_id: JobId,
+    epoch: i64,
+) -> Result<Job, PersistenceError> {
+    let mut tx = conn.begin().await?;
+    crate::leadership::ensure_leadership(&mut tx, epoch).await?;
+    let job = jobs::lock_job(&mut tx, job_id).await?;
+    if job.state != JobState::Deleting || job.cancellation.is_some() {
+        return Err(PersistenceError::JobNotInState {
+            job: job.id,
+            state: job.state,
+            operation: "authorize an orphan deletion batch",
+        });
+    }
+    tx.commit().await?;
+    Ok(job)
+}
+
+/// Ends a deletion in `to` under the leader lease, in one transaction.
+///
+/// The leadership check and the transition commit together, so a coordinator
+/// that lost the lease cannot end the job.
 ///
 /// # Errors
 ///
 /// [`PersistenceError::RevisionConflict`] when another writer changed the job,
 /// [`PersistenceError::JobTransition`] when the lifecycle forbids the move, and
 /// [`PersistenceError::LeadershipLost`] when the lease is gone.
-pub async fn finish_deletion(
+pub async fn end_deletion(
     conn: &mut PgConnection,
     job_id: JobId,
     expected_revision: i64,
     epoch: i64,
+    to: JobState,
     reason: &'static str,
 ) -> Result<Job, PersistenceError> {
     let mut tx = conn.begin().await?;
-    let transitioned = jobs::transition_job(
+    crate::leadership::ensure_leadership(&mut tx, epoch).await?;
+    let transitioned = jobs::transition_job_within(
         &mut tx,
         &Transition {
             job_id,
             expected_revision,
-            to: JobState::Succeeded,
+            to,
             reason: Some(reason.to_owned()),
             actor: None,
             non_publication_proven: false,
         },
     )
     .await?;
-    crate::leadership::ensure_leadership(&mut tx, epoch).await?;
     tx.commit().await?;
     Ok(transitioned)
 }

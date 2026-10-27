@@ -522,6 +522,10 @@ impl PlannerService {
     /// prefix, referenced objects, and objects younger than the connection's
     /// protection window or the operation's minimum age are never candidates.
     /// An empty selection ends the job `NoOp`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one plan keeps the gate, reachability, selection, and durable plan in one fenced step"
+    )]
     async fn plan_orphans(
         &self,
         job: &jobs::Job,
@@ -530,7 +534,6 @@ impl PlannerService {
         if !self.orphan.enabled {
             return Err(PlanningError::OrphanCleanupUnavailable);
         }
-        let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
         let Some(baseline) = bergsmith_maintenance::PlanningBaseline::capture(
             &binding.loaded.metadata,
             binding.loaded.metadata_location.as_deref(),
@@ -538,6 +541,7 @@ impl PlannerService {
         .map_err(PlanningError::Plan)?
         else {
             let reason = bergsmith_maintenance::NoOpReason::NoSnapshot;
+            let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
             let recorded = self.record_noop(&mut conn, job, reason, binding).await?;
             return Ok((PlannedWork::NoOp(reason), recorded));
         };
@@ -550,8 +554,12 @@ impl PlannerService {
             &binding.loaded.metadata,
             metadata_location,
             binding.store.file_io(),
-            ReachabilityBounds::new(self.orphan.max_scan_entries, self.orphan.max_scan_entries)
-                .map_err(PlanningError::Orphan)?,
+            ReachabilityBounds::new(
+                self.orphan.max_scan_entries,
+                self.orphan.max_scan_entries,
+                self.orphan.max_scan_bytes,
+            )
+            .map_err(PlanningError::Orphan)?,
         )
         .await
         .map_err(PlanningError::Orphan)?;
@@ -560,12 +568,14 @@ impl PlannerService {
             .map_err(PlanningError::Orphan)?;
         let listed = binding
             .store
-            .list(&table)
+            .list_bounded(&table, self.orphan.max_listed_objects)
             .await
-            .map_err(|error| PlanningError::Access(AccessError::Storage(error)))?;
-        if listed.len() > self.orphan.max_listed_objects {
-            return Err(PlanningError::OrphanListingTooLarge);
-        }
+            .map_err(|error| match error {
+                bergsmith_storage::StorageError::ListingTooLarge { .. } => {
+                    PlanningError::OrphanListingTooLarge
+                }
+                error => PlanningError::Access(AccessError::Storage(error)),
+            })?;
         let policy = OrphanPolicy::new(
             self.orphan.minimum_age_seconds,
             protection_window_ms(binding),
@@ -576,12 +586,14 @@ impl PlannerService {
             &reachable,
             &listed,
             binding.loaded.metadata.location(),
+            baseline.data_location(),
             &policy,
             Utc::now(),
         )
         .map_err(PlanningError::Orphan)?;
         if decision.candidates.is_empty() {
             let reason = bergsmith_maintenance::NoOpReason::NoOrphanFiles;
+            let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
             let recorded = self.record_noop(&mut conn, job, reason, binding).await?;
             return Ok((PlannedWork::NoOp(reason), recorded));
         }
@@ -600,6 +612,7 @@ impl PlannerService {
             .content_hash()
             .map_err(PlanningError::Plan)?
             .to_hex();
+        let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
         let recorded = orphan_plans::create_orphan_plan(
             &mut conn,
             &NewOrphanPlan {

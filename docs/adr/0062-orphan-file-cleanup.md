@@ -47,11 +47,13 @@ is the union of:
 Everything else under the table location is a candidate. Objects outside the
 table location are never deleted, even when metadata references them.
 
-**Bergsmith's own tree is never a candidate.** No object within
-`<table-location>/bergsmith/` is listed for deletion, so attempt outputs,
-manifests a job is writing, and artifacts an unresolved publication will add
-survive. Files an unresolved job may publish are therefore protected twice:
-their outputs are under that prefix, and the deletion pass reloads table
+**Bergsmith's own tree is never a candidate.** Attempt outputs, task artifacts,
+and manifests a job is writing live under `<data-location>/bergsmith/`, where
+the data location is the table's `write.data.path` or
+`<table-location>/data`. No object under that prefix is deleted; a
+`<table-location>/bergsmith/` tree from an older layout is protected the same
+way. Files an unresolved job may publish are therefore protected twice: their
+outputs are under the Bergsmith prefix, and the deletion pass reloads table
 metadata so a commit that landed protects its files as reachable.
 
 **Only old, unreferenced objects are candidates.** The age floor is the
@@ -69,13 +71,16 @@ paths with sizes and modification times. Its hash covers the canonical typed
 form, as with compaction and expiration plans. A rerun of the planner cannot
 change what a job deletes.
 
-**Deletion re-verifies before it removes.** For each bounded batch the leader
-reloads table metadata, recomputes reachability, and deletes a candidate only
-while it is still unreferenced, still older than the effective window, still
-outside the Bergsmith prefix, and still inside the table location. A candidate
-that fails a check is recorded as skipped, never deleted. Deletes are
-idempotent, so a leader that dies between the delete and the receipt only
-repeats itself.
+**Deletion re-verifies before it removes.** Each bounded batch runs in a
+fenced step: the coordinator proves it still holds the leader lease, the job is
+still `Deleting`, and no cancellation was recorded. It then reloads table
+metadata, recomputes reachability, and re-lists the table, so the modification
+time and size used for verification are current rather than planning-time
+values. A candidate is deleted only while it is still unreferenced, still older
+than the effective window, still the listed object (same size), still outside
+the Bergsmith prefix, and still inside the table location. Anything else is
+recorded as skipped, never deleted. Deletes are idempotent, so a leader that
+dies between the delete and the receipt only repeats itself.
 
 **Ledger receipts make the job resumable and auditable.**
 `orphan_deletions` records one row per planned candidate with its disposition
@@ -86,10 +91,13 @@ passes and a restart resumes where the receipts stop.
 
 **Deletion is off by default.** `orphans.enabled` must be set: the submission
 API answers 400 while it is false, and planning and the first deletion fail
-closed if it was disabled between them. Listing and scanning are bounded by
-`orphans.max_listed_objects` and `orphans.max_scan_entries`; exceeding either
-fails the job permanently with a typed reason instead of deleting from a
-partial listing.
+closed if it was disabled between them. Listing is bounded while it is
+consumed (`orphans.max_listed_objects`), and the scan bounds manifests, manifest
+entries, and object bytes (`orphans.max_scan_entries`,
+`orphans.max_scan_bytes`); exceeding any bound fails the job permanently with a
+typed reason instead of deleting from a partial view. A permanent failure
+during deletion ends the job `Failed` through the deletion path, so it does not
+repeat every pass.
 
 **Cancellation stays provable.** A deletion may be cancelled before it starts
 or between batches; already-removed objects were unreferenced, so the job
@@ -128,6 +136,8 @@ publication.
 - The planning pass builds the plan and moves the job to `ReadyToCommit`; the
   publication pass executes bounded batches, records receipts, and completes
   the job. Both are leader-only.
+- `orphans.max_scan_bytes` bounds a manifest list or manifest read.
 - `POST /api/v1/jobs` accepts `operation: "remove_orphan_files"` while
-  `orphans.enabled` is set; the table page offers the action, and the job page
-  labels it.
+  `orphans.enabled` is set; the table page offers the action, the job page
+  labels it, and the maintenance history reports the operation so the
+  publication lane never claims a commit for cleanup.

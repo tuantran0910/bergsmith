@@ -11401,6 +11401,7 @@
         "required": [
           "job_id",
           "state",
+          "operation",
           "created_at",
           "updated_at",
           "elapsed_millis",
@@ -11463,6 +11464,15 @@
             "type": "string",
             "pattern": "^[0-9]+$",
             "description": "Distinct delete files the accepted tasks applied."
+          },
+          "operation": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "expire_snapshots",
+              "remove_orphan_files"
+            ],
+            "description": "The maintenance operation the job performed."
           }
         }
       },

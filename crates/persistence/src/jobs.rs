@@ -624,7 +624,25 @@ pub async fn transition_job(
     transition: &Transition,
 ) -> Result<Job, PersistenceError> {
     let mut tx = conn.begin().await?;
-    let current = lock_job(&mut tx, transition.job_id).await?;
+    let job = transition_job_within(&mut tx, transition).await?;
+    tx.commit().await?;
+    Ok(job)
+}
+
+/// Applies a transition inside the caller's transaction.
+///
+/// The caller is responsible for committing. This is the form a fenced writer
+/// uses when the transition must commit together with its own rows and its
+/// leadership check, such as a plan insert or a send authorization.
+///
+/// # Errors
+///
+/// As for [`transition_job`].
+pub(crate) async fn transition_job_within(
+    conn: &mut PgConnection,
+    transition: &Transition,
+) -> Result<Job, PersistenceError> {
+    let current = lock_job(conn, transition.job_id).await?;
     if current.state_revision != transition.expected_revision {
         return Err(PersistenceError::RevisionConflict {
             job: current.id,
@@ -650,11 +668,11 @@ pub async fn transition_job(
     .bind(current.id.as_uuid())
     .bind(transition.to.as_str())
     .bind(&transition.reason)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *conn)
     .await?
     .try_into()?;
     append_event(
-        &mut tx,
+        conn,
         &EventRecord {
             job_id: job.id,
             kind: JobEventKind::Transitioned,
@@ -668,24 +686,23 @@ pub async fn transition_job(
     .await?;
     if job.state.is_terminal() || job.state == JobState::Cancelling {
         sqlx::query("UPDATE attempts SET state='Cancelled',finished_at=clock_timestamp() WHERE task_id IN (SELECT id FROM tasks WHERE job_id=$1) AND state IN ('Granted','Running')")
-            .bind(job.id.as_uuid()).execute(&mut *tx).await?;
+            .bind(job.id.as_uuid()).execute(&mut *conn).await?;
         sqlx::query("UPDATE tasks SET state='Cancelled',retry_not_before=NULL,updated_at=clock_timestamp() WHERE job_id=$1 AND state IN ('Pending','Leased','RetryWaiting')")
-            .bind(job.id.as_uuid()).execute(&mut *tx).await?;
+            .bind(job.id.as_uuid()).execute(&mut *conn).await?;
     }
     if job.state.is_terminal() {
         sqlx::query(
             "UPDATE execution_admissions SET released=true WHERE job_id=$1 AND NOT released",
         )
         .bind(job.id.as_uuid())
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
         sqlx::query("DELETE FROM publication_barriers WHERE job_id = $1")
             .bind(job.id.as_uuid())
-            .execute(&mut *tx)
+            .execute(&mut *conn)
             .await?;
     }
-    enqueue_job_outcome(&mut tx, &job, transition.reason.as_deref()).await?;
-    tx.commit().await?;
+    enqueue_job_outcome(conn, &job, transition.reason.as_deref()).await?;
     Ok(job)
 }
 

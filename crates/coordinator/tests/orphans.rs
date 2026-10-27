@@ -5,7 +5,7 @@
 mod support;
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -21,9 +21,11 @@ use bergsmith_coordinator::workers::{WorkerConfig, WorkerService};
 use bergsmith_fixtures::{Commit, FileSpec, Fixture, TableSpec, row};
 use bergsmith_maintenance::PlannerConfig;
 use bergsmith_maintenance::orphans::OrphanPlanDocument;
+use bergsmith_persistence::cancellation::{self, CancelJob, CancellationDisposition};
+use bergsmith_persistence::orphans::{self, Disposition};
 use bergsmith_persistence::scheduling::RetryPolicy;
 use bergsmith_persistence::{
-    Database, DatabaseConfig, DatabaseUrl, jobs, leadership::acquire_leadership, orphans, tables,
+    Database, DatabaseConfig, DatabaseUrl, jobs, leadership::acquire_leadership, tables,
 };
 use bergsmith_storage::{Location, StorageProfile, StorageProfiles};
 use iceberg::spec::{NestedField, PrimitiveType, Schema, Type};
@@ -34,15 +36,16 @@ use sqlx::{ConnectOptions, PgPool};
 const TABLE_PATH: &str = "/v1/namespaces/db/tables/t";
 
 struct Run {
+    pool: PgPool,
     fixture: Fixture,
     tenant: support::Tenant,
     job: jobs::Job,
+    epoch: i64,
+    catalogs: Arc<RuntimeCatalogs>,
     server: ServerGuard,
     orphan_data: PathBuf,
     orphan_metadata: PathBuf,
-    bergsmith_output: PathBuf,
-    planner: PlannerService,
-    publication: PublicationService,
+    bergsmith_outputs: Vec<PathBuf>,
 }
 
 async fn fixture() -> Fixture {
@@ -72,7 +75,7 @@ async fn fixture() -> Fixture {
         .unwrap()
 }
 
-fn enabled() -> OrphanConfig {
+fn enabled(pass: usize) -> OrphanConfig {
     OrphanConfig {
         enabled: true,
         // The test writes its orphans just before the pass, so any positive
@@ -80,8 +83,9 @@ fn enabled() -> OrphanConfig {
         minimum_age_seconds: 0,
         max_listed_objects: 10_000,
         max_scan_entries: 100_000,
+        max_scan_bytes: 64 * 1024 * 1024,
         max_candidates: 100,
-        max_deletions_per_pass: 50,
+        max_deletions_per_pass: pass,
     }
 }
 
@@ -100,28 +104,28 @@ fn task_settings() -> TaskSettings {
     clippy::too_many_lines,
     reason = "one fixture keeps the table, catalog mock, and both services explicit"
 )]
-async fn setup(pool: &PgPool, orphan: OrphanConfig) -> Run {
+async fn setup(pool: &PgPool) -> Run {
     let fixture = fixture().await;
     let root = fixture.root().to_owned();
     let orphan_data = root.join("data/orphan-left-behind.parquet");
     let orphan_metadata = root.join("metadata/orphan-left-behind.metadata.json");
-    let bergsmith_output = root.join("bergsmith/job/attempt/output.parquet");
-    std::fs::create_dir_all(bergsmith_output.parent().unwrap()).unwrap();
+    // Bergsmith writes under the data location, not the table root, and an
+    // older layout used the table root. Both must survive.
+    let data_output = root.join("data/bergsmith/job/attempt/output.parquet");
+    let legacy_output = root.join("bergsmith/job/attempt/output.parquet");
+    for path in [&data_output, &legacy_output] {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    }
     // Older than the connection's 180s execution plus 3600s unresolved
     // publication window, so age never hides the orphans.
     let two_days_ago = SystemTime::now() - Duration::from_secs(2 * 24 * 60 * 60);
     for (path, bytes) in [
         (&orphan_data, b"orphan".as_slice()),
         (&orphan_metadata, b"{}".as_slice()),
-        (&bergsmith_output, b"output".as_slice()),
+        (&data_output, b"output".as_slice()),
+        (&legacy_output, b"output".as_slice()),
     ] {
-        std::fs::write(path, bytes).unwrap();
-        std::fs::File::options()
-            .write(true)
-            .open(path)
-            .unwrap()
-            .set_modified(two_days_ago)
-            .unwrap();
+        write_older(path, bytes, two_days_ago);
     }
 
     let mut conn = pool.acquire().await.unwrap();
@@ -201,13 +205,45 @@ async fn setup(pool: &PgPool, orphan: OrphanConfig) -> Run {
             connections: BTreeMap::new(),
         },
     ));
-    let access = Arc::new(RuntimeWorkerAccess::new(catalogs.clone()));
-    let worker =
-        WorkerService::new(pool.clone(), epoch, WorkerConfig::default(), access.clone()).unwrap();
+    Run {
+        pool: pool.clone(),
+        fixture,
+        tenant,
+        job,
+        epoch,
+        catalogs,
+        server,
+        orphan_data,
+        orphan_metadata,
+        bergsmith_outputs: vec![data_output, legacy_output],
+    }
+}
+
+fn publication(run: &Run, orphan: OrphanConfig) -> PublicationService {
+    PublicationService::new(
+        run.pool.clone(),
+        run.catalogs.clone(),
+        run.epoch,
+        PublicationConfig::default(),
+        RetryPolicy::default(),
+        false,
+        orphan,
+    )
+}
+
+fn planner(run: &Run, orphan: OrphanConfig) -> PlannerService {
+    let access = Arc::new(RuntimeWorkerAccess::new(run.catalogs.clone()));
+    let worker = WorkerService::new(
+        run.pool.clone(),
+        run.epoch,
+        WorkerConfig::default(),
+        access.clone(),
+    )
+    .unwrap();
     let scheduler = Arc::new(Scheduler::new(worker, access, SchedulerConfig::default()).unwrap());
-    let planner = PlannerService::new(
-        pool.clone(),
-        catalogs.clone(),
+    PlannerService::new(
+        run.pool.clone(),
+        run.catalogs.clone(),
         scheduler,
         PlannerConfig::default(),
         task_settings(),
@@ -216,30 +252,20 @@ async fn setup(pool: &PgPool, orphan: OrphanConfig) -> Run {
         false,
         orphan,
     )
-    .unwrap();
-    let publication = PublicationService::new(
-        pool.clone(),
-        catalogs,
-        epoch,
-        PublicationConfig::default(),
-        RetryPolicy::default(),
-        false,
-        orphan,
-    );
-    Run {
-        fixture,
-        tenant,
-        job,
-        server,
-        orphan_data,
-        orphan_metadata,
-        bergsmith_output,
-        planner,
-        publication,
-    }
+    .unwrap()
 }
 
-fn file_uri(path: &std::path::Path) -> String {
+fn write_older(path: &Path, bytes: &[u8], modified: SystemTime) {
+    std::fs::write(path, bytes).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+}
+
+fn file_uri(path: &Path) -> String {
     format!("file://{}", path.display())
 }
 
@@ -249,9 +275,9 @@ fn local_path(uri: &str) -> PathBuf {
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
 async fn a_cleanup_plan_deletes_only_the_unreferenced_objects(pool: PgPool) {
-    let mut run = setup(&pool, enabled()).await;
+    let mut run = setup(&pool).await;
     let mut conn = pool.acquire().await.unwrap();
-    let planned = run.planner.pass().await.unwrap();
+    let planned = planner(&run, enabled(50)).pass().await.unwrap();
     let job = jobs::job(&mut conn, run.tenant.organization, run.job.id)
         .await
         .unwrap();
@@ -282,12 +308,9 @@ async fn a_cleanup_plan_deletes_only_the_unreferenced_objects(pool: PgPool) {
     ];
     expected.sort();
     assert_eq!(candidates, expected);
-    assert!(
-        !candidates.iter().any(|path| path.contains("/bergsmith/")),
-        "Bergsmith's own tree is never a candidate"
-    );
+    assert!(!candidates.iter().any(|path| path.contains("/bergsmith/")));
 
-    let cleaned = run.publication.pass().await.unwrap();
+    let cleaned = publication(&run, enabled(50)).pass().await.unwrap();
     assert_eq!(cleaned.cleaned, 1, "one deletion pass");
     let job = jobs::job(&mut conn, run.tenant.organization, run.job.id)
         .await
@@ -298,10 +321,13 @@ async fn a_cleanup_plan_deletes_only_the_unreferenced_objects(pool: PgPool) {
         !run.orphan_metadata.exists(),
         "the orphan metadata file is gone"
     );
-    assert!(
-        run.bergsmith_output.exists(),
-        "worker outputs are never removed"
-    );
+    for output in &run.bergsmith_outputs {
+        assert!(
+            output.exists(),
+            "Bergsmith's own tree is never removed: {}",
+            output.display()
+        );
+    }
     let live = local_path(run.fixture.path_of("a").unwrap());
     assert!(live.exists(), "referenced data survives");
     assert!(
@@ -316,10 +342,120 @@ async fn a_cleanup_plan_deletes_only_the_unreferenced_objects(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
-async fn cleanup_is_refused_when_disabled(pool: PgPool) {
-    let mut run = setup(&pool, OrphanConfig::default()).await;
+async fn a_replaced_object_is_skipped_instead_of_deleted(pool: PgPool) {
+    let mut run = setup(&pool).await;
     let mut conn = pool.acquire().await.unwrap();
-    let summary = run.planner.pass().await.unwrap();
+    planner(&run, enabled(50)).pass().await.unwrap();
+    // The plan named an old object; replacing it makes the path young and a
+    // different size, so deletion has to skip it.
+    std::fs::write(&run.orphan_data, b"a much newer replacement object").unwrap();
+    let cleaned = publication(&run, enabled(50)).pass().await.unwrap();
+    assert_eq!(cleaned.cleaned, 1);
+    assert!(
+        run.orphan_data.exists(),
+        "a replaced object is not the object the plan named"
+    );
+    assert!(!run.orphan_metadata.exists());
+    let job = jobs::job(&mut conn, run.tenant.organization, run.job.id)
+        .await
+        .unwrap();
+    assert_eq!(job.state, JobState::Succeeded);
+    let receipts: Vec<(String, String)> =
+        sqlx::query_as("SELECT path, disposition FROM orphan_deletions WHERE job_id = $1")
+            .bind(job.id.as_uuid())
+            .fetch_all(&mut *conn)
+            .await
+            .unwrap();
+    assert!(receipts.contains(&(
+        file_uri(&run.orphan_data),
+        Disposition::Skipped.as_str().to_owned()
+    )));
+    run.server.reset();
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn partial_batches_resume_from_receipts_and_complete(pool: PgPool) {
+    let mut run = setup(&pool).await;
+    let mut conn = pool.acquire().await.unwrap();
+    planner(&run, enabled(1)).pass().await.unwrap();
+    let first = publication(&run, enabled(1)).pass().await.unwrap();
+    assert_eq!(first.cleaned, 1);
+    let job = jobs::job(&mut conn, run.tenant.organization, run.job.id)
+        .await
+        .unwrap();
+    assert_eq!(job.state, JobState::Deleting, "a bounded batch leaves work");
+    assert_eq!(
+        orphans::receipt_totals(&mut conn, job.id).await.unwrap().0,
+        1
+    );
+    assert!(!run.orphan_data.exists());
+    assert!(run.orphan_metadata.exists(), "the second object waits");
+
+    let second = publication(&run, enabled(1)).pass().await.unwrap();
+    assert_eq!(second.cleaned, 1);
+    let job = jobs::job(&mut conn, run.tenant.organization, run.job.id)
+        .await
+        .unwrap();
+    assert_eq!(job.state, JobState::Succeeded);
+    assert!(!run.orphan_metadata.exists());
+    run.server.reset();
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_cancellation_between_batches_stops_deletion(pool: PgPool) {
+    let mut run = setup(&pool).await;
+    let mut conn = pool.acquire().await.unwrap();
+    planner(&run, enabled(1)).pass().await.unwrap();
+    publication(&run, enabled(1)).pass().await.unwrap();
+    let outcome = cancellation::request_cancellation(
+        &mut conn,
+        &CancelJob {
+            job_id: run.job.id,
+            requested_by: Some(run.tenant.user),
+            reason: Some("test".to_owned()),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome.disposition, CancellationDisposition::Cancelling);
+    assert!(run.orphan_metadata.exists());
+    publication(&run, enabled(1)).pass().await.unwrap();
+    assert!(
+        run.orphan_metadata.exists(),
+        "cancellation stops the remaining batches"
+    );
+    let job = jobs::job(&mut conn, run.tenant.organization, run.job.id)
+        .await
+        .unwrap();
+    assert_eq!(job.state, JobState::Cancelling);
+    run.server.reset();
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_permanent_scan_failure_terminates_the_deleting_job(pool: PgPool) {
+    let mut run = setup(&pool).await;
+    let mut conn = pool.acquire().await.unwrap();
+    planner(&run, enabled(50)).pass().await.unwrap();
+    let too_small = OrphanConfig {
+        max_scan_bytes: 1,
+        ..enabled(50)
+    };
+    let failed = publication(&run, too_small).pass().await.unwrap();
+    assert_eq!(failed.failed, 1);
+    let job = jobs::job(&mut conn, run.tenant.organization, run.job.id)
+        .await
+        .unwrap();
+    assert_eq!(job.state, JobState::Failed);
+    assert_eq!(job.state_reason.as_deref(), Some("OrphanCleanupInvalid"));
+    assert!(run.orphan_data.exists(), "a failed pass deletes nothing");
+    run.server.reset();
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn cleanup_is_refused_when_disabled(pool: PgPool) {
+    let mut run = setup(&pool).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let summary = planner(&run, OrphanConfig::default()).pass().await.unwrap();
     assert_eq!(summary.failed, 1);
     let job = jobs::job(&mut conn, run.tenant.organization, run.job.id)
         .await

@@ -51,7 +51,11 @@ function duration(millis: string): string {
 
 /** A terminal entry's two status lines, as the job page presents them. */
 function outcome(entry: Schemas["MaintenanceEntry"]) {
-    const boundary = { state: entry.state, publication_started: false };
+    const boundary = {
+        state: entry.state,
+        operation: entry.operation,
+        publication_started: false,
+    };
     return {
         execution: executionStatus(boundary),
         publication: publicationStatus(boundary),

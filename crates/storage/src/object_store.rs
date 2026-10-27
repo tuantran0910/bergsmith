@@ -38,6 +38,12 @@ pub enum StorageError {
     /// The backend listed a path that is not a valid location.
     #[error("storage listed an invalid location")]
     InvalidListing(#[source] LocationError),
+    /// The listing exceeded the caller's bound.
+    #[error("the listing under the prefix exceeds {limit} objects")]
+    ListingTooLarge {
+        /// The bound the caller set.
+        limit: usize,
+    },
 }
 
 /// `FileIO` for one backend, with location-typed helpers.
@@ -110,25 +116,42 @@ impl ObjectStore {
     /// [`StorageError::InvalidListing`] when the backend returns a path that
     /// does not parse.
     pub async fn list(&self, prefix: &Location) -> Result<Vec<ObjectEntry>, StorageError> {
-        let mut entries: Vec<ObjectEntry> = self
+        self.list_bounded(prefix, usize::MAX).await
+    }
+
+    /// Lists every object under `prefix`, stopping at `limit` entries.
+    ///
+    /// The stream is consumed only until the bound is crossed, so a caller can
+    /// refuse an oversized listing without collecting it first.
+    ///
+    /// # Errors
+    ///
+    /// [`StorageError::ListingTooLarge`] when more than `limit` objects exist,
+    /// plus the errors of [`Self::list`].
+    pub async fn list_bounded(
+        &self,
+        prefix: &Location,
+        limit: usize,
+    ) -> Result<Vec<ObjectEntry>, StorageError> {
+        let mut listing = self
             .file_io
             .list(prefix.to_dir_uri(), true)
             .await?
             .try_filter(|entry| std::future::ready(!entry.is_dir))
-            .map_err(StorageError::Io)
-            .and_then(|entry| {
-                std::future::ready(
-                    Location::parse_listed(&entry.path)
-                        .map(|location| ObjectEntry {
-                            location,
-                            size: entry.size,
-                            last_modified_ms: entry.last_modified_ms,
-                        })
-                        .map_err(StorageError::InvalidListing),
-                )
-            })
-            .try_collect()
-            .await?;
+            .map_err(StorageError::Io);
+        let mut entries = Vec::new();
+        while let Some(entry) = listing.try_next().await? {
+            let location =
+                Location::parse_listed(&entry.path).map_err(StorageError::InvalidListing)?;
+            entries.push(ObjectEntry {
+                location,
+                size: entry.size,
+                last_modified_ms: entry.last_modified_ms,
+            });
+            if entries.len() > limit {
+                return Err(StorageError::ListingTooLarge { limit });
+            }
+        }
         entries.sort();
         Ok(entries)
     }

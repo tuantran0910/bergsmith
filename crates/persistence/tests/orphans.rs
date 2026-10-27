@@ -123,9 +123,16 @@ async fn a_plan_and_its_receipts_carry_the_job_through_deletion(pool: PgPool) {
         (2, 10)
     );
 
-    let finished = orphans::finish_deletion(&mut conn, id, 2, epoch, "OrphanFilesRemoved")
-        .await
-        .unwrap();
+    let finished = orphans::end_deletion(
+        &mut conn,
+        id,
+        2,
+        epoch,
+        JobState::Succeeded,
+        "OrphanFilesRemoved",
+    )
+    .await
+    .unwrap();
     assert_eq!(finished.state, JobState::Succeeded);
     assert_eq!(finished.state_revision, 3);
     assert_eq!(finished.state_reason.as_deref(), Some("OrphanFilesRemoved"));
