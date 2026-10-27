@@ -51,6 +51,9 @@ pub struct CoordinatorConfig {
     /// Base planner limits for manual jobs.
     #[serde(default)]
     pub planner: PlannerConfig,
+    /// Snapshot-expiration safety settings.
+    #[serde(default)]
+    pub expiration: ExpirationSettings,
     /// Scheduler admission and timing.
     #[serde(default)]
     pub scheduler: SchedulerSettings,
@@ -77,6 +80,21 @@ pub struct CoordinatorConfig {
 }
 
 /// PostgreSQL connection settings.
+/// Snapshot-expiration policy that depends on the catalog.
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExpirationSettings {
+    /// Whether the catalog atomically rejects a `remove-snapshots` commit that
+    /// would remove a snapshot referenced by any branch or tag.
+    ///
+    /// False by default: a standard Iceberg catalog may drop a concurrently
+    /// created ref with the snapshot, so expiration stays disabled until an
+    /// operator certifies the behavior for this catalog.
+    #[serde(default)]
+    pub catalog_ref_safety: bool,
+}
+
+/// PostgreSQL connection and pool settings.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DatabaseSettings {

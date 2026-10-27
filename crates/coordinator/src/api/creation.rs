@@ -10,6 +10,7 @@
 
 use bergsmith_common::audit::AuditAction;
 use bergsmith_common::ids::{JobId, TableId};
+use bergsmith_common::job::JobOperation;
 use bergsmith_common::permission::{Permission, ResourceScope};
 use bergsmith_persistence::audit::NewAuditEvent;
 use bergsmith_persistence::idempotency::{self, IdempotencyKey, IdempotencyStatus, RecordOutcome};
@@ -26,6 +27,8 @@ pub(super) struct JobCreation {
     pub(super) key: IdempotencyKey,
     /// The canonical table the job maintains.
     pub(super) table_id: TableId,
+    /// The maintenance operation the job performs.
+    pub(super) operation: JobOperation,
     /// The terminal job this one retries, if any.
     pub(super) retry_of: Option<JobId>,
     /// The permission the requester must hold on the table.
@@ -78,6 +81,7 @@ pub(super) async fn create_job(
             id,
             organization_id: caller.organization_id,
             table_id: creation.table_id,
+            operation: creation.operation,
             retry_of: creation.retry_of,
             created_by: caller.principal_id,
         },

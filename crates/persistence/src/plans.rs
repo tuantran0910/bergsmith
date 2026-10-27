@@ -1,6 +1,6 @@
 //! Immutable plans and the tasks they define.
 
-use bergsmith_common::ids::{JobId, PlanId, TaskId};
+use bergsmith_common::ids::{JobId, PlanId, TableId, TaskId};
 use bergsmith_common::job::JobState;
 use bergsmith_common::task::TaskState;
 use chrono::{DateTime, Utc};
@@ -9,6 +9,29 @@ use uuid::Uuid;
 
 use crate::PersistenceError;
 use crate::jobs::lock_job;
+
+/// Serializes plan persistence and expiration preparation for one table.
+///
+/// The caller must already hold the job row lock, so the order is job then
+/// table everywhere. Expiration preparation takes this lock before its final
+/// pin check and intent insert, which closes the window between planning and
+/// publication for a snapshot newly pinned by a plan.
+///
+/// # Errors
+///
+/// Returns a database error.
+pub async fn lock_table_planning(
+    conn: &mut PgConnection,
+    table: TableId,
+) -> Result<(), PersistenceError> {
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtext('bergsmith.table-planning'), hashtext($1::text))",
+    )
+    .bind(table.as_uuid().to_string())
+    .execute(conn)
+    .await?;
+    Ok(())
+}
 
 /// Locks a planning job and its live coordinator epoch in the caller's transaction.
 ///
@@ -177,6 +200,43 @@ pub async fn create_plan(conn: &mut PgConnection, new: &NewPlan) -> Result<Plan,
             state: job.state,
             operation: "accept a plan",
         });
+    }
+    lock_table_planning(&mut tx, job.table_id).await?;
+    if let Some(snapshot_id) = new
+        .content
+        .pointer("/baseline/snapshot_id")
+        .and_then(|snapshot| {
+            snapshot
+                .as_i64()
+                .or_else(|| snapshot.as_str().and_then(|text| text.parse().ok()))
+        })
+    {
+        let expiring: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+                 SELECT 1 FROM expiration_plans e
+                 JOIN jobs j ON j.id = e.job_id
+                 WHERE j.organization_id = $1 AND j.table_identity_id = $2
+                   AND j.state NOT IN
+                       ('Succeeded', 'NoOp', 'Cancelled', 'ReplanRequired', 'Failed')
+                   AND e.content -> 'remove' @> jsonb_build_array($3)
+                 UNION ALL
+                 SELECT 1 FROM publication_intents i
+                 JOIN jobs j ON j.id = i.job_id
+                 WHERE j.organization_id = $1 AND j.table_identity_id = $2
+                   AND j.operation = 'ExpireSnapshots'
+                   AND j.state NOT IN
+                       ('Succeeded', 'NoOp', 'Cancelled', 'ReplanRequired', 'Failed')
+                   AND i.content -> 'remove' @> jsonb_build_array($3)
+             )",
+        )
+        .bind(job.organization_id.as_uuid())
+        .bind(job.table_id.as_uuid())
+        .bind(snapshot_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if expiring {
+            return Err(PersistenceError::SnapshotExpiring { snapshot_id });
+        }
     }
     let plan: Plan = sqlx::query_as::<_, PlanRow>(
         "INSERT INTO plans (id, job_id, content, content_hash) VALUES ($1, $2, $3, $4)

@@ -48,6 +48,13 @@ pub enum SnapshotEvidence {
     /// The table has no snapshot with the expected ID. This never proves
     /// that the commit was not published.
     Absent,
+    /// A metadata-only commit's expected post-state holds: the head is the
+    /// baseline head, every removed snapshot is absent, and every protected
+    /// snapshot is present.
+    ExpirationApplied,
+    /// A metadata-only commit's expected post-state is not visible yet.
+    /// This never proves the commit was not published.
+    ExpirationPending,
     /// Something other than the proposal is there. This is an integrity
     /// problem for an operator, never proof of either outcome.
     Mismatch(EvidenceMismatch),

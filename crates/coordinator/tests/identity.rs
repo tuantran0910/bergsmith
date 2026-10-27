@@ -10,6 +10,7 @@ mod support;
 
 use bergsmith_common::audit::{ActorKind, AuditAction, AuditOutcome};
 use bergsmith_common::ids::{JobId, OrganizationId, PrincipalId, RoleGrantId};
+use bergsmith_common::job::JobOperation;
 use bergsmith_common::permission::{GrantScope, Permission, ResourceScope, Role};
 use bergsmith_coordinator::identity::{
     administration, audit,
@@ -74,6 +75,7 @@ async fn planning_job(
             id,
             organization_id: fixtures.organization,
             table_id: fixtures.table,
+            operation: JobOperation::Compact,
             retry_of: None,
             created_by,
         },

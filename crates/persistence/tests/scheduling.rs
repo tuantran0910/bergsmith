@@ -6,7 +6,7 @@ mod support;
 use bergsmith_common::ids::{
     AttemptId, JobId, OrganizationId, PrincipalId, PublicationId, TaskId, WorkerSessionId,
 };
-use bergsmith_common::job::JobState;
+use bergsmith_common::job::{JobOperation, JobState};
 use bergsmith_persistence::{
     attempts, cancellation, jobs, plans, publications, scheduling as scheduler, workers,
 };
@@ -357,6 +357,7 @@ async fn a_paused_connection_cannot_borrow_another_connections_grant(pool: PgPoo
             id: JobId::generate(),
             organization_id: organization,
             table_id: table,
+            operation: JobOperation::Compact,
             retry_of: None,
             created_by: requester,
         },

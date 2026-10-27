@@ -2,7 +2,7 @@
 
 use bergsmith_common::health::{FindingKind, HealthTrigger, Severity};
 use bergsmith_common::ids::{JobId, OrganizationId, PrincipalId, TableId};
-use bergsmith_common::job::{JobState, PublicationContext};
+use bergsmith_common::job::{JobOperation, JobState, PublicationContext};
 use bergsmith_common::notifications::EventKind;
 use chrono::{DateTime, Utc};
 use sqlx::{Connection, PgConnection};
@@ -14,10 +14,10 @@ use crate::PersistenceError;
 /// `&'static str` literals.
 macro_rules! job_columns {
     () => {
-        "id, organization_id, table_identity_id, state, state_revision, state_reason, \
-         retry_of_job_id, created_by, created_at, updated_at, cancellation_requested_at, \
-         cancellation_requested_by, cancellation_reason, publication_started_at, deadline_at, \
-         trigger_finding, trigger_severity"
+        "id, organization_id, table_identity_id, operation, state, state_revision, \
+         state_reason, retry_of_job_id, created_by, created_at, updated_at, \
+         cancellation_requested_at, cancellation_requested_by, cancellation_reason, \
+         publication_started_at, deadline_at, trigger_finding, trigger_severity"
     };
 }
 pub(crate) use job_columns;
@@ -31,6 +31,8 @@ pub struct Job {
     pub organization_id: OrganizationId,
     /// The canonical table the job maintains.
     pub table_id: TableId,
+    /// What the job does.
+    pub operation: JobOperation,
     /// Current lifecycle state.
     pub state: JobState,
     /// Incremented by every state transition; writers supply the revision
@@ -83,6 +85,8 @@ pub struct NewJob {
     pub organization_id: OrganizationId,
     /// The canonical table to maintain; must belong to the organization.
     pub table_id: TableId,
+    /// What the job does.
+    pub operation: JobOperation,
     /// The terminal job this one retries, if any.
     pub retry_of: Option<JobId>,
     /// Who submitted the job.
@@ -156,6 +160,7 @@ pub(crate) struct JobRow {
     id: Uuid,
     organization_id: Uuid,
     table_identity_id: Uuid,
+    operation: String,
     state: String,
     state_revision: i64,
     state_reason: Option<String>,
@@ -180,6 +185,7 @@ impl TryFrom<JobRow> for Job {
             id: JobId::from_uuid(row.id),
             organization_id: OrganizationId::from_uuid(row.organization_id),
             table_id: TableId::from_uuid(row.table_identity_id),
+            operation: parse_job_operation(&row.operation)?,
             state: parse_job_state(&row.state)?,
             state_revision: row.state_revision,
             state_reason: row.state_reason,
@@ -255,6 +261,14 @@ fn trigger_from_row(
             value: format!("{finding:?}/{severity:?}"),
         }),
     }
+}
+
+/// Parses a stored job operation.
+fn parse_job_operation(value: &str) -> Result<JobOperation, PersistenceError> {
+    JobOperation::from_name(value).ok_or_else(|| PersistenceError::CorruptValue {
+        entity: "job operation",
+        value: value.to_owned(),
+    })
 }
 
 pub(crate) fn parse_job_state(value: &str) -> Result<JobState, PersistenceError> {
@@ -347,15 +361,16 @@ pub async fn create_job_with_trigger(
     let mut tx = conn.begin().await?;
     crate::tenancy::lock_table_connections(&mut tx, new.organization_id, new.table_id).await?;
     let job: Job = sqlx::query_as::<_, JobRow>(concat!(
-        "INSERT INTO jobs (id, organization_id, table_identity_id, state, retry_of_job_id,
-                           created_by, trigger_finding, trigger_severity)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        "INSERT INTO jobs (id, organization_id, table_identity_id, operation, state,
+                           retry_of_job_id, created_by, trigger_finding, trigger_severity)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING ",
         job_columns!()
     ))
     .bind(new.id.as_uuid())
     .bind(new.organization_id.as_uuid())
     .bind(new.table_id.as_uuid())
+    .bind(new.operation.as_str())
     .bind(JobState::Planning.as_str())
     .bind(new.retry_of.as_ref().map(JobId::as_uuid))
     .bind(new.created_by.as_uuid())

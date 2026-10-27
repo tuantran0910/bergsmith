@@ -4,7 +4,8 @@ use axum::http::HeaderMap;
 use axum::response::Response;
 use bergsmith_common::audit::AuditAction;
 use bergsmith_common::digest::Sha256Digest;
-use bergsmith_common::ids::TableId;
+use bergsmith_common::ids::{PrincipalId, TableId};
+use bergsmith_common::job::JobOperation;
 use bergsmith_common::permission::Permission;
 use bergsmith_persistence::auth::Session;
 use bergsmith_persistence::idempotency::IdempotencyKey;
@@ -18,6 +19,19 @@ use super::{ApiError, ApiState, Caller, accepted_job, json_body};
 #[serde(deny_unknown_fields)]
 pub(super) struct SubmitJob {
     table_id: TableId,
+    /// `compact` (the default) or `expire_snapshots`.
+    operation: Option<String>,
+}
+
+impl SubmitJob {
+    /// The operation this request names, defaulting to compaction.
+    fn job_operation(&self) -> Result<JobOperation, ApiError> {
+        match self.operation.as_deref() {
+            None | Some("compact") => Ok(JobOperation::Compact),
+            Some("expire_snapshots") => Ok(JobOperation::ExpireSnapshots),
+            Some(_) => Err(ApiError::invalid()),
+        }
+    }
 }
 
 pub(super) async fn submit(
@@ -27,6 +41,14 @@ pub(super) async fn submit(
     body: Result<Json<SubmitJob>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Response, ApiError> {
     let request = json_body(body)?;
+    let operation = request.job_operation()?;
+    if operation == JobOperation::ExpireSnapshots && !state.expiration_ref_safety {
+        return Err(ApiError::permanent(
+            axum::http::StatusCode::BAD_REQUEST,
+            "expiration_ref_safety_unavailable",
+            "configure_a_catalog_with_atomic_reference_protection",
+        ));
+    }
     let key = submission_key(&caller.0, &headers, &request)?;
     let id = creation::create_job(
         &state,
@@ -34,14 +56,40 @@ pub(super) async fn submit(
         JobCreation {
             key,
             table_id: request.table_id,
+            operation,
             retry_of: None,
             permission: Permission::SubmitJobs,
             audit_action: AuditAction::JobSubmitted,
-            audit_detail: json!({"table_id": request.table_id}),
+            audit_detail: json!({
+                "table_id": request.table_id,
+                "operation": operation.as_str(),
+            }),
         },
     )
     .await?;
     Ok(accepted_job(id, None))
+}
+
+/// The pre-operation request shape, used only for hashing.
+///
+/// A pre-upgrade submission had no `operation` field and must keep its hash so
+/// a retry with the original key still replays the original job.
+#[derive(Serialize)]
+struct LegacySubmitJob {
+    table_id: TableId,
+}
+
+fn canonical_submission(principal: PrincipalId, request: &SubmitJob) -> Result<Vec<u8>, ApiError> {
+    if request.operation.is_none() {
+        return serde_json::to_vec(&(
+            principal,
+            LegacySubmitJob {
+                table_id: request.table_id,
+            },
+        ))
+        .map_err(|_| ApiError::invalid());
+    }
+    serde_json::to_vec(&(principal, request)).map_err(|_| ApiError::invalid())
 }
 
 fn submission_key(
@@ -57,12 +105,38 @@ fn submission_key(
         })
         .ok_or_else(ApiError::invalid)?;
     // The actor is part of the hash: a key cannot reveal another actor's job.
-    let canonical =
-        serde_json::to_vec(&(caller.principal_id, request)).map_err(|_| ApiError::invalid())?;
+    let canonical = canonical_submission(caller.principal_id, request)?;
     Ok(IdempotencyKey {
         organization_id: caller.organization_id,
         key: key.into(),
         operation: "SubmitJob".into(),
         request_hash: Sha256Digest::of(b"bergsmith.api.submit-job.v1", &canonical).to_hex(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_legacy_compaction_hash_is_preserved() {
+        let principal = PrincipalId::generate();
+        let table = TableId::generate();
+        let request = SubmitJob {
+            table_id: table,
+            operation: None,
+        };
+        let legacy =
+            serde_json::to_vec(&(principal, serde_json::json!({ "table_id": table }))).unwrap();
+        assert_eq!(canonical_submission(principal, &request).unwrap(), legacy);
+
+        let expiration = SubmitJob {
+            table_id: table,
+            operation: Some("expire_snapshots".to_owned()),
+        };
+        assert_ne!(
+            canonical_submission(principal, &expiration).unwrap(),
+            legacy
+        );
+    }
 }

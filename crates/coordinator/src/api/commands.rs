@@ -157,12 +157,14 @@ pub(super) async fn retry(
         JobCreation {
             key,
             table_id: source.table_id,
+            operation: source.operation,
             retry_of: Some(id),
             permission: Permission::RetryJobs,
             audit_action: AuditAction::JobRetryRequested,
             audit_detail: json!({
                 "source_job_id": id,
                 "source_state": source.state,
+                "operation": source.operation.as_str(),
             }),
         },
     )

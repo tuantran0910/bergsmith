@@ -7650,7 +7650,8 @@
               "notification_delivery_failed",
               "destination_url_invalid",
               "destination_url_unavailable",
-              "notifications_secrets_dir_unconfigured"
+              "notifications_secrets_dir_unconfigured",
+              "expiration_ref_safety_unavailable"
             ]
           },
           "disposition": {
@@ -8331,7 +8332,8 @@
           "updated_at",
           "cancellation_requested",
           "publication_started",
-          "trigger"
+          "trigger",
+          "operation"
         ],
         "properties": {
           "id": {
@@ -8424,6 +8426,14 @@
                 "type": "null"
               }
             ]
+          },
+          "operation": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "expire_snapshots"
+            ],
+            "description": "The maintenance operation this job performs."
           }
         }
       },
@@ -9377,6 +9387,14 @@
           "table_id": {
             "type": "string",
             "format": "uuid"
+          },
+          "operation": {
+            "type": "string",
+            "enum": [
+              "compact",
+              "expire_snapshots"
+            ],
+            "description": "Maintenance operation: compact (default) or expire_snapshots. Snapshot expiration removes only snapshot entries and deletes no files."
           }
         }
       },

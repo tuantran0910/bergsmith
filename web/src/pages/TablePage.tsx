@@ -12,6 +12,7 @@ import { Metric, MetricGrid } from "../components/Metric";
 import { LoadingDetail, PageHeader } from "../components/Page";
 import { ResourceId } from "../components/ResourceId";
 import { TechnicalDetails } from "../components/TechnicalDetails";
+import { Confirm, uncertain } from "../components/Writes";
 import {
     aliasName,
     count,
@@ -61,6 +62,23 @@ export function TablePage({ id }: { id: string }) {
             ),
     });
 
+    const expire = useKeyedMutation(
+        (key: string) =>
+            call(
+                api.POST("/api/v1/jobs", {
+                    params: {
+                        header: { "Idempotency-Key": key, ...csrfHeader() },
+                    },
+                    body: { table_id: id, operation: "expire_snapshots" },
+                }),
+            ),
+        (accepted) => {
+            void navigate({
+                to: "/jobs/$jobId",
+                params: { jobId: accepted.job_id },
+            });
+        },
+    );
     const submit = useKeyedMutation(
         (key: string) =>
             call(
@@ -161,6 +179,17 @@ export function TablePage({ id }: { id: string }) {
                                     ? "Submitting…"
                                     : "Run maintenance"}
                             </Button>
+                            <Confirm
+                                label="Expire snapshots"
+                                description="Removes snapshot entries older than the table's retention settings and the connection's execution and publication bounds. Running jobs' snapshots, every branch and tag, and anything newer are kept. No data or metadata files are deleted."
+                                pending={
+                                    expire.isPending || uncertain(expire.error)
+                                }
+                                error={expire.error}
+                                onConfirm={() => {
+                                    expire.mutate(undefined);
+                                }}
+                            />
                         </>
                     ) : undefined
                 }

@@ -16,7 +16,7 @@ use bergsmith_common::ids::{
     AttemptId, CatalogConnectionId, JobId, OrganizationId, PlanId, PrincipalId, TableId, TaskId,
     WorkerPoolTokenId, WorkerSessionId,
 };
-use bergsmith_common::job::JobState;
+use bergsmith_common::job::{JobOperation, JobState};
 use bergsmith_common::permission::{GrantScope, Role};
 use bergsmith_persistence::PersistenceError;
 use bergsmith_persistence::attempts::{self, Attempt, NewGrant};
@@ -228,6 +228,7 @@ pub(crate) async fn job(conn: &mut PgConnection, tenant: &Tenant) -> JobId {
             id,
             organization_id: tenant.organization,
             table_id: tenant.table,
+            operation: JobOperation::Compact,
             retry_of: None,
             created_by: tenant.user,
         },

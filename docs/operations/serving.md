@@ -103,6 +103,17 @@ The JSON document is validated before any listener starts. A minimal document:
 | `statistics` | Metadata-only sampling: interval, retention, page and connection bounds, and the sample's manifest-entry and histogram limits ([ADR 0057](../adr/0057-metadata-only-table-statistics.md)) |
 | `observability` | Optional metrics listener and ledger snapshot bounds ([observability](observability.md)) |
 | `notifications` | Outbound destinations: allowed hosts, signing-secret directory, request timeout ([ADR 0060](../adr/0060-notification-destinations-and-durable-delivery.md)) |
+| `expiration` | Catalog reference safety for snapshot expiration (`catalog_ref_safety`) |
+
+`expiration.catalog_ref_safety` is false by default. Enabling snapshot
+expiration requires an operator to verify that the catalog rejects a
+`remove-snapshots` commit atomically when any listed snapshot is referenced by
+a branch or tag. A standard REST catalog may drop a concurrently created ref
+with the snapshot; Bergsmith cannot close that race from the client, so
+submission answers 400 `expiration_ref_safety_unavailable` until the setting is
+enabled. A restart with the setting off also fails any prepared but unsent
+expiration job before its first send; an already authorized send is recovered
+from evidence rather than resent.
 
 `notifications.allowed_hosts` is the complete list of hosts a destination URL
 may name; an empty list allows none, and a literal link-local address is

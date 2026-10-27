@@ -102,6 +102,8 @@ pub enum NoOpReason {
     NoSnapshot,
     /// No bin is beneficial and within the job limits.
     NoBeneficialWork,
+    /// Every remaining snapshot is younger than the retention cutoff or pinned.
+    NoExpiredSnapshots,
 }
 
 impl NoOpReason {
@@ -111,6 +113,7 @@ impl NoOpReason {
         match self {
             Self::NoSnapshot => "no_snapshot",
             Self::NoBeneficialWork => "no_beneficial_work",
+            Self::NoExpiredSnapshots => "no_expired_snapshots",
         }
     }
 }

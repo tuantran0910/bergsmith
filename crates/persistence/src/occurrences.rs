@@ -23,6 +23,7 @@
 use bergsmith_common::audit::{ActorKind, AuditAction, AuditOutcome};
 use bergsmith_common::health::{HealthThresholds, HealthTrigger, HealthVerdict};
 use bergsmith_common::ids::{JobId, OrganizationId, PolicyId, PrincipalId, ScheduleId, TableId};
+use bergsmith_common::job::JobOperation;
 use bergsmith_common::notifications::EventKind;
 use bergsmith_common::schedule::CronSchedule;
 use bergsmith_common::window::MaintenanceWindow;
@@ -893,6 +894,7 @@ async fn admit_or_coalesce(
                 id: JobId::generate(),
                 organization_id: OrganizationId::from_uuid(schedule.organization_id),
                 table_id: TableId::from_uuid(schedule.table_identity_id),
+                operation: JobOperation::Compact,
                 retry_of: None,
                 created_by: PrincipalId::from_uuid(schedule.service_principal_id),
             },

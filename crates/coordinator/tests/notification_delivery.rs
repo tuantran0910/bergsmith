@@ -11,7 +11,7 @@ use std::time::Duration;
 use bergsmith_common::ids::{
     CatalogConnectionId, JobId, NotificationDestinationId, OrganizationId, PrincipalId, TableId,
 };
-use bergsmith_common::job::JobState;
+use bergsmith_common::job::{JobOperation, JobState};
 use bergsmith_common::notifications::{AllowList, EventKind};
 use bergsmith_coordinator::notifications::delivery::{BACKOFF, DeliveryLoop, MAX_ATTEMPTS};
 use bergsmith_coordinator::notifications::{DeliveryClient, Settings};
@@ -448,6 +448,7 @@ async fn a_failed_job_enqueues_a_delivery_in_its_transaction(pool: PgPool) {
             id: JobId::generate(),
             organization_id: tenant.organization,
             table_id: table,
+            operation: JobOperation::Compact,
             retry_of: None,
             created_by: tenant.user,
         },

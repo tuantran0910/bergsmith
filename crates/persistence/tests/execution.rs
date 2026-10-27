@@ -4,7 +4,7 @@
 mod support;
 
 use bergsmith_common::ids::{JobId, PlanId, PublicationId};
-use bergsmith_common::job::JobState;
+use bergsmith_common::job::{JobOperation, JobState};
 use bergsmith_common::task::{AttemptState, TaskState};
 use bergsmith_persistence::PersistenceError;
 use bergsmith_persistence::attempts::{
@@ -72,6 +72,7 @@ async fn jobs_cannot_reference_another_organizations_table(pool: PgPool) {
             id: JobId::generate(),
             organization_id: globex.organization,
             table_id: acme.table,
+            operation: JobOperation::Compact,
             retry_of: None,
             created_by: globex.user,
         },
@@ -114,6 +115,7 @@ async fn a_retry_links_to_the_job_it_retries(pool: PgPool) {
             id: JobId::generate(),
             organization_id: tenant.organization,
             table_id: tenant.table,
+            operation: JobOperation::Compact,
             retry_of: Some(original),
             created_by: tenant.user,
         },

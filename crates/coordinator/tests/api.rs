@@ -147,6 +147,7 @@ impl Browser {
             previews,
             event_hub(),
             notifications(),
+            true,
         )
         .await
     }
@@ -166,6 +167,26 @@ impl Browser {
             previewer(),
             events,
             notifications(),
+            true,
+        )
+        .await
+    }
+
+    async fn without_expiration_ref_safety(
+        pool: &PgPool,
+        tenant: &support::Tenant,
+        principal: PrincipalId,
+        subject: &str,
+    ) -> Self {
+        Self::with_state(
+            pool,
+            tenant,
+            principal,
+            subject,
+            previewer(),
+            event_hub(),
+            notifications(),
+            false,
         )
         .await
     }
@@ -185,10 +206,15 @@ impl Browser {
             previewer(),
             event_hub(),
             notifications,
+            true,
         )
         .await
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one test fixture keeps every API dependency explicit"
+    )]
     async fn with_state(
         pool: &PgPool,
         tenant: &support::Tenant,
@@ -197,6 +223,7 @@ impl Browser {
         previews: CatalogPreviewer,
         events: JobEventHub,
         notifications: bergsmith_coordinator::notifications::DeliveryClient,
+        expiration_ref_safety: bool,
     ) -> Self {
         let config = SessionConfig {
             secure: false,
@@ -230,6 +257,7 @@ impl Browser {
                 }),
                 discovery: discovery(pool),
                 notifications,
+                expiration_ref_safety,
             }),
             cookie: format!("{}={}", config.cookie_name, issued.token.expose()),
             csrf: issued.csrf.expose().into(),
@@ -282,6 +310,7 @@ fn router_with(pool: &PgPool, config: SessionConfig) -> Router {
         checks: CapabilityChecker::default(),
         discovery: discovery(pool),
         notifications: notifications(),
+        expiration_ref_safety: true,
     })
 }
 
@@ -721,6 +750,86 @@ async fn submission_is_atomic_idempotent_and_actor_bound_under_concurrency(pool:
         .await
         .1;
     assert_ne!(next["items"][0]["id"], audit.1["items"][0]["id"]);
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_submission_records_its_operation(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    let admin = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+
+    let (status, accepted) = admin
+        .request(
+            "POST",
+            "/api/v1/jobs",
+            Some(json!({
+                "table_id": tenant.table,
+                "operation": "expire_snapshots",
+            })),
+            Some("expire"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");
+    let id = accepted["job_id"].as_str().unwrap();
+    let (status, job) = admin
+        .request("GET", &format!("/api/v1/jobs/{id}"), None, None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{job}");
+    assert_eq!(job["operation"], "expire_snapshots");
+
+    let (status, body) = admin
+        .request(
+            "POST",
+            "/api/v1/jobs",
+            Some(json!({"table_id": tenant.table, "operation": "vacuum"})),
+            Some("bad-operation"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    let (status, accepted) = admin
+        .request(
+            "POST",
+            "/api/v1/jobs",
+            Some(json!({"table_id": tenant.table})),
+            Some("default"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");
+    let id = accepted["job_id"].as_str().unwrap();
+    let (_, job) = admin
+        .request("GET", &format!("/api/v1/jobs/{id}"), None, None)
+        .await;
+    assert_eq!(job["operation"], "compact");
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn expiration_is_refused_without_catalog_reference_safety(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    let browser =
+        Browser::without_expiration_ref_safety(&pool, &tenant, tenant.user, "alice").await;
+    let (status, body) = browser
+        .request(
+            "POST",
+            "/api/v1/jobs",
+            Some(json!({
+                "table_id": tenant.table,
+                "operation": "expire_snapshots",
+            })),
+            Some("unsafe"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["reason"], "expiration_ref_safety_unavailable");
+    let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE organization_id = $1")
+        .bind(tenant.organization.as_uuid())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(jobs, 0);
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]

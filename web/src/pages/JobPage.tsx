@@ -162,7 +162,9 @@ function JobDetail({ job }: { job: Job }) {
 
             <div className="grid gap-4 md:grid-cols-2">
                 <Lane title="Execution" status={executionStatus(job)}>
-                    The rewrite work that workers do.
+                    {job.operation === "expire_snapshots"
+                        ? "Metadata-only work: no worker tasks."
+                        : "The rewrite work that workers do."}
                 </Lane>
                 <Lane title="Publication" status={publicationStatus(job)}>
                     The catalog commit. Only a confirmed publication changed the
@@ -294,6 +296,12 @@ function JobFacts({
         <Card>
             <CardContent className="grid gap-4">
                 <dl className="m-0 grid gap-x-6 gap-y-3 sm:grid-cols-[max-content_1fr]">
+                    <dt className="text-muted-foreground">Operation</dt>
+                    <dd className="m-0">
+                        {job.operation === "expire_snapshots"
+                            ? "Snapshot expiration"
+                            : "Compaction"}
+                    </dd>
                     <dt className="text-muted-foreground">State</dt>
                     <dd className="m-0">
                         {job.state} (revision {job.revision})
