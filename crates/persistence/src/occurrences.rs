@@ -23,6 +23,7 @@
 use bergsmith_common::audit::{ActorKind, AuditAction, AuditOutcome};
 use bergsmith_common::health::{HealthThresholds, HealthTrigger, HealthVerdict};
 use bergsmith_common::ids::{JobId, OrganizationId, PolicyId, PrincipalId, ScheduleId, TableId};
+use bergsmith_common::notifications::EventKind;
 use bergsmith_common::schedule::CronSchedule;
 use bergsmith_common::window::MaintenanceWindow;
 use chrono::{DateTime, Utc};
@@ -32,6 +33,7 @@ use uuid::Uuid;
 
 use crate::audit::NewAuditEvent;
 use crate::jobs::{self, NewJob};
+use crate::notifications::{DeliveryEvent, enqueue_event};
 use crate::tenancy::ExecutionRoute;
 use crate::{PersistenceError, audit, schedules};
 
@@ -854,14 +856,36 @@ async fn admit_or_coalesce(
     .fetch_optional(&mut *conn)
     .await?;
     let occurrence = if let Some(blocking) = blocking {
-        finish(
+        let occurrence = finish(
             conn,
             occurrence.id,
             "Coalesced",
             Some(blocking),
             Some("TableBusy"),
         )
-        .await?
+        .await?;
+        enqueue_event(
+            conn,
+            &DeliveryEvent {
+                organization_id: OrganizationId::from_uuid(schedule.organization_id),
+                event_kind: EventKind::OccurrenceMissed,
+                source_key: format!("occurrence:{}", occurrence.id),
+                occurred_at: first,
+                summary: format!(
+                    "Schedule {} coalesced an occurrence behind a running job",
+                    ScheduleId::from_uuid(schedule.id)
+                ),
+                resource_kind: "schedule".to_owned(),
+                resource_id: ScheduleId::from_uuid(schedule.id).to_string(),
+                resource_label: None,
+                reason: Some("TableBusy".to_owned()),
+                connection_id: None,
+                table_id: Some(TableId::from_uuid(schedule.table_identity_id)),
+                pools: Vec::new(),
+            },
+        )
+        .await?;
+        occurrence
     } else {
         let job = jobs::create_job_with_trigger(
             conn,
@@ -1011,6 +1035,28 @@ async fn skip(
     .await
     .map_err(|error| PersistenceError::from_write("schedule occurrence", error))?;
     let occurrence: Occurrence = row.try_into()?;
+    enqueue_event(
+        conn,
+        &DeliveryEvent {
+            organization_id: OrganizationId::from_uuid(schedule.organization_id),
+            event_kind: EventKind::OccurrenceMissed,
+            source_key: format!("occurrence:{}", occurrence.id),
+            occurred_at: first,
+            summary: format!(
+                "Schedule {} missed an occurrence: {}",
+                ScheduleId::from_uuid(schedule.id),
+                reason.as_str()
+            ),
+            resource_kind: "schedule".to_owned(),
+            resource_id: ScheduleId::from_uuid(schedule.id).to_string(),
+            resource_label: None,
+            reason: Some(reason.as_str().to_owned()),
+            connection_id: None,
+            table_id: Some(TableId::from_uuid(schedule.table_identity_id)),
+            pools: Vec::new(),
+        },
+    )
+    .await?;
     if reason.audited() {
         audit::record(
             conn,

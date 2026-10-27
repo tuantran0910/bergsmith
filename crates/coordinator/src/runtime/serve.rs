@@ -217,6 +217,17 @@ pub async fn serve(config: CoordinatorConfig) -> Result<(), ServeError> {
             ("statistics", Ok(()))
         });
     }
+    {
+        let shutdown = shutdown.clone();
+        let interval = Duration::from_millis(config.notifications.delivery_interval_millis);
+        let client = crate::notifications::DeliveryClient::new(&config.notifications.policy()?)
+            .map_err(|error| ConfigError::Invalid(format!("notifications: {error}")))?;
+        let delivery = crate::notifications::DeliveryLoop::new(database.clone(), client);
+        tasks.spawn(async move {
+            delivery.run(interval, shutdown.wait()).await;
+            ("notification delivery", Ok(()))
+        });
+    }
     let first = tokio::select! {
         () = shutdown.wait() => None,
         joined = tasks.join_next() => Some(joined),

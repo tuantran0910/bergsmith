@@ -749,6 +749,9 @@ pub struct NotificationsSettings {
     /// Timeout for one delivery request.
     #[serde(default = "default_notification_timeout_seconds")]
     pub request_timeout_seconds: u64,
+    /// How often the leader claims due deliveries.
+    #[serde(default = "default_notification_delivery_millis")]
+    pub delivery_interval_millis: u64,
 }
 
 impl Default for NotificationsSettings {
@@ -757,6 +760,7 @@ impl Default for NotificationsSettings {
             allowed_hosts: Vec::new(),
             secrets_dir: None,
             request_timeout_seconds: default_notification_timeout_seconds(),
+            delivery_interval_millis: default_notification_delivery_millis(),
         }
     }
 }
@@ -778,6 +782,11 @@ impl NotificationsSettings {
                 "notifications.request_timeout_seconds must be 1 to 60".into(),
             ));
         }
+        if !(1_000..=300_000).contains(&self.delivery_interval_millis) {
+            return Err(ConfigError::Invalid(
+                "notifications.delivery_interval_millis must be 1000 to 300000".into(),
+            ));
+        }
         Ok(crate::notifications::Settings::new(
             allow_list,
             self.secrets_dir.clone(),
@@ -788,6 +797,10 @@ impl NotificationsSettings {
 
 fn default_notification_timeout_seconds() -> u64 {
     10
+}
+
+fn default_notification_delivery_millis() -> u64 {
+    15_000
 }
 
 /// Metrics settings (BS-020.T2).

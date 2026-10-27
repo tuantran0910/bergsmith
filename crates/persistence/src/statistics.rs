@@ -1017,3 +1017,46 @@ pub async fn prune_snapshots(
     .await?;
     Ok(result.rows_affected())
 }
+
+/// Records the newest observed health state and reports whether the table
+/// entered Critical.
+///
+/// The previous state is read under the row lock, so two collectors cannot both
+/// observe the same transition. A table with no assessment stores `NULL`;
+/// recovery to a milder state lets a later Critical entry alert again.
+///
+/// # Errors
+///
+/// Database errors.
+pub async fn record_health_state(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    table_identity_id: TableId,
+    state: Option<&str>,
+    at: DateTime<Utc>,
+) -> Result<bool, PersistenceError> {
+    let previous: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT state FROM table_health_states
+         WHERE organization_id = $1 AND table_identity_id = $2
+         FOR UPDATE",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(table_identity_id.as_uuid())
+    .fetch_optional(&mut *conn)
+    .await?;
+    let previous = previous.flatten();
+    sqlx::query(
+        "INSERT INTO table_health_states
+             (organization_id, table_identity_id, state, observed_at)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (organization_id, table_identity_id) DO UPDATE
+         SET state = EXCLUDED.state, observed_at = EXCLUDED.observed_at",
+    )
+    .bind(organization_id.as_uuid())
+    .bind(table_identity_id.as_uuid())
+    .bind(state)
+    .bind(at)
+    .execute(&mut *conn)
+    .await?;
+    Ok(previous.as_deref() != Some("critical") && state == Some("critical"))
+}

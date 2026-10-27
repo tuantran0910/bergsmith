@@ -20,11 +20,13 @@
 //! *when* to send lives in the delivery loop (BS-029.T3).
 
 pub mod client;
+pub mod delivery;
 pub mod payload;
 pub mod secret;
 pub mod signature;
 
 pub use client::{Delivery, DeliveryClient, DeliveryError, Target};
+pub use delivery::DeliveryLoop;
 pub use payload::{Event, ResourceRef};
 pub use secret::{SecretError, read_secret};
 pub use signature::{SIGNATURE_TIMESTAMP, header_value, mac_hex};
