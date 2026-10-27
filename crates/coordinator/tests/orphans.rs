@@ -700,6 +700,35 @@ async fn a_revoked_requester_stops_deletion(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_deactivated_requester_fails_at_the_batch_fence(pool: PgPool) {
+    let mut run = setup(&pool).await;
+    let mut conn = pool.acquire().await.unwrap();
+    planner(&run, enabled(50)).pass().await.unwrap();
+    // Deactivation keeps the grants, so binding still succeeds and the batch
+    // fence is the guard that has to stop the deletion. The fixture's user is
+    // the last administrator, so the guard that refuses that deactivation is
+    // bypassed deliberately here.
+    sqlx::query("UPDATE principals SET deactivated_at = now() WHERE id = $1")
+        .bind(run.tenant.user.as_uuid())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    let summary = publication(&run, enabled(50)).pass().await.unwrap();
+    assert_eq!(summary.failed, 1);
+    let job = jobs::job(&mut conn, run.tenant.organization, run.job.id)
+        .await
+        .unwrap();
+    assert_eq!(job.state, JobState::Failed);
+    assert_eq!(
+        job.state_reason.as_deref(),
+        Some("ExecutionAuthorityRevoked"),
+        "the batch fence rechecks the requester"
+    );
+    assert!(run.orphan_data.exists(), "nothing is deleted");
+    run.server.reset();
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
 async fn a_resumed_job_without_a_plan_fails(pool: PgPool) {
     let mut run = setup(&pool).await;
     let mut conn = pool.acquire().await.unwrap();

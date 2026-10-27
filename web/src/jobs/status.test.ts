@@ -177,7 +177,7 @@ describe("orphan cleanup labels", () => {
         Planning: "Planning cleanup",
         ReadyToCommit: "Plan ready",
         Deleting: "Deleting unreferenced files",
-        Succeeded: "Files removed",
+        Succeeded: "Cleanup finished",
         NoOp: "No orphan files",
         Cancelled: "Stopped: cancelled",
         Failed: "Failed",

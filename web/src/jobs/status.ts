@@ -58,7 +58,9 @@ export function executionStatus(job: Boundary): StatusLine {
                     tone: "warning",
                 };
             case "Succeeded":
-                return { label: "Files removed", tone: "ok" };
+                // Completion means every candidate was resolved; a batch may
+                // have skipped every one, so do not claim files were removed.
+                return { label: "Cleanup finished", tone: "ok" };
             case "NoOp":
                 return { label: "No orphan files", tone: "neutral" };
             case "Cancelled":
