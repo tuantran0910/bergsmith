@@ -173,3 +173,36 @@ async fn sessions_are_listed_per_organization_with_status_and_cursor(pool: PgPoo
     assert_eq!(rest[0].id, expected[1]);
     assert_eq!(SessionStatus::Live.as_str(), "live");
 }
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn inventory_pages_group_interleaved_table_ids_by_organization(pool: PgPool) {
+    use uuid::Uuid;
+    let mut conn = pool.acquire().await.unwrap();
+    let mut expected = Vec::new();
+    for index in 0..3_u128 {
+        let organization = support::organization(&mut conn, &format!("tenant-{index}")).await;
+        let connection = support::connection(&mut conn, organization, "main").await;
+        let ids: Vec<_> = (0..300_u128)
+            .map(|n| Uuid::from_u128(3 * n + index + 1))
+            .collect();
+        sqlx::query("INSERT INTO table_identities (id, organization_id, table_uuid) SELECT id, $1, id FROM unnest($2::uuid[]) id")
+            .bind(organization.as_uuid()).bind(&ids).execute(&mut *conn).await.unwrap();
+        sqlx::query("INSERT INTO table_aliases (catalog_connection_id, namespace, table_name, organization_id, table_identity_id) SELECT $1, ARRAY['db'], id::text, $2, id FROM unnest($3::uuid[]) id")
+            .bind(connection.as_uuid()).bind(organization.as_uuid()).bind(&ids)
+            .execute(&mut *conn).await.unwrap();
+        expected.extend(ids.into_iter().map(|id| (*organization.as_uuid(), id)));
+    }
+    expected.sort_unstable();
+    let mut actual = Vec::new();
+    let mut after = None;
+    loop {
+        let page = metrics::inventory_page(&mut conn, after).await.unwrap();
+        if page.is_empty() {
+            break;
+        }
+        assert!(page.len() <= 256);
+        actual.extend(page.into_iter().map(|t| (t.organization_id, t.id)));
+        after = actual.last().copied();
+    }
+    assert_eq!(actual, expected);
+}

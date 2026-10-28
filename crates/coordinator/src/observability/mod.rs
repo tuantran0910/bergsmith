@@ -5,9 +5,11 @@
 //! single read per refresh interval and the values survive restarts and
 //! leadership changes. Worker RPC latency is process-local. No label or value
 //! is taken from a credential, a URL, or free-form text: labels are states,
-//! stable reason codes, dispositions, and RPC method names.
+//! stable reason codes, dispositions, RPC method names, connection UUIDs,
+//! and opt-in table UUIDs.
 
 mod exposition;
+mod health;
 mod rpc;
 
 use std::collections::BTreeMap;
@@ -21,6 +23,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use bergsmith_persistence::Database;
 use bergsmith_persistence::metrics::{self, LedgerSnapshot};
+use sqlx::Connection as _;
 
 use exposition::{CONTENT_TYPE, Exposition, Kind};
 pub use rpc::{RpcLatency, RpcLatencyLayer, RpcMetrics};
@@ -48,8 +51,14 @@ const SESSION_STATUSES: [&str; 3] = ["live", "draining", "expired"];
 pub struct MetricsConfig {
     /// A snapshot younger than this is served from cache.
     pub refresh: Duration,
-    /// Statement timeout for the snapshot, and the wait for a connection.
+    /// Ledger statement timeout and connection-acquisition bound.
     pub query_timeout: Duration,
+    /// Independent whole-scan, statement, and acquisition timeout for health metrics.
+    pub health_query_timeout: Duration,
+    /// Emit table UUID labels in addition to connection aggregates.
+    pub per_table_metrics: bool,
+    /// Maximum tables whose individual series are exposed, in UUID order.
+    pub max_table_metrics: usize,
 }
 
 impl Default for MetricsConfig {
@@ -57,15 +66,18 @@ impl Default for MetricsConfig {
         Self {
             refresh: Duration::from_secs(15),
             query_timeout: Duration::from_secs(5),
+            health_query_timeout: Duration::from_secs(5),
+            per_table_metrics: false,
+            max_table_metrics: 1000,
         }
     }
 }
 
 #[derive(Debug, Default)]
-struct Cache {
+struct Cache<T> {
     attempted: Option<Instant>,
     succeeded: bool,
-    snapshot: Option<(Instant, LedgerSnapshot)>,
+    snapshot: Option<(Instant, Arc<T>)>,
 }
 
 /// Shared metrics state for the coordinator process.
@@ -74,7 +86,8 @@ pub struct Observability {
     database: Database,
     config: MetricsConfig,
     rpc: RpcMetrics,
-    cache: Arc<tokio::sync::Mutex<Cache>>,
+    ledger_cache: Arc<tokio::sync::Mutex<Cache<LedgerSnapshot>>>,
+    health_cache: Arc<tokio::sync::Mutex<Cache<health::Snapshot>>>,
 }
 
 impl Observability {
@@ -85,7 +98,8 @@ impl Observability {
             database,
             config,
             rpc: RpcMetrics::default(),
-            cache: Arc::new(tokio::sync::Mutex::new(Cache::default())),
+            ledger_cache: Arc::new(tokio::sync::Mutex::new(Cache::default())),
+            health_cache: Arc::new(tokio::sync::Mutex::new(Cache::default())),
         }
     }
 
@@ -100,9 +114,24 @@ impl Observability {
     ///
     /// A failed ledger read is reported as `bergsmith_ledger_up 0` and the
     /// last good snapshot, if any, is still exposed with its age. A failed
-    /// read is not retried until the refresh interval passes.
+    /// read is not retried until the refresh interval passes. Health/statistics
+    /// refreshes independently with its own up and age metrics; its failures
+    /// do not prevent fresh ledger values from being exposed.
     pub async fn render(&self) -> String {
-        let (up, snapshot) = self.snapshot().await;
+        let ((up, snapshot), (health_up, health)) = tokio::join!(
+            cached(
+                &self.ledger_cache,
+                self.config.refresh,
+                || Box::pin(self.read_ledger()),
+                "ledger",
+            ),
+            cached(
+                &self.health_cache,
+                self.config.refresh,
+                || Box::pin(self.read_health()),
+                "health",
+            ),
+        );
         let mut out = Exposition::default();
         out.family(
             "bergsmith_build_info",
@@ -133,38 +162,34 @@ impl Observability {
             );
             write_ledger(&mut out, &snapshot);
         }
+        out.family(
+            "bergsmith_health_metrics_up",
+            Kind::Gauge,
+            "Whether the last health/statistics metrics scan succeeded.",
+        );
+        out.sample(
+            "bergsmith_health_metrics_up",
+            &[],
+            if health_up { 1.0 } else { 0.0 },
+        );
+        if let Some((age, health)) = health {
+            out.family(
+                "bergsmith_health_metrics_snapshot_age_seconds",
+                Kind::Gauge,
+                "Age of the independent health/statistics metrics snapshot.",
+            );
+            out.sample(
+                "bergsmith_health_metrics_snapshot_age_seconds",
+                &[],
+                age.as_secs_f64(),
+            );
+            health.write(&mut out);
+        }
         self.rpc.write(&mut out);
         out.finish()
     }
 
-    async fn snapshot(&self) -> (bool, Option<(Duration, LedgerSnapshot)>) {
-        let mut cache = self.cache.lock().await;
-        let stale = cache
-            .attempted
-            .is_none_or(|attempted| attempted.elapsed() >= self.config.refresh);
-        if stale {
-            cache.attempted = Some(Instant::now());
-            match self.read().await {
-                Ok(snapshot) => {
-                    cache.succeeded = true;
-                    cache.snapshot = Some((Instant::now(), snapshot));
-                }
-                Err(reason) => {
-                    cache.succeeded = false;
-                    tracing::warn!(reason, "ledger metrics snapshot failed");
-                }
-            }
-        }
-        (
-            cache.succeeded,
-            cache
-                .snapshot
-                .as_ref()
-                .map(|(taken, snapshot)| (taken.elapsed(), snapshot.clone())),
-        )
-    }
-
-    async fn read(&self) -> Result<LedgerSnapshot, &'static str> {
+    async fn read_ledger(&self) -> Result<LedgerSnapshot, &'static str> {
         let timeout = self.config.query_timeout;
         let mut conn = tokio::time::timeout(timeout, self.database.pool().acquire())
             .await
@@ -174,6 +199,63 @@ impl Observability {
             .await
             .map_err(|_| "query_failed")
     }
+
+    async fn read_health(&self) -> Result<health::Snapshot, &'static str> {
+        let timeout = self.config.health_query_timeout;
+        let mut conn = tokio::time::timeout(timeout, self.database.pool().acquire())
+            .await
+            .map_err(|_| "connection_timeout")?
+            .map_err(|_| "connection_unavailable")?;
+        tokio::time::timeout(timeout, async {
+            let mut tx = conn.begin().await?;
+            sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("SELECT set_config('statement_timeout', $1, true)")
+                .bind(timeout.as_millis().max(1).to_string())
+                .execute(&mut *tx)
+                .await?;
+            let now = sqlx::query_scalar("SELECT transaction_timestamp()")
+                .fetch_one(&mut *tx)
+                .await?;
+            let health = health::Snapshot::read(&mut tx, self.config, now).await?;
+            tx.commit().await?;
+            Ok::<_, bergsmith_persistence::PersistenceError>(health)
+        })
+        .await
+        .map_err(|_| "query_timeout")?
+        .map_err(|_| "query_failed")
+    }
+}
+
+/// Serializes refreshes for one component, preserving only complete successes.
+async fn cached<T, F: Future<Output = Result<T, &'static str>>>(
+    cache: &tokio::sync::Mutex<Cache<T>>,
+    refresh: Duration,
+    read: impl FnOnce() -> F,
+    component: &'static str,
+) -> (bool, Option<(Duration, Arc<T>)>) {
+    let mut cache = cache.lock().await;
+    if cache.attempted.is_none_or(|at| at.elapsed() >= refresh) {
+        cache.attempted = Some(Instant::now());
+        match read().await {
+            Ok(snapshot) => {
+                cache.succeeded = true;
+                cache.snapshot = Some((Instant::now(), Arc::new(snapshot)));
+            }
+            Err(reason) => {
+                cache.succeeded = false;
+                tracing::warn!(component, reason, "metrics snapshot failed");
+            }
+        }
+    }
+    (
+        cache.succeeded,
+        cache
+            .snapshot
+            .as_ref()
+            .map(|(at, snapshot)| (at.elapsed(), snapshot.clone())),
+    )
 }
 
 /// Whether `database` answers a trivial query within the readiness timeout.
