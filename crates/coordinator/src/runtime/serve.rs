@@ -354,6 +354,7 @@ async fn start(
             constraint: error.to_string(),
         })
     })?;
+    let metadata_rewrites = config.metadata_rewrites()?;
     let notification_settings = config.notifications.policy()?;
     let notifications = crate::notifications::DeliveryClient::new(&notification_settings)
         .map_err(|error| ConfigError::Invalid(format!("notifications: {error}")))?;
@@ -367,6 +368,7 @@ async fn start(
         notifications,
         expiration_ref_safety: config.expiration.catalog_ref_safety,
         orphans_enabled: orphan_settings.enabled(),
+        metadata_rewrites,
     };
     let identity = IdentityState::new(database.clone(), Arc::new(provider), sessions);
 
@@ -411,7 +413,8 @@ async fn start(
             entity: "planner",
             constraint: error.to_string(),
         })
-    })?;
+    })?
+    .with_metadata_rewrites(metadata_rewrites);
     let publication = PublicationService::new(
         database.pool().clone(),
         catalogs.clone(),
@@ -436,7 +439,9 @@ async fn start(
             })
         })?,
     ));
-    let publication = publication.with_statistics(statistics.clone());
+    let publication = publication
+        .with_statistics(statistics.clone())
+        .with_metadata_rewrites(metadata_rewrites);
 
     let observability = Observability::new(
         database.clone(),

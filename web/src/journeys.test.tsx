@@ -1344,6 +1344,72 @@ describe("preview and run", () => {
         });
     });
 
+    it.each([
+        ["Rewrite manifests", "rewrite_manifests"],
+        ["Remove dangling deletes", "remove_dangling_deletes"],
+    ] as const)("submits %s as its own operation", async (label, operation) => {
+        fake.on("POST", "/api/v1/jobs", () =>
+            json(
+                202,
+                schema("AcceptedJob", {
+                    operation_id: JOB_ID,
+                    job_id: JOB_ID,
+                    resource_url: `/api/v1/jobs/${JOB_ID}`,
+                }),
+            ),
+        ).on("GET", "/api/v1/jobs/{id}", () =>
+            json(200, job("Planning", { operation })),
+        );
+        const user = start(`/tables/${TABLE_ID}`);
+
+        await user.click(await screen.findByRole("button", { name: label }));
+        const dialog = await screen.findByRole("dialog", { name: label });
+        expect(dialog).toHaveTextContent("one new snapshot");
+        await user.click(
+            screen.getByRole("button", {
+                name: `Confirm ${label.toLowerCase()}`,
+            }),
+        );
+        expect(await screen.findByText(JOB_ID)).toBeInTheDocument();
+        expect(window.location.pathname).toBe(`/jobs/${JOB_ID}`);
+        const request = fake.sent("POST", "/api/v1/jobs")[0];
+        expect(await request?.json()).toEqual({
+            table_id: TABLE_ID,
+            operation,
+        });
+    });
+
+    it("explains a metadata rewrite refused during compaction", async () => {
+        fake.on("POST", "/api/v1/jobs", () =>
+            apiError(
+                409,
+                "compaction_in_progress",
+                "PermanentFailure",
+                "wait_for_the_table_compaction_to_finish",
+            ),
+        );
+        const user = start(`/tables/${TABLE_ID}`);
+
+        await user.click(
+            await screen.findByRole("button", { name: "Rewrite manifests" }),
+        );
+        await user.click(
+            await screen.findByRole("button", {
+                name: "Confirm rewrite manifests",
+            }),
+        );
+        const dialog = screen.getByRole("dialog", {
+            name: "Rewrite manifests",
+        });
+        expect(
+            await within(dialog).findByText("Compaction in progress"),
+        ).toBeVisible();
+        expect(dialog).toHaveTextContent(
+            "Next step: Wait for the table compaction to finish.",
+        );
+        expect(window.location.pathname).toBe(`/tables/${TABLE_ID}`);
+    });
+
     it("explains a disabled orphan cleanup in the dialog", async () => {
         fake.on("POST", "/api/v1/jobs", () =>
             apiError(

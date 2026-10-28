@@ -41,7 +41,7 @@ as `x-csrf-token`. All responses use `Cache-Control: no-store`.
 | `GET /api/v1/catalogs/{id}/statistics` | Totals over the newest sample of every visible table on one connection; 404 when the connection is not visible |
 | `GET /api/v1/statistics` | The same totals over every table the caller may view in the organization |
 | `GET /api/v1/jobs`, `GET /api/v1/jobs/{id}` | Authorized job state, revision, requester and their display name, the table's caller-visible aliases, cancellation/publication boundary, retry link, and the `trigger` (finding kind and severity) that admitted it, or null |
-| `POST /api/v1/jobs` | Idempotent durable submission of `compact` (default), `expire_snapshots`, or `remove_orphan_files`; returns 202 with job and operation IDs and Location |
+| `POST /api/v1/jobs` | Idempotent durable submission of `compact` (default), `expire_snapshots`, `remove_orphan_files`, `rewrite_manifests`, or `remove_dangling_deletes`; returns 202 with job and operation IDs and Location |
 | `POST /api/v1/jobs/{id}/cancel` | Record a cancellation request and report what it achieved |
 | `POST /api/v1/jobs/{id}/retry` | Create a fresh-plan retry of a terminal job; 202 with the new job |
 | `POST /api/v1/previews` | Assess a table without creating work |
@@ -325,8 +325,10 @@ catalog's message, URLs, table locations, or Iceberg error text.
 `POST /api/v1/jobs` requires `jobs:submit` on the table and an `Idempotency-Key`.
 The body is `{"table_id": "<uuid>"}` for compaction,
 `{"table_id": "<uuid>", "operation": "expire_snapshots"}` for snapshot
-expiration, or `{"table_id": "<uuid>", "operation": "remove_orphan_files"}`
-for orphan-file cleanup; an unknown operation answers 400. Expiration also requires
+expiration, `{"table_id": "<uuid>", "operation": "remove_orphan_files"}`
+for orphan-file cleanup, `"operation": "rewrite_manifests"` for manifest
+rewrite, or `"operation": "remove_dangling_deletes"` for dangling-delete
+removal; an unknown operation answers 400. Expiration also requires
 `expiration.catalog_ref_safety`, because a catalog must atomically refuse to
 remove a snapshot that a concurrently created branch or tag references;
 otherwise the request answers 400 `expiration_ref_safety_unavailable`. A
@@ -336,10 +338,29 @@ guarantee; an authorized send is never resent.
 A submission that omits `operation` keeps the pre-expiration canonical
 representation for idempotency, so a retry with an original compaction key
 still replays the original job. Every job document reports
-`operation` as `compact`, `expire_snapshots`, or `remove_orphan_files`, and a
-retry copies the source's operation. A retry is refused with the same 400 as
-a submission while its operation is unavailable
-(`expiration_ref_safety_unavailable` or `orphan_cleanup_unavailable`).
+`operation` as `compact`, `expire_snapshots`, `remove_orphan_files`,
+`rewrite_manifests`, or `remove_dangling_deletes`, and a retry copies the
+source's operation. A retry is refused with the same 400 as a submission while
+its operation is unavailable (`expiration_ref_safety_unavailable`,
+`orphan_cleanup_unavailable`, `manifest_rewrite_unavailable`, or
+`dangling_delete_removal_unavailable`).
+
+Manifest rewrite and dangling-delete removal (ADR 0063) are metadata-only:
+the coordinator plans them from the table's manifests, stores an immutable
+plan, and publishes one `replace` snapshot on `main` with the original
+planning-baseline requirements, without worker tasks. Manifest rewrite merges
+the data manifests smaller than the table's
+`commit.manifest.target-size-bytes` (8 MiB by default), per partition spec
+with at least two; dangling-delete removal drops delete files that apply to
+no live data file. Each requires its switch (`manifests.rewrite_enabled`,
+`deletes.dangling_removal_enabled`), and a submission or retry while the
+table has an unfinished compaction answers 409 `compaction_in_progress`. A
+table change before publication ends the job `ReplanRequired`, and an
+ambiguous commit resolves only by the snapshot's recorded evidence, as for
+compaction. Nothing to do ends the job `NoOp` with `no_manifests_to_rewrite`
+or `no_dangling_deletes`. Turning a switch off fails a planned or unsent job
+at its next pass with `ManifestRewriteUnavailable` or
+`DanglingDeleteRemovalUnavailable`.
 
 Orphan cleanup requires `orphans.enabled`; otherwise the request answers 400
 `orphan_cleanup_unavailable` and no job is created. It is coordinator-only and

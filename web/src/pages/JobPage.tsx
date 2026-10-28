@@ -26,8 +26,10 @@ import {
     canRetry,
     cancellationMessage,
     executionStatus,
+    isMetadataOnly,
     isTerminal,
     notice,
+    operationLabel,
     publicationStatus,
 } from "../jobs/status";
 import { useSession, useSessionMutation } from "../queryClient";
@@ -162,7 +164,7 @@ function JobDetail({ job }: { job: Job }) {
 
             <div className="grid gap-4 md:grid-cols-2">
                 <Lane title="Execution" status={executionStatus(job)}>
-                    {job.operation === "expire_snapshots"
+                    {isMetadataOnly(job.operation)
                         ? "Metadata-only work: no worker tasks."
                         : job.operation === "remove_orphan_files"
                           ? "Coordinator-only deletion: no worker tasks."
@@ -300,13 +302,7 @@ function JobFacts({
             <CardContent className="grid gap-4">
                 <dl className="m-0 grid gap-x-6 gap-y-3 sm:grid-cols-[max-content_1fr]">
                     <dt className="text-muted-foreground">Operation</dt>
-                    <dd className="m-0">
-                        {job.operation === "expire_snapshots"
-                            ? "Snapshot expiration"
-                            : job.operation === "remove_orphan_files"
-                              ? "Orphan-file cleanup"
-                              : "Compaction"}
-                    </dd>
+                    <dd className="m-0">{operationLabel(job.operation)}</dd>
                     <dt className="text-muted-foreground">State</dt>
                     <dd className="m-0">
                         {job.state} (revision {job.revision})

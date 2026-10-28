@@ -30,7 +30,7 @@ use uuid::Uuid;
 
 use crate::durable_publication::{self, DurablePublicationError, PublicationConfig};
 use crate::runtime::catalogs::{AccessError, RuntimeCatalogs};
-use crate::runtime::config::OrphanConfig;
+use crate::runtime::config::{MetadataRewriteConfig, OrphanConfig};
 use crate::runtime::planning::DEFAULT_PLANNING_PAGE;
 use crate::runtime::statistics::StatisticsCollector;
 
@@ -42,6 +42,14 @@ const ORPHAN_DELETE_CONCURRENCY: usize = 8;
 /// refusing (a permission or object lock) cannot succeed on its own, and the
 /// job would otherwise stay `Deleting` and rescan the table forever.
 const ORPHAN_DELETE_ATTEMPTS: u32 = 5;
+
+/// The failure reason of a metadata rewrite whose operation is disabled.
+const fn metadata_unavailable(operation: JobOperation) -> &'static str {
+    match operation {
+        JobOperation::RewriteManifests => "ManifestRewriteUnavailable",
+        _ => "DanglingDeleteRemovalUnavailable",
+    }
+}
 
 /// What one publication pass did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -90,6 +98,8 @@ pub struct PublicationService {
     expiration_ref_safety: bool,
     /// Orphan-file cleanup limits and enablement.
     orphan: OrphanConfig,
+    /// Manifest-rewrite and dangling-delete limits and enablement.
+    metadata: MetadataRewriteConfig,
 }
 
 #[derive(Clone, Copy)]
@@ -124,7 +134,16 @@ impl PublicationService {
             statistics: None,
             expiration_ref_safety,
             orphan,
+            metadata: MetadataRewriteConfig::default(),
         }
+    }
+
+    /// Enables manifest rewrite and dangling-delete removal as `metadata`
+    /// allows; both are disabled otherwise.
+    #[must_use]
+    pub const fn with_metadata_rewrites(mut self, metadata: MetadataRewriteConfig) -> Self {
+        self.metadata = metadata;
+        self
     }
 
     /// Samples a table right after it publishes, in addition to the interval.
@@ -359,6 +378,13 @@ impl PublicationService {
                 .await?;
             return Ok(Outcome::Failed);
         }
+        if !self.metadata.allows(job.operation) {
+            // The intent is durable but unsent, so the disabled operation
+            // can fail it safely.
+            self.stop(job, JobState::Failed, metadata_unavailable(job.operation))
+                .await?;
+            return Ok(Outcome::Failed);
+        }
         let connection = {
             let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
             self.catalogs
@@ -414,6 +440,15 @@ impl PublicationService {
         if job.operation == JobOperation::RemoveOrphanFiles {
             return self.publish_orphan_job(job).await;
         }
+        if job.operation.is_metadata_rewrite() {
+            return self.publish_metadata_job(job).await;
+        }
+        self.publish_compaction_job(job).await
+    }
+
+    /// Verifies a compaction's accepted results, prepares its intent, and
+    /// sends it once.
+    async fn publish_compaction_job(&self, job: &jobs::Job) -> Result<Outcome, PublicationError> {
         let binding = self
             .catalogs
             .binding_for_job(job)
@@ -495,6 +530,95 @@ impl PublicationService {
                     job_id = %job.id,
                     reason_code = "PublicationOutcomeUnknown",
                     "publication left for scheduler recovery"
+                );
+                match error {
+                    DurablePublicationError::Catalog(_) => Ok(Outcome::Unresolved),
+                    _ => Err(PublicationError::Durable(error)),
+                }
+            }
+        }
+    }
+
+    /// Prepares and sends one manifest rewrite or dangling-delete removal
+    /// (ADR 0063). A disabled operation fails before anything is prepared.
+    async fn publish_metadata_job(&self, job: &jobs::Job) -> Result<Outcome, PublicationError> {
+        if !self.metadata.allows(job.operation) {
+            self.stop(job, JobState::Failed, metadata_unavailable(job.operation))
+                .await?;
+            return Ok(Outcome::Failed);
+        }
+        let binding = self
+            .catalogs
+            .binding_for_job(job)
+            .await
+            .map_err(PublicationError::Access)?;
+        let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
+        let plan = durable_publication::load_metadata_plan(&mut conn, job.id)
+            .await
+            .map_err(PublicationError::Durable)?;
+        let captured = PlanningBaseline::capture(
+            &binding.loaded.metadata,
+            binding.loaded.metadata_location.as_deref(),
+        )?;
+        if captured.as_ref() != Some(&plan.baseline) {
+            drop(conn);
+            self.stop(job, JobState::ReplanRequired, "PublicationBaselineChanged")
+                .await?;
+            return Ok(Outcome::Replanned);
+        }
+        let baseline = Baseline::new(&binding.loaded, binding.store.file_io().clone())
+            .map_err(|_| PublicationError::Proposal)?;
+        let prepared = durable_publication::prepare_metadata_rewrite(
+            &mut conn,
+            job,
+            self.epoch,
+            binding.connection.id,
+            &binding.catalog,
+            &baseline,
+            &binding.store,
+            &plan,
+            self.metadata.operation_timeout(job.operation),
+        )
+        .await;
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(DurablePublicationError::BaselineChanged(_)) => {
+                drop(conn);
+                self.stop(job, JobState::ReplanRequired, "PublicationBaselineChanged")
+                    .await?;
+                return Ok(Outcome::Replanned);
+            }
+            Err(DurablePublicationError::Persistence(
+                PersistenceError::JobNotInState { .. } | PersistenceError::RevisionConflict { .. },
+            )) => return Ok(Outcome::Superseded),
+            Err(error) => return Err(PublicationError::Durable(error)),
+        };
+        if prepared.state != JobState::Committing {
+            return Ok(match prepared.state {
+                JobState::Succeeded => Outcome::Published,
+                JobState::Failed => Outcome::Failed,
+                JobState::ReplanRequired => Outcome::Replanned,
+                JobState::CommitOutcomeUnknown => Outcome::Unresolved,
+                _ => Outcome::Superseded,
+            });
+        }
+        match durable_publication::publish(&mut conn, &prepared, self.epoch, &binding.catalog).await
+        {
+            Ok(job) => Ok(match job.state {
+                JobState::Succeeded => Outcome::Published,
+                JobState::CommitOutcomeUnknown => Outcome::Unresolved,
+                JobState::ReplanRequired => Outcome::Replanned,
+                JobState::Failed | JobState::Cancelled => Outcome::Failed,
+                _ => Outcome::Superseded,
+            }),
+            Err(DurablePublicationError::Persistence(
+                PersistenceError::JobNotInState { .. } | PersistenceError::RevisionConflict { .. },
+            )) => Ok(Outcome::Superseded),
+            Err(error) => {
+                tracing::warn!(
+                    job_id = %job.id,
+                    reason_code = "PublicationOutcomeUnknown",
+                    "metadata rewrite publication left for recovery"
                 );
                 match error {
                     DurablePublicationError::Catalog(_) => Ok(Outcome::Unresolved),

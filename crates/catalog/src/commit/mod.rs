@@ -23,8 +23,8 @@ pub use drift::{BaselineChange, PLAN_RELEVANT_PROPERTIES};
 pub use error::ProposalError;
 pub use evidence::{EvidenceMismatch, ExpectedSnapshot, SnapshotEvidence};
 pub use proposal::{
-    JOB_ID_PROPERTY, PROPOSAL_HASH_PROPERTY, PUBLICATION_ID_PROPERTY, PreparedCommit,
-    RewriteProposal, new_snapshot_id,
+    JOB_ID_PROPERTY, ManifestRewriteProposal, PROPOSAL_HASH_PROPERTY, PUBLICATION_ID_PROPERTY,
+    PreparedCommit, RewriteProposal, new_snapshot_id,
 };
 pub use request::CommitRequest;
 pub use send::{

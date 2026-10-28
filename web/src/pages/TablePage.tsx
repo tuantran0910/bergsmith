@@ -96,6 +96,43 @@ export function TablePage({ id }: { id: string }) {
             });
         },
     );
+    const rewriteManifests = useKeyedMutation(
+        (key: string) =>
+            call(
+                api.POST("/api/v1/jobs", {
+                    params: {
+                        header: { "Idempotency-Key": key, ...csrfHeader() },
+                    },
+                    body: { table_id: id, operation: "rewrite_manifests" },
+                }),
+            ),
+        (accepted) => {
+            void navigate({
+                to: "/jobs/$jobId",
+                params: { jobId: accepted.job_id },
+            });
+        },
+    );
+    const removeDangling = useKeyedMutation(
+        (key: string) =>
+            call(
+                api.POST("/api/v1/jobs", {
+                    params: {
+                        header: { "Idempotency-Key": key, ...csrfHeader() },
+                    },
+                    body: {
+                        table_id: id,
+                        operation: "remove_dangling_deletes",
+                    },
+                }),
+            ),
+        (accepted) => {
+            void navigate({
+                to: "/jobs/$jobId",
+                params: { jobId: accepted.job_id },
+            });
+        },
+    );
     const submit = useKeyedMutation(
         (key: string) =>
             call(
@@ -206,6 +243,30 @@ export function TablePage({ id }: { id: string }) {
                                 error={cleanup.error}
                                 onConfirm={() => {
                                     cleanup.mutate(undefined);
+                                }}
+                            />
+                            <Confirm
+                                label="Rewrite manifests"
+                                description="Merges the small data manifests of the table's current snapshot into target-sized ones in one new snapshot. No data or delete file changes. It is refused while a compaction of this table is unfinished, and the deployment must enable manifest rewrite."
+                                pending={
+                                    rewriteManifests.isPending ||
+                                    uncertain(rewriteManifests.error)
+                                }
+                                error={rewriteManifests.error}
+                                onConfirm={() => {
+                                    rewriteManifests.mutate(undefined);
+                                }}
+                            />
+                            <Confirm
+                                label="Remove dangling deletes"
+                                description="Removes delete files that apply to no live data file of the current snapshot, in one new snapshot. Reads return the same rows. Files stay in storage until snapshot expiration and orphan cleanup. It is refused while a compaction of this table is unfinished, and the deployment must enable dangling-delete removal."
+                                pending={
+                                    removeDangling.isPending ||
+                                    uncertain(removeDangling.error)
+                                }
+                                error={removeDangling.error}
+                                onConfirm={() => {
+                                    removeDangling.mutate(undefined);
                                 }}
                             />
                             <Confirm

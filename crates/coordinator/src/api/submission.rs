@@ -19,8 +19,8 @@ use super::{ApiError, ApiState, Caller, accepted_job, json_body};
 #[serde(deny_unknown_fields)]
 pub(super) struct SubmitJob {
     table_id: TableId,
-    /// `compact` (the default), `expire_snapshots`, or
-    /// `remove_orphan_files`.
+    /// `compact` (the default), `expire_snapshots`, `remove_orphan_files`,
+    /// `rewrite_manifests`, or `remove_dangling_deletes`.
     operation: Option<String>,
 }
 
@@ -28,10 +28,8 @@ impl SubmitJob {
     /// The operation this request names, defaulting to compaction.
     fn job_operation(&self) -> Result<JobOperation, ApiError> {
         match self.operation.as_deref() {
-            None | Some("compact") => Ok(JobOperation::Compact),
-            Some("expire_snapshots") => Ok(JobOperation::ExpireSnapshots),
-            Some("remove_orphan_files") => Ok(JobOperation::RemoveOrphanFiles),
-            Some(_) => Err(ApiError::invalid()),
+            None => Ok(JobOperation::Compact),
+            Some(name) => JobOperation::from_api_name(name).ok_or_else(ApiError::invalid),
         }
     }
 }
@@ -118,8 +116,10 @@ fn submission_key(
 /// # Errors
 ///
 /// 400 `expiration_ref_safety_unavailable` for snapshot expiration without
-/// catalog reference safety, and 400 `orphan_cleanup_unavailable` for orphan
-/// cleanup while `orphans.enabled` is off.
+/// catalog reference safety, 400 `orphan_cleanup_unavailable` for orphan
+/// cleanup while `orphans.enabled` is off, and 400
+/// `manifest_rewrite_unavailable` or `dangling_delete_removal_unavailable`
+/// while that operation is off.
 pub(super) fn require_available(state: &ApiState, operation: JobOperation) -> Result<(), ApiError> {
     match operation {
         JobOperation::ExpireSnapshots if !state.expiration_ref_safety => Err(ApiError::permanent(
@@ -132,6 +132,20 @@ pub(super) fn require_available(state: &ApiState, operation: JobOperation) -> Re
             "orphan_cleanup_unavailable",
             "enable_orphan_cleanup_in_the_deployment_configuration",
         )),
+        JobOperation::RewriteManifests if !state.metadata_rewrites.allows(operation) => {
+            Err(ApiError::permanent(
+                axum::http::StatusCode::BAD_REQUEST,
+                "manifest_rewrite_unavailable",
+                "enable_manifest_rewrite_in_the_deployment_configuration",
+            ))
+        }
+        JobOperation::RemoveDanglingDeletes if !state.metadata_rewrites.allows(operation) => {
+            Err(ApiError::permanent(
+                axum::http::StatusCode::BAD_REQUEST,
+                "dangling_delete_removal_unavailable",
+                "enable_dangling_delete_removal_in_the_deployment_configuration",
+            ))
+        }
         _ => Ok(()),
     }
 }

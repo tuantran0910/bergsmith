@@ -19,6 +19,7 @@ pub mod idempotency;
 pub mod jobs;
 pub mod leadership;
 pub mod maintenance;
+pub mod metadata_plans;
 pub mod metrics;
 pub mod notifications;
 pub mod occurrences;

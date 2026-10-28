@@ -105,6 +105,8 @@ The JSON document is validated before any listener starts. A minimal document:
 | `notifications` | Outbound destinations: allowed hosts, signing-secret directory, request timeout ([ADR 0060](../adr/0060-notification-destinations-and-durable-delivery.md)) |
 | `expiration` | Catalog reference safety for snapshot expiration (`catalog_ref_safety`) |
 | `orphans` | Orphan-file cleanup: enablement, minimum object age, the listing, scan, object-byte, candidate, and per-pass deletion bounds, and the storage step deadline ([ADR 0062](../adr/0062-orphan-file-cleanup.md)) |
+| `manifests` | Manifest rewrite: enablement, input bounds, and the step deadline ([ADR 0063](../adr/0063-manifest-rewrite-and-dangling-delete-removal.md)) |
+| `deletes` | Dangling-delete removal: enablement, the per-job removal bound, and the step deadline ([ADR 0063](../adr/0063-manifest-rewrite-and-dangling-delete-removal.md)) |
 
 `expiration.catalog_ref_safety` is false by default. Enabling snapshot
 expiration requires an operator to verify that the catalog rejects a
@@ -136,6 +138,22 @@ A listed key that is not a valid storage location (for example one with an
 invalid path segment, a query, or a fragment) fails the listing, so one such
 object under the table location blocks cleanup for that table until it is
 removed or renamed. The job fails rather than deleting from a partial view.
+
+Manifest rewrite (`manifests`) and dangling-delete removal (`deletes`) each
+publish a new `main` snapshot, so both are off until enabled:
+
+| Key | Default | Range | Bounds |
+|---|---|---|---|
+| `manifests.rewrite_enabled` | `false` | | Whether manifest rewrite may be submitted, planned, or published |
+| `manifests.max_input_manifests` | 1000 | 2–100000 | Manifests one job replaces; the rest wait for a later job |
+| `manifests.max_input_entries` | 1000000 | 1–10000000 | Live data files the replaced manifests may record |
+| `manifests.operation_timeout_seconds` | 300 | 1–3600 | Deadline for reading the manifest list, and for the whole commit preparation |
+| `deletes.dangling_removal_enabled` | `false` | | Whether dangling-delete removal may be submitted, planned, or published |
+| `deletes.max_removals` | 10000 | 1–1000000 | Delete files one job removes; the rest wait for a later job |
+| `deletes.operation_timeout_seconds` | 120 | 1–3600 | Deadline for reading the baseline manifests, and for the commit preparation |
+
+Dangling-delete selection reads at most `planner.max_manifest_entries` live
+entries, like compaction planning.
 
 `notifications.allowed_hosts` is the complete list of hosts a destination URL
 may name; an empty list allows none, and a literal link-local address is

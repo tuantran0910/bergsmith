@@ -43,8 +43,10 @@ pub(super) struct JobCreation {
 ///
 /// # Errors
 ///
-/// A typed [`ApiError`] for a denied or revoked grant, a reused key, a ledger
-/// failure, or an audit failure. Nothing is committed in any of them.
+/// A typed [`ApiError`] for a denied or revoked grant, a reused key, a
+/// metadata rewrite while the table has an unfinished compaction (409
+/// `compaction_in_progress`), a ledger failure, or an audit failure. Nothing
+/// is committed in any of them.
 pub(super) async fn create_job(
     state: &ApiState,
     caller: &Caller,
@@ -73,6 +75,22 @@ pub(super) async fn create_job(
     {
         tx.rollback().await?;
         return Ok(JobId::from_uuid(resource_id));
+    }
+    if creation.operation.is_metadata_rewrite()
+        && bergsmith_persistence::metadata_plans::compaction_in_progress(
+            &mut tx,
+            caller.organization_id,
+            creation.table_id,
+        )
+        .await?
+    {
+        // A new `main` snapshot would send the compaction back to planning
+        // after its workers rewrote data (ADR 0063).
+        tx.rollback().await?;
+        return Err(ApiError::conflict(
+            "compaction_in_progress",
+            "wait_for_the_table_compaction_to_finish",
+        ));
     }
     let id = JobId::generate();
     jobs::create_job(

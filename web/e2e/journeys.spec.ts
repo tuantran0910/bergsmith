@@ -184,6 +184,45 @@ test("submits orphan cleanup from the table page", async ({
     });
 });
 
+test("submits a manifest rewrite from the table page", async ({
+    page,
+    coordinator,
+}) => {
+    signedIn(coordinator);
+    coordinator
+        .on("POST", "/api/v1/jobs", () =>
+            json(202, {
+                operation_id: JOB_ID,
+                job_id: JOB_ID,
+                resource_url: `/api/v1/jobs/${JOB_ID}`,
+            }),
+        )
+        .on("GET", "/api/v1/jobs/{id}", () =>
+            json(200, job("ReadyToCommit", { operation: "rewrite_manifests" })),
+        )
+        .on("GET", "/api/v1/jobs/{id}/events", () =>
+            eventStream([event(1, "Planning", null)]),
+        );
+
+    await page.goto(`/tables/${TABLE_ID}`);
+    await page.getByRole("button", { name: "Rewrite manifests" }).click();
+    const dialog = page.getByRole("dialog", { name: "Rewrite manifests" });
+    await expect(dialog).toContainText("No data or delete file changes");
+    await expectAccessible(page);
+    await page
+        .getByRole("button", { name: "Confirm rewrite manifests" })
+        .click();
+    await expect(page).toHaveURL(`/jobs/${JOB_ID}`);
+    await expect(page.getByText("Manifest rewrite")).toBeVisible();
+    await expect(page.getByText("Plan ready")).toBeVisible();
+    await expectAccessible(page);
+
+    expect(coordinator.sent("POST", "/api/v1/jobs")[0]?.body).toEqual({
+        table_id: TABLE_ID,
+        operation: "rewrite_manifests",
+    });
+});
+
 test("shows a table's statistics on an addressable tab", async ({
     page,
     coordinator,

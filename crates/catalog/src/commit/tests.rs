@@ -628,3 +628,174 @@ async fn a_literal_update_commit_asserts_exactly_the_baseline_requirements() {
         "the request must carry the exact snapshot ids"
     );
 }
+
+/// An empty table plus three appends, one manifest each.
+async fn fragmented(store: &ObjectStore) -> TableMetadata {
+    let mut metadata = empty_table();
+    for name in ["a", "b", "c"] {
+        metadata = append(store, &metadata, &[data_file(name, 1)]).await;
+    }
+    metadata
+}
+
+async fn data_manifests(store: &ObjectStore, metadata: &TableMetadata) -> Vec<String> {
+    let baseline = baseline(store, metadata);
+    let table = baseline.table();
+    let snapshot = metadata.current_snapshot().unwrap();
+    let list = table.manifest_list_reader(snapshot).load().await.unwrap();
+    list.entries()
+        .iter()
+        .map(|manifest| manifest.manifest_path.clone())
+        .collect()
+}
+
+async fn live_paths(store: &ObjectStore, metadata: &TableMetadata) -> Vec<String> {
+    let baseline = baseline(store, metadata);
+    let table = baseline.table();
+    let snapshot = metadata.current_snapshot().unwrap();
+    let list = table.manifest_list_reader(snapshot).load().await.unwrap();
+    let mut live = Vec::new();
+    for manifest in list.entries() {
+        for entry in manifest
+            .load_manifest(table.file_io())
+            .await
+            .unwrap()
+            .entries()
+        {
+            if entry.is_alive() {
+                live.push(entry.data_file().file_path().to_owned());
+            }
+        }
+    }
+    live.sort();
+    live
+}
+
+fn manifest_proposal(metadata: &TableMetadata, manifests: Vec<String>) -> ManifestRewriteProposal {
+    ManifestRewriteProposal {
+        job_id: JobId::generate(),
+        publication_id: PublicationId::generate(),
+        snapshot_id: new_snapshot_id(metadata),
+        manifests,
+        target_size_bytes: 8 * 1024 * 1024,
+    }
+}
+
+#[tokio::test]
+async fn a_manifest_rewrite_merges_small_manifests_and_keeps_every_file() {
+    let store = store();
+    let metadata = fragmented(&store).await;
+    let main = metadata.current_snapshot().unwrap().clone();
+    let manifests = data_manifests(&store, &metadata).await;
+    assert_eq!(manifests.len(), 3);
+    let before = live_paths(&store, &metadata).await;
+    let baseline = baseline(&store, &metadata);
+    let proposal = manifest_proposal(&metadata, manifests.clone());
+    let (snapshot_id, job_id, publication_id) = (
+        proposal.snapshot_id,
+        proposal.job_id,
+        proposal.publication_id,
+    );
+    let hash = proposal.proposal_hash(&baseline).unwrap();
+
+    let prepared = proposal.prepare(&baseline).await.unwrap();
+    let published = publish(&metadata, &prepared.request);
+
+    let snapshot = published.snapshot_by_id(snapshot_id).unwrap();
+    assert_eq!(published.current_snapshot_id(), Some(snapshot_id));
+    assert_eq!(snapshot.parent_snapshot_id(), Some(main.snapshot_id()));
+    assert_eq!(
+        snapshot.summary().operation,
+        iceberg::spec::Operation::Replace
+    );
+    let summary = &snapshot.summary().additional_properties;
+    assert_eq!(summary[JOB_ID_PROPERTY], job_id.to_string());
+    assert_eq!(summary[PUBLICATION_ID_PROPERTY], publication_id.to_string());
+    assert_eq!(summary[PROPOSAL_HASH_PROPERTY], hash.to_hex());
+    assert_eq!(
+        prepared.request.decode().unwrap().requirements,
+        baseline.requirements()
+    );
+    assert_eq!(prepared.expected.manifest_list, snapshot.manifest_list());
+    let after = data_manifests(&store, &published).await;
+    assert_eq!(after.len(), 1);
+    assert!(after[0].contains(&publication_id.to_string()), "{after:?}");
+    assert_eq!(live_paths(&store, &published).await, before);
+}
+
+#[tokio::test]
+async fn a_manifest_rewrite_rewrites_only_the_planned_manifests() {
+    let store = store();
+    let metadata = fragmented(&store).await;
+    let manifests = data_manifests(&store, &metadata).await;
+    let baseline = baseline(&store, &metadata);
+    let planned = vec![manifests[0].clone(), manifests[1].clone()];
+
+    let prepared = manifest_proposal(&metadata, planned.clone())
+        .prepare(&baseline)
+        .await
+        .unwrap();
+    let published = publish(&metadata, &prepared.request);
+
+    let after = data_manifests(&store, &published).await;
+    assert_eq!(after.len(), 2);
+    assert!(after.contains(&manifests[2]));
+    assert!(!after.iter().any(|path| planned.contains(path)));
+    assert_eq!(live_paths(&store, &published).await.len(), 3);
+}
+
+#[tokio::test]
+async fn invalid_manifest_rewrites_are_rejected_before_building() {
+    let store = store();
+    let metadata = fragmented(&store).await;
+    let manifests = data_manifests(&store, &metadata).await;
+    let baseline = baseline(&store, &metadata);
+
+    for planned in [
+        vec![manifests[0].clone()],
+        vec![manifests[0].clone(), manifests[0].clone()],
+        vec![
+            manifests[0].clone(),
+            format!("{LOCATION}/metadata/missing.avro"),
+        ],
+    ] {
+        let error = manifest_proposal(&metadata, planned)
+            .prepare(&baseline)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ProposalError::NothingRemoved), "{error}");
+    }
+    let mut taken = manifest_proposal(&metadata, manifests.clone());
+    taken.snapshot_id = metadata.current_snapshot_id().unwrap();
+    assert!(matches!(
+        taken.prepare(&baseline).await,
+        Err(ProposalError::SnapshotIdInUse(_))
+    ));
+    let empty = empty_table();
+    assert!(matches!(
+        manifest_proposal(&empty, manifests)
+            .prepare(&self::baseline(&store, &empty))
+            .await,
+        Err(ProposalError::NoMainSnapshot)
+    ));
+}
+
+#[tokio::test]
+async fn manifest_proposal_hashes_ignore_order_and_cover_the_target_size() {
+    let store = store();
+    let metadata = fragmented(&store).await;
+    let manifests = data_manifests(&store, &metadata).await;
+    let baseline = baseline(&store, &metadata);
+    let proposal = manifest_proposal(&metadata, manifests.clone());
+    let hash = proposal.proposal_hash(&baseline).unwrap();
+
+    let mut reversed = proposal.clone();
+    reversed.manifests.reverse();
+    assert_eq!(reversed.proposal_hash(&baseline).unwrap(), hash);
+    let mut resized = proposal.clone();
+    resized.target_size_bytes += 1;
+    assert_ne!(resized.proposal_hash(&baseline).unwrap(), hash);
+    let mut fewer = proposal;
+    fewer.manifests.pop();
+    assert_ne!(fewer.proposal_hash(&baseline).unwrap(), hash);
+}

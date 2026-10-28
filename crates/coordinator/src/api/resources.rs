@@ -91,7 +91,7 @@ macro_rules! job_summary {
         concat!(
             "jsonb_build_object('id', r.id, 'table_id', r.table_identity_id, 'table_aliases', ",
             visible_aliases!("r.table_identity_id"),
-            ", 'operation', CASE r.operation WHEN 'ExpireSnapshots' THEN 'expire_snapshots' WHEN 'RemoveOrphanFiles' THEN 'remove_orphan_files' ELSE 'compact' END, 'state', r.state, 'revision', r.state_revision, 'state_reason', r.state_reason, \
+            ", 'operation', CASE r.operation WHEN 'ExpireSnapshots' THEN 'expire_snapshots' WHEN 'RemoveOrphanFiles' THEN 'remove_orphan_files' WHEN 'RewriteManifests' THEN 'rewrite_manifests' WHEN 'RemoveDanglingDeletes' THEN 'remove_dangling_deletes' ELSE 'compact' END, 'state', r.state, 'revision', r.state_revision, 'state_reason', r.state_reason, \
              'retry_of_job_id', r.retry_of_job_id, 'created_by', r.created_by, \
              'created_by_name', (SELECT p.display_name FROM principals p \
                 WHERE p.id = r.created_by AND p.organization_id = r.organization_id), \

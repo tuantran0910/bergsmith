@@ -32,6 +32,32 @@ export function isTerminal(state: JobState): boolean {
 
 type Boundary = Pick<Job, "state" | "publication_started" | "operation">;
 
+/** The operator-facing name of a job's operation. */
+export function operationLabel(operation: Job["operation"]): string {
+    switch (operation) {
+        case "compact":
+            return "Compaction";
+        case "expire_snapshots":
+            return "Snapshot expiration";
+        case "remove_orphan_files":
+            return "Orphan-file cleanup";
+        case "rewrite_manifests":
+            return "Manifest rewrite";
+        case "remove_dangling_deletes":
+            return "Dangling-delete removal";
+    }
+}
+
+/** Whether the coordinator publishes the job from metadata alone, with no
+ * worker tasks. */
+export function isMetadataOnly(operation: Job["operation"]): boolean {
+    return (
+        operation === "expire_snapshots" ||
+        operation === "rewrite_manifests" ||
+        operation === "remove_dangling_deletes"
+    );
+}
+
 /** Where the job's work stands, in the operation's own terms. */
 export function executionStatus(job: Boundary): StatusLine {
     if (job.operation === "remove_orphan_files") {
@@ -69,6 +95,28 @@ export function executionStatus(job: Boundary): StatusLine {
                 return { label: "Stopped: replan required", tone: "error" };
             case "Failed":
                 return { label: "Failed", tone: "error" };
+        }
+    }
+    if (
+        job.operation === "rewrite_manifests" ||
+        job.operation === "remove_dangling_deletes"
+    ) {
+        switch (job.state) {
+            case "ReadyToCommit":
+            case "Committing":
+            case "CommitOutcomeUnknown":
+            case "Succeeded":
+                return { label: "Plan ready", tone: "ok" };
+            case "NoOp":
+                return {
+                    label:
+                        job.operation === "rewrite_manifests"
+                            ? "No small manifests to merge"
+                            : "No dangling deletes",
+                    tone: "neutral",
+                };
+            default:
+                break;
         }
     }
     switch (job.state) {
