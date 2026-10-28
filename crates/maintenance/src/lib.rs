@@ -63,3 +63,6 @@ pub use statistics::{
     PartitionFiles, SizeBucket, SnapshotDeltas, SnapshotEntry, StatisticsConfig, StatisticsError,
     TableSample, snapshot_history,
 };
+
+/// Bounded, read-only table-prefix storage accounting.
+pub mod storage_breakdown;

@@ -5,7 +5,8 @@
 //! decoding runs on blocking tasks so a large scan never occupies an async
 //! runtime thread.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::time::Duration;
 
 use bergsmith_storage::{Backend, Location};
@@ -21,6 +22,8 @@ pub struct ReachabilityBounds {
     entries: usize,
     bytes: u64,
     read_timeout: Duration,
+    lists: usize,
+    total_bytes: u64,
 }
 
 impl ReachabilityBounds {
@@ -43,7 +46,22 @@ impl ReachabilityBounds {
             entries: max_entries,
             bytes: max_bytes,
             read_timeout,
+            lists: usize::MAX,
+            total_bytes: u64::MAX,
         })
+    }
+
+    /// Adds whole-scan bounds for reporting. Existing cleanup bounds are unchanged.
+    ///
+    /// # Errors
+    /// Returns [`OrphanError::InvalidPolicy`] for a zero bound.
+    pub fn with_scan_limits(mut self, lists: usize, total_bytes: u64) -> Result<Self, OrphanError> {
+        if lists == 0 || total_bytes == 0 {
+            return Err(OrphanError::InvalidPolicy);
+        }
+        self.lists = lists;
+        self.total_bytes = total_bytes;
+        Ok(self)
     }
 
     /// The most manifests one scan reads.
@@ -80,6 +98,17 @@ impl ReachabilityBounds {
 pub(crate) struct ObjectIdentity(Backend, String, String);
 
 impl ObjectIdentity {
+    pub(crate) fn is_within(&self, root: &Location) -> bool {
+        self.0 == root.backend()
+            && self.1 == root.authority()
+            && (root.key().is_empty()
+                || self.2 == root.key()
+                || self
+                    .2
+                    .strip_prefix(root.key())
+                    .is_some_and(|tail| tail.starts_with('/')))
+    }
+
     pub(crate) fn of(location: &Location) -> Self {
         Self(
             location.backend(),
@@ -104,6 +133,17 @@ pub struct Reachable {
     scanned: BTreeSet<ObjectIdentity>,
     manifests: usize,
     entries: usize,
+    lists: usize,
+    bytes: u64,
+    pub(crate) accounting: Option<References>,
+    decoder: Option<Arc<tokio::sync::Semaphore>>,
+}
+
+/// Optional reporting view; deletion continues to use the conservative union.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct References {
+    pub(crate) metadata: BTreeSet<ObjectIdentity>,
+    pub(crate) data: BTreeMap<ObjectIdentity, (u64, bool)>,
 }
 
 impl Reachable {
@@ -158,24 +198,74 @@ impl Reachable {
         file_io: &FileIO,
         bounds: ReachabilityBounds,
     ) -> Result<Self, OrphanError> {
-        let mut reachable = Self::default();
-        reachable.insert(metadata_location)?;
+        Self::capture_inner(
+            metadata,
+            metadata_location,
+            unresolved_manifest_lists,
+            file_io,
+            bounds,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn capture_accounted(
+        metadata: &TableMetadata,
+        metadata_location: &str,
+        unresolved_manifest_lists: &[String],
+        file_io: &FileIO,
+        bounds: ReachabilityBounds,
+        decoder: Arc<tokio::sync::Semaphore>,
+    ) -> Result<Self, OrphanError> {
+        Self::capture_inner(
+            metadata,
+            metadata_location,
+            unresolved_manifest_lists,
+            file_io,
+            bounds,
+            Some(decoder),
+        )
+        .await
+    }
+
+    async fn capture_inner(
+        metadata: &TableMetadata,
+        metadata_location: &str,
+        unresolved_manifest_lists: &[String],
+        file_io: &FileIO,
+        bounds: ReachabilityBounds,
+        decoder: Option<Arc<tokio::sync::Semaphore>>,
+    ) -> Result<Self, OrphanError> {
+        let mut reachable = Self {
+            accounting: decoder.as_ref().map(|_| References::default()),
+            decoder,
+            ..Self::default()
+        };
+        reachable.metadata(metadata_location)?;
         for log in metadata.metadata_log() {
-            reachable.insert(&log.metadata_file)?;
+            reachable.metadata(&log.metadata_file)?;
         }
         for statistics in metadata.statistics_iter() {
-            reachable.insert(&statistics.statistics_path)?;
+            reachable.metadata(&statistics.statistics_path)?;
         }
         for statistics in metadata.partition_statistics_iter() {
-            reachable.insert(&statistics.statistics_path)?;
+            reachable.metadata(&statistics.statistics_path)?;
         }
-        for snapshot in metadata.snapshots() {
+        // Main first: any shared manifest is classified as live before retained history.
+        let main = metadata.current_snapshot();
+        for snapshot in main
+            .into_iter()
+            .chain(metadata.snapshots().filter(|snapshot| {
+                main.is_none_or(|head| snapshot.snapshot_id() != head.snapshot_id())
+            }))
+        {
             reachable
                 .scan_manifest_list(
                     snapshot.manifest_list(),
                     metadata.format_version(),
                     file_io,
                     bounds,
+                    Some(main.is_some_and(|head| head.snapshot_id() == snapshot.snapshot_id())),
                 )
                 .await?;
         }
@@ -184,7 +274,13 @@ impl Reachable {
         // nothing in the current snapshot references them.
         for manifest_list in unresolved_manifest_lists {
             reachable
-                .scan_manifest_list(manifest_list, metadata.format_version(), file_io, bounds)
+                .scan_manifest_list(
+                    manifest_list,
+                    metadata.format_version(),
+                    file_io,
+                    bounds,
+                    None,
+                )
                 .await?;
         }
         Ok(reachable)
@@ -202,17 +298,28 @@ impl Reachable {
         format_version: iceberg::spec::FormatVersion,
         file_io: &FileIO,
         bounds: ReachabilityBounds,
+        live: Option<bool>,
     ) -> Result<(), OrphanError> {
         if !self.mark_scanned(manifest_list)? {
             return Ok(());
         }
-        let bytes = read_bounded(file_io, manifest_list, bounds).await?;
-        // Avro decoding is CPU-bound; keep it off the runtime's async threads.
-        let list = tokio::task::spawn_blocking(move || {
-            ManifestList::parse_with_version(&bytes, format_version)
-        })
-        .await??;
+        self.lists = self.lists.saturating_add(1);
+        if self.lists > bounds.lists {
+            return Err(OrphanError::ScanListsTooLarge {
+                limit: bounds.lists,
+            });
+        }
+        if live.is_some() {
+            self.metadata(manifest_list)?;
+        }
+        let bytes = self.read(file_io, manifest_list, bounds).await?;
+        let list = self
+            .decode(move || ManifestList::parse_with_version(&bytes, format_version))
+            .await?;
         for manifest in list.entries() {
+            if live.is_some() {
+                self.metadata(&manifest.manifest_path)?;
+            }
             if !self.mark_scanned(&manifest.manifest_path)? {
                 continue;
             }
@@ -231,9 +338,8 @@ impl Reachable {
                     entries: projected,
                 });
             }
-            let bytes = read_bounded(file_io, &manifest.manifest_path, bounds).await?;
-            let loaded =
-                tokio::task::spawn_blocking(move || Manifest::parse_avro(&bytes)).await??;
+            let bytes = self.read(file_io, &manifest.manifest_path, bounds).await?;
+            let loaded = self.decode(move || Manifest::parse_avro(&bytes)).await?;
             for entry in loaded.entries() {
                 self.entries = self.entries.saturating_add(1);
                 if self.entries > bounds.max_entries() {
@@ -242,8 +348,91 @@ impl Reachable {
                         entries: self.entries,
                     });
                 }
-                self.insert(entry.data_file().file_path())?;
+                let file = entry.data_file();
+                self.insert(file.file_path())?;
+                if entry.is_alive()
+                    && let Some(live) = live
+                    && let Some(accounting) = &mut self.accounting
+                {
+                    let identity = ObjectIdentity::of(
+                        &Location::parse(file.file_path()).map_err(OrphanError::Location)?,
+                    );
+                    let size = file.file_size_in_bytes();
+                    let previous = accounting.data.entry(identity).or_insert((size, live));
+                    if previous.0 != size {
+                        return Err(OrphanError::InconsistentMetadata);
+                    }
+                    previous.1 |= live;
+                }
+                if self.entries.is_multiple_of(4096) {
+                    tokio::task::yield_now().await;
+                }
             }
+        }
+        Ok(())
+    }
+
+    async fn decode<T: Send + 'static>(
+        &self,
+        work: impl FnOnce() -> iceberg::Result<T> + Send + 'static,
+    ) -> Result<T, OrphanError> {
+        let permit = self.decode_permit().await?;
+        Ok(tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            work()
+        })
+        .await??)
+    }
+
+    async fn decode_permit(
+        &self,
+    ) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, OrphanError> {
+        // Cleanup has no reporting semaphore. Reporting keeps ownership in the
+        // blocking closure, even if the waiting future is cancelled.
+        match &self.decoder {
+            Some(gate) => Ok(Some(
+                gate.clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| OrphanError::InvalidPolicy)?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    async fn read(
+        &mut self,
+        io: &FileIO,
+        path: &str,
+        bounds: ReachabilityBounds,
+    ) -> Result<bytes::Bytes, OrphanError> {
+        let remaining = bounds.total_bytes.saturating_sub(self.bytes);
+        let limited = ReachabilityBounds {
+            bytes: bounds.bytes.min(remaining),
+            ..bounds
+        };
+        let bytes = read_bounded(io, path, limited)
+            .await
+            .map_err(|error| match error {
+                OrphanError::ScanObjectTooLarge { size, .. }
+                    if size <= bounds.bytes && size > remaining =>
+                {
+                    OrphanError::ScanBytesTooLarge {
+                        limit: bounds.total_bytes,
+                    }
+                }
+                other => other,
+            })?;
+        self.bytes = self.bytes.saturating_add(bytes.len() as u64);
+        Ok(bytes)
+    }
+
+    fn metadata(&mut self, path: &str) -> Result<(), OrphanError> {
+        self.insert(path)?;
+        if let Some(accounting) = &mut self.accounting {
+            accounting.metadata.insert(ObjectIdentity::of(
+                &Location::parse(path).map_err(OrphanError::Location)?,
+            ));
         }
         Ok(())
     }
@@ -361,5 +550,37 @@ mod tests {
             declared_entries(&manifest([Some(u32::MAX), Some(u32::MAX), Some(1)])).unwrap(),
             usize::try_from(u32::MAX).unwrap()
         );
+    }
+    #[tokio::test]
+    async fn a_cancelled_reporting_decode_keeps_its_budget_until_the_worker_exits() {
+        let gate = Arc::new(tokio::sync::Semaphore::new(1));
+        let scan = Reachable {
+            decoder: Some(gate.clone()),
+            ..Reachable::default()
+        };
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+        let work = scan.decode(move || {
+            started_tx.send(()).unwrap();
+            finish_rx.recv().unwrap();
+            Ok(7)
+        });
+        let mut work = Box::pin(work);
+        // Poll production decoding until the blocking worker has taken ownership.
+        tokio::select! {
+            () = async { started_rx.await.unwrap(); } => {},
+            result = &mut work => panic!("decode finished before release: {result:?}"),
+        }
+        assert_eq!(gate.available_permits(), 0);
+        // Cancelling the awaiting scan must not return the decoder's capacity.
+        drop(work);
+        assert_eq!(gate.available_permits(), 0);
+        finish_tx.send(()).unwrap();
+        let permit = tokio::time::timeout(Duration::from_secs(10), gate.acquire())
+            .await
+            .unwrap()
+            .unwrap();
+        drop(permit);
+        assert_eq!(scan.decode(|| Ok(9)).await.unwrap(), 9);
     }
 }

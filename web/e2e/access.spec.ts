@@ -1,3 +1,4 @@
+import { catalogStorage } from "../src/test/fixtures";
 import { schema } from "../src/test/fakes";
 import {
     CATALOG_ID,
@@ -234,6 +235,9 @@ test("connection and table Access keep grants scoped on narrow screens", async (
         )
         .on("GET", "/api/v1/catalogs", () => json(200, catalogs))
         .on("GET", "/api/v1/catalogs/{id}", () => json(200, managedCatalog))
+        .on("GET", "/api/v1/catalogs/{id}/storage", () =>
+            json(200, catalogStorage),
+        )
         .on("GET", "/api/v1/catalogs/{id}/statistics", () =>
             json(200, catalogTotals),
         )

@@ -535,3 +535,266 @@ async fn a_published_table_is_sampled_on_demand(pool: PgPool) {
             .is_some()
     );
 }
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn storage_collection_rescans_unchanged_tables_and_keeps_a_sample_after_failure(
+    pool: PgPool,
+) {
+    use bergsmith_coordinator::runtime::storage_breakdown::{StorageCollector, StorageSettings};
+    use bergsmith_persistence::{leadership, storage_breakdown as ledger};
+    let fixture = committed_twice().await;
+    let mut server = mockito::Server::new_async().await;
+    serve_table(&mut server, &fixture).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = tenant(&mut conn, &server.url(), &fixture).await;
+    let epoch = leadership::acquire_leadership(
+        &mut conn,
+        "storage-test",
+        std::time::Duration::from_secs(300),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .epoch;
+    drop(conn);
+    let database = Database::from_pool(pool.clone());
+    let catalogs = Arc::new(RuntimeCatalogs::new(
+        database,
+        RuntimeProfiles {
+            default: StorageProfiles::new([StorageProfile::LocalFs]),
+            connections: BTreeMap::new(),
+        },
+    ));
+    let settings = StorageSettings {
+        enabled: true,
+        ..StorageSettings::default()
+    };
+    let collector = StorageCollector::new(pool.clone(), catalogs, settings, 0, epoch);
+    collector.pass().await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let sample = ledger::latest(&mut conn, tenant.organization, tenant.table)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(sample.content.as_ref().unwrap()["live"]["files"], 2);
+    sqlx::query("UPDATE table_storage SET checked_at=checked_at-interval '2 hours'")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    drop(conn);
+    collector.pass().await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let newer = ledger::latest(&mut conn, tenant.organization, tenant.table)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        newer.sampled_at > sample.sampled_at,
+        "unchanged metadata must not skip a due listing"
+    );
+    sqlx::query("UPDATE table_storage SET checked_at=checked_at-interval '2 hours'")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    drop(conn);
+    server.reset();
+    collector.pass().await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let failed = ledger::latest(&mut conn, tenant.organization, tenant.table)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(failed.sampled_at, newer.sampled_at);
+    assert!(failed.failure_reason.is_some());
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn storage_collection_discards_a_changed_baseline_and_disabled_collection_does_no_io(
+    pool: PgPool,
+) {
+    use bergsmith_coordinator::runtime::storage_breakdown::{StorageCollector, StorageSettings};
+    use bergsmith_persistence::{leadership, storage_breakdown as ledger};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let fixture = fixture().await;
+    let mut server = mockito::Server::new_async().await;
+    let config = server
+        .mock("GET", "/v1/config")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"defaults":{},"overrides":{}}"#)
+        .create_async()
+        .await;
+    let body = json!({"metadata-location":fixture.metadata_location(),"metadata":serde_json::to_value(fixture.metadata()).unwrap(),"config":{}});
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let table_mock = server
+        .mock("GET", "/v1/namespaces/db/tables/events")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .expect(2)
+        .with_body_from_request(move |_| {
+            let mut body = body.clone();
+            if observed.fetch_add(1, Ordering::SeqCst) > 0 {
+                body["metadata-location"] = json!("file:///changed-metadata.json");
+            }
+            body.to_string().into_bytes()
+        })
+        .create_async()
+        .await;
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = tenant(&mut conn, &server.url(), &fixture).await;
+    let epoch = leadership::acquire_leadership(
+        &mut conn,
+        "storage-baseline",
+        std::time::Duration::from_secs(300),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .epoch;
+    drop(conn);
+    let database = Database::from_pool(pool.clone());
+    let catalogs = Arc::new(RuntimeCatalogs::new(
+        database,
+        RuntimeProfiles {
+            default: StorageProfiles::new([StorageProfile::LocalFs]),
+            connections: BTreeMap::new(),
+        },
+    ));
+    let disabled = StorageCollector::new(
+        pool.clone(),
+        catalogs.clone(),
+        StorageSettings::default(),
+        0,
+        epoch,
+    );
+    disabled.pass().await.unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let enabled = StorageCollector::new(
+        pool.clone(),
+        catalogs,
+        StorageSettings {
+            enabled: true,
+            ..StorageSettings::default()
+        },
+        0,
+        epoch,
+    );
+    enabled.pass().await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let checked = ledger::latest(&mut conn, tenant.organization, tenant.table)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(checked.content.is_none());
+    assert_eq!(
+        checked.failure_reason.as_deref(),
+        Some("StorageBaselineChanged")
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    config.assert_async().await;
+    table_mock.assert_async().await;
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn storage_recheck_failure_does_not_repeat_the_scan_through_another_alias(pool: PgPool) {
+    use bergsmith_coordinator::runtime::storage_breakdown::{StorageCollector, StorageSettings};
+    use bergsmith_persistence::{leadership, storage_breakdown as ledger};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let fixture = fixture().await;
+    let mut server = mockito::Server::new_async().await;
+    let config = server
+        .mock("GET", "/v1/config")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"defaults":{},"overrides":{}}"#)
+        .create_async()
+        .await;
+    let body = json!({"metadata-location":fixture.metadata_location(),"metadata":serde_json::to_value(fixture.metadata()).unwrap(),"config":{}}).to_string();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let initial_body = body.clone();
+    let primary = server
+        .mock("GET", "/v1/namespaces/db/tables/events")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .expect(2)
+        .with_body_from_request(move |_| {
+            if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+                initial_body.clone().into_bytes()
+            } else {
+                b"invalid catalog response during recheck".to_vec()
+            }
+        })
+        .create_async()
+        .await;
+    let fallback = server
+        .mock("GET", "/v1/namespaces/db/tables/z_fallback")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(body)
+        .expect(0)
+        .create_async()
+        .await;
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = tenant(&mut conn, &server.url(), &fixture).await;
+    tables::resolve_table(
+        &mut conn,
+        tenant.organization,
+        &TableAlias {
+            connection_id: tenant.connection,
+            namespace: vec!["db".to_owned()],
+            name: "z_fallback".to_owned(),
+        },
+        fixture.metadata().uuid(),
+    )
+    .await
+    .unwrap();
+    let epoch = leadership::acquire_leadership(
+        &mut conn,
+        "storage-recheck",
+        std::time::Duration::from_secs(300),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .epoch;
+    drop(conn);
+    let catalogs = Arc::new(RuntimeCatalogs::new(
+        Database::from_pool(pool.clone()),
+        RuntimeProfiles {
+            default: StorageProfiles::new([StorageProfile::LocalFs]),
+            connections: BTreeMap::new(),
+        },
+    ));
+    StorageCollector::new(
+        pool.clone(),
+        catalogs,
+        StorageSettings {
+            enabled: true,
+            ..StorageSettings::default()
+        },
+        0,
+        epoch,
+    )
+    .pass()
+    .await
+    .unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let latest = ledger::latest(&mut conn, tenant.organization, tenant.table)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        latest.failure_reason.as_deref(),
+        Some("StorageBaselineUnavailable")
+    );
+    assert!(
+        latest.content.is_none(),
+        "an unverified observation must not be published"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    config.assert_async().await;
+    primary.assert_async().await;
+    fallback.assert_async().await;
+}

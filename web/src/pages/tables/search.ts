@@ -22,6 +22,7 @@ const TABS = [
     "snapshots",
     "statistics",
     "maintenance",
+    "storage",
 ] as const;
 
 /** The table detail's addressable tab. */

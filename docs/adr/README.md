@@ -70,3 +70,4 @@ record's status; never rewrite an accepted decision.
 | [0061](0061-snapshot-expiration.md) | Snapshot expiration with ledger-aware retention bounds | Proposed |
 | [0062](0062-orphan-file-cleanup.md) | Orphan-file cleanup with reachability and ledger protection | Proposed |
 | [0063](0063-manifest-rewrite-and-dangling-delete-removal.md) | Manifest rewrite and dangling-delete removal | Proposed |
+| [0064](0064-storage-breakdown.md) | Sampled table-prefix storage breakdown | Proposed |

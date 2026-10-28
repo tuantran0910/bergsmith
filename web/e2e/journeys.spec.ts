@@ -1,3 +1,4 @@
+import { tableStorage } from "../src/test/fixtures";
 // The M4 journeys in a real browser, under the coordinator's CSP, with axe
 // checking each page (BS-021.T4).
 
@@ -989,5 +990,29 @@ test("filters tables by health and opens the health tab", async ({
         page.getByRole("cell", { name: "Policy “nightly”" }),
     ).toHaveCount(2);
     await expect(page.getByText(/5 files \(20.0 MiB\)/)).toBeVisible();
+    await expectAccessible(page);
+});
+
+test("shows sampled storage with candidate and scope explanations", async ({
+    page,
+    coordinator,
+}) => {
+    signedIn(coordinator);
+    coordinator.on("GET", "/api/v1/tables/{id}/storage", () =>
+        json(200, tableStorage),
+    );
+    await page.setViewportSize({ width: 320, height: 800 });
+    await page.goto(`/tables/${TABLE_ID}?tab=storage`);
+    await expect(
+        page.getByRole("region", { name: "Storage breakdown" }),
+    ).toBeVisible();
+    await expect(
+        page.getByRole("rowheader", { name: "Orphan candidates" }),
+    ).toBeVisible();
+    await expect(
+        page.getByText(/not a promise of reclaimable space/),
+    ).toBeVisible();
+    await expectAccessible(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
     await expectAccessible(page);
 });

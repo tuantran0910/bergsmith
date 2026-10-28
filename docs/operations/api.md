@@ -703,3 +703,24 @@ document; regenerate it with `npm --prefix web run generate` whenever
 
 Run `make services-up` followed by
 `DATABASE_URL=postgres://bergsmith:bergsmith@127.0.0.1:55432/bergsmith cargo test -p bergsmith-coordinator --test api`.
+
+### Storage breakdown
+
+`GET /api/v1/tables/{id}/storage` returns reporting enablement, the nullable
+latest complete sample, and independent last-check timestamp/reason. Inventory
+visibility is required; invisible/unknown tables return 404. The sample
+reports decimal-string file/byte counts for live main files, other retained
+snapshots, reachable metadata, orphan candidates, protected/other, total
+table-prefix footprint, and separately excluded external referenced files. It
+includes sample time, staleness, snapshot ID, schema version and effective
+orphan cutoff. Healthy samples become stale after two collection intervals;
+failed checks mark them stale immediately. No paths or partition values leave
+the ledger API. A failed check preserves the previous complete sample; null
+means unassessed, not zero usage.
+
+`GET /api/v1/catalogs/{id}/storage` follows catalog inventory visibility and
+sums only distinct visible table identities, with total/assessed/fresh/failed
+coverage and oldest/newest sample times. Shared files and overlapping table
+locations can count more than once; this is not a physical bucket total.
+Neither endpoint makes catalog/storage requests or authorizes cleanup. See ADR
+0064 for scope and bounds.

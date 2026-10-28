@@ -101,6 +101,8 @@ async fn the_ui_api_and_auth_share_one_origin(pool: PgPool) {
         .unwrap(),
         expiration_ref_safety: false,
         orphans_enabled: true,
+        storage_breakdown:
+            bergsmith_coordinator::runtime::storage_breakdown::StorageSettings::default(),
         metadata_rewrites: bergsmith_coordinator::runtime::config::MetadataRewriteConfig::default(),
     };
     let identity = IdentityState::new(database, Arc::new(provider), sessions);

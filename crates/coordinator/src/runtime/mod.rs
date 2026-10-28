@@ -22,3 +22,6 @@ pub use planning::{PlannerService, PlanningSummary};
 pub use publication::{PublicationService, PublicationSummary};
 pub use serve::{ServeError, serve};
 pub use statistics::{SampleError, SampleSummary, SamplingSettings, StatisticsCollector};
+
+/// Bounded background storage reporting.
+pub mod storage_breakdown;

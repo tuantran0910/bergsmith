@@ -1,3 +1,4 @@
+import { tableStorage } from "./test/fixtures";
 // M4 browser journeys against a contract-typed fake coordinator.
 
 import {
@@ -2558,4 +2559,67 @@ it("shows no empty state while a filtered list is loading or failed", async () =
     // The failure is shown as a failure, not as "nothing matched".
     expect(await screen.findByText("Internal error")).toBeInTheDocument();
     expect(screen.queryByText("No matches.")).not.toBeInTheDocument();
+});
+
+it("shows sampled storage on the addressable table tab", async () => {
+    fake.on("GET", "/api/v1/tables/{id}/storage", () =>
+        json(200, tableStorage),
+    );
+    const user = start(`/tables/${TABLE_ID}`);
+    await user.click(await screen.findByRole("tab", { name: "Storage" }));
+    expect(
+        await screen.findByRole("region", { name: "Storage breakdown" }),
+    ).toBeVisible();
+    expect(window.location.search).toBe("?tab=storage");
+    expect(
+        screen.getByRole("rowheader", { name: "Other retained snapshots" }),
+    ).toBeVisible();
+    expect(
+        screen.getByRole("rowheader", { name: "Orphan candidates" }),
+    ).toBeVisible();
+    expect(
+        screen.getByText(/not a promise of reclaimable space/),
+    ).toBeVisible();
+});
+it("distinguishes disabled and unassessed storage from zero", async () => {
+    fake.on("GET", "/api/v1/tables/{id}/storage", () =>
+        json(
+            200,
+            schema("TableStorage", {
+                enabled: false,
+                latest: null,
+                checked_at: null,
+                failure_reason: null,
+            }),
+        ),
+    );
+    start(`/tables/${TABLE_ID}?tab=storage`);
+    expect(await screen.findByText(/Usage is unknown/)).toBeVisible();
+    expect(screen.getByText(/collection is disabled/)).toBeVisible();
+    expect(
+        screen.queryByRole("region", { name: "Storage breakdown" }),
+    ).not.toBeInTheDocument();
+});
+it("keeps the previous storage observation visible after a failed check", async () => {
+    fake.on("GET", "/api/v1/tables/{id}/storage", () =>
+        json(
+            200,
+            schema("TableStorage", {
+                ...tableStorage,
+                failure_reason: "StorageListingTooLarge",
+                latest:
+                    tableStorage.latest === null
+                        ? null
+                        : { ...tableStorage.latest, stale: true },
+            }),
+        ),
+    );
+    start(`/tables/${TABLE_ID}?tab=storage`);
+    expect(
+        await screen.findByText(/The latest check failed/),
+    ).toHaveTextContent("StorageListingTooLarge");
+    expect(screen.getByText(/Stale sample/)).toBeVisible();
+    expect(
+        screen.getByRole("region", { name: "Storage breakdown" }),
+    ).toBeVisible();
 });

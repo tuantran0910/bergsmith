@@ -23,6 +23,7 @@ mod resources;
 mod scheduling;
 mod service_identities;
 mod statistics;
+mod storage_breakdown;
 mod submission;
 mod tables;
 
@@ -74,6 +75,8 @@ pub struct ApiState {
     pub expiration_ref_safety: bool,
     /// Whether orphan-file cleanup may be submitted.
     pub orphans_enabled: bool,
+    /// Reporting availability and freshness interval.
+    pub storage_breakdown: crate::runtime::storage_breakdown::StorageSettings,
     /// Which metadata-only `main` rewrites may be submitted.
     pub metadata_rewrites: crate::runtime::config::MetadataRewriteConfig,
 }
@@ -119,6 +122,11 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/tables", get(tables::tables))
         .route("/api/v1/tables/{id}", get(tables::table))
         .route("/api/v1/tables/{id}/statistics", get(statistics::table))
+        .route("/api/v1/tables/{id}/storage", get(storage_breakdown::table))
+        .route(
+            "/api/v1/catalogs/{id}/storage",
+            get(storage_breakdown::catalog),
+        )
         .route("/api/v1/tables/{id}/snapshots", get(statistics::snapshots))
         .route(
             "/api/v1/tables/{id}/definition",

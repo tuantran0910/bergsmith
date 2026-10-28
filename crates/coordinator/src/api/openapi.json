@@ -7518,6 +7518,233 @@
           }
         }
       }
+    },
+    "/api/v1/tables/{id}/storage": {
+      "get": {
+        "operationId": "getTableStorage",
+        "description": "Requires inventory visibility. Reads PostgreSQL only; no catalog or storage request is performed. Counts exclude invisible tables and contain no paths or partition values.",
+        "responses": {
+          "400": {
+            "description": "Invalid request or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or inaccessible resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Statistics page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TableStorage"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaque continuation bound to organization, principal, and resource. Current grants are rechecked.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Inclusive RFC 3339 lower bound for the history.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "summary": "Read sampled storage breakdown"
+      }
+    },
+    "/api/v1/catalogs/{id}/storage": {
+      "get": {
+        "operationId": "getCatalogStorage",
+        "description": "Requires inventory visibility. Reads PostgreSQL only; no catalog or storage request is performed. Counts exclude invisible tables and contain no paths or partition values.",
+        "responses": {
+          "400": {
+            "description": "Invalid request or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or inaccessible resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Statistics totals",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogStorage"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "summary": "Read sampled storage breakdown"
+      }
     }
   },
   "components": {
@@ -13024,6 +13251,232 @@
                 "type": "null"
               }
             ]
+          }
+        }
+      },
+      "StorageUsage": {
+        "type": "object",
+        "description": "Unique object count and bytes, serialized as decimal strings.",
+        "additionalProperties": false,
+        "required": [
+          "files",
+          "bytes"
+        ],
+        "properties": {
+          "files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          }
+        }
+      },
+      "TableStorageSample": {
+        "type": "object",
+        "description": "Complete table-prefix observation. Live is main data/deletes; retained covers other snapshots including branch/tag heads. Metadata is reachable metadata. Orphan is an uncapped candidate count under cleanup protections, not deletion authority. Protected covers the remainder. External referenced data/delete files are excluded from the total; their bytes come from manifests. This is not an atomic storage snapshot. Stale after two collection intervals, or immediately after a failed check.",
+        "additionalProperties": false,
+        "required": [
+          "live",
+          "retained",
+          "metadata",
+          "orphan",
+          "protected",
+          "total",
+          "external",
+          "version",
+          "sampled_at",
+          "snapshot_id",
+          "stale",
+          "cutoff_at"
+        ],
+        "properties": {
+          "live": {
+            "$ref": "#/components/schemas/StorageUsage"
+          },
+          "retained": {
+            "$ref": "#/components/schemas/StorageUsage"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/StorageUsage"
+          },
+          "orphan": {
+            "$ref": "#/components/schemas/StorageUsage"
+          },
+          "protected": {
+            "$ref": "#/components/schemas/StorageUsage"
+          },
+          "total": {
+            "$ref": "#/components/schemas/StorageUsage"
+          },
+          "external": {
+            "$ref": "#/components/schemas/StorageUsage"
+          },
+          "version": {
+            "type": "integer",
+            "enum": [
+              1
+            ]
+          },
+          "sampled_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^-?[0-9]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stale": {
+            "type": "boolean"
+          },
+          "cutoff_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "TableStorage": {
+        "type": "object",
+        "description": "Latest complete sample and independent check status. Null latest means unassessed, never zero usage. Failed checks preserve previous samples.",
+        "additionalProperties": false,
+        "required": [
+          "enabled",
+          "latest",
+          "checked_at",
+          "failure_reason"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "latest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TableStorageSample"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "checked_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "CatalogStorage": {
+        "type": "object",
+        "description": "Sums over distinct visible table identities; coverage and sample times describe mixed-age results. Shared objects and overlapping table locations may count more than once. Not a physical bucket total.",
+        "additionalProperties": false,
+        "required": [
+          "live",
+          "retained",
+          "metadata",
+          "orphan",
+          "protected",
+          "total",
+          "external",
+          "enabled",
+          "tables",
+          "assessed",
+          "fresh",
+          "failed",
+          "oldest_sampled_at",
+          "newest_sampled_at",
+          "stale"
+        ],
+        "properties": {
+          "live": {
+            "$ref": "#/components/schemas/StorageUsage"
+          },
+          "retained": {
+            "$ref": "#/components/schemas/StorageUsage"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/StorageUsage"
+          },
+          "orphan": {
+            "$ref": "#/components/schemas/StorageUsage"
+          },
+          "protected": {
+            "$ref": "#/components/schemas/StorageUsage"
+          },
+          "total": {
+            "$ref": "#/components/schemas/StorageUsage"
+          },
+          "external": {
+            "$ref": "#/components/schemas/StorageUsage"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "tables": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "assessed": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "fresh": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "failed": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "oldest_sampled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "newest_sampled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stale": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
           }
         }
       }

@@ -306,3 +306,38 @@ transaction; failure leaves none of those changes behind. `issue-worker-token`
 requires an administrator holding `workers:manage`, stores only the verifier,
 and writes the bearer token once to a new mode-0600 file. An existing file is
 never overwritten; do not pass the token through shell history or a log.
+
+## Storage reporting
+
+`storage_breakdown.enabled` defaults to false. Reporting is read-only and does
+not require `orphans.enabled`. Set it to true to collect hourly; GET requests only
+read the latest ledger observation. Failed checks preserve that observation.
+
+| Setting (`storage_breakdown.*`) | Default | Meaning |
+|---|---:|---|
+| `interval_seconds` | 3600 | Check interval, including failures (60–86400) |
+| `page_size` | 20 | Due tables per pass (1–1000) |
+| `max_concurrent_scans` | 1 | Concurrent tables (1–16); one per catalog |
+| `max_listed_objects` | 1000000 | Listing bound (up to 10000000) |
+| `max_manifest_lists` | 10000 | Distinct snapshot/intent lists (up to 100000) |
+| `max_manifests` | 100000 | Distinct manifests (up to 1000000) |
+| `max_entries` | 500000 | Decoded entries (up to 10000000) |
+| `max_object_bytes` | 67108864 | Single metadata-object read (up to 1 GiB) |
+| `max_total_bytes` | 1073741824 | Cumulative reads (object bound through 100 GiB) |
+| `read_timeout_seconds` | 120 | Single metadata-object read deadline (1–3600) |
+| `scan_timeout_seconds` | 600 | Active scan including full listing, after catalog queue wait (1–3600) |
+
+Orphan candidates use `orphans.minimum_age_seconds` and the connection protection
+window, even when deletion is disabled. They are not guaranteed reclaimable space.
+Collection uses listing sizes under the table location. External referenced files
+are shown separately; catalog sums may double-count shared storage. Raising scan
+bounds increases memory and I/O; no partial result is published when a bound fails.
+
+Storage observations become stale after two collection intervals (two hours by
+default), leaving one interval of scheduling grace. A failed check makes the
+retained observation stale immediately. Catalog and table views use the same
+cutoff. Reporting decoders have their own capacity, equal to
+`max_concurrent_scans`; they never serialize orphan cleanup. Catalog lock waits
+do not consume the scan deadline. Typed `Storage*` failure codes distinguish
+manifest-list limits, cumulative read budgets, inconsistent listings/metadata,
+and accounting overflow.
