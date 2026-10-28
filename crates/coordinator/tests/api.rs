@@ -43,6 +43,8 @@ mod table_health;
 #[path = "api/table_maintenance.rs"]
 mod table_maintenance;
 
+#[path = "api/storage_breakdown.rs"]
+mod storage_breakdown;
 #[path = "api/table_statistics.rs"]
 mod table_statistics;
 
@@ -284,6 +286,8 @@ impl Browser {
                 notifications,
                 expiration_ref_safety,
                 orphans_enabled,
+                storage_breakdown:
+                    bergsmith_coordinator::runtime::storage_breakdown::StorageSettings::default(),
                 metadata_rewrites: metadata_rewrites(orphans_enabled),
             }),
             cookie: format!("{}={}", config.cookie_name, issued.token.expose()),
@@ -339,6 +343,8 @@ fn router_with(pool: &PgPool, config: SessionConfig) -> Router {
         notifications: notifications(),
         expiration_ref_safety: true,
         orphans_enabled: true,
+        storage_breakdown:
+            bergsmith_coordinator::runtime::storage_breakdown::StorageSettings::default(),
         metadata_rewrites: metadata_rewrites(true),
     })
 }
@@ -1438,6 +1444,8 @@ fn openapi_documents_every_route() {
         ("/api/v1/statistics/maintenance", "get"),
         ("/api/v1/overview", "get"),
         ("/api/v1/tables/{id}/statistics", "get"),
+        ("/api/v1/tables/{id}/storage", "get"),
+        ("/api/v1/catalogs/{id}/storage", "get"),
         ("/api/v1/catalogs/{id}/statistics", "get"),
         ("/api/v1/statistics", "get"),
         ("/api/v1/jobs", "get"),

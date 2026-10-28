@@ -837,6 +837,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tables/{id}/storage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read sampled storage breakdown
+         * @description Requires inventory visibility. Reads PostgreSQL only; no catalog or storage request is performed. Counts exclude invisible tables and contain no paths or partition values.
+         */
+        get: operations["getTableStorage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/catalogs/{id}/storage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read sampled storage breakdown
+         * @description Requires inventory visibility. Reads PostgreSQL only; no catalog or storage request is performed. Counts exclude invisible tables and contain no paths or partition values.
+         */
+        get: operations["getCatalogStorage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2123,6 +2163,54 @@ export interface components {
             outcome: "delivered" | "rejected" | "failed";
             status: number | null;
             reason: string | null;
+        };
+        /** @description Unique object count and bytes, serialized as decimal strings. */
+        StorageUsage: {
+            files: string;
+            bytes: string;
+        };
+        /** @description Complete table-prefix observation. Live is main data/deletes; retained covers other snapshots including branch/tag heads. Metadata is reachable metadata. Orphan is an uncapped candidate count under cleanup protections, not deletion authority. Protected covers the remainder. External referenced data/delete files are excluded from the total; their bytes come from manifests. This is not an atomic storage snapshot. Stale after two collection intervals, or immediately after a failed check. */
+        TableStorageSample: {
+            live: components["schemas"]["StorageUsage"];
+            retained: components["schemas"]["StorageUsage"];
+            metadata: components["schemas"]["StorageUsage"];
+            orphan: components["schemas"]["StorageUsage"];
+            protected: components["schemas"]["StorageUsage"];
+            total: components["schemas"]["StorageUsage"];
+            external: components["schemas"]["StorageUsage"];
+            /** @enum {integer} */
+            version: 1;
+            /** Format: date-time */
+            sampled_at: string;
+            snapshot_id: string | null;
+            stale: boolean;
+            /** Format: date-time */
+            cutoff_at: string;
+        };
+        /** @description Latest complete sample and independent check status. Null latest means unassessed, never zero usage. Failed checks preserve previous samples. */
+        TableStorage: {
+            enabled: boolean;
+            latest: components["schemas"]["TableStorageSample"] | null;
+            checked_at: string | null;
+            failure_reason: string | null;
+        };
+        /** @description Sums over distinct visible table identities; coverage and sample times describe mixed-age results. Shared objects and overlapping table locations may count more than once. Not a physical bucket total. */
+        CatalogStorage: {
+            live: components["schemas"]["StorageUsage"];
+            retained: components["schemas"]["StorageUsage"];
+            metadata: components["schemas"]["StorageUsage"];
+            orphan: components["schemas"]["StorageUsage"];
+            protected: components["schemas"]["StorageUsage"];
+            total: components["schemas"]["StorageUsage"];
+            external: components["schemas"]["StorageUsage"];
+            enabled: boolean;
+            tables: string;
+            assessed: string;
+            fresh: string;
+            failed: string;
+            oldest_sampled_at: string | null;
+            newest_sampled_at: string | null;
+            stale: string;
         };
     };
     responses: never;
@@ -8099,6 +8187,182 @@ export interface operations {
                 };
             };
             /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    getTableStorage: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque continuation bound to organization, principal, and resource. Current grants are rechecked. */
+                cursor?: string;
+                /** @description Inclusive RFC 3339 lower bound for the history. */
+                since?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Statistics page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TableStorage"];
+                };
+            };
+            /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unknown or inaccessible resource */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    getCatalogStorage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Statistics totals */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogStorage"];
+                };
+            };
+            /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unknown or inaccessible resource */
             404: {
                 headers: {
                     [name: string]: unknown;

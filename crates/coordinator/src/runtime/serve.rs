@@ -150,6 +150,7 @@ pub async fn serve(config: CoordinatorConfig) -> Result<(), ServeError> {
         planner,
         publication,
         statistics,
+        storage_breakdown,
     } = started;
     let listener = events.listen(&database);
     let http_shutdown = shutdown.clone();
@@ -215,6 +216,13 @@ pub async fn serve(config: CoordinatorConfig) -> Result<(), ServeError> {
         tasks.spawn(async move {
             statistics.run(interval, shutdown.wait()).await;
             ("statistics", Ok(()))
+        });
+    }
+    {
+        let shutdown = shutdown.clone();
+        tasks.spawn(async move {
+            storage_breakdown.run(shutdown.wait()).await;
+            ("storage breakdown", Ok(()))
         });
     }
     {
@@ -304,6 +312,7 @@ struct Started {
     planner: PlannerService,
     publication: PublicationService,
     statistics: Arc<StatisticsCollector>,
+    storage_breakdown: crate::runtime::storage_breakdown::StorageCollector,
 }
 
 #[expect(
@@ -368,6 +377,7 @@ async fn start(
         notifications,
         expiration_ref_safety: config.expiration.catalog_ref_safety,
         orphans_enabled: orphan_settings.enabled(),
+        storage_breakdown: config.storage_breakdown.clone(),
         metadata_rewrites,
     };
     let identity = IdentityState::new(database.clone(), Arc::new(provider), sessions);
@@ -429,6 +439,13 @@ async fn start(
         config.expiration.catalog_ref_safety,
         orphan_settings,
     );
+    let storage_breakdown = crate::runtime::storage_breakdown::StorageCollector::new(
+        database.pool().clone(),
+        catalogs.clone(),
+        config.storage_breakdown.clone(),
+        config.orphans.minimum_age_seconds,
+        epoch,
+    );
     let statistics = Arc::new(StatisticsCollector::new(
         database.pool().clone(),
         catalogs,
@@ -471,6 +488,7 @@ async fn start(
         planner,
         publication,
         statistics,
+        storage_breakdown,
     })
 }
 

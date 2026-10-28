@@ -839,3 +839,41 @@ export function notificationDeliveryDetail(
         ...overrides,
     });
 }
+
+/** Complete table-prefix storage observation, contract checked. */
+export const tableStorage = schema("TableStorage", {
+    enabled: true,
+    checked_at: "2026-10-28T00:00:00Z",
+    failure_reason: null,
+    latest: {
+        version: 1,
+        sampled_at: "2026-10-28T00:00:00Z",
+        snapshot_id: "7",
+        stale: false,
+        cutoff_at: "2026-10-25T00:00:00Z",
+        live: { files: "2", bytes: "4096" },
+        retained: { files: "1", bytes: "2048" },
+        metadata: { files: "3", bytes: "1024" },
+        orphan: { files: "1", bytes: "512" },
+        protected: { files: "1", bytes: "256" },
+        total: { files: "8", bytes: "7936" },
+        external: { files: "0", bytes: "0" },
+    },
+});
+export const catalogStorage = schema("CatalogStorage", {
+    stale: "0",
+    enabled: true,
+    tables: "2",
+    assessed: "1",
+    fresh: "1",
+    failed: "0",
+    oldest_sampled_at: "2026-10-28T00:00:00Z",
+    newest_sampled_at: "2026-10-28T00:00:00Z",
+    live: { files: "2", bytes: "4096" },
+    retained: { files: "1", bytes: "2048" },
+    metadata: { files: "3", bytes: "1024" },
+    orphan: { files: "1", bytes: "512" },
+    protected: { files: "1", bytes: "256" },
+    total: { files: "8", bytes: "7936" },
+    external: { files: "0", bytes: "0" },
+});

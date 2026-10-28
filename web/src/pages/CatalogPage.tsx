@@ -25,6 +25,7 @@ import { Skeleton } from "../ui/Skeleton";
 import { Capabilities } from "./catalogs/Capabilities";
 import { Discovery } from "./catalogs/Discovery";
 import { RegisteredTables } from "./catalogs/RegisteredTables";
+import { CatalogStorage } from "./catalogs/Storage";
 import { Settings } from "./catalogs/Settings";
 import { Access } from "./access/Access";
 
@@ -80,6 +81,7 @@ export function CatalogPage({ id }: { id: string }) {
                 }
                 actions={<Link to="/catalogs">All catalogs</Link>}
             />
+            <CatalogStorage id={id} />
             <Card>
                 <CardHeader>
                     <CardTitle>Table statistics</CardTitle>

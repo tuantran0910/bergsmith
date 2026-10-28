@@ -1,3 +1,4 @@
+import { catalogStorage } from "../src/test/fixtures";
 import { schema } from "../src/test/fakes";
 import {
     CATALOG_ID,
@@ -42,6 +43,9 @@ test("checks an unsaved connection, saves it, and registers a discovered table",
             return json(201, managedCatalog);
         })
         .on("GET", "/api/v1/catalogs/{id}", () => json(200, managedCatalog))
+        .on("GET", "/api/v1/catalogs/{id}/storage", () =>
+            json(200, catalogStorage),
+        )
         .on("GET", "/api/v1/catalogs/{id}/statistics", () =>
             json(200, catalogTotals),
         )
@@ -169,6 +173,9 @@ test("pauses maintenance and removes a registration with its revision", async ({
         .on("GET", "/auth/session", () => json(200, session("Administrator")))
         .on("GET", "/api/v1/catalogs", () => json(200, catalogs))
         .on("GET", "/api/v1/catalogs/{id}", () => json(200, current))
+        .on("GET", "/api/v1/catalogs/{id}/storage", () =>
+            json(200, catalogStorage),
+        )
         .on("GET", "/api/v1/catalogs/{id}/statistics", () =>
             json(200, catalogTotals),
         )
@@ -263,5 +270,35 @@ test("blocks secret-bearing URIs before sending a draft to the coordinator", asy
     await expect(
         page.getByRole("button", { name: "Save connection" }),
     ).toHaveCount(0);
+    await expectAccessible(page);
+});
+
+test("shows catalog storage coverage and shared-storage scope", async ({
+    page,
+    coordinator,
+}) => {
+    coordinator
+        .on("GET", "/auth/session", () => json(200, session("Administrator")))
+        .on("GET", "/api/v1/catalogs", () => json(200, catalogs))
+        .on("GET", "/api/v1/catalogs/{id}", () => json(200, managedCatalog))
+        .on("GET", "/api/v1/catalogs/{id}/storage", () =>
+            json(200, catalogStorage),
+        )
+        .on("GET", "/api/v1/catalogs/{id}/statistics", () =>
+            json(200, catalogTotals),
+        )
+        .on("GET", "/api/v1/tables", () =>
+            json(
+                200,
+                schema("TablePage", { items: [table], next_cursor: null }),
+            ),
+        );
+    await page.goto(`/catalogs/${CATALOG_ID}`);
+    await expect(
+        page.getByText(/1 of 2 visible tables assessed/),
+    ).toBeVisible();
+    await expect(
+        page.getByText(/Shared files and overlapping table locations/),
+    ).toBeVisible();
     await expectAccessible(page);
 });

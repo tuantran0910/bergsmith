@@ -31,6 +31,7 @@ import { namespaceKey, tab, type TableTab } from "./tables/search";
 import { TableDefinition } from "./tables/Definition";
 import { TableHealth } from "./tables/Health";
 import { TableMaintenance } from "./tables/Maintenance";
+import { TableStorage } from "./tables/Storage";
 import { TableStatistics } from "./tables/Statistics";
 import { TableSnapshots } from "./tables/Snapshots";
 
@@ -307,6 +308,7 @@ export function TablePage({ id }: { id: string }) {
                     <TabsTrigger value="health">Health</TabsTrigger>
                     <TabsTrigger value="snapshots">Snapshots</TabsTrigger>
                     <TabsTrigger value="statistics">Statistics</TabsTrigger>
+                    <TabsTrigger value="storage">Storage</TabsTrigger>
                     <TabsTrigger value="maintenance">Maintenance</TabsTrigger>
                 </TabsList>
                 <TabsContent value="overview">
@@ -466,6 +468,9 @@ export function TablePage({ id }: { id: string }) {
                 </TabsContent>
                 <TabsContent value="statistics">
                     <TableStatistics id={id} />
+                </TabsContent>
+                <TabsContent value="storage">
+                    <TableStorage id={id} />
                 </TabsContent>
                 <TabsContent value="maintenance">
                     <TableMaintenance id={id} />

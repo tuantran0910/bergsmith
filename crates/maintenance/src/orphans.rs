@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::baseline::DATA_PATH_PROPERTY;
 
-mod reachable;
+pub(crate) mod reachable;
 
 use reachable::ObjectIdentity;
 
@@ -114,6 +114,27 @@ pub enum OrphanError {
     /// A bound is zero, so no plan could ever be built.
     #[error("the orphan clean-up bounds must be positive")]
     InvalidPolicy,
+    /// The reporting scan exceeds its distinct manifest-list bound.
+    #[error("the manifest-list scan exceeds {limit} lists")]
+    ScanListsTooLarge {
+        /// Maximum distinct lists.
+        limit: usize,
+    },
+    /// The reporting scan exceeds its cumulative read budget.
+    #[error("the metadata scan exceeds its {limit} byte read budget")]
+    ScanBytesTooLarge {
+        /// Maximum cumulative metadata bytes read.
+        limit: u64,
+    },
+    /// Duplicate objects disagree or a listing escapes its requested root.
+    #[error("the storage listing is inconsistent")]
+    InconsistentListing,
+    /// Retained manifests disagree about an object's declared size.
+    #[error("the manifest file sizes are inconsistent")]
+    InconsistentMetadata,
+    /// Object or byte accounting cannot be represented.
+    #[error("the storage accounting overflowed")]
+    AccountingOverflow,
     /// A table, metadata, or planned path is not a valid storage location.
     #[error("orphan cleanup met an invalid storage location")]
     Location(#[source] bergsmith_storage::LocationError),
@@ -188,6 +209,11 @@ impl OrphanError {
             }
             Self::TimedOut { .. } => true,
             Self::InvalidPolicy
+            | Self::ScanListsTooLarge { .. }
+            | Self::ScanBytesTooLarge { .. }
+            | Self::InconsistentListing
+            | Self::InconsistentMetadata
+            | Self::AccountingOverflow
             | Self::Location(_)
             | Self::ListingTooLarge { .. }
             | Self::ScanUnboundedManifest { .. }
@@ -202,6 +228,11 @@ impl OrphanError {
     pub const fn reason_code(&self) -> &'static str {
         match self {
             Self::InvalidPolicy => "OrphanBoundsInvalid",
+            Self::ScanListsTooLarge { .. } => "StorageManifestListsExceeded",
+            Self::ScanBytesTooLarge { .. } => "StorageReadBudgetExceeded",
+            Self::InconsistentListing => "StorageListingInconsistent",
+            Self::InconsistentMetadata => "StorageMetadataInconsistent",
+            Self::AccountingOverflow => "StorageAccountingOverflow",
             Self::Location(_) => "OrphanLocationInvalid",
             Self::Io(_) => "OrphanMetadataReadFailed",
             Self::Storage(_) => "OrphanStorageFailed",
@@ -226,16 +257,25 @@ impl OrphanError {
                 limit: Some(*limit),
                 ..OrphanDiagnostics::default()
             },
+            Self::ScanBytesTooLarge { limit } => OrphanDiagnostics {
+                limit: Some(*limit),
+                ..OrphanDiagnostics::default()
+            },
             Self::ScanTooLarge { manifests, entries } => OrphanDiagnostics {
                 manifests: Some(*manifests),
                 entries: Some(*entries),
                 ..OrphanDiagnostics::default()
             },
-            Self::ListingTooLarge { limit } => OrphanDiagnostics {
-                limit: u64::try_from(*limit).ok(),
-                ..OrphanDiagnostics::default()
-            },
+            Self::ListingTooLarge { limit } | Self::ScanListsTooLarge { limit } => {
+                OrphanDiagnostics {
+                    limit: u64::try_from(*limit).ok(),
+                    ..OrphanDiagnostics::default()
+                }
+            }
             Self::InvalidPolicy
+            | Self::InconsistentListing
+            | Self::InconsistentMetadata
+            | Self::AccountingOverflow
             | Self::Location(_)
             | Self::Io(_)
             | Self::Storage(_)
@@ -398,7 +438,7 @@ fn bergsmith_roots(table: &Location, data_location: &str) -> Result<Vec<Location
 pub struct OrphanDiagnostics {
     /// The observed object size in bytes.
     pub size: Option<u64>,
-    /// The configured bound in bytes.
+    /// The configured bound, in the units identified by the failure reason.
     pub limit: Option<u64>,
     /// The observed manifest count.
     pub manifests: Option<usize>,

@@ -81,6 +81,9 @@ pub struct CoordinatorConfig {
     /// Metadata-only table statistics sampling.
     #[serde(default)]
     pub statistics: StatisticsSettings,
+    /// Independently budgeted table-prefix storage reporting.
+    #[serde(default)]
+    pub storage_breakdown: crate::runtime::storage_breakdown::StorageSettings,
     /// Notification destinations and outbound delivery (BS-029).
     #[serde(default)]
     pub notifications: NotificationsSettings,
@@ -1507,6 +1510,7 @@ impl CoordinatorConfig {
         }
         self.observability.metrics()?;
         self.statistics.sampling()?;
+        self.storage_breakdown.validate()?;
         self.notifications.policy()?;
         Ok(())
     }

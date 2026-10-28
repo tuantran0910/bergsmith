@@ -37,3 +37,6 @@ pub mod workers;
 
 pub use database::{Database, DatabaseConfig, DatabaseTlsMode, DatabaseUrl, MIGRATOR};
 pub use error::PersistenceError;
+
+/// Latest complete storage observations and scoped rollups.
+pub mod storage_breakdown;
