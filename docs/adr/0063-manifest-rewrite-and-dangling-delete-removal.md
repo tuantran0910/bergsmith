@@ -108,9 +108,12 @@ left with a single selected manifest is dropped, and the rest wait for a later
 job. The plan records how many eligible manifests it deferred. The
 iceberg-rust action is one opaque step, so the whole preparation runs under
 `manifests.operation_timeout_seconds`. Dangling-delete selection reuses the
-planner's manifest-entry bound, and its inventory read and its preparation
-each run under `deletes.operation_timeout_seconds`. A missed deadline is
-retried like any transient storage failure.
+planner's manifest-entry bound, and its inventory read with classification,
+and its preparation, each run under `deletes.operation_timeout_seconds`.
+Classification tests each delete only until it first applies, stops once
+every delete is accounted for, and yields regularly so the deadline can stop
+it; a selection that completes after its deadline is rejected. A missed
+deadline is retried like any transient storage failure.
 
 ## Consequences
 

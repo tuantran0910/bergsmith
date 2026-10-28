@@ -25,7 +25,7 @@ use iceberg::spec::{
 use serde::{Deserialize, Serialize};
 
 use crate::baseline::PlanningBaseline;
-use crate::deletes::DeleteIndex;
+use crate::deletes::PendingDeletes;
 use crate::error::PlanError;
 use crate::inventory::{DeleteKind, Inventory};
 use crate::partition::Specs;
@@ -309,7 +309,8 @@ fn choose_manifests(
 /// Selects the dangling delete files of the baseline snapshot.
 ///
 /// Reads every manifest of the baseline snapshot, up to `max_entries` live
-/// entries. The caller bounds the reads with a deadline.
+/// entries, then classifies the deletes. Classification yields regularly, so
+/// the caller bounds both the reads and the classification with a deadline.
 ///
 /// # Errors
 ///
@@ -337,7 +338,8 @@ pub async fn select_dangling_deletes(
         &specs,
         &floating_point_fields(metadata),
         max_removals,
-    ))
+    )
+    .await)
 }
 
 /// Field IDs that are `float` or `double` in any schema of `metadata`.
@@ -356,8 +358,14 @@ fn floating_point_fields(metadata: &TableMetadata) -> BTreeSet<i32> {
     fields
 }
 
+/// Delete-applicability tests between cooperative yields.
+const TESTS_PER_YIELD: usize = 4096;
+
 /// The dangling deletes of `inventory`, by path, at most `max_removals`.
-fn dangling(
+///
+/// Yields every [`TESTS_PER_YIELD`] applicability tests, so a deadline around
+/// the returned future can stop it.
+async fn dangling(
     mut inventory: Inventory,
     specs: &Specs,
     floating: &BTreeSet<i32>,
@@ -374,16 +382,21 @@ fn dangling(
             }
         }
     }
-    let index = DeleteIndex::new(&inventory.deletes, specs);
-    let mut applied: BTreeSet<&str> = BTreeSet::new();
+    let mut pending = PendingDeletes::new(&inventory.deletes, specs);
+    let mut tested = 0;
     for data in &inventory.data {
-        applied.extend(
-            index
-                .applicable(data)
-                .into_iter()
-                .map(|delete| delete.file.path.as_str()),
-        );
+        if pending.is_empty() {
+            break;
+        }
+        tested += pending.discharge(data);
+        // Classification is CPU work: yield regularly so the caller's
+        // deadline can cancel it and the runtime worker stays responsive.
+        if tested >= TESTS_PER_YIELD {
+            tested = 0;
+            tokio::task::yield_now().await;
+        }
     }
+    let applied = pending.into_applied();
     let mut deletes: Vec<PlannedDanglingDelete> = inventory
         .deletes
         .iter()
@@ -700,7 +713,7 @@ mod tests {
 
     fn select(data: Vec<FileEntry>, deletes: Vec<DeleteEntry>, max: u64) -> DanglingSelection {
         let inventory = Inventory::from_entries(data, deletes).unwrap();
-        dangling(inventory, &specs(), &BTreeSet::from([2]), max)
+        futures::executor::block_on(dangling(inventory, &specs(), &BTreeSet::from([2]), max))
     }
 
     fn dangling_paths(selection: &DanglingSelection) -> Vec<&str> {
@@ -712,6 +725,62 @@ mod tests {
             referenced: None,
             path_bounds: None,
         }
+    }
+
+    fn global_deletes(count: usize) -> (Vec<FileEntry>, Vec<DeleteEntry>) {
+        let data = (0..count)
+            .map(|i| file(&format!("d{i:05}"), 1, PartitionKey::unpartitioned()))
+            .collect();
+        let deletes = (0..count)
+            .map(|i| {
+                delete(
+                    &format!("e{i:05}"),
+                    2,
+                    DeleteKind::Equality { field_ids: vec![1] },
+                )
+            })
+            .collect();
+        (data, deletes)
+    }
+
+    #[test]
+    fn a_live_delete_is_tested_only_until_it_first_applies() {
+        let (data, deletes) = global_deletes(3000);
+        let specs = specs();
+        let mut pending = PendingDeletes::new(&deletes, &specs);
+        assert_eq!(pending.discharge(&data[0]), 3000);
+        assert!(pending.is_empty());
+        assert_eq!(pending.discharge(&data[1]), 0);
+        assert_eq!(pending.into_applied().len(), 3000);
+    }
+
+    #[test]
+    fn classification_yields_so_a_deadline_can_stop_it() {
+        let deletes = (0..3000)
+            .map(|i| {
+                delete(
+                    &format!("e{i:05}"),
+                    1,
+                    DeleteKind::Equality { field_ids: vec![1] },
+                )
+            })
+            .collect();
+        let data = (0..10)
+            .map(|i| file(&format!("d{i:05}"), 1, PartitionKey::unpartitioned()))
+            .collect();
+        let inventory = Inventory::from_entries(data, deletes).unwrap();
+        let (specs, floating) = (specs(), BTreeSet::new());
+        let classify = dangling(inventory, &specs, &floating, 10);
+        // 30,000 tests of deletes that never apply cannot finish in one poll.
+        assert!(futures::FutureExt::now_or_never(classify).is_none());
+    }
+
+    #[test]
+    fn many_live_global_deletes_leave_nothing_dangling() {
+        let (data, deletes) = global_deletes(3000);
+        let selection = select(data, deletes, 10);
+        assert!(selection.deletes.is_empty());
+        assert_eq!(selection.examined, 3000);
     }
 
     #[test]

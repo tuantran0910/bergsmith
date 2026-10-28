@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use bergsmith_common::ids::{JobId, PlanId};
 use bergsmith_common::job::{JobOperation, JobState};
+use bergsmith_maintenance::deadline::within;
 use bergsmith_maintenance::metadata_plan::{
     MetadataPlanDocument, MetadataPlanError, select_dangling_deletes, select_manifests,
 };
@@ -686,7 +687,7 @@ impl PlannerService {
         let limit = self.metadata.operation_timeout(job.operation);
         let file_io = binding.store.file_io();
         let (work, empty) = if job.operation == JobOperation::RewriteManifests {
-            let selection = tokio::time::timeout(
+            let selection = within(
                 limit,
                 select_manifests(
                     metadata,
@@ -696,12 +697,12 @@ impl PlannerService {
                 ),
             )
             .await
-            .map_err(|_| PlanningError::MetadataTimedOut)??;
+            .ok_or(PlanningError::MetadataTimedOut)??;
             let reason = bergsmith_maintenance::NoOpReason::NoManifestsToRewrite;
             let empty = selection.manifests.is_empty().then_some(reason);
             (selection.into_work(), empty)
         } else {
-            let selection = tokio::time::timeout(
+            let selection = within(
                 limit,
                 select_dangling_deletes(
                     metadata,
@@ -712,7 +713,7 @@ impl PlannerService {
                 ),
             )
             .await
-            .map_err(|_| PlanningError::MetadataTimedOut)??;
+            .ok_or(PlanningError::MetadataTimedOut)??;
             let reason = bergsmith_maintenance::NoOpReason::NoDanglingDeletes;
             let empty = selection.deletes.is_empty().then_some(reason);
             (selection.into_work(), empty)
