@@ -435,7 +435,8 @@ pub async fn latest(
 /// Batch form of [`latest`] for the tables list and its health filter, which
 /// evaluate a page or a whole visible inventory at once. Tables without a
 /// sample are absent from the result, and the order is the table id order the
-/// query plans on.
+/// query plans on. Each distinct requested table uses a newest-row index
+/// lookup instead of scanning its retained sample history.
 ///
 /// # Errors
 ///
@@ -447,11 +448,13 @@ pub async fn latest_for_tables(
 ) -> Result<Vec<(TableId, StoredTableSample)>, PersistenceError> {
     let ids: Vec<Uuid> = table_ids.iter().map(|table| *table.as_uuid()).collect();
     let rows: Vec<TableSampleRow> = sqlx::query_as(concat!(
-        "SELECT DISTINCT ON (table_identity_id) table_identity_id, sampled_at, \
-         catalog_connection_id, ",
+        "SELECT table_identity_id, sampled_at, catalog_connection_id, ",
         sample_columns!(),
-        " FROM table_statistics WHERE organization_id = $1 AND table_identity_id = ANY($2) \
-         ORDER BY table_identity_id, sampled_at DESC"
+        " FROM (SELECT DISTINCT unnest($2::uuid[]) AS id) requested \
+         JOIN LATERAL (SELECT * FROM table_statistics s \
+                       WHERE s.organization_id = $1 AND s.table_identity_id = requested.id \
+                       ORDER BY s.sampled_at DESC LIMIT 1) newest ON true \
+         ORDER BY table_identity_id"
     ))
     .bind(organization_id.as_uuid())
     .bind(&ids)

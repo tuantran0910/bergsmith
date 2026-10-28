@@ -71,3 +71,4 @@ record's status; never rewrite an accepted decision.
 | [0062](0062-orphan-file-cleanup.md) | Orphan-file cleanup with reachability and ledger protection | Proposed |
 | [0063](0063-manifest-rewrite-and-dangling-delete-removal.md) | Manifest rewrite and dangling-delete removal | Proposed |
 | [0064](0064-storage-breakdown.md) | Sampled table-prefix storage breakdown | Proposed |
+| [0065](0065-bounded-health-and-statistics-metrics.md) | Bounded health and statistics metrics | Proposed |

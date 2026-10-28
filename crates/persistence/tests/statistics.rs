@@ -147,16 +147,26 @@ async fn batch_reads_take_the_newest_sample_and_check_per_table(pool: PgPool) {
 
     // The newest sample of each sampled table, and nothing for an unsampled
     // one or a table outside the organization.
-    let latest =
-        statistics::latest_for_tables(&mut conn, tenant.organization, &[tenant.table, unsampled])
-            .await
-            .unwrap();
+    let latest = statistics::latest_for_tables(
+        &mut conn,
+        tenant.organization,
+        &[tenant.table, unsampled, tenant.table],
+    )
+    .await
+    .unwrap();
     assert_eq!(latest.len(), 1);
     assert_eq!(latest[0].0, tenant.table);
     assert_eq!(latest[0].1.record_count, 200);
     assert_eq!(latest[0].1.sampled_at, second.sampled_at);
     assert!(
         statistics::latest_for_tables(&mut conn, other.organization, &[tenant.table])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    assert!(
+        statistics::latest_for_tables(&mut conn, tenant.organization, &[])
             .await
             .unwrap()
             .is_empty()

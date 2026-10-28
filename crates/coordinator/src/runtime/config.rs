@@ -1306,9 +1306,22 @@ pub struct ObservabilitySettings {
     /// How long a ledger snapshot is reused before PostgreSQL is read again.
     #[serde(default = "default_ledger_refresh_seconds")]
     pub ledger_refresh_seconds: u64,
-    /// Statement timeout for the ledger snapshot.
+    /// Ledger statement timeout, also bounding connection acquisition.
     #[serde(default = "default_ledger_query_timeout_millis")]
     pub ledger_query_timeout_millis: u64,
+    /// Independent whole-scan and statement timeout for health/statistics metrics.
+    #[serde(default = "default_ledger_query_timeout_millis")]
+    pub health_query_timeout_millis: u64,
+    /// Expose individual table UUID series; disabled to bound default cardinality.
+    #[serde(default)]
+    pub per_table_metrics: bool,
+    /// Maximum number of tables with individual series (1 through 100,000).
+    #[serde(default = "default_max_table_metrics")]
+    pub max_table_metrics: usize,
+}
+
+const fn default_max_table_metrics() -> usize {
+    1000
 }
 
 impl Default for ObservabilitySettings {
@@ -1317,6 +1330,9 @@ impl Default for ObservabilitySettings {
             metrics_bind: None,
             ledger_refresh_seconds: default_ledger_refresh_seconds(),
             ledger_query_timeout_millis: default_ledger_query_timeout_millis(),
+            health_query_timeout_millis: default_ledger_query_timeout_millis(),
+            per_table_metrics: false,
+            max_table_metrics: default_max_table_metrics(),
         }
     }
 }
@@ -1333,14 +1349,25 @@ impl ObservabilitySettings {
                 "observability.metrics_bind must not be empty".into(),
             ));
         }
-        if self.ledger_refresh_seconds == 0 || self.ledger_query_timeout_millis == 0 {
+        if self.ledger_refresh_seconds == 0
+            || self.ledger_query_timeout_millis == 0
+            || self.health_query_timeout_millis == 0
+        {
             return Err(ConfigError::Invalid(
-                "observability ledger refresh and query timeout must be positive".into(),
+                "observability refresh and query timeouts must be positive".into(),
+            ));
+        }
+        if !(1..=100_000).contains(&self.max_table_metrics) {
+            return Err(ConfigError::Invalid(
+                "observability.max_table_metrics must be between 1 and 100000".into(),
             ));
         }
         Ok(crate::observability::MetricsConfig {
             refresh: Duration::from_secs(self.ledger_refresh_seconds),
             query_timeout: Duration::from_millis(self.ledger_query_timeout_millis),
+            health_query_timeout: Duration::from_millis(self.health_query_timeout_millis),
+            per_table_metrics: self.per_table_metrics,
+            max_table_metrics: self.max_table_metrics,
         })
     }
 }
@@ -1778,10 +1805,19 @@ mod tests {
         let mut value = minimal();
         value["observability"] = serde_json::json!({ "metrics_bind": "127.0.0.1:9464" });
         assert!(parse(value).is_ok());
+        let mut value = minimal();
+        value["observability"] =
+            serde_json::json!({"per_table_metrics": true, "max_table_metrics": 17});
+        let metrics = parse(value).unwrap().observability.metrics().unwrap();
+        assert!(metrics.per_table_metrics);
+        assert_eq!(metrics.max_table_metrics, 17);
         for invalid in [
             serde_json::json!({ "metrics_bind": "" }),
             serde_json::json!({ "ledger_refresh_seconds": 0 }),
             serde_json::json!({ "ledger_query_timeout_millis": 0 }),
+            serde_json::json!({ "health_query_timeout_millis": 0 }),
+            serde_json::json!({ "max_table_metrics": 0 }),
+            serde_json::json!({ "max_table_metrics": 100_001 }),
         ] {
             let mut value = minimal();
             value["observability"] = invalid;

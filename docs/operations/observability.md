@@ -1,7 +1,8 @@
 # Observability
 
 BS-020.T2 adds metrics, a readiness probe, structured logs, and a worker
-health view. The decision is [ADR 0044](../adr/0044-observability-baseline.md).
+health view. The decision is [ADR
+0044](../adr/0044-observability-baseline.md).
 
 ## Probes
 
@@ -24,7 +25,10 @@ default.
 "observability": {
   "metrics_bind": "0.0.0.0:9464",
   "ledger_refresh_seconds": 15,
-  "ledger_query_timeout_millis": 5000
+  "ledger_query_timeout_millis": 5000,
+  "health_query_timeout_millis": 5000,
+  "per_table_metrics": false,
+  "max_table_metrics": 1000
 }
 ```
 
@@ -63,8 +67,65 @@ age; a failed read is retried after the refresh interval.
 | `bergsmith_worker_rpc_duration_seconds{method,code}` | histogram | Worker RPC latency on this coordinator, by method and gRPC code; resets on restart |
 
 Labels are only states, stable reason codes, dispositions, RPC method names,
-and gRPC codes; no credential, URL, or free-form text becomes a label.
-`RequestTask` is a long poll, so its latency includes waiting for work.
+and gRPC codes, plus connection UUIDs and opt-in table UUIDs; no credential,
+URL, or free-form text becomes a label. `RequestTask` is a long poll, so its
+latency includes waiting for work.
+
+### Health and table statistics
+
+BS-030.T1 ([ADR 0065](../adr/0065-bounded-health-and-statistics-metrics.md))
+adds an independently cached transaction with the following gauges. Health is
+re-evaluated at database time on every refresh, using the API's worst enabled
+policy and last metadata confirmation. No catalog or storage calls occur.
+
+| Metric | Labels | Meaning |
+|---|---|---|
+| `bergsmith_health_metrics_up` | none | Whether the last health/statistics refresh succeeded |
+| `bergsmith_health_metrics_snapshot_age_seconds` | none | Age of the health/statistics values |
+| `bergsmith_tables_health` | `state` | Registered canonical tables by `healthy`, `warning`, `critical`, or `unassessed` |
+| `bergsmith_connection_tables_health` | `connection_id`, `state` | Distinct tables named by each connection, by health |
+| `bergsmith_statistics_<counter>` | none | Sum over newest complete samples of assessed tables |
+| `bergsmith_connection_statistics_<counter>` | `connection_id` | Same sum over distinct tables named by the connection |
+| `bergsmith_table_health` | `table_id` | Opt-in state: healthy=0, warning=1, critical=2, unassessed=3 |
+| `bergsmith_table_statistics_<counter>` | `table_id` | Opt-in newest complete table counters; absent when unassessed |
+| `bergsmith_table_statistics_confirmed_timestamp_seconds` | `table_id` | Opt-in last confirmation as Unix seconds; absent without a sample |
+| `bergsmith_table_metrics_omitted` | none | Tables excluded by the individual-series cap; zero when disabled |
+
+`<counter>` is one of `data_files`, `data_bytes`, `delete_files`,
+`delete_bytes`, `records`, `manifests`, or `snapshots`. These are logical
+metadata sample totals, not physical storage usage. Samples can have different
+ages. Missing, legacy, or unusable evidence is unassessed; its counters do not
+contribute to sums. Check unassessed counts before interpreting totals as
+complete. Empty connections emit zeros. Disabled connections remain included.
+
+Multiple aliases of one table in a connection count once. A table shared by
+two connections counts in both; connection totals must not be summed to infer
+global totals. Identities without aliases are unregistered and excluded from
+all health/statistics metrics, even while historical samples remain.
+
+Individual-table series are off by default. Enable `per_table_metrics` only
+when needed. `max_table_metrics` (default 1,000, valid 1–100,000) limits them
+to the lowest canonical table UUIDs, without limiting aggregate coverage. Each
+selected table adds at most nine series. Inventory changes can select
+different UUIDs and therefore create historical series churn. Default new
+cardinality is eleven series per connection plus fourteen global series. The
+listener exposes installation-wide data; restrict its network access.
+
+Health refreshes have an independent statement and whole-scan deadline,
+`health_query_timeout_millis` (default 5,000; must be positive). Ledger and
+health caches share the refresh interval but can describe different database
+instants. Each scrape starts both refreshes concurrently. A failed health
+refresh keeps its previous complete values, sets `bergsmith_health_metrics_up`
+to zero, and leaves ledger refreshes independent. Alert on that signal and
+`bergsmith_health_metrics_snapshot_age_seconds` as well as health: retained
+values cannot represent new freshness transitions. Ledger failures retain
+their own snapshot and set `bergsmith_ledger_up` to zero. Neither component
+exposes partial refresh results.
+
+Registered identities are paged by organization and table UUID. Each page
+batches reads per organization; the individual-series cap still selects the
+lowest table UUIDs globally. Unusable-sample and policy-decoding diagnostics
+are logged at debug level to avoid recurring per-table warnings.
 
 Suggested alerts:
 
@@ -74,14 +135,15 @@ Suggested alerts:
   `bergsmith_worker_sessions{status="live"}` is zero.
 - `bergsmith_schedule_lag_seconds` above a few scheduler intervals.
 - `bergsmith_ledger_up == 0`.
+- `bergsmith_health_metrics_up == 0`.
 
 ## Logs and traces
 
 Both binaries log through `tracing`. `RUST_LOG` filters (default `info`), and
 `BERGSMITH_LOG_FORMAT` selects `text` (default) or `json`. A JSON line carries
 the event fields, the current span, and its parent spans; an unknown format
-stops the process at startup. Spans name `job_id` for each job the planner
-or publisher handles and the `method` of each worker RPC. Spans are the trace
+stops the process at startup. Spans name `job_id` for each job the planner or
+publisher handles and the `method` of each worker RPC. Spans are the trace
 baseline; there is no OpenTelemetry exporter yet. Credentials and tokens never
 appear in fields.
 

@@ -92,15 +92,29 @@ pub async fn ledger_snapshot(
         .execute(&mut *tx)
         .await?;
 
-    let mut snapshot = LedgerSnapshot::default();
-    jobs(&mut tx, &mut snapshot).await?;
-    tasks_and_attempts(&mut tx, &mut snapshot).await?;
-    failures(&mut tx, &mut snapshot).await?;
-    work(&mut tx, &mut snapshot).await?;
-    publications(&mut tx, &mut snapshot).await?;
-    schedules(&mut tx, &mut snapshot).await?;
-    sessions(&mut tx, &mut snapshot).await?;
+    let snapshot = read_ledger(&mut tx).await?;
     tx.commit().await?;
+    Ok(snapshot)
+}
+
+/// Reads the metric aggregates using the caller's transaction and timeout.
+///
+/// The caller must establish a read-only repeatable-read transaction and set
+/// a statement timeout before calling. This permits other ledger-derived
+/// metrics to share the same database instant.
+///
+/// # Errors
+///
+/// [`PersistenceError::Database`] when a query fails.
+pub async fn read_ledger(conn: &mut PgConnection) -> Result<LedgerSnapshot, PersistenceError> {
+    let mut snapshot = LedgerSnapshot::default();
+    jobs(conn, &mut snapshot).await?;
+    tasks_and_attempts(conn, &mut snapshot).await?;
+    failures(conn, &mut snapshot).await?;
+    work(conn, &mut snapshot).await?;
+    publications(conn, &mut snapshot).await?;
+    schedules(conn, &mut snapshot).await?;
+    sessions(conn, &mut snapshot).await?;
     Ok(snapshot)
 }
 
@@ -281,4 +295,65 @@ async fn sessions(
     .await?;
     snapshot.worker_sessions = sessions.into_iter().collect();
     Ok(())
+}
+
+/// One canonical table and the distinct catalog connections that name it.
+#[derive(Debug, sqlx::FromRow)]
+pub struct InventoryTable {
+    /// Owning organization.
+    pub organization_id: uuid::Uuid,
+    /// Canonical table identity.
+    pub id: uuid::Uuid,
+    /// Connections, deduplicated across aliases and ordered by identifier.
+    pub connections: Vec<uuid::Uuid>,
+}
+
+/// Reads up to 256 registered identities in organization, table UUID order.
+///
+/// The cursor is exclusive. Identities without aliases are unregistered and
+/// excluded, even if historical samples remain. Multiple aliases in one
+/// connection contribute only once to that connection's aggregates.
+///
+/// # Errors
+///
+/// [`PersistenceError::Database`] when the query fails.
+pub async fn inventory_page(
+    conn: &mut PgConnection,
+    after: Option<(uuid::Uuid, uuid::Uuid)>,
+) -> Result<Vec<InventoryTable>, PersistenceError> {
+    let mut query = sqlx::QueryBuilder::new(
+        "SELECT t.organization_id, t.id,
+                ARRAY(SELECT DISTINCT a.catalog_connection_id FROM table_aliases a
+                      WHERE a.organization_id = t.organization_id AND a.table_identity_id = t.id
+                      ORDER BY a.catalog_connection_id) AS connections
+         FROM table_identities t
+         WHERE EXISTS (SELECT 1 FROM table_aliases registered
+                       WHERE registered.organization_id = t.organization_id
+                         AND registered.table_identity_id = t.id)",
+    );
+    // Keep the cursor as an index range condition even with a generic prepared
+    // plan; a nullable OR predicate can rescan earlier pages on every call.
+    if let Some((organization, table)) = after {
+        query
+            .push(" AND (t.organization_id, t.id) > (")
+            .push_bind(organization)
+            .push(", ")
+            .push_bind(table)
+            .push(")");
+    }
+    query.push(" ORDER BY t.organization_id, t.id LIMIT 256");
+    Ok(query.build_query_as().fetch_all(conn).await?)
+}
+
+/// Lists connection identifiers, including connections with no inventoried tables.
+///
+/// # Errors
+///
+/// [`PersistenceError::Database`] when the query fails.
+pub async fn connection_ids(conn: &mut PgConnection) -> Result<Vec<uuid::Uuid>, PersistenceError> {
+    Ok(
+        sqlx::query_scalar("SELECT id FROM catalog_connections ORDER BY id")
+            .fetch_all(conn)
+            .await?,
+    )
 }

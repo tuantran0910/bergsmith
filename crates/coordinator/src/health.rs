@@ -199,7 +199,7 @@ pub async fn assess(
 /// replaces it with a complete observation on its next pass. The worst
 /// evaluation across the sets wins, and the defaults apply when the table has
 /// no enabled policy.
-fn assess_table(
+pub(crate) fn assess_table(
     table: TableId,
     stored: &StoredTableSample,
     checked: Option<DateTime<Utc>>,
@@ -214,7 +214,7 @@ fn assess_table(
     let sample = match sample_model(stored) {
         Ok(sample) => sample,
         Err(error) => {
-            tracing::warn!(
+            tracing::debug!(
                 table_id = %table,
                 error = %error,
                 "health sample cannot be presented; reporting the table unassessed"
@@ -227,7 +227,7 @@ fn assess_table(
         let thresholds = match set.thresholds() {
             Ok(thresholds) => thresholds,
             Err(error) => {
-                tracing::warn!(
+                tracing::debug!(
                     table_id = %table,
                     policy_id = %set.policy_id,
                     error = %error,
@@ -258,7 +258,7 @@ fn assess_table(
                     ));
                 }
             }
-            Err(error) => tracing::warn!(
+            Err(error) => tracing::debug!(
                 table_id = %table,
                 policy_id = %set.policy_id,
                 error = %error,
@@ -276,7 +276,7 @@ fn assess_table(
         )
         .map(|health| (health, ThresholdProvenance::Defaults))
         .map_err(|error| {
-            tracing::warn!(
+            tracing::debug!(
                 table_id = %table,
                 error = %error,
                 "health defaults cannot be evaluated; reporting the table unassessed"
@@ -351,6 +351,65 @@ mod tests {
         thresholds: &HealthThresholds,
     ) -> schedules::TableThresholds {
         schedules::TableThresholds::new(table(), policy, name.to_owned(), thresholds)
+    }
+
+    #[test]
+    fn repeated_unusable_samples_and_thresholds_log_only_debug_diagnostics() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        use tracing_subscriber::prelude::*;
+        #[derive(Clone)]
+        struct Events {
+            warnings: Arc<AtomicUsize>,
+            debug: Arc<AtomicUsize>,
+        }
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Events {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                match *event.metadata().level() {
+                    tracing::Level::WARN => {
+                        self.warnings.fetch_add(1, Ordering::Relaxed);
+                    }
+                    tracing::Level::DEBUG => {
+                        self.debug.fetch_add(1, Ordering::Relaxed);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let events = Events {
+            warnings: Arc::default(),
+            debug: Arc::default(),
+        };
+        let subscriber = tracing_subscriber::registry().with(events.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            let mut corrupt = stored(at());
+            corrupt.size_histogram = json!({"not": "an array"});
+            let invalid = HealthThresholds {
+                small_files: Thresholds {
+                    warning: 0,
+                    critical: 0,
+                },
+                ..HealthThresholds::default()
+            };
+            for _ in 0..3 {
+                assess_table(table(), &corrupt, Some(at()), vec![], at());
+                assess_table(
+                    table(),
+                    &stored(at()),
+                    Some(at()),
+                    vec![set(PolicyId::generate(), "bad", &invalid)],
+                    at(),
+                );
+            }
+        });
+        assert_eq!(events.warnings.load(Ordering::Relaxed), 0);
+        assert_eq!(events.debug.load(Ordering::Relaxed), 6);
     }
 
     #[test]
