@@ -284,6 +284,7 @@ impl Browser {
                 notifications,
                 expiration_ref_safety,
                 orphans_enabled,
+                metadata_rewrites: metadata_rewrites(orphans_enabled),
             }),
             cookie: format!("{}={}", config.cookie_name, issued.token.expose()),
             csrf: issued.csrf.expose().into(),
@@ -338,7 +339,30 @@ fn router_with(pool: &PgPool, config: SessionConfig) -> Router {
         notifications: notifications(),
         expiration_ref_safety: true,
         orphans_enabled: true,
+        metadata_rewrites: metadata_rewrites(true),
     })
+}
+
+/// Every metadata rewrite enabled, or none. The harness ties them to the
+/// orphan switch: `without_orphans` disables every operator-enabled
+/// maintenance operation.
+fn metadata_rewrites(
+    enabled: bool,
+) -> bergsmith_coordinator::runtime::config::MetadataRewriteConfig {
+    use bergsmith_coordinator::runtime::config::{
+        DeleteSettings, ManifestSettings, MetadataRewriteConfig,
+    };
+    MetadataRewriteConfig::new(
+        &ManifestSettings {
+            rewrite_enabled: enabled,
+            ..ManifestSettings::default()
+        },
+        &DeleteSettings {
+            dangling_removal_enabled: enabled,
+            ..DeleteSettings::default()
+        },
+    )
+    .unwrap()
 }
 
 async fn raw(router: &Router, method: &str, uri: &str) -> (StatusCode, HeaderMap, Value) {
@@ -4764,4 +4788,82 @@ async fn canceling_a_finished_cleanup_reports_it_ended(pool: PgPool) {
         "cleanup never published, so it cannot be too late for a commit"
     );
     assert_eq!(body["state"], "Succeeded");
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn metadata_rewrites_are_refused_when_disabled(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    let browser = Browser::without_orphans(&pool, &tenant, tenant.user, "alice").await;
+    for (operation, reason) in [
+        ("rewrite_manifests", "manifest_rewrite_unavailable"),
+        (
+            "remove_dangling_deletes",
+            "dangling_delete_removal_unavailable",
+        ),
+    ] {
+        let (status, body) = browser
+            .request(
+                "POST",
+                "/api/v1/jobs",
+                Some(json!({ "table_id": tenant.table, "operation": operation })),
+                Some(operation),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["reason"], reason);
+    }
+    let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE organization_id = $1")
+        .bind(tenant.organization.as_uuid())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(jobs, 0, "a refused submission creates no job");
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn metadata_rewrites_wait_for_an_unfinished_compaction(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    let compaction = support::job(&mut conn, &tenant).await;
+    support::force_job_state(&mut conn, compaction, JobState::Running).await;
+    drop(conn);
+    let admin = Browser::new(&pool, &tenant, tenant.user, "alice").await;
+    let submit = |operation: &'static str, key: &'static str| {
+        admin.request(
+            "POST",
+            "/api/v1/jobs",
+            Some(json!({ "table_id": tenant.table, "operation": operation })),
+            Some(key),
+        )
+    };
+
+    for operation in ["rewrite_manifests", "remove_dangling_deletes"] {
+        let (status, body) = submit(operation, operation).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["reason"], "compaction_in_progress");
+    }
+    // Other operations do not wait.
+    let (status, body) = submit("expire_snapshots", "expire").await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+
+    let mut conn = pool.acquire().await.unwrap();
+    support::force_job_state(&mut conn, compaction, JobState::Succeeded).await;
+    drop(conn);
+    for operation in ["rewrite_manifests", "remove_dangling_deletes"] {
+        let key: &'static str = if operation == "rewrite_manifests" {
+            "manifests-after"
+        } else {
+            "deletes-after"
+        };
+        let (status, accepted) = submit(operation, key).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");
+        let id = accepted["job_id"].as_str().unwrap();
+        let (status, job) = admin
+            .request("GET", &format!("/api/v1/jobs/{id}"), None, None)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{job}");
+        assert_eq!(job["operation"], operation);
+    }
 }

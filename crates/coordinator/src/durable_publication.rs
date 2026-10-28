@@ -7,19 +7,21 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use bergsmith_catalog::{
-    Baseline, CatalogConnection, CommitOutcome, CommitRequest, ExpectedSnapshot, PreparedCommit,
-    ProposalError, RewriteProposal, SnapshotEvidence, TableName, new_snapshot_id,
+    Baseline, CatalogConnection, CommitOutcome, CommitRequest, ExpectedSnapshot,
+    ManifestRewriteProposal, PreparedCommit, ProposalError, RewriteProposal, SnapshotEvidence,
+    TableName, new_snapshot_id,
 };
 use bergsmith_common::digest::Sha256Digest;
 use bergsmith_common::ids::{CatalogConnectionId, JobId, PublicationId};
 use bergsmith_common::job::{JobOperation, JobState};
+use bergsmith_maintenance::metadata_plan::{MetadataPlanDocument, MetadataWork};
 use bergsmith_maintenance::{ExpirationPlanDocument, PlanningBaseline};
 use bergsmith_persistence::cancellation::SendAuthorization;
 use bergsmith_persistence::jobs::Job;
 use bergsmith_persistence::{PersistenceError, jobs, publications};
 use bergsmith_storage::{Location, ObjectStore};
 use iceberg::TableUpdate;
-use iceberg::spec::{DataContentType, FormatVersion, ManifestList};
+use iceberg::spec::{DataContentType, FormatVersion, ManifestContentType, ManifestList};
 
 use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
@@ -207,6 +209,32 @@ pub async fn prepare_publication_with(
         config.operation_timeout,
     )
     .await?;
+    persist_snapshot_intent(
+        conn,
+        job,
+        epoch,
+        catalog_connection_id,
+        &prepared,
+        plan.to_value().map_err(ResultError::from)?,
+        &receipts,
+    )
+    .await
+}
+
+/// Persists the intent of a commit that adds one snapshot on the baseline
+/// `main` and enters `Committing`.
+///
+/// A deployment policy disabled before the intent exists proves
+/// non-publication, so it fails the job instead of leaving it ready.
+async fn persist_snapshot_intent(
+    conn: &mut PgConnection,
+    job: &Job,
+    epoch: i64,
+    catalog_connection_id: CatalogConnectionId,
+    prepared: &PreparedCommit,
+    plan: serde_json::Value,
+    receipts: &[publications::AcceptedReceipt],
+) -> Result<Job, DurablePublicationError> {
     let expected = &prepared.expected;
     let evidence = Evidence {
         catalog_connection_id,
@@ -217,7 +245,7 @@ pub async fn prepare_publication_with(
         parent_snapshot_id: expected.parent_snapshot_id,
         manifest_list: expected.manifest_list.clone(),
         proposal_hash: expected.proposal_hash.to_hex(),
-        plan: plan.to_value().map_err(ResultError::from)?,
+        plan,
         receipts: receipts
             .iter()
             .map(|r| (r.attempt_id.to_string(), r.content_hash.clone()))
@@ -231,7 +259,7 @@ pub async fn prepare_publication_with(
         request_body: prepared.request.body().to_vec(),
         request_hash: prepared.request.sha256().to_hex(),
     };
-    match publications::create_intent(conn, &intent, job.state_revision, epoch, &receipts).await {
+    match publications::create_intent(conn, &intent, job.state_revision, epoch, receipts).await {
         Ok(committing) => Ok(committing),
         Err(PersistenceError::MaintenancePolicyDisabled { .. }) => {
             // No intent or send exists, so the denial proves non-publication.
@@ -261,6 +289,174 @@ pub async fn prepare_publication_with(
         }
         Err(error) => Err(error.into()),
     }
+}
+
+/// Prepares a manifest rewrite or dangling-delete removal (ADR 0063) and
+/// persists its intent, then enters `Committing`.
+///
+/// The original baseline is required, exactly as for a compaction: the stored
+/// plan's baseline must equal both `baseline` and a fresh catalog load. The
+/// proposal (reading the baseline manifests and writing the new ones) runs
+/// under one deadline, `limit`, because iceberg-rust's rewrite action is one
+/// step. The intent has the compaction shape with no receipts, so send,
+/// snapshot-evidence recovery, and attestation are shared.
+///
+/// # Errors
+///
+/// Returns baseline drift, an inconsistent plan, a missed deadline,
+/// cancellation, a stale revision or leadership, or a table barrier conflict
+/// without authorizing a commit.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is an independent durable or external input to one atomic preparation"
+)]
+pub async fn prepare_metadata_rewrite(
+    conn: &mut PgConnection,
+    job: &Job,
+    epoch: i64,
+    catalog_connection_id: CatalogConnectionId,
+    catalog: &CatalogConnection,
+    baseline: &Baseline,
+    store: &ObjectStore,
+    plan: &MetadataPlanDocument,
+    limit: Duration,
+) -> Result<Job, DurablePublicationError> {
+    publications::validate_destination(
+        conn,
+        job.id,
+        &bergsmith_persistence::tables::TableAlias {
+            connection_id: catalog_connection_id,
+            namespace: baseline.name().namespace.clone(),
+            name: baseline.name().name.clone(),
+        },
+        baseline.metadata().uuid(),
+    )
+    .await?;
+    let captured = PlanningBaseline::capture(baseline.metadata(), baseline.metadata_location())
+        .map_err(ResultError::from)?;
+    if captured.as_ref() != Some(&plan.baseline) || plan.job_id != job.id {
+        return Err(DurablePublicationError::BaselineChanged(job.id));
+    }
+    let current = catalog.load_table(baseline.name(), false).await?;
+    if !baseline.changes(&current).is_empty() {
+        return Err(DurablePublicationError::BaselineChanged(job.id));
+    }
+    let prepared = bounded(limit, metadata_proposal(plan, job.id, baseline, store)).await?;
+    persist_snapshot_intent(
+        conn,
+        job,
+        epoch,
+        catalog_connection_id,
+        &prepared,
+        plan.to_value().map_err(ResultError::from)?,
+        &[],
+    )
+    .await
+}
+
+/// Builds the commit a metadata plan describes.
+async fn metadata_proposal(
+    plan: &MetadataPlanDocument,
+    job_id: JobId,
+    baseline: &Baseline,
+    store: &ObjectStore,
+) -> Result<PreparedCommit, DurablePublicationError> {
+    let publication_id = PublicationId::generate();
+    let snapshot_id = new_snapshot_id(baseline.metadata());
+    match &plan.work {
+        MetadataWork::RewriteManifests {
+            target_size_bytes,
+            manifests,
+            ..
+        } => Ok(ManifestRewriteProposal {
+            job_id,
+            publication_id,
+            snapshot_id,
+            manifests: manifests.iter().map(|m| m.path.clone()).collect(),
+            target_size_bytes: *target_size_bytes,
+        }
+        .prepare(baseline)
+        .await?),
+        MetadataWork::RemoveDanglingDeletes { deletes, .. } => {
+            let planned: BTreeSet<&str> = deletes.iter().map(|d| d.path.as_str()).collect();
+            let snapshot = baseline
+                .metadata()
+                .snapshot_by_id(plan.baseline.snapshot_id())
+                .ok_or(DurablePublicationError::InvalidIntent(job_id))?;
+            let bytes = store
+                .file_io()
+                .new_input(snapshot.manifest_list())?
+                .read()
+                .await?;
+            let list = ManifestList::parse_with_version(&bytes, FormatVersion::V2)?;
+            let mut removed = Vec::new();
+            for manifest in list.entries() {
+                if manifest.content != ManifestContentType::Deletes {
+                    continue;
+                }
+                let loaded = manifest.load_manifest(store.file_io()).await?;
+                for entry in loaded.entries().iter().filter(|e| e.is_alive()) {
+                    let file = entry.data_file();
+                    if file.content_type() != DataContentType::Data
+                        && planned.contains(file.file_path())
+                    {
+                        removed.push(file.clone());
+                    }
+                }
+            }
+            if removed.len() != planned.len() {
+                return Err(DurablePublicationError::InvalidIntent(job_id));
+            }
+            Ok(RewriteProposal {
+                job_id,
+                publication_id,
+                snapshot_id,
+                removed,
+                added: Vec::new(),
+            }
+            .prepare(baseline)
+            .await?)
+        }
+    }
+}
+
+/// Reads and verifies one job's immutable metadata plan.
+///
+/// # Errors
+///
+/// [`DurablePublicationError::InvalidIntent`] when the row is missing, does
+/// not decode, belongs to another job, or does not match its hash.
+pub async fn load_metadata_plan(
+    conn: &mut PgConnection,
+    job_id: JobId,
+) -> Result<MetadataPlanDocument, DurablePublicationError> {
+    let Some((content, hash)) =
+        bergsmith_persistence::metadata_plans::metadata_plan(conn, job_id).await?
+    else {
+        return Err(DurablePublicationError::InvalidIntent(job_id));
+    };
+    let plan = MetadataPlanDocument::from_persisted(content)
+        .map_err(|_| DurablePublicationError::InvalidIntent(job_id))?;
+    let matches = plan
+        .content_hash()
+        .map_err(|_| DurablePublicationError::InvalidIntent(job_id))?
+        .to_hex()
+        == hash;
+    if !matches || plan.job_id != job_id {
+        return Err(DurablePublicationError::InvalidIntent(job_id));
+    }
+    Ok(plan)
+}
+
+/// The baseline a snapshot-adding job was planned from.
+async fn planned_baseline(
+    conn: &mut PgConnection,
+    job: &Job,
+) -> Result<PlanningBaseline, DurablePublicationError> {
+    if job.operation.is_metadata_rewrite() {
+        return Ok(load_metadata_plan(conn, job.id).await?.baseline);
+    }
+    Ok(results::plan(conn, job.id).await?.baseline().clone())
 }
 
 /// Prepares and persists a metadata-only expiration intent, then enters `Committing`.
@@ -624,11 +820,11 @@ pub async fn publish(
     }
     // Recheck the original baseline even after a restart between intent creation
     // and authorization; standard requirements cannot assert metadata location/properties.
-    let plan = results::plan(conn, job.id).await?;
+    let planned = planned_baseline(conn, &current).await?;
     let loaded = catalog.load_table(prepared.request.table(), false).await?;
     let observed = PlanningBaseline::capture(&loaded.metadata, loaded.metadata_location.as_deref())
         .map_err(ResultError::from)?;
-    if observed.as_ref() != Some(plan.baseline()) {
+    if observed.as_ref() != Some(&planned) {
         return Ok(publications::resolve(
             conn,
             current.id,

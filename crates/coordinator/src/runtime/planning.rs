@@ -17,6 +17,10 @@ use std::time::Duration;
 
 use bergsmith_common::ids::{JobId, PlanId};
 use bergsmith_common::job::{JobOperation, JobState};
+use bergsmith_maintenance::deadline::within;
+use bergsmith_maintenance::metadata_plan::{
+    MetadataPlanDocument, MetadataPlanError, select_dangling_deletes, select_manifests,
+};
 use bergsmith_maintenance::orphans::{
     OrphanBaseline, OrphanError, OrphanPlanDocument, OrphanPolicy, OrphanStep, Reachable,
     select_orphans,
@@ -26,6 +30,7 @@ use bergsmith_maintenance::{
     PlanInput, PlanOutcome, PlannedTask, Planner, PlannerConfig, plan_expiration,
 };
 use bergsmith_persistence::expirations::{self, NewExpirationPlan};
+use bergsmith_persistence::metadata_plans::{self, NewMetadataPlan};
 use bergsmith_persistence::orphans::{self as orphan_plans, NewOrphanPlan};
 use bergsmith_persistence::scheduling::RetryPolicy;
 use bergsmith_persistence::{PersistenceError, jobs, schedules};
@@ -38,7 +43,7 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::runtime::catalogs::{AccessError, RuntimeCatalogs, TableBinding};
-use crate::runtime::config::{OrphanConfig, TaskSettings};
+use crate::runtime::config::{MetadataRewriteConfig, OrphanConfig, TaskSettings};
 use crate::scheduling::{Scheduler, SchedulingError};
 
 /// The execution budget of the connection a job is planned through.
@@ -96,6 +101,9 @@ enum PlannedWork {
     Expiration,
     /// An orphan-file plan; the job is already `ReadyToCommit`.
     OrphanCleanup,
+    /// A manifest-rewrite or dangling-delete plan; the job is already
+    /// `ReadyToCommit`.
+    MetadataRewrite,
     /// No work.
     NoOp(bergsmith_maintenance::NoOpReason),
     /// The MVP cannot maintain the table.
@@ -115,6 +123,8 @@ pub struct PlannerService {
     expiration_ref_safety: bool,
     /// Orphan-file cleanup limits and enablement.
     orphan: OrphanConfig,
+    /// Manifest-rewrite and dangling-delete limits and enablement.
+    metadata: MetadataRewriteConfig,
     page: i64,
     retry_after: tokio::sync::Mutex<BTreeMap<JobId, RetryEntry>>,
     planning_cursor: std::sync::Mutex<Uuid>,
@@ -162,11 +172,20 @@ impl PlannerService {
             retry,
             expiration_ref_safety,
             orphan,
+            metadata: MetadataRewriteConfig::default(),
             page: DEFAULT_PLANNING_PAGE,
             retry_after: tokio::sync::Mutex::new(BTreeMap::new()),
             planning_cursor: std::sync::Mutex::new(Uuid::nil()),
             queued_cursor: std::sync::Mutex::new(Uuid::nil()),
         })
+    }
+
+    /// Enables manifest rewrite and dangling-delete removal as `metadata`
+    /// allows; both are disabled otherwise.
+    #[must_use]
+    pub const fn with_metadata_rewrites(mut self, metadata: MetadataRewriteConfig) -> Self {
+        self.metadata = metadata;
+        self
     }
 
     /// Runs one pass immediately and then at `interval` until shutdown.
@@ -256,7 +275,9 @@ impl PlannerService {
                                 }
                             }
                         }
-                        PlannedWork::Expiration | PlannedWork::OrphanCleanup => {
+                        PlannedWork::Expiration
+                        | PlannedWork::OrphanCleanup
+                        | PlannedWork::MetadataRewrite => {
                             summary.planned += 1;
                         }
                         PlannedWork::NoOp(reason) => {
@@ -362,6 +383,9 @@ impl PlannerService {
         if job.operation == JobOperation::RemoveOrphanFiles {
             return self.plan_orphans(job).await;
         }
+        if !self.metadata.allows(job.operation) {
+            return Err(PlanningError::MetadataRewriteUnavailable(job.operation));
+        }
         let binding = self
             .catalogs
             .binding_for_job(job)
@@ -369,6 +393,9 @@ impl PlannerService {
             .map_err(PlanningError::Access)?;
         if job.operation == JobOperation::ExpireSnapshots {
             return self.plan_expiration(job, &binding).await;
+        }
+        if job.operation.is_metadata_rewrite() {
+            return self.plan_metadata(job, &binding).await;
         }
         let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
         let policy = schedules::policy_for_job(&mut conn, job.id).await?;
@@ -635,6 +662,95 @@ impl PlannerService {
         Ok((PlannedWork::OrphanCleanup, recorded))
     }
 
+    /// Plans a manifest rewrite or a dangling-delete removal (ADR 0063).
+    ///
+    /// Selection reads the baseline `main` snapshot's manifest list (and, for
+    /// dangling deletes, its manifests) under the operation's deadline. An
+    /// empty selection ends the job `NoOp`.
+    async fn plan_metadata(
+        &self,
+        job: &jobs::Job,
+        binding: &TableBinding,
+    ) -> Result<(PlannedWork, jobs::Job), PlanningError> {
+        let metadata = &binding.loaded.metadata;
+        let Some(baseline) = bergsmith_maintenance::PlanningBaseline::capture(
+            metadata,
+            binding.loaded.metadata_location.as_deref(),
+        )
+        .map_err(PlanningError::Plan)?
+        else {
+            let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
+            let reason = bergsmith_maintenance::NoOpReason::NoSnapshot;
+            let recorded = self.record_noop(&mut conn, job, reason, binding).await?;
+            return Ok((PlannedWork::NoOp(reason), recorded));
+        };
+        let limit = self.metadata.operation_timeout(job.operation);
+        let file_io = binding.store.file_io();
+        let (work, empty) = if job.operation == JobOperation::RewriteManifests {
+            let selection = within(
+                limit,
+                select_manifests(
+                    metadata,
+                    &baseline,
+                    file_io,
+                    self.metadata.manifest_policy(),
+                ),
+            )
+            .await
+            .ok_or(PlanningError::MetadataTimedOut)??;
+            let reason = bergsmith_maintenance::NoOpReason::NoManifestsToRewrite;
+            let empty = selection.manifests.is_empty().then_some(reason);
+            (selection.into_work(), empty)
+        } else {
+            let selection = within(
+                limit,
+                select_dangling_deletes(
+                    metadata,
+                    &baseline,
+                    file_io,
+                    self.config.max_manifest_entries,
+                    self.metadata.max_removals(),
+                ),
+            )
+            .await
+            .ok_or(PlanningError::MetadataTimedOut)??;
+            let reason = bergsmith_maintenance::NoOpReason::NoDanglingDeletes;
+            let empty = selection.deletes.is_empty().then_some(reason);
+            (selection.into_work(), empty)
+        };
+        let mut conn = self.pool.acquire().await.map_err(PersistenceError::from)?;
+        if let Some(reason) = empty {
+            let recorded = self.record_noop(&mut conn, job, reason, binding).await?;
+            return Ok((PlannedWork::NoOp(reason), recorded));
+        }
+        let document = MetadataPlanDocument::new(job.id, PlanId::generate(), baseline, work)
+            .map_err(PlanningError::Plan)?;
+        let content = document.to_value().map_err(PlanningError::Plan)?;
+        let hash = document
+            .content_hash()
+            .map_err(PlanningError::Plan)?
+            .to_hex();
+        let recorded = metadata_plans::create_metadata_plan(
+            &mut conn,
+            &NewMetadataPlan {
+                id: document.plan_id,
+                job_id: job.id,
+                content: &content,
+                content_hash: &hash,
+            },
+            job.state_revision,
+            self.scheduler.epoch(),
+        )
+        .await
+        .map_err(|error| match error {
+            PersistenceError::RevisionConflict { .. } | PersistenceError::JobNotInState { .. } => {
+                PlanningError::Superseded
+            }
+            error => PlanningError::Persistence(error),
+        })?;
+        Ok((PlannedWork::MetadataRewrite, recorded))
+    }
+
     /// Records a metadata-only no-op inside the fenced planning transaction.
     async fn record_noop(
         &self,
@@ -830,6 +946,15 @@ pub enum PlanningError {
     /// The table's listing exceeds the configured bound.
     #[error("the table lists more objects than orphan cleanup may examine")]
     OrphanListingTooLarge,
+    /// A manifest-rewrite or dangling-delete selection failed.
+    #[error(transparent)]
+    MetadataPlan(#[from] MetadataPlanError),
+    /// The operation is disabled in this deployment.
+    #[error("{} is disabled", .0.api_name())]
+    MetadataRewriteUnavailable(JobOperation),
+    /// A metadata read missed its deadline.
+    #[error("metadata selection timed out")]
+    MetadataTimedOut,
     /// Recording the outcome failed.
     #[error(transparent)]
     Record(#[from] crate::planning::PlanningError),
@@ -846,8 +971,11 @@ impl PlanningError {
     #[must_use]
     pub fn is_transient(&self) -> bool {
         match self {
-            Self::Persistence(_) => true,
+            Self::Persistence(_) | Self::MetadataTimedOut => true,
             Self::Orphan(error) => error.is_transient(),
+            Self::MetadataPlan(error) => {
+                matches!(error, MetadataPlanError::Plan(PlanError::Iceberg(_)))
+            }
             // Only metadata I/O can succeed on a retry. Invalid selections,
             // duplicate files, missing sequences, oversized inventories, and
             // malformed locations/predicates are deterministic for the same
@@ -868,6 +996,7 @@ impl PlanningError {
             | Self::ExpirationRefSafetyUnavailable
             | Self::OrphanCleanupUnavailable
             | Self::OrphanListingTooLarge
+            | Self::MetadataRewriteUnavailable(_)
             | Self::Superseded => false,
         }
     }
@@ -886,13 +1015,24 @@ impl PlanningError {
     pub fn reason_code(&self) -> &'static str {
         match self {
             Self::Persistence(_) => "PlanningLedgerUnavailable",
-            Self::Plan(PlanError::InvalidConfig(_)) => "PlanningConfigurationInvalid",
-            Self::Plan(_) => "PlanningFailed",
+            Self::Plan(PlanError::InvalidConfig(_))
+            | Self::MetadataPlan(MetadataPlanError::InvalidBounds(_)) => {
+                "PlanningConfigurationInvalid"
+            }
+            Self::Plan(_) | Self::MetadataPlan(MetadataPlanError::Plan(_)) => "PlanningFailed",
             Self::Expiration(_) => "PlanningExpirationInvalid",
             Self::ExpirationRefSafetyUnavailable => "ExpirationRefSafetyUnavailable",
             Self::Orphan(error) => error.reason_code(),
             Self::OrphanCleanupUnavailable => "OrphanCleanupUnavailable",
             Self::OrphanListingTooLarge => "OrphanListingTooLarge",
+            Self::MetadataPlan(MetadataPlanError::FormatVersion { .. }) => {
+                "MetadataRewriteUnsupportedTable"
+            }
+            Self::MetadataRewriteUnavailable(JobOperation::RewriteManifests) => {
+                "ManifestRewriteUnavailable"
+            }
+            Self::MetadataRewriteUnavailable(_) => "DanglingDeleteRemovalUnavailable",
+            Self::MetadataTimedOut => "MetadataPlanningTimedOut",
             Self::Record(_) => "PlanningRecordFailed",
             Self::Access(error) => error.reason_code(),
             Self::Superseded => "PlanningSuperseded",

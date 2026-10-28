@@ -178,11 +178,7 @@ fn entry_document(entry: &MaintenanceEntry) -> Value {
     json!({
         "job_id": entry.job_id,
         "state": entry.state.as_str(),
-        "operation": match entry.operation {
-            bergsmith_common::job::JobOperation::Compact => "compact",
-            bergsmith_common::job::JobOperation::ExpireSnapshots => "expire_snapshots",
-            bergsmith_common::job::JobOperation::RemoveOrphanFiles => "remove_orphan_files",
-        },
+        "operation": entry.operation.api_name(),
         "created_at": stamp(entry.created_at),
         "updated_at": stamp(entry.updated_at),
         "elapsed_millis": counter(entry.elapsed_millis),

@@ -174,12 +174,13 @@ impl AssessmentState {
 
 /// Maps one finding to the maintenance action that resolves it.
 ///
-/// Only a whole-table compaction can run today. Delete pressure counts the
-/// physical bytes of retained delete files, and compaction applies applicable
-/// deletes but retains their descriptors (ADR 0020), so removing them needs
-/// BS-031's delete cleanup. Partition-targeted compaction, snapshot
-/// expiration, and manifest rewrite are advisory for the same reason; a stale
-/// sample resolves itself on the collector's interval.
+/// Only a whole-table compaction runs from a preview. Delete pressure counts
+/// the physical bytes of retained delete files, and compaction applies
+/// applicable deletes but retains their descriptors (ADR 0020); dangling-delete
+/// removal and manifest rewrite (ADR 0063) are separate, operator-enabled
+/// jobs, so their recommendations stay advisory. Partition-targeted compaction
+/// and snapshot expiration are advisory too; a stale sample resolves itself on
+/// the collector's interval.
 #[must_use]
 pub const fn recommend(kind: FindingKind) -> Recommendation {
     let (action, advisory) = match kind {
@@ -187,7 +188,7 @@ pub const fn recommend(kind: FindingKind) -> Recommendation {
         FindingKind::DeletePressure => (
             RecommendationAction::DeleteCleanup,
             Some(
-                "compaction applies applicable deletes but retains their files; removing retained delete files lands in BS-031",
+                "compaction applies applicable deletes but retains their files; dangling-delete removal drops the ones no live data file needs, when the deployment enables it",
             ),
         ),
         FindingKind::PartitionSkew => (
@@ -200,7 +201,7 @@ pub const fn recommend(kind: FindingKind) -> Recommendation {
         ),
         FindingKind::ManifestFragmentation => (
             RecommendationAction::ManifestRewrite,
-            Some("manifest rewrite is not implemented yet (BS-031)"),
+            Some("manifest rewrite runs from the table page when the deployment enables it"),
         ),
         FindingKind::StaleStatistics => (
             RecommendationAction::Resample,

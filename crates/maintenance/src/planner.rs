@@ -106,6 +106,10 @@ pub enum NoOpReason {
     NoExpiredSnapshots,
     /// No listed object is old, unreferenced, and outside Bergsmith's prefix.
     NoOrphanFiles,
+    /// No partition spec has two small data manifests to merge.
+    NoManifestsToRewrite,
+    /// Every live delete file applies to a live data file.
+    NoDanglingDeletes,
 }
 
 impl NoOpReason {
@@ -117,6 +121,8 @@ impl NoOpReason {
             Self::NoBeneficialWork => "no_beneficial_work",
             Self::NoExpiredSnapshots => "no_expired_snapshots",
             Self::NoOrphanFiles => "no_orphan_files",
+            Self::NoManifestsToRewrite => "no_manifests_to_rewrite",
+            Self::NoDanglingDeletes => "no_dangling_deletes",
         }
     }
 }

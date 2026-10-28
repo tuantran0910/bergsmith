@@ -74,6 +74,8 @@ pub struct ApiState {
     pub expiration_ref_safety: bool,
     /// Whether orphan-file cleanup may be submitted.
     pub orphans_enabled: bool,
+    /// Which metadata-only `main` rewrites may be submitted.
+    pub metadata_rewrites: crate::runtime::config::MetadataRewriteConfig,
 }
 
 /// Builds the `/api/v1` resource router, including its `OpenAPI` document.

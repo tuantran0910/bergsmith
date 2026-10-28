@@ -23,7 +23,7 @@
 //! it by path and key.
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::inventory::{DeleteEntry, DeleteKind, FileEntry};
 use crate::partition::{BoundSpec, PartitionKey, Specs};
@@ -90,6 +90,67 @@ impl<'a> DeleteIndex<'a> {
             })
             .map(|(delete, _)| *delete)
             .collect()
+    }
+}
+
+/// Deletes not yet shown to apply to any data file, scoped as in
+/// [`DeleteIndex`].
+///
+/// Each delete is tested only until it first applies, so classifying an
+/// inventory costs at most one test per pending delete in scope per data
+/// file, and nothing once every delete is accounted for.
+pub(crate) struct PendingDeletes<'a> {
+    global: Vec<&'a DeleteEntry>,
+    by_partition: BTreeMap<&'a PartitionKey, Vec<&'a DeleteEntry>>,
+    applied: BTreeSet<&'a str>,
+}
+
+impl<'a> PendingDeletes<'a> {
+    pub(crate) fn new(deletes: &'a [DeleteEntry], specs: &Specs) -> Self {
+        let index = DeleteIndex::new(deletes, specs);
+        Self {
+            global: index.global.into_iter().map(|(delete, _)| delete).collect(),
+            by_partition: index.by_partition,
+            applied: BTreeSet::new(),
+        }
+    }
+
+    /// Records the pending deletes that apply to `data`; returns how many
+    /// deletes it tested.
+    pub(crate) fn discharge(&mut self, data: &FileEntry) -> usize {
+        let applied = &mut self.applied;
+        let mut tested = self.global.len();
+        self.global.retain(|delete| {
+            let live = applies(delete, data);
+            if live {
+                applied.insert(delete.file.path.as_str());
+            }
+            !live
+        });
+        if let Some(local) = self.by_partition.get_mut(&data.partition) {
+            tested += local.len();
+            local.retain(|delete| {
+                let live = applies(delete, data);
+                if live {
+                    applied.insert(delete.file.path.as_str());
+                }
+                !live
+            });
+            if local.is_empty() {
+                self.by_partition.remove(&data.partition);
+            }
+        }
+        tested
+    }
+
+    /// Whether every delete has been shown to apply.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.global.is_empty() && self.by_partition.is_empty()
+    }
+
+    /// The paths of the deletes shown to apply to some data file.
+    pub(crate) fn into_applied(self) -> BTreeSet<&'a str> {
+        self.applied
     }
 }
 

@@ -859,7 +859,7 @@ export interface components {
         };
         ApiError: {
             /** @enum {string} */
-            reason: "authentication_required" | "csrf_rejected" | "invalid_request" | "resource_not_found" | "permission_denied" | "idempotency_key_reused" | "ledger_unavailable" | "method_not_allowed" | "request_too_large" | "internal_error" | "catalog_credential_unavailable" | "catalog_connection_invalid" | "storage_profile_unavailable" | "storage_unavailable" | "catalog_access_denied" | "catalog_unavailable" | "table_staged" | "job_not_terminal" | "job_already_succeeded" | "table_identity_changed" | "catalog_table_missing" | "inventory_too_large" | "table_metadata_inconsistent" | "preview_capacity_exhausted" | "catalog_unsupported" | "catalog_credentials_unavailable" | "catalog_request_rejected" | "event_stream_capacity_exhausted" | "invalid_policy_parameters" | "invalid_policy_operation" | "invalid_cron_expression" | "invalid_time_zone" | "invalid_maintenance_window" | "run_budget_below_target_file_size" | "invalid_health_thresholds" | "revision_conflict" | "service_identity_not_eligible" | "resource_already_exists" | "catalog_connection_disabled" | "catalog_connection_in_use" | "catalog_connection_changed" | "capability_check_capacity_exhausted" | "catalog_response_too_large" | "table_in_use" | "catalog_namespace_not_found" | "catalog_table_not_found" | "catalog_discovery_capacity_exhausted" | "registration_too_large" | "table_identity_conflict" | "catalog_namespace_mismatch" | "catalog_page_too_large" | "registration_incomplete" | "catalog_token_too_large" | "last_administrator" | "grant_already_exists" | "destination_not_allowed" | "signing_secret_unavailable" | "notification_delivery_failed" | "destination_url_invalid" | "destination_url_unavailable" | "notifications_secrets_dir_unconfigured" | "expiration_ref_safety_unavailable" | "orphan_cleanup_unavailable";
+            reason: "authentication_required" | "csrf_rejected" | "invalid_request" | "resource_not_found" | "permission_denied" | "idempotency_key_reused" | "ledger_unavailable" | "method_not_allowed" | "request_too_large" | "internal_error" | "catalog_credential_unavailable" | "catalog_connection_invalid" | "storage_profile_unavailable" | "storage_unavailable" | "catalog_access_denied" | "catalog_unavailable" | "table_staged" | "job_not_terminal" | "job_already_succeeded" | "table_identity_changed" | "catalog_table_missing" | "inventory_too_large" | "table_metadata_inconsistent" | "preview_capacity_exhausted" | "catalog_unsupported" | "catalog_credentials_unavailable" | "catalog_request_rejected" | "event_stream_capacity_exhausted" | "invalid_policy_parameters" | "invalid_policy_operation" | "invalid_cron_expression" | "invalid_time_zone" | "invalid_maintenance_window" | "run_budget_below_target_file_size" | "invalid_health_thresholds" | "revision_conflict" | "service_identity_not_eligible" | "resource_already_exists" | "catalog_connection_disabled" | "catalog_connection_in_use" | "catalog_connection_changed" | "capability_check_capacity_exhausted" | "catalog_response_too_large" | "table_in_use" | "catalog_namespace_not_found" | "catalog_table_not_found" | "catalog_discovery_capacity_exhausted" | "registration_too_large" | "table_identity_conflict" | "catalog_namespace_mismatch" | "catalog_page_too_large" | "registration_incomplete" | "catalog_token_too_large" | "last_administrator" | "grant_already_exists" | "destination_not_allowed" | "signing_secret_unavailable" | "notification_delivery_failed" | "destination_url_invalid" | "destination_url_unavailable" | "notifications_secrets_dir_unconfigured" | "expiration_ref_safety_unavailable" | "orphan_cleanup_unavailable" | "manifest_rewrite_unavailable" | "dangling_delete_removal_unavailable" | "compaction_in_progress";
             /** @enum {string} */
             disposition: "RetrySameRequest" | "RetryTask" | "ReplanRequired" | "PermanentFailure" | "ResolvePublication";
             operator_action: string;
@@ -1069,7 +1069,7 @@ export interface components {
              * @description The maintenance operation this job performs.
              * @enum {string}
              */
-            operation: "compact" | "expire_snapshots" | "remove_orphan_files";
+            operation: "compact" | "expire_snapshots" | "remove_orphan_files" | "rewrite_manifests" | "remove_dangling_deletes";
         };
         /** @description The data of one job event. `reason` is set only for transitions, as the typed state reason; operator cancellation text is never included. */
         JobEvent: {
@@ -1275,10 +1275,10 @@ export interface components {
             /** Format: uuid */
             table_id: string;
             /**
-             * @description Maintenance operation: compact (default), expire_snapshots, or remove_orphan_files. Snapshot expiration removes only snapshot entries and deletes no files; orphan cleanup deletes objects no retained snapshot references, outside Bergsmith's own prefix and older than the configured window.
+             * @description Maintenance operation: compact (default), expire_snapshots, remove_orphan_files, rewrite_manifests, or remove_dangling_deletes. Snapshot expiration removes only snapshot entries and deletes no files; orphan cleanup deletes objects no retained snapshot references, outside Bergsmith's own prefix and older than the configured window. Manifest rewrite merges small data manifests of main, and dangling-delete removal drops delete files that apply to no live data file; both publish one replace snapshot, are refused with 409 compaction_in_progress while the table has an unfinished compaction, and are disabled unless the deployment enables them.
              * @enum {string}
              */
-            operation?: "compact" | "expire_snapshots" | "remove_orphan_files";
+            operation?: "compact" | "expire_snapshots" | "remove_orphan_files" | "rewrite_manifests" | "remove_dangling_deletes";
         };
         Table: {
             /** Format: uuid */
@@ -1764,7 +1764,7 @@ export interface components {
              * @description The maintenance operation the job performed.
              * @enum {string}
              */
-            operation: "compact" | "expire_snapshots" | "remove_orphan_files";
+            operation: "compact" | "expire_snapshots" | "remove_orphan_files" | "rewrite_manifests" | "remove_dangling_deletes";
         };
         TableMaintenancePage: {
             /** Format: uuid */

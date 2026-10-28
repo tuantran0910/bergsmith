@@ -207,14 +207,20 @@ pub enum JobOperation {
     ExpireSnapshots,
     /// Delete storage objects that no retained snapshot references.
     RemoveOrphanFiles,
+    /// Merge small data manifests of `main` into target-sized ones.
+    RewriteManifests,
+    /// Remove delete files that apply to no live data file of `main`.
+    RemoveDanglingDeletes,
 }
 
 impl JobOperation {
     /// Every operation.
-    pub const ALL: [Self; 3] = [
+    pub const ALL: [Self; 5] = [
         Self::Compact,
         Self::ExpireSnapshots,
         Self::RemoveOrphanFiles,
+        Self::RewriteManifests,
+        Self::RemoveDanglingDeletes,
     ];
 
     /// Returns the persisted name of the operation.
@@ -224,7 +230,36 @@ impl JobOperation {
             Self::Compact => "Compact",
             Self::ExpireSnapshots => "ExpireSnapshots",
             Self::RemoveOrphanFiles => "RemoveOrphanFiles",
+            Self::RewriteManifests => "RewriteManifests",
+            Self::RemoveDanglingDeletes => "RemoveDanglingDeletes",
         }
+    }
+
+    /// Whether the job publishes a metadata-only `main` snapshot from a
+    /// `metadata_plans` plan (ADR 0063).
+    #[must_use]
+    pub const fn is_metadata_rewrite(self) -> bool {
+        matches!(self, Self::RewriteManifests | Self::RemoveDanglingDeletes)
+    }
+
+    /// Returns the operation's name in the HTTP API.
+    #[must_use]
+    pub const fn api_name(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::ExpireSnapshots => "expire_snapshots",
+            Self::RemoveOrphanFiles => "remove_orphan_files",
+            Self::RewriteManifests => "rewrite_manifests",
+            Self::RemoveDanglingDeletes => "remove_dangling_deletes",
+        }
+    }
+
+    /// Parses an API name produced by [`Self::api_name`].
+    #[must_use]
+    pub fn from_api_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|operation| operation.api_name() == name)
     }
 
     /// Parses a persisted name produced by [`Self::as_str`].
@@ -344,6 +379,13 @@ mod tests {
             assert_eq!(back, operation);
         }
         assert_eq!(JobOperation::from_name("compact"), None);
+        for operation in JobOperation::ALL {
+            assert_eq!(
+                JobOperation::from_api_name(operation.api_name()),
+                Some(operation)
+            );
+        }
+        assert_eq!(JobOperation::from_api_name("Compact"), None);
     }
 
     #[test]

@@ -62,7 +62,6 @@ impl Baseline {
     }
 
     /// The iceberg-rust table.
-    #[cfg(test)]
     pub(crate) fn table(&self) -> &Table {
         &self.table
     }

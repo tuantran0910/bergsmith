@@ -4,8 +4,10 @@ import {
     canRetry,
     cancellationMessage,
     executionStatus,
+    isMetadataOnly,
     isTerminal,
     notice,
+    operationLabel,
     publicationStatus,
 } from "./status";
 
@@ -195,5 +197,58 @@ describe("orphan cleanup labels", () => {
                 }).label,
             ).toBe(label);
         }
+    });
+});
+
+describe("operation labels", () => {
+    it("names every operation", () => {
+        expect(
+            (
+                [
+                    "compact",
+                    "expire_snapshots",
+                    "remove_orphan_files",
+                    "rewrite_manifests",
+                    "remove_dangling_deletes",
+                ] as const
+            ).map(operationLabel),
+        ).toEqual([
+            "Compaction",
+            "Snapshot expiration",
+            "Orphan-file cleanup",
+            "Manifest rewrite",
+            "Dangling-delete removal",
+        ]);
+    });
+
+    it("marks only commit-without-workers operations as metadata-only", () => {
+        expect(isMetadataOnly("compact")).toBe(false);
+        expect(isMetadataOnly("remove_orphan_files")).toBe(false);
+        expect(isMetadataOnly("expire_snapshots")).toBe(true);
+        expect(isMetadataOnly("rewrite_manifests")).toBe(true);
+        expect(isMetadataOnly("remove_dangling_deletes")).toBe(true);
+    });
+});
+
+describe("metadata rewrite labels", () => {
+    it.each([
+        ["rewrite_manifests", "No small manifests to merge"],
+        ["remove_dangling_deletes", "No dangling deletes"],
+    ] as const)("describes %s in its own terms", (operation, noOp) => {
+        const status = (state: JobState) =>
+            executionStatus({ state, operation, publication_started: false })
+                .label;
+        expect(status("Planning")).toBe("Planning");
+        expect(status("ReadyToCommit")).toBe("Plan ready");
+        expect(status("Succeeded")).toBe("Plan ready");
+        expect(status("NoOp")).toBe(noOp);
+        expect(status("Failed")).toBe("Failed");
+        expect(
+            publicationStatus({
+                state: "Succeeded",
+                operation,
+                publication_started: true,
+            }).label,
+        ).toBe("Confirmed");
     });
 });

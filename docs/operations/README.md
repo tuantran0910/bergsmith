@@ -52,7 +52,9 @@ job that wrote them is `Committing` or `CommitOutcomeUnknown`.
   `orphans.enabled` is set; it deletes only objects no retained snapshot
   references and never touches anything under a `bergsmith` path segment
   below the table location, which includes `<data-location>/bergsmith/`.
-  Manifest rewrite
-  and dangling-delete removal are not available. Frequency and retention parameters for scheduled expiration
+  Manifest rewrite (`operation: "rewrite_manifests"`) and dangling-delete
+  removal (`operation: "remove_dangling_deletes"`) are manual jobs once
+  `manifests.rewrite_enabled` or `deletes.dangling_removal_enabled` is set;
+  each publishes one `replace` snapshot and changes no table rows. Frequency and retention parameters for scheduled expiration
   are not yet configurable.
 - Kubernetes and Helm are planned for M8.

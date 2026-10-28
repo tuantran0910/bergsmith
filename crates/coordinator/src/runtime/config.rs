@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use bergsmith_common::ids::CatalogConnectionId;
+use bergsmith_common::job::JobOperation;
 use bergsmith_maintenance::{PlannerConfig, StatisticsConfig};
 use bergsmith_persistence::scheduling::{AdmissionLimits, RetryPolicy};
 use bergsmith_storage::{AzureProfile, GcsProfile, S3Profile, StorageProfile, StorageProfiles};
@@ -57,6 +58,12 @@ pub struct CoordinatorConfig {
     /// Orphan-file cleanup limits and enablement (BS-031.T2).
     #[serde(default)]
     pub orphans: OrphanSettings,
+    /// Manifest rewrite limits and enablement (BS-031.T3).
+    #[serde(default)]
+    pub manifests: ManifestSettings,
+    /// Dangling-delete removal limits and enablement (BS-031.T3).
+    #[serde(default)]
+    pub deletes: DeleteSettings,
     /// Scheduler admission and timing.
     #[serde(default)]
     pub scheduler: SchedulerSettings,
@@ -217,6 +224,203 @@ impl OrphanSettings {
             operation_timeout_seconds: self.operation_timeout_seconds,
         })
     }
+}
+
+/// Manifest rewrite settings (BS-031.T3, ADR 0063).
+///
+/// The rewrite publishes a new `main` snapshot, so it does nothing until an
+/// operator sets `rewrite_enabled`.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestSettings {
+    /// Whether manifest rewrite may run at all.
+    #[serde(default)]
+    pub rewrite_enabled: bool,
+    /// The most manifests one job replaces.
+    #[serde(default = "default_manifest_max_input_manifests")]
+    pub max_input_manifests: u64,
+    /// The most live data files the replaced manifests may record.
+    #[serde(default = "default_manifest_max_input_entries")]
+    pub max_input_entries: u64,
+    /// The deadline in seconds for reading the manifest list while planning,
+    /// and for the whole commit preparation, which reads and writes every
+    /// selected manifest in one step.
+    #[serde(default = "default_manifest_operation_timeout_seconds")]
+    pub operation_timeout_seconds: u64,
+}
+
+impl Default for ManifestSettings {
+    fn default() -> Self {
+        Self {
+            rewrite_enabled: false,
+            max_input_manifests: default_manifest_max_input_manifests(),
+            max_input_entries: default_manifest_max_input_entries(),
+            operation_timeout_seconds: default_manifest_operation_timeout_seconds(),
+        }
+    }
+}
+
+/// Dangling-delete removal settings (BS-031.T3, ADR 0063).
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteSettings {
+    /// Whether dangling-delete removal may run at all.
+    #[serde(default)]
+    pub dangling_removal_enabled: bool,
+    /// The most delete files one job removes.
+    #[serde(default = "default_delete_max_removals")]
+    pub max_removals: u64,
+    /// The deadline in seconds for reading the baseline manifests while
+    /// planning, and for the commit preparation.
+    #[serde(default = "default_delete_operation_timeout_seconds")]
+    pub operation_timeout_seconds: u64,
+}
+
+impl Default for DeleteSettings {
+    fn default() -> Self {
+        Self {
+            dangling_removal_enabled: false,
+            max_removals: default_delete_max_removals(),
+            operation_timeout_seconds: default_delete_operation_timeout_seconds(),
+        }
+    }
+}
+
+/// Validated settings of both metadata-only `main` rewrites.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MetadataRewriteConfig {
+    manifests_enabled: bool,
+    manifest_policy: bergsmith_maintenance::metadata_plan::ManifestPolicy,
+    manifest_timeout_seconds: u64,
+    deletes_enabled: bool,
+    max_removals: u64,
+    delete_timeout_seconds: u64,
+}
+
+impl MetadataRewriteConfig {
+    /// Validates both sections.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::Invalid`] naming the first bound outside its range.
+    pub fn new(
+        manifests: &ManifestSettings,
+        deletes: &DeleteSettings,
+    ) -> Result<Self, ConfigError> {
+        for (name, value, high) in [
+            (
+                "manifests.max_input_manifests",
+                manifests.max_input_manifests,
+                100_000,
+            ),
+            (
+                "manifests.max_input_entries",
+                manifests.max_input_entries,
+                10_000_000,
+            ),
+            (
+                "manifests.operation_timeout_seconds",
+                manifests.operation_timeout_seconds,
+                3_600,
+            ),
+            ("deletes.max_removals", deletes.max_removals, 1_000_000),
+            (
+                "deletes.operation_timeout_seconds",
+                deletes.operation_timeout_seconds,
+                3_600,
+            ),
+        ] {
+            if !(1..=high).contains(&value) {
+                return Err(ConfigError::Invalid(format!(
+                    "{name} must be between 1 and {high}"
+                )));
+            }
+        }
+        if manifests.max_input_manifests < 2 {
+            return Err(ConfigError::Invalid(
+                "manifests.max_input_manifests must be at least 2".into(),
+            ));
+        }
+        Ok(Self {
+            manifests_enabled: manifests.rewrite_enabled,
+            manifest_policy: bergsmith_maintenance::metadata_plan::ManifestPolicy {
+                max_input_manifests: manifests.max_input_manifests,
+                max_input_entries: manifests.max_input_entries,
+            },
+            manifest_timeout_seconds: manifests.operation_timeout_seconds,
+            deletes_enabled: deletes.dangling_removal_enabled,
+            max_removals: deletes.max_removals,
+            delete_timeout_seconds: deletes.operation_timeout_seconds,
+        })
+    }
+
+    /// Whether `operation` may run: compaction, expiration, and cleanup are
+    /// gated elsewhere and always pass here.
+    #[must_use]
+    pub const fn allows(&self, operation: JobOperation) -> bool {
+        match operation {
+            JobOperation::RewriteManifests => self.manifests_enabled,
+            JobOperation::RemoveDanglingDeletes => self.deletes_enabled,
+            _ => true,
+        }
+    }
+
+    /// The manifest selection bounds.
+    #[must_use]
+    pub const fn manifest_policy(&self) -> bergsmith_maintenance::metadata_plan::ManifestPolicy {
+        self.manifest_policy
+    }
+
+    /// The most delete files one job removes.
+    #[must_use]
+    pub const fn max_removals(&self) -> u64 {
+        self.max_removals
+    }
+
+    /// The deadline of one bounded step of `operation`.
+    #[must_use]
+    pub const fn operation_timeout(&self, operation: JobOperation) -> Duration {
+        Duration::from_secs(match operation {
+            JobOperation::RewriteManifests => self.manifest_timeout_seconds,
+            _ => self.delete_timeout_seconds,
+        })
+    }
+}
+
+impl Default for MetadataRewriteConfig {
+    fn default() -> Self {
+        Self {
+            manifests_enabled: false,
+            manifest_policy: bergsmith_maintenance::metadata_plan::ManifestPolicy {
+                max_input_manifests: default_manifest_max_input_manifests(),
+                max_input_entries: default_manifest_max_input_entries(),
+            },
+            manifest_timeout_seconds: default_manifest_operation_timeout_seconds(),
+            deletes_enabled: false,
+            max_removals: default_delete_max_removals(),
+            delete_timeout_seconds: default_delete_operation_timeout_seconds(),
+        }
+    }
+}
+
+const fn default_manifest_max_input_manifests() -> u64 {
+    1_000
+}
+
+const fn default_manifest_max_input_entries() -> u64 {
+    1_000_000
+}
+
+const fn default_manifest_operation_timeout_seconds() -> u64 {
+    300
+}
+
+const fn default_delete_max_removals() -> u64 {
+    10_000
+}
+
+const fn default_delete_operation_timeout_seconds() -> u64 {
+    120
 }
 
 const fn default_orphan_minimum_age_seconds() -> u64 {
@@ -1208,6 +1412,15 @@ impl CoordinatorConfig {
         })
     }
 
+    /// The validated manifest-rewrite and dangling-delete settings.
+    ///
+    /// # Errors
+    ///
+    /// As for [`MetadataRewriteConfig::new`].
+    pub fn metadata_rewrites(&self) -> Result<MetadataRewriteConfig, ConfigError> {
+        MetadataRewriteConfig::new(&self.manifests, &self.deletes)
+    }
+
     /// Validates every cross-field invariant that does not need I/O.
     ///
     /// # Errors
@@ -1216,6 +1429,7 @@ impl CoordinatorConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.database.url()?;
         self.orphans.cleanup()?;
+        self.metadata_rewrites()?;
         if self.http.bind.is_empty() {
             return Err(ConfigError::Invalid("http.bind must not be empty".into()));
         }
@@ -1681,6 +1895,58 @@ mod tests {
         assert!(!bounded(1_000_001, 1));
         assert!(!bounded(10, 0));
         assert!(!bounded(10, 11), "a pass may not exceed the plan");
+    }
+
+    #[test]
+    fn metadata_rewrites_are_off_by_default_with_documented_bounds() {
+        let config = parse(minimal()).unwrap();
+        let rewrites = config.metadata_rewrites().unwrap();
+        assert_eq!(rewrites, MetadataRewriteConfig::default());
+        assert!(!rewrites.allows(JobOperation::RewriteManifests));
+        assert!(!rewrites.allows(JobOperation::RemoveDanglingDeletes));
+        assert!(rewrites.allows(JobOperation::Compact));
+        assert_eq!(rewrites.manifest_policy().max_input_manifests, 1_000);
+        assert_eq!(rewrites.manifest_policy().max_input_entries, 1_000_000);
+        assert_eq!(rewrites.max_removals(), 10_000);
+        assert_eq!(
+            rewrites.operation_timeout(JobOperation::RewriteManifests),
+            Duration::from_secs(300)
+        );
+        assert_eq!(
+            rewrites.operation_timeout(JobOperation::RemoveDanglingDeletes),
+            Duration::from_secs(120)
+        );
+
+        let mut value = minimal();
+        value["manifests"] = serde_json::json!({ "rewrite_enabled": true });
+        value["deletes"] = serde_json::json!({ "dangling_removal_enabled": true });
+        let enabled = parse(value).unwrap().metadata_rewrites().unwrap();
+        assert!(enabled.allows(JobOperation::RewriteManifests));
+        assert!(enabled.allows(JobOperation::RemoveDanglingDeletes));
+    }
+
+    #[test]
+    fn metadata_rewrite_bounds_are_checked_at_each_edge() {
+        let accepts = |section: &str, field: &str, value: u64| {
+            let mut config = minimal();
+            config[section] = serde_json::json!({ field: value });
+            parse(config).is_ok()
+        };
+        for (section, field, low, high) in [
+            ("manifests", "max_input_manifests", 2_u64, 100_000_u64),
+            ("manifests", "max_input_entries", 1, 10_000_000),
+            ("manifests", "operation_timeout_seconds", 1, 3_600),
+            ("deletes", "max_removals", 1, 1_000_000),
+            ("deletes", "operation_timeout_seconds", 1, 3_600),
+        ] {
+            assert!(!accepts(section, field, low - 1), "{field} = {}", low - 1);
+            assert!(accepts(section, field, low), "{field} = {low}");
+            assert!(accepts(section, field, high), "{field} = {high}");
+            assert!(!accepts(section, field, high + 1), "{field} = {}", high + 1);
+        }
+        let mut unknown = minimal();
+        unknown["deletes"] = serde_json::json!({ "enabled": true });
+        assert!(parse(unknown).is_err());
     }
 
     #[test]

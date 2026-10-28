@@ -14,7 +14,11 @@ import { ResourceLabel } from "../components/ResourceLabel";
 import { CopyButton } from "../components/ResourceId";
 import { StatusBadge } from "../components/StatusBadge";
 import { shortId, tableName, timestamp } from "../format";
-import { executionStatus, publicationStatus } from "../jobs/status";
+import {
+    executionStatus,
+    operationLabel,
+    publicationStatus,
+} from "../jobs/status";
 import {
     Table,
     TableBody,
@@ -126,9 +130,7 @@ export function JobsPage() {
                                             />
                                         </TableCell>
                                         <TableCell className="text-muted-foreground">
-                                            {job.operation === "compact"
-                                                ? "Compaction"
-                                                : "Snapshot expiration"}
+                                            {operationLabel(job.operation)}
                                         </TableCell>
                                         <TableCell className="text-muted-foreground">
                                             {job.state}

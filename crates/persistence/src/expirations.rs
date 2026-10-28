@@ -106,7 +106,8 @@ pub async fn expiration_plan(
 /// Snapshot identifiers a live job, plan, or publication still pins.
 ///
 /// Protected snapshots come from every nonterminal job on the table (its
-/// execution plan and expiration plan baselines) and from publication intents:
+/// execution, expiration, and metadata plan baselines) and from publication
+/// intents:
 /// rewrite intents pin their plan's baseline, and expiration intents pin their
 /// explicit `baseline_snapshot_id` and `protected` entries. The expiring job is
 /// excluded, so it can remove what it planned to remove. Only well-formed
@@ -134,6 +135,13 @@ pub async fn protected_snapshots(
              SELECT e.content -> 'baseline' ->> 'snapshot_id'
              FROM expiration_plans e
              JOIN jobs j ON j.id = e.job_id
+             WHERE j.organization_id = $1 AND j.table_identity_id = $2 AND j.id <> $3
+               AND j.state NOT IN
+                   ('Succeeded', 'NoOp', 'Cancelled', 'ReplanRequired', 'Failed')
+             UNION ALL
+             SELECT m.content -> 'baseline' ->> 'snapshot_id'
+             FROM metadata_plans m
+             JOIN jobs j ON j.id = m.job_id
              WHERE j.organization_id = $1 AND j.table_identity_id = $2 AND j.id <> $3
                AND j.state NOT IN
                    ('Succeeded', 'NoOp', 'Cancelled', 'ReplanRequired', 'Failed')

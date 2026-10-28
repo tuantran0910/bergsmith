@@ -7652,7 +7652,10 @@
               "destination_url_unavailable",
               "notifications_secrets_dir_unconfigured",
               "expiration_ref_safety_unavailable",
-              "orphan_cleanup_unavailable"
+              "orphan_cleanup_unavailable",
+              "manifest_rewrite_unavailable",
+              "dangling_delete_removal_unavailable",
+              "compaction_in_progress"
             ]
           },
           "disposition": {
@@ -8435,7 +8438,9 @@
             "enum": [
               "compact",
               "expire_snapshots",
-              "remove_orphan_files"
+              "remove_orphan_files",
+              "rewrite_manifests",
+              "remove_dangling_deletes"
             ],
             "description": "The maintenance operation this job performs."
           }
@@ -9399,9 +9404,11 @@
             "enum": [
               "compact",
               "expire_snapshots",
-              "remove_orphan_files"
+              "remove_orphan_files",
+              "rewrite_manifests",
+              "remove_dangling_deletes"
             ],
-            "description": "Maintenance operation: compact (default), expire_snapshots, or remove_orphan_files. Snapshot expiration removes only snapshot entries and deletes no files; orphan cleanup deletes objects no retained snapshot references, outside Bergsmith's own prefix and older than the configured window."
+            "description": "Maintenance operation: compact (default), expire_snapshots, remove_orphan_files, rewrite_manifests, or remove_dangling_deletes. Snapshot expiration removes only snapshot entries and deletes no files; orphan cleanup deletes objects no retained snapshot references, outside Bergsmith's own prefix and older than the configured window. Manifest rewrite merges small data manifests of main, and dangling-delete removal drops delete files that apply to no live data file; both publish one replace snapshot, are refused with 409 compaction_in_progress while the table has an unfinished compaction, and are disabled unless the deployment enables them."
           }
         }
       },
@@ -11470,7 +11477,9 @@
             "enum": [
               "compact",
               "expire_snapshots",
-              "remove_orphan_files"
+              "remove_orphan_files",
+              "rewrite_manifests",
+              "remove_dangling_deletes"
             ],
             "description": "The maintenance operation the job performed."
           }
