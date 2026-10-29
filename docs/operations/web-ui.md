@@ -32,6 +32,23 @@ administer organization configuration. Creating a schedule also needs
 identity; the page names the missing grants rather than offer a control that
 cannot work.
 
+## Phone widths
+
+Below 40rem (640 px) the shared data grid renders each row as a card instead
+of a horizontally scrolling table (BS-032.T4). The first column is the card
+title, columns with an empty header and end alignment stay visible as card
+actions, and the remaining columns become labelled details; sorting moves to a
+compact select and direction button above the cards. List filters, such as the
+Tables page's catalog and health selectors, open in a bottom drawer with a
+`Show results` action, while search, clear, and the live result count stay in
+the bar. Job statistics keep two columns at this width.
+
+The browser gate visits the tables, policies, and schedules lists at 320 and
+390 pixels in light and dark. It asserts that the document never grows wider
+than the viewport, that no visible action is clipped, that rows render as
+cards, and that the filter drawer opens and closes. Screenshots are test
+artifacts for review, not committed baselines.
+
 ## Health
 
 A table's state comes from its newest metadata-only sample and the thresholds of
