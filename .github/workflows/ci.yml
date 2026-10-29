@@ -147,6 +147,7 @@ jobs:
           path: |
             web/playwright-report
             web/test-results
+            web/e2e/**/*-snapshots
       - run: make web-audit
 
   observability:

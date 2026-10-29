@@ -2,7 +2,15 @@
 
 The browser application in `web/` covers manual maintenance over the
 [browser API](api.md). The decision is recorded in
-[ADR 0037](../adr/0037-web-ui-and-generated-client.md).
+[ADR 0037](../adr/0037-web-ui-and-generated-client.md); navigation, tabbed
+details, and the response to the original UI review are recorded in
+[ADR 0056](../adr/0056-ui-platform-navigation-and-names-first-operation.md) and
+the [UI revamp release notes](../release-notes/0.1.0-ui-revamp.md).
+
+The shell groups destinations under Overview, Data, Operations, and
+Administration. Lists keep search, filters, and sort in the URL, and detail
+pages keep their tab in the URL, so a link opens the same view. Below 40rem a
+list renders as cards with its filters in a bottom drawer.
 
 ## Journeys
 

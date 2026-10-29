@@ -1,4 +1,4 @@
-import { firstLoadBytes, firstLoadFailure } from "./bundleBudget";
+import { firstLoadBytes, firstLoadFailure, lazyChunks } from "./bundleBudget";
 
 function chunk(
     fileName: string,
@@ -89,5 +89,33 @@ describe("firstLoadBytes", () => {
 
     it("counts nothing without an entry chunk", () => {
         expect(firstLoadBytes([chunk("orphan.js", 500)])).toBe(0);
+    });
+});
+
+describe("lazyChunks", () => {
+    it("reports chunks outside the entry closure, largest first", () => {
+        const report = lazyChunks([
+            chunk("entry.js", 100, { isEntry: true, imports: ["shared.js"] }),
+            chunk("shared.js", 80),
+            chunk("small-page.js", 20),
+            chunk("large-page.js", 300),
+        ]);
+        expect(report.total).toBe(320);
+        expect(report.chunks.map((item) => item.fileName)).toEqual([
+            "large-page.js",
+            "small-page.js",
+        ]);
+    });
+
+    it("is empty when everything is entry-reachable", () => {
+        expect(
+            lazyChunks([
+                chunk("entry.js", 100, {
+                    isEntry: true,
+                    imports: ["shared.js"],
+                }),
+                chunk("shared.js", 80),
+            ]),
+        ).toEqual({ total: 0, chunks: [] });
     });
 });

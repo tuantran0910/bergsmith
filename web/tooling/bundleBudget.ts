@@ -23,6 +23,26 @@ export function firstLoadBytes(chunks: readonly EmittedChunk[]): number {
     return measured(chunks).total;
 }
 
+/** Lazy chunks (everything outside the entry closure), largest first. */
+export interface LazyChunks {
+    total: number;
+    chunks: readonly EmittedChunk[];
+}
+
+/** The JavaScript a navigation loads later, largest chunk first. */
+export function lazyChunks(chunks: readonly EmittedChunk[]): LazyChunks {
+    const counted = new Set(
+        measured(chunks).counted.map((chunk) => chunk.fileName),
+    );
+    const lazy = chunks
+        .filter((chunk) => !counted.has(chunk.fileName))
+        .sort((left, right) => right.gzipBytes - left.gzipBytes);
+    return {
+        total: lazy.reduce((sum, chunk) => sum + chunk.gzipBytes, 0),
+        chunks: lazy,
+    };
+}
+
 /** Entry-reachable chunks and their gzipped total. */
 function measured(chunks: readonly EmittedChunk[]): {
     total: number;
@@ -92,6 +112,17 @@ export function bundleBudget(budgetBytes: number): Plugin {
             const firstLoad = firstLoadBytes(chunks);
             this.info(
                 `First-load JavaScript: ${kilobytes(firstLoad)} gzipped (budget ${kilobytes(budgetBytes)})`,
+            );
+            const lazy = lazyChunks(chunks);
+            this.info(
+                `Lazy JavaScript: ${kilobytes(lazy.total)} gzipped in ${lazy.chunks.length} chunks; ` +
+                    lazy.chunks
+                        .slice(0, 5)
+                        .map(
+                            (chunk) =>
+                                `${chunk.fileName} ${kilobytes(chunk.gzipBytes)}`,
+                        )
+                        .join(", "),
             );
             const failure = firstLoadFailure(chunks, budgetBytes);
             if (failure !== null) {

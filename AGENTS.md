@@ -354,6 +354,9 @@ tracking task.
   Wait for the expected UI state, not an arbitrary timeout. When checking
   contrast after opening a dialog, wait for its finite opening animations to
   finish so axe measures the visible controls rather than transparent text.
+- Visual baselines live under `web/e2e/**-snapshots` and compare only in CI,
+  where the pinned Linux browser renders them. Other screenshots are review
+  artifacts, not source files.
 - Playwright MCP is optional developer tooling for exploratory interaction,
   screenshots, console/network inspection, and responsive checks. Use it when
   available, with a dedicated test browser and fake or development data. MCP
