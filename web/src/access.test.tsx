@@ -295,6 +295,29 @@ it("opens token management from the URL and keeps it out of a user's tabs", asyn
     expect(window.location.search).toBe("");
 });
 
+it("opens a workers-only operator on tokens without an empty Access tab", async () => {
+    const workers = session("Viewer");
+    workers.permissions = [
+        {
+            permission: "workers:manage",
+            scope: { catalog_connection: null, table: null },
+        },
+    ];
+    fake.on("GET", "/auth/session", () => json(200, workers));
+    start(`/service-identities/${SERVICE_ID}?tab=access`);
+    expect(
+        await screen.findByRole("heading", { name: "Pool tokens" }),
+    ).toBeVisible();
+    expect(
+        screen.queryByRole("tab", { name: "Access" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Tokens" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+    );
+    expect(fake.sent("GET", "/api/v1/grants")).toHaveLength(0);
+});
+
 it("ignores a token tab for a user principal", async () => {
     start(`/users/${USER_ID}?tab=tokens`);
     expect(await screen.findByRole("tab", { name: "Access" })).toHaveAttribute(

@@ -303,10 +303,18 @@ function PrincipalDetail({
     tab?: PrincipalTab | undefined;
 }) {
     const navigate = useNavigate();
-    const selected = principalTab(tab) ?? "access";
-    const current = selected === "tokens" && !services ? "access" : selected;
     const query = usePrincipal(id, services);
     const session = useSession();
+    const manage =
+        session !== null && hasOrganizationPermission(session, "grants:manage");
+    const requested = principalTab(tab) ?? "access";
+    const current = !services
+        ? requested === "tokens"
+            ? "access"
+            : requested
+        : manage
+          ? requested
+          : "tokens";
     useBreadcrumbLabel(query.data?.display_name);
     const client = useQueryClient();
     const update = useSessionMutation({
@@ -333,8 +341,6 @@ function PrincipalDetail({
             />
         );
     const principal = query.data;
-    const manage =
-        session !== null && hasOrganizationPermission(session, "grants:manage");
     return (
         <section className="grid gap-6">
             <PageHeader
@@ -433,7 +439,9 @@ function PrincipalDetail({
                 }}
             >
                 <TabsList>
-                    <TabsTrigger value="access">Access</TabsTrigger>
+                    {(!services || manage) && (
+                        <TabsTrigger value="access">Access</TabsTrigger>
+                    )}
                     {services && (
                         <TabsTrigger value="tokens">Tokens</TabsTrigger>
                     )}

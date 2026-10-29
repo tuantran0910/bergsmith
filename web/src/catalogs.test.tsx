@@ -284,6 +284,19 @@ it("shows human units and discards unsaved settings from the save bar", async ()
     expect(screen.getByLabelText("Connection enabled")).toBeChecked();
 });
 
+it("keeps an unsaved settings draft across tab switches", async () => {
+    const user = start();
+    await user.click(await screen.findByRole("tab", { name: "Settings" }));
+    const name = screen.getByLabelText("Connection name");
+    await user.clear(name);
+    await user.type(name, "renamed");
+    expect(screen.getByText("Unsaved settings changes.")).toBeVisible();
+    await user.click(screen.getByRole("tab", { name: "Overview" }));
+    await user.click(screen.getByRole("tab", { name: "Settings" }));
+    expect(screen.getByLabelText("Connection name")).toHaveValue("renamed");
+    expect(screen.getByText("Unsaved settings changes.")).toBeVisible();
+});
+
 it("keeps settings and access away from viewers", async () => {
     fake.on("GET", "/auth/session", () => json(200, session("Viewer")));
     start(`/catalogs/${CATALOG_ID}?tab=settings`);

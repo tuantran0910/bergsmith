@@ -491,7 +491,7 @@ export function CatalogPage({ id }: { id: string }) {
                     </TabsContent>
                 )}
                 {manager && (
-                    <TabsContent value="settings">
+                    <TabsContent value="settings" keepMounted>
                         <Settings key={catalog.revision} catalog={catalog} />
                     </TabsContent>
                 )}

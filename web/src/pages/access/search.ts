@@ -1,6 +1,6 @@
 // The principal detail's URL state (ADR 0056): which tab is open. Tabs stay in
-// validated search parameters so a link opens the same view and back/forward
-// works, while an unknown tab falls back to access.
+// validated search parameters so a link opens the same view, while an unknown
+// tab falls back to access.
 
 const TABS = ["access", "tokens"] as const;
 
