@@ -3,6 +3,7 @@
 //! | Route | Purpose |
 //! |---|---|
 //! | `GET /api/v1/principals` | Page through the organization's users and services |
+//! | `GET /api/v1/principals/facets` | Count them by kind and by activity |
 //! | `POST /api/v1/principals` | Provision a user for an issuer and subject |
 //! | `GET /api/v1/principals/{id}` | One principal |
 //! | `PATCH /api/v1/principals/{id}` | Deactivate or reactivate a principal |
@@ -19,7 +20,9 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use bergsmith_common::ids::PrincipalId;
 use bergsmith_common::permission::{Permission, ResourceScope};
-use bergsmith_persistence::tenancy::{self, NewPrincipal, Principal, PrincipalKind};
+use bergsmith_persistence::tenancy::{
+    self, NewPrincipal, Principal, PrincipalFilter, PrincipalKind,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -27,7 +30,7 @@ use uuid::Uuid;
 use crate::identity::administration;
 
 use super::pagination::{Page, PageQuery};
-use super::{ApiError, ApiState, Caller, json_body, resources};
+use super::{ApiError, ApiState, Caller, json_body, lists, resources};
 
 /// The longest issuer or subject the API stores, in bytes.
 const MAX_IDENTITY: usize = 2048;
@@ -36,8 +39,34 @@ const MAX_IDENTITY: usize = 2048;
 #[serde(deny_unknown_fields)]
 pub(super) struct ListPrincipals {
     kind: Option<String>,
+    active: Option<String>,
+    q: Option<String>,
     limit: Option<usize>,
     cursor: Option<String>,
+}
+
+impl ListPrincipals {
+    fn filter(&self) -> Result<PrincipalFilter, ApiError> {
+        let kind = match self.kind.as_deref() {
+            None => None,
+            Some("User") => Some(PrincipalKind::User),
+            Some("Service") => Some(PrincipalKind::Service),
+            Some(_) => return Err(ApiError::invalid()),
+        };
+        Ok(PrincipalFilter {
+            kind,
+            active: lists::flag(self.active.as_deref())?,
+            display_name: lists::search(self.q.as_deref())?,
+        })
+    }
+}
+
+/// The canonical form of a principal filter, which a cursor scope digests.
+#[derive(serde::Serialize)]
+struct Scope<'a> {
+    kind: Option<&'static str>,
+    active: Option<bool>,
+    q: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -75,17 +104,17 @@ pub(super) async fn list(
     query: Result<Query<ListPrincipals>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let query = query.map_err(|_| ApiError::invalid())?.0;
-    let kind = match query.kind.as_deref() {
-        None => None,
-        Some("User") => Some(PrincipalKind::User),
-        Some("Service") => Some(PrincipalKind::Service),
-        Some(_) => return Err(ApiError::invalid()),
+    let filter = query.filter()?;
+    let scope = Scope {
+        kind: filter.kind.map(PrincipalKind::as_str),
+        active: filter.active,
+        q: filter.display_name.as_ref().map(|q| q.as_str()),
     };
     let page = Page::parse(
         PageQuery::new(query.limit, query.cursor),
         caller.organization_id,
         caller.principal_id,
-        "principals",
+        lists::scope("principals", &scope, filter != PrincipalFilter::default())?,
     )?;
     let after = page
         .after
@@ -107,7 +136,7 @@ pub(super) async fn list(
     let rows = tenancy::list_principals(
         &mut conn,
         caller.organization_id,
-        kind,
+        &filter,
         after,
         page.limit + 1,
     )
@@ -119,6 +148,37 @@ pub(super) async fn list(
                 .collect(),
         )?,
     ))
+}
+
+/// `GET /api/v1/principals/facets`: principal counts by kind and activity.
+pub(super) async fn facets(
+    State(state): State<ApiState>,
+    caller: Caller,
+    query: Result<Query<ListPrincipals>, axum::extract::rejection::QueryRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let query = query.map_err(|_| ApiError::invalid())?.0;
+    if query.limit.is_some() || query.cursor.is_some() {
+        return Err(ApiError::invalid());
+    }
+    let filter = query.filter()?;
+    let mut conn = state.database.pool().acquire().await?;
+    resources::require(
+        &mut conn,
+        &caller.0,
+        Permission::ManageGrants,
+        ResourceScope::Organization,
+    )
+    .await?;
+    let facets = tenancy::principal_facets(&mut conn, caller.organization_id, &filter).await?;
+    Ok(Json(json!({
+        "kind": lists::facet(facets.kind.into_iter().map(|(kind, count)| (kind.as_str(), count))),
+        "active": lists::facet(
+            facets
+                .active
+                .into_iter()
+                .map(|(active, count)| (active.to_string(), count))
+        ),
+    })))
 }
 
 pub(super) async fn create(

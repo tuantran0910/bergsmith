@@ -217,7 +217,7 @@ impl AuditAction {
 }
 
 /// The result of the audited action.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AuditOutcome {
     /// The action was permitted and completed.
     Allowed,

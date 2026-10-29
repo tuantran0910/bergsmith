@@ -20,17 +20,17 @@ as `x-csrf-token`. All responses use `Cache-Control: no-store`.
 | Endpoint | Behavior |
 |---|---|
 | `GET /api/v1/openapi.json` | Public OpenAPI 3.1 contract; no session required |
-| `GET /api/v1/catalogs`, `GET /api/v1/catalogs/{id}` | Authorized catalog summaries; detail also includes settings for connection managers |
+| `GET /api/v1/catalogs`, `GET /api/v1/catalogs/{id}` | Authorized catalog summaries; detail also includes settings for connection managers. The list accepts `enabled` and `q` (name) |
 | `POST /api/v1/catalogs` | Create a connection under organization-wide `connections:manage`; 201 |
 | `PATCH /api/v1/catalogs/{id}` | Edit, enable, or disable under connection-scoped `connections:manage`, using `expected_revision`; 409 for stale revisions or routing edits while jobs depend on the connection |
 | `POST /api/v1/catalogs/{id}/check` | Read what the connection's catalog advertises and record the answer; requires connection-scoped `connections:manage` |
-| `GET /api/v1/principals`, `GET /api/v1/principals/{id}` | The organization's users and service accounts, active and deactivated alike; requires organization-wide `grants:manage` |
+| `GET /api/v1/principals`, `GET /api/v1/principals/{id}` | The organization's users and service accounts, active and deactivated alike; requires organization-wide `grants:manage`. The list accepts `kind`, `active`, and `q` (display name) |
 | `POST /api/v1/principals` | Provision a user for an issuer and subject with a display name; 201; requires organization-wide `grants:manage` |
 | `PATCH /api/v1/principals/{id}` | Deactivate (`{"active":false}`) or reactivate (`{"active":true}`) a principal; 409 `last_administrator` for the last active administrator |
 | `GET /api/v1/grants` | Active grants in ascending identifier order, optionally filtered by `principal_id`, `catalog_connection`, or `table`; the filter's scope requires `grants:manage`. A connection page includes the grants on its tables |
 | `POST /api/v1/grants` | Grant a role over the organization (`"scope": {}`), one connection, or one table; 201; requires `grants:manage` over that scope; 409 `grant_already_exists` for an identical active grant |
 | `DELETE /api/v1/grants/{id}` | Revoke an active grant, keeping the row for audit; requires `grants:manage` over its scope; 409 `last_administrator` when it is the last active organization-wide administrator grant |
-| `GET /api/v1/tables`, `GET /api/v1/tables/{id}` | Authorized canonical table identities, each with the newest metadata-only statistics summary or `null` when unsampled, and its evaluated health (`state` plus the sample and confirmation instants; `state` is `null` when unassessed). The list accepts `health` to keep one exact state (`healthy`, `warning`, `critical`, `unassessed`) and `sort=health` to order the worst state first with ties by id; either evaluates every visible table from its newest sample and the thresholds of its enabled policies, so the cost grows with the inventory rather than the page. A cursor belongs to the query shape that produced it, and a health-filtered cursor resumes after the health sort key |
+| `GET /api/v1/tables`, `GET /api/v1/tables/{id}` | Authorized canonical table identities, each with the newest metadata-only statistics summary or `null` when unsampled, and its evaluated health (`state` plus the sample and confirmation instants; `state` is `null` when unassessed). The list accepts `health` to keep one exact state (`healthy`, `warning`, `critical`, `unassessed`) and `sort=health` to order the worst state first with ties by id; either evaluates every visible table from its newest sample and the thresholds of its enabled policies, so the cost grows with the inventory rather than the page. It also accepts `catalog` and `q` (a visible alias's `namespace.name`). A cursor belongs to the query shape that produced it, and a health-filtered cursor resumes after the health sort key |
 | `GET /api/v1/tables/{id}/statistics` | The table's newest sample and a cursor page of its history; `since` filters by instant; counts and bytes are decimal strings; partition values appear only for callers allowed to submit jobs on the table; 404 for unknown or invisible tables |
 | `GET /api/v1/tables/{id}/definition` | The table's current schema, every retained partition spec, its default sort order, and the allow-listed properties (`DEFINITION_PROPERTIES`) that are set; metadata only, so no data or delete file is read and no partition value, metadata location, credential, or connection setting is returned; 404 for unknown or invisible tables |
 | `GET /api/v1/tables/{id}/snapshots` | The table's recorded commits, newest first, each with its operation, the change counts its summary records, the committing engine's summary properties, and the Bergsmith job that published it; `hours` (1–168, default 24) sizes the commit-per-hour cadence ending with the current hour; per-partition counters appear only for callers allowed to submit jobs on the table; counts and IDs are decimal strings; 404 for unknown or invisible tables |
@@ -40,13 +40,14 @@ as `x-csrf-token`. All responses use `Cache-Control: no-store`.
 | `GET /api/v1/overview` | The landing overview: terminal jobs whose transition falls in the last day, by outcome and conflict rate; the unresolved-publication count and oldest age in full plus a bounded list of jobs that need attention (unresolved publications first, aged from send authorization, then `ReplanRequired` and failed jobs, aged from their terminal transition); visible tables that were never sampled or whose newest job needs a decision; enabled schedules whose next due instant has passed, plus occurrences folded or skipped in the last day; and registered worker capacity. Job and table figures follow the caller's grants, and the schedule and worker sections are `null` when the caller may not manage them; counters are decimal strings |
 | `GET /api/v1/catalogs/{id}/statistics` | Totals over the newest sample of every visible table on one connection; 404 when the connection is not visible |
 | `GET /api/v1/statistics` | The same totals over every table the caller may view in the organization |
-| `GET /api/v1/jobs`, `GET /api/v1/jobs/{id}` | Authorized job state, revision, requester and their display name, the table's caller-visible aliases, cancellation/publication boundary, retry link, and the `trigger` (finding kind and severity) that admitted it, or null |
+| `GET /api/v1/jobs`, `GET /api/v1/jobs/{id}` | Authorized job state, revision, requester and their display name, the table's caller-visible aliases, cancellation/publication boundary, retry link, and the `trigger` (finding kind and severity) that admitted it, or null. The list accepts `state`, `operation`, `table`, `catalog`, `created_by`, `q` (a visible alias's `namespace.name`), and `order=newest` |
 | `GET /api/v1/jobs/{id}/tasks` | One page of the job's tasks in plan order, each with its attempts in generation order: task state and attempts started, each attempt's worker pool and name, grant and finish times, duration, the stable failure reason and disposition, and accepted output files and bytes. Same `jobs:read` authorization as the job; unknown and invisible jobs both return 404. `limit` is 1–100 (default 50) with a cursor bound to the caller and resource; counts, bytes, and durations are decimal strings |
 | `POST /api/v1/jobs` | Idempotent durable submission of `compact` (default), `expire_snapshots`, `remove_orphan_files`, `rewrite_manifests`, or `remove_dangling_deletes`; returns 202 with job and operation IDs and Location |
 | `POST /api/v1/jobs/{id}/cancel` | Record a cancellation request and report what it achieved |
 | `POST /api/v1/jobs/{id}/retry` | Create a fresh-plan retry of a terminal job; 202 with the new job |
 | `POST /api/v1/previews` | Assess a table without creating work |
-| `GET /api/v1/audit` | Organization audit history with each actor's current display name; requires organization-wide `audit:read` |
+| `GET /api/v1/audit` | Organization audit history with each actor's current display name; requires organization-wide `audit:read`. Accepts `outcome`, `action`, `resource_type`, `actor`, `q` (actor display name), and `order=newest` |
+| `GET /api/v1/{jobs,tables,catalogs,audit,principals}/facets` | Counts per value of each facet dimension (jobs: `state`, `operation`; tables: `health`, `catalog`; catalogs: `enabled`; audit: `outcome`, `action`, `resource_type`; principals: `kind`, `active`) under the list's filters, each dimension ignoring its own filter. Same authorization and grant scoping as the list; page parameters are rejected |
 | `GET /api/v1/workers` | Current worker sessions and their lease status; requires organization-wide `workers:manage` |
 | `GET /api/v1/policies`, `GET /api/v1/policies/{id}` | Maintenance policies; requires organization-wide `schedules:manage` |
 | `POST /api/v1/policies` | Create a policy; 201 with the stored row. `health_thresholds` overrides per-finding bounds (absent findings keep the documented defaults) and `health_trigger` names the finding and severity that admit maintenance; both are optional |
@@ -54,6 +55,13 @@ as `x-csrf-token`. All responses use `Cache-Control: no-store`.
 | `GET /api/v1/schedules`, `GET /api/v1/schedules/{id}` | Maintenance schedules; requires organization-wide `schedules:manage` |
 | `POST /api/v1/schedules` | Bind a policy to one table with a cron expression, time zone, and service identity; 201; requires organization-wide `schedules:manage` |
 | `PATCH /api/v1/schedules/{id}` | Edit a schedule's timing or enabled state using the revision read; requires organization-wide `schedules:manage` |
+
+List filters combine with AND, and one filter's comma-separated values (at
+most 16) with OR; an empty or unknown value is rejected with 400 rather than
+ignored. `q` is trimmed, 1 to 128 characters without control characters, and
+matches display names case-insensitively with `%` and `_` taken literally; it
+never searches table rows, and a table is found only through aliases the
+caller may see. A filtered cursor is refused under any other filter or order.
 
 Principal administration requires `grants:manage` over the organization,
 because the issuer and subject are the key sign-in is bound to. Deactivation is

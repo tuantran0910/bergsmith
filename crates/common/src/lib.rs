@@ -16,6 +16,7 @@ pub mod notifications;
 pub mod permission;
 pub mod policy;
 pub mod schedule;
+pub mod search;
 pub mod secret;
 pub mod settings;
 pub mod table;

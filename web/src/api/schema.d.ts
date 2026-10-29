@@ -11,11 +11,28 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Authorized summaries in ascending UUID order; authorization filters before pagination. */
+        /** @description Authorized summaries in ascending UUID order; authorization and filters apply before pagination. */
         get: operations["listCatalogs"];
         put?: never;
         /** @description Requires connections:manage. Create requires organization scope; edits require connection scope. PATCH checks expected_revision. Disabling preserves recovery. Routing edits conflict while nonterminal jobs depend on the connection. */
         post: operations["createCatalog"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/catalogs/facets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Catalog counts by whether they are enabled, under the list's filters, scoped by grant. */
+        get: operations["listCatalogFacets"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -83,6 +100,23 @@ export interface paths {
         };
         /** @description Authorized summaries in ascending UUID order; authorization filters before pagination. Every row carries the table's health, evaluated from its newest sample and the thresholds of its enabled policies (ADR 0059). `health` keeps one exact state, and `sort=health` orders the worst state first (critical, warning, healthy, unassessed) with ties by id; either parameter evaluates every visible table, so the cost grows with the inventory, and a filtered cursor resumes after the health sort key. A cursor is only valid for the query shape that produced it. */
         get: operations["listTables"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tables/facets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Table counts by health and catalog under the list's filters, scoped by grant. Health counts evaluate every visible table, so the cost grows with the inventory. */
+        get: operations["listTableFacets"];
         put?: never;
         post?: never;
         delete?: never;
@@ -183,11 +217,28 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Authorized summaries in ascending UUID order; authorization filters before pagination. */
+        /** @description Authorized summaries in UUID order, oldest first unless `order=newest`; authorization and filters apply before pagination. Filters combine with AND; the values of one filter combine with OR. */
         get: operations["listJobs"];
         put?: never;
         /** @description Persist a Planning job and return its operation ID. Planning execution and commands follow in BS-018.T2. The same key and typed request return the same operation; a different actor or request conflicts. No publication or execution is implied. */
         post: operations["submitJob"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/jobs/facets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Job counts by state and operation under the list's filters, scoped by grant inside the query, so a count never includes a job the caller cannot list. */
+        get: operations["listJobFacets"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -286,8 +337,25 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Requires organization-wide audit:read. Ascending durable event IDs, encoded as decimal strings. */
+        /** @description Requires organization-wide audit:read. Durable event IDs, encoded as decimal strings, oldest first unless `order=newest`. Filters combine with AND; the values of one filter combine with OR. */
         get: operations["listAudit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/audit/facets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Requires organization-wide audit:read. Record counts by outcome, action, and resource kind under the list's filters. */
+        get: operations["listAuditFacets"];
         put?: never;
         post?: never;
         delete?: never;
@@ -516,6 +584,23 @@ export interface paths {
         put?: never;
         /** @description Provisions a user for a verified issuer and subject. Requires grants:manage over the organization; the principal and its audit record commit together. A deactivated principal is deactivated here, never deleted. */
         post: operations["createPrincipal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/principals/facets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Requires grants:manage over the organization. Principal counts by kind and activity under the list's filters. */
+        get: operations["listPrincipalFacets"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2269,6 +2354,46 @@ export interface components {
             newest_sampled_at: string | null;
             stale: string;
         };
+        /** @description One value of a facet dimension and how many visible resources have it. `value` is exactly the filter parameter value that selects them. */
+        FacetCount: {
+            value: string;
+            count: number;
+        };
+        /** @description Counts of the jobs the caller may view. Each dimension applies every filter except its own; values with no jobs are omitted. */
+        JobFacets: {
+            /** @description Jobs per state, in lifecycle order. */
+            state: components["schemas"]["FacetCount"][];
+            /** @description Jobs per operation. */
+            operation: components["schemas"]["FacetCount"][];
+        };
+        /** @description Counts of the tables the caller may view. Each dimension applies every filter except its own; values with no tables are omitted. */
+        TableFacets: {
+            /** @description Tables per evaluated state, worst first. */
+            health: components["schemas"]["FacetCount"][];
+            /** @description Tables per catalog ID, counting each table once per catalog it has a visible alias in. */
+            catalog: components["schemas"]["FacetCount"][];
+        };
+        /** @description Counts of the catalogs the caller may view. Each dimension applies every filter except its own; values with no catalogs are omitted. */
+        CatalogFacets: {
+            /** @description Catalogs per `enabled` value, enabled first. */
+            enabled: components["schemas"]["FacetCount"][];
+        };
+        /** @description Counts of the organization's audit records. Each dimension applies every filter except its own; values with no records are omitted. */
+        AuditFacets: {
+            /** @description Records per outcome. */
+            outcome: components["schemas"]["FacetCount"][];
+            /** @description Records per action name. */
+            action: components["schemas"]["FacetCount"][];
+            /** @description Records per resource kind. */
+            resource_type: components["schemas"]["FacetCount"][];
+        };
+        /** @description Counts of the organization's principals. Each dimension applies every filter except its own; values with no principals are omitted. */
+        PrincipalFacets: {
+            /** @description Principals per kind, people first. */
+            kind: components["schemas"]["FacetCount"][];
+            /** @description Principals per activity, active first. */
+            active: components["schemas"]["FacetCount"][];
+        };
     };
     responses: never;
     parameters: never;
@@ -2282,8 +2407,12 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: number;
-                /** @description Opaque continuation bound to organization, principal, and resource. Current grants are rechecked. */
+                /** @description Opaque continuation bound to organization, principal, resource, and the list's filters and order. Current grants are rechecked. */
                 cursor?: string;
+                /** @description Keep catalogs that new previews and admissions may use (`true`) or that are disabled (`false`). */
+                enabled?: "true" | "false";
+                /** @description Keep catalogs whose name contains this text, case-insensitively. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves. */
+                q?: string;
             };
             header?: never;
             path?: never;
@@ -2462,6 +2591,85 @@ export interface operations {
                 };
             };
             /** @description Request refused or unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    listCatalogFacets: {
+        parameters: {
+            query?: {
+                /** @description Keep catalogs that new previews and admissions may use (`true`) or that are disabled (`false`). */
+                enabled?: "true" | "false";
+                /** @description Keep catalogs whose name contains this text, case-insensitively. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves. */
+                q?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Facet counts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogFacets"];
+                };
+            };
+            /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -2846,12 +3054,16 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: number;
-                /** @description Opaque continuation bound to organization, principal, and resource. Current grants are rechecked. */
+                /** @description Opaque continuation bound to organization, principal, resource, and the list's filters and order. Current grants are rechecked. */
                 cursor?: string;
                 /** @description Keep only tables whose evaluated state is exactly this one. An unassessed table has no complete sample. */
                 health?: "healthy" | "warning" | "critical" | "unassessed";
                 /** @description Order by evaluated state, worst first, ties by id. Applying `health` implies this order. */
                 sort?: "health";
+                /** @description Keep tables with an alias in this catalog that the caller may see. */
+                catalog?: string;
+                /** @description Keep tables with a visible alias whose `namespace.name` contains this text, case-insensitively. Only names are searched, never table rows. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves. */
+                q?: string;
             };
             header?: never;
             path?: never;
@@ -2866,6 +3078,87 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TablePage"];
+                };
+            };
+            /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    listTableFacets: {
+        parameters: {
+            query?: {
+                /** @description Keep only tables whose evaluated state is exactly this one. An unassessed table has no complete sample. */
+                health?: "healthy" | "warning" | "critical" | "unassessed";
+                /** @description Keep tables with an alias in this catalog that the caller may see. */
+                catalog?: string;
+                /** @description Keep tables with a visible alias whose `namespace.name` contains this text, case-insensitively. Only names are searched, never table rows. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves. */
+                q?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Facet counts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TableFacets"];
                 };
             };
             /** @description Invalid request or cursor */
@@ -3365,8 +3658,22 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: number;
-                /** @description Opaque continuation bound to organization, principal, and resource. Current grants are rechecked. */
+                /** @description Opaque continuation bound to organization, principal, resource, and the list's filters and order. Current grants are rechecked. */
                 cursor?: string;
+                /** @description `oldest` (default) or `newest` first. Identifiers are time-ordered, so this is creation order. */
+                order?: "oldest" | "newest";
+                /** @description Keep jobs in these states. Comma-separated, at most 16 distinct values: `Planning`, `Queued`, `Running`, `ReadyToCommit`, `Committing`, `CommitOutcomeUnknown`, `Deleting`, `Cancelling`, `Succeeded`, `NoOp`, `Cancelled`, `ReplanRequired`, `Failed`. An unknown or empty value is rejected. */
+                state?: string;
+                /** @description Keep jobs of these operations. Comma-separated, at most 16 distinct values: `compact`, `expire_snapshots`, `remove_orphan_files`, `rewrite_manifests`, `remove_dangling_deletes`. An unknown or empty value is rejected. */
+                operation?: string;
+                /** @description Keep jobs of this table. */
+                table?: string;
+                /** @description Keep jobs whose table has an alias in this catalog that the caller may see. */
+                catalog?: string;
+                /** @description Keep jobs requested by this principal. */
+                created_by?: string;
+                /** @description Keep jobs whose table has a visible alias whose `namespace.name` contains this text, case-insensitively. Only names are searched, never table rows. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves. */
+                q?: string;
             };
             header?: never;
             path?: never;
@@ -3513,6 +3820,93 @@ export interface operations {
             };
             /** @description Request body too large */
             413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    listJobFacets: {
+        parameters: {
+            query?: {
+                /** @description Keep jobs in these states. Comma-separated, at most 16 distinct values: `Planning`, `Queued`, `Running`, `ReadyToCommit`, `Committing`, `CommitOutcomeUnknown`, `Deleting`, `Cancelling`, `Succeeded`, `NoOp`, `Cancelled`, `ReplanRequired`, `Failed`. An unknown or empty value is rejected. */
+                state?: string;
+                /** @description Keep jobs of these operations. Comma-separated, at most 16 distinct values: `compact`, `expire_snapshots`, `remove_orphan_files`, `rewrite_manifests`, `remove_dangling_deletes`. An unknown or empty value is rejected. */
+                operation?: string;
+                /** @description Keep jobs of this table. */
+                table?: string;
+                /** @description Keep jobs whose table has an alias in this catalog that the caller may see. */
+                catalog?: string;
+                /** @description Keep jobs requested by this principal. */
+                created_by?: string;
+                /** @description Keep jobs whose table has a visible alias whose `namespace.name` contains this text, case-insensitively. Only names are searched, never table rows. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves. */
+                q?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Facet counts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobFacets"];
+                };
+            };
+            /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4007,8 +4401,20 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: number;
-                /** @description Opaque continuation bound to organization, principal, and resource. Current grants are rechecked. */
+                /** @description Opaque continuation bound to organization, principal, resource, and the list's filters and order. Current grants are rechecked. */
                 cursor?: string;
+                /** @description `oldest` (default) or `newest` first. */
+                order?: "oldest" | "newest";
+                /** @description Keep records with these outcomes. Comma-separated, at most 16 distinct values: `Allowed`, `Denied`, `Failed`. An unknown or empty value is rejected. */
+                outcome?: string;
+                /** @description Keep records of these stable action names, such as `job.admitted`. Comma-separated, at most 16 distinct values; an unknown action is rejected. */
+                action?: string;
+                /** @description Keep records about these resource kinds, such as `job` or `table`. Comma-separated, at most 16 distinct values of lowercase letters and underscores. */
+                resource_type?: string;
+                /** @description Keep records by this principal. */
+                actor?: string;
+                /** @description Keep records whose actor's current display name contains this text, case-insensitively. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves. */
+                q?: string;
             };
             header?: never;
             path?: never;
@@ -4023,6 +4429,91 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AuditEventPage"];
+                };
+            };
+            /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    listAuditFacets: {
+        parameters: {
+            query?: {
+                /** @description Keep records with these outcomes. Comma-separated, at most 16 distinct values: `Allowed`, `Denied`, `Failed`. An unknown or empty value is rejected. */
+                outcome?: string;
+                /** @description Keep records of these stable action names, such as `job.admitted`. Comma-separated, at most 16 distinct values; an unknown action is rejected. */
+                action?: string;
+                /** @description Keep records about these resource kinds, such as `job` or `table`. Comma-separated, at most 16 distinct values of lowercase letters and underscores. */
+                resource_type?: string;
+                /** @description Keep records by this principal. */
+                actor?: string;
+                /** @description Keep records whose actor's current display name contains this text, case-insensitively. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves. */
+                q?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Facet counts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditFacets"];
                 };
             };
             /** @description Invalid request or cursor */
@@ -5646,10 +6137,14 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: number;
-                /** @description Opaque continuation bound to organization, principal, and resource. Current grants are rechecked. */
+                /** @description Opaque continuation bound to organization, principal, resource, and the list's filters and order. Current grants are rechecked. */
                 cursor?: string;
                 /** @description Restrict the page to people (`User`) or service accounts (`Service`). */
                 kind?: "User" | "Service";
+                /** @description Keep active (`true`) or deactivated (`false`) principals. */
+                active?: "true" | "false";
+                /** @description Keep principals whose display name contains this text, case-insensitively. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves. */
+                q?: string;
             };
             header?: never;
             path?: never;
@@ -5819,6 +6314,87 @@ export interface operations {
                 };
             };
             /** @description Request refused or unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    listPrincipalFacets: {
+        parameters: {
+            query?: {
+                /** @description Restrict the page to people (`User`) or service accounts (`Service`). */
+                kind?: "User" | "Service";
+                /** @description Keep active (`true`) or deactivated (`false`) principals. */
+                active?: "true" | "false";
+                /** @description Keep principals whose display name contains this text, case-insensitively. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves. */
+                q?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Facet counts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrincipalFacets"];
+                };
+            };
+            /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
             503: {
                 headers: {
                     [name: string]: unknown;

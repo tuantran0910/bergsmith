@@ -147,7 +147,10 @@ pub(super) async fn list(
     let rows = tenancy::list_principals(
         &mut conn,
         caller.organization_id,
-        Some(tenancy::PrincipalKind::Service),
+        &tenancy::PrincipalFilter {
+            kind: Some(tenancy::PrincipalKind::Service),
+            ..tenancy::PrincipalFilter::default()
+        },
         after,
         page.limit + 1,
     )

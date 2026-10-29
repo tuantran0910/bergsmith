@@ -4,6 +4,10 @@
 //! server-side session; mutations additionally require the session's CSRF token.
 //! Organization and actor identifiers always come from that session.
 
+// Declared first: its SQL fragment macros are used by the modules below.
+#[macro_use]
+mod sql;
+
 mod catalogs;
 mod commands;
 mod creation;
@@ -12,6 +16,7 @@ mod discovery;
 mod events;
 mod grants;
 mod job_tasks;
+mod lists;
 mod maintenance;
 mod notification_rules;
 mod notifications;
@@ -103,8 +108,9 @@ pub fn router(state: ApiState) -> Router {
     let protected = Router::new()
         .route(
             "/api/v1/catalogs",
-            get(resources::catalogs).post(catalogs::create),
+            get(lists::catalogs).post(catalogs::create),
         )
+        .route("/api/v1/catalogs/facets", get(lists::catalog_facets))
         .route(
             "/api/v1/catalogs/{id}",
             get(resources::catalog).patch(catalogs::update),
@@ -121,6 +127,7 @@ pub fn router(state: ApiState) -> Router {
             post(discovery::register).delete(discovery::unregister),
         )
         .route("/api/v1/tables", get(tables::tables))
+        .route("/api/v1/tables/facets", get(tables::table_facets))
         .route("/api/v1/tables/{id}", get(tables::table))
         .route("/api/v1/tables/{id}/statistics", get(statistics::table))
         .route("/api/v1/tables/{id}/storage", get(storage_breakdown::table))
@@ -145,10 +152,8 @@ pub fn router(state: ApiState) -> Router {
             "/api/v1/statistics/maintenance",
             get(maintenance::organization),
         )
-        .route(
-            "/api/v1/jobs",
-            get(resources::jobs).post(submission::submit),
-        )
+        .route("/api/v1/jobs", get(lists::jobs).post(submission::submit))
+        .route("/api/v1/jobs/facets", get(lists::job_facets))
         .route("/api/v1/jobs/{id}", get(resources::job))
         .route("/api/v1/jobs/{id}/tasks", get(job_tasks::tasks))
         .route("/api/v1/jobs/{id}/cancel", post(commands::cancel))
@@ -158,6 +163,7 @@ pub fn router(state: ApiState) -> Router {
             "/api/v1/principals",
             get(principals::list).post(principals::create),
         )
+        .route("/api/v1/principals/facets", get(principals::facets))
         .route(
             "/api/v1/principals/{id}",
             get(principals::get).patch(principals::update),
@@ -212,7 +218,8 @@ pub fn router(state: ApiState) -> Router {
             "/api/v1/notifications/deliveries/{id}",
             get(notifications::get_delivery),
         )
-        .route("/api/v1/audit", get(resources::audit))
+        .route("/api/v1/audit", get(lists::audit))
+        .route("/api/v1/audit/facets", get(lists::audit_facets))
         .route("/api/v1/workers", get(resources::workers))
         .route("/api/v1/previews", post(preview::preview))
         .route(

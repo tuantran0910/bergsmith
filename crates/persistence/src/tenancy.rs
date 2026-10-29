@@ -2,11 +2,12 @@
 
 use bergsmith_common::ids::{CatalogConnectionId, OrganizationId, PrincipalId, TableId};
 use bergsmith_common::permission::Role;
+use bergsmith_common::search::SearchText;
 use bergsmith_common::settings::ConnectionSettings;
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
-use sqlx::{Connection, PgConnection};
+use sqlx::{Connection, PgConnection, Postgres, QueryBuilder};
 use uuid::Uuid;
 
 use crate::PersistenceError;
@@ -374,9 +375,46 @@ pub async fn principal(
     .try_into()
 }
 
+/// Which principals a list or a count keeps (BS-033.T4). `None` keeps
+/// everything; `display_name` matches the display name only.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrincipalFilter {
+    /// Keep people or service accounts.
+    pub kind: Option<PrincipalKind>,
+    /// Keep active (`true`) or deactivated (`false`) principals.
+    pub active: Option<bool>,
+    /// Keep principals whose display name contains this text.
+    pub display_name: Option<SearchText>,
+}
+
+impl PrincipalFilter {
+    /// Appends the filters; `with_kind` and `with_active` leave out the one a
+    /// facet is counting.
+    fn push(&self, query: &mut QueryBuilder<Postgres>, with_kind: bool, with_active: bool) {
+        if let Some(kind) = self.kind.filter(|_| with_kind) {
+            query.push(" AND kind = ").push_bind(kind.as_str());
+        }
+        match self.active.filter(|_| with_active) {
+            Some(true) => {
+                query.push(" AND deactivated_at IS NULL");
+            }
+            Some(false) => {
+                query.push(" AND deactivated_at IS NOT NULL");
+            }
+            None => {}
+        }
+        if let Some(name) = &self.display_name {
+            query
+                .push(" AND display_name ILIKE ")
+                .push_bind(name.contains_pattern())
+                .push(" ESCAPE '\\'");
+        }
+    }
+}
+
 /// Lists an organization's principals in ascending identifier order.
 ///
-/// `kind` filters people from service accounts; `after` continues a page.
+/// `filter` narrows the list; `after` continues a page.
 ///
 /// # Errors
 ///
@@ -384,7 +422,7 @@ pub async fn principal(
 pub async fn list_principals(
     conn: &mut PgConnection,
     organization_id: OrganizationId,
-    kind: Option<PrincipalKind>,
+    filter: &PrincipalFilter,
     after: Option<PrincipalId>,
     limit: usize,
 ) -> Result<Vec<Principal>, PersistenceError> {
@@ -392,23 +430,63 @@ pub async fn list_principals(
         entity: "principal page",
         constraint: "the page size must fit in an identifier count".to_owned(),
     })?;
-    let rows = sqlx::query_as::<_, PrincipalRow>(concat!(
+    let mut query = QueryBuilder::new(concat!(
         "SELECT ",
         principal_columns!(),
-        " FROM principals
-         WHERE organization_id = $1
-           AND ($2::text IS NULL OR kind = $2)
-           AND ($3::uuid IS NULL OR id > $3)
-         ORDER BY id
-         LIMIT $4"
-    ))
-    .bind(organization_id.as_uuid())
-    .bind(kind.map(PrincipalKind::as_str))
-    .bind(after.as_ref().map(PrincipalId::as_uuid))
-    .bind(limit)
-    .fetch_all(conn)
-    .await?;
+        " FROM principals WHERE organization_id = "
+    ));
+    query.push_bind(*organization_id.as_uuid());
+    filter.push(&mut query, true, true);
+    // A present cursor stays a direct index range condition.
+    if let Some(after) = after {
+        query.push(" AND id > ").push_bind(*after.as_uuid());
+    }
+    query.push(" ORDER BY id LIMIT ").push_bind(limit);
+    let rows: Vec<PrincipalRow> = query.build_query_as().fetch_all(conn).await?;
     rows.into_iter().map(TryInto::try_into).collect()
+}
+
+/// Counts of an organization's principals by kind and by whether they are
+/// active. Each dimension applies every filter but its own.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrincipalFacets {
+    /// Principals per kind, people first.
+    pub kind: Vec<(PrincipalKind, i64)>,
+    /// Principals per activity, active first.
+    pub active: Vec<(bool, i64)>,
+}
+
+/// Counts the principals `filter` keeps along each facet dimension.
+///
+/// # Errors
+///
+/// [`PersistenceError::CorruptValue`] for an unknown stored kind, and
+/// database errors.
+pub async fn principal_facets(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    filter: &PrincipalFilter,
+) -> Result<PrincipalFacets, PersistenceError> {
+    let mut query =
+        QueryBuilder::new("SELECT kind, count(*) FROM principals WHERE organization_id = ");
+    query.push_bind(*organization_id.as_uuid());
+    filter.push(&mut query, false, true);
+    // `User` sorts after `Service`; people come first.
+    query.push(" GROUP BY kind ORDER BY kind DESC");
+    let kinds: Vec<(String, i64)> = query.build_query_as().fetch_all(&mut *conn).await?;
+    let kind = kinds
+        .into_iter()
+        .map(|(name, count)| PrincipalKind::parse(&name).map(|kind| (kind, count)))
+        .collect::<Result<_, _>>()?;
+
+    let mut query = QueryBuilder::new(
+        "SELECT deactivated_at IS NULL AS active, count(*) FROM principals WHERE organization_id = ",
+    );
+    query.push_bind(*organization_id.as_uuid());
+    filter.push(&mut query, true, false);
+    query.push(" GROUP BY 1 ORDER BY 1 DESC");
+    let active = query.build_query_as().fetch_all(conn).await?;
+    Ok(PrincipalFacets { kind, active })
 }
 
 /// The display names of `ids` within `organization_id`.

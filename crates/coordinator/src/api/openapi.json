@@ -14,7 +14,7 @@
     "/api/v1/catalogs": {
       "get": {
         "operationId": "listCatalogs",
-        "description": "Authorized summaries in ascending UUID order; authorization filters before pagination.",
+        "description": "Authorized summaries in ascending UUID order; authorization and filters apply before pagination.",
         "responses": {
           "400": {
             "description": "Invalid request or cursor",
@@ -101,9 +101,31 @@
           {
             "name": "cursor",
             "in": "query",
-            "description": "Opaque continuation bound to organization, principal, and resource. Current grants are rechecked.",
+            "description": "Opaque continuation bound to organization, principal, resource, and the list's filters and order. Current grants are rechecked.",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "enabled",
+            "in": "query",
+            "description": "Keep catalogs that new previews and admissions may use (`true`) or that are disabled (`false`).",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Keep catalogs whose name contains this text, case-insensitively. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
             }
           }
         ]
@@ -243,6 +265,108 @@
             }
           }
         }
+      }
+    },
+    "/api/v1/catalogs/facets": {
+      "get": {
+        "operationId": "listCatalogFacets",
+        "description": "Catalog counts by whether they are enabled, under the list's filters, scoped by grant.",
+        "responses": {
+          "400": {
+            "description": "Invalid request or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Facet counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogFacets"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "enabled",
+            "in": "query",
+            "description": "Keep catalogs that new previews and admissions may use (`true`) or that are disabled (`false`).",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Keep catalogs whose name contains this text, case-insensitively. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ]
       }
     },
     "/api/v1/catalogs/{id}": {
@@ -784,7 +908,7 @@
           {
             "name": "cursor",
             "in": "query",
-            "description": "Opaque continuation bound to organization, principal, and resource. Current grants are rechecked.",
+            "description": "Opaque continuation bound to organization, principal, resource, and the list's filters and order. Current grants are rechecked.",
             "schema": {
               "type": "string"
             }
@@ -812,6 +936,138 @@
               "enum": [
                 "health"
               ]
+            }
+          },
+          {
+            "name": "catalog",
+            "in": "query",
+            "description": "Keep tables with an alias in this catalog that the caller may see.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Keep tables with a visible alias whose `namespace.name` contains this text, case-insensitively. Only names are searched, never table rows. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/tables/facets": {
+      "get": {
+        "operationId": "listTableFacets",
+        "description": "Table counts by health and catalog under the list's filters, scoped by grant. Health counts evaluate every visible table, so the cost grows with the inventory.",
+        "responses": {
+          "400": {
+            "description": "Invalid request or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Facet counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TableFacets"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "health",
+            "in": "query",
+            "description": "Keep only tables whose evaluated state is exactly this one. An unassessed table has no complete sample.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "healthy",
+                "warning",
+                "critical",
+                "unassessed"
+              ]
+            }
+          },
+          {
+            "name": "catalog",
+            "in": "query",
+            "description": "Keep tables with an alias in this catalog that the caller may see.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Keep tables with a visible alias whose `namespace.name` contains this text, case-insensitively. Only names are searched, never table rows. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
             }
           }
         ]
@@ -1369,7 +1625,7 @@
     "/api/v1/jobs": {
       "get": {
         "operationId": "listJobs",
-        "description": "Authorized summaries in ascending UUID order; authorization filters before pagination.",
+        "description": "Authorized summaries in UUID order, oldest first unless `order=newest`; authorization and filters apply before pagination. Filters combine with AND; the values of one filter combine with OR.",
         "responses": {
           "400": {
             "description": "Invalid request or cursor",
@@ -1456,9 +1712,75 @@
           {
             "name": "cursor",
             "in": "query",
-            "description": "Opaque continuation bound to organization, principal, and resource. Current grants are rechecked.",
+            "description": "Opaque continuation bound to organization, principal, resource, and the list's filters and order. Current grants are rechecked.",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "description": "`oldest` (default) or `newest` first. Identifiers are time-ordered, so this is creation order.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "oldest",
+                "newest"
+              ],
+              "default": "oldest"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "Keep jobs in these states. Comma-separated, at most 16 distinct values: `Planning`, `Queued`, `Running`, `ReadyToCommit`, `Committing`, `CommitOutcomeUnknown`, `Deleting`, `Cancelling`, `Succeeded`, `NoOp`, `Cancelled`, `ReplanRequired`, `Failed`. An unknown or empty value is rejected.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "operation",
+            "in": "query",
+            "description": "Keep jobs of these operations. Comma-separated, at most 16 distinct values: `compact`, `expire_snapshots`, `remove_orphan_files`, `rewrite_manifests`, `remove_dangling_deletes`. An unknown or empty value is rejected.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "table",
+            "in": "query",
+            "description": "Keep jobs of this table.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "catalog",
+            "in": "query",
+            "description": "Keep jobs whose table has an alias in this catalog that the caller may see.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "created_by",
+            "in": "query",
+            "description": "Keep jobs requested by this principal.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Keep jobs whose table has a visible alias whose `namespace.name` contains this text, case-insensitively. Only names are searched, never table rows. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
             }
           }
         ]
@@ -1597,6 +1919,139 @@
             }
           }
         }
+      }
+    },
+    "/api/v1/jobs/facets": {
+      "get": {
+        "operationId": "listJobFacets",
+        "description": "Job counts by state and operation under the list's filters, scoped by grant inside the query, so a count never includes a job the caller cannot list.",
+        "responses": {
+          "400": {
+            "description": "Invalid request or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Facet counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobFacets"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "description": "Keep jobs in these states. Comma-separated, at most 16 distinct values: `Planning`, `Queued`, `Running`, `ReadyToCommit`, `Committing`, `CommitOutcomeUnknown`, `Deleting`, `Cancelling`, `Succeeded`, `NoOp`, `Cancelled`, `ReplanRequired`, `Failed`. An unknown or empty value is rejected.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "operation",
+            "in": "query",
+            "description": "Keep jobs of these operations. Comma-separated, at most 16 distinct values: `compact`, `expire_snapshots`, `remove_orphan_files`, `rewrite_manifests`, `remove_dangling_deletes`. An unknown or empty value is rejected.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "table",
+            "in": "query",
+            "description": "Keep jobs of this table.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "catalog",
+            "in": "query",
+            "description": "Keep jobs whose table has an alias in this catalog that the caller may see.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "created_by",
+            "in": "query",
+            "description": "Keep jobs requested by this principal.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Keep jobs whose table has a visible alias whose `namespace.name` contains this text, case-insensitively. Only names are searched, never table rows. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ]
       }
     },
     "/api/v1/jobs/{id}": {
@@ -2202,7 +2657,7 @@
     "/api/v1/audit": {
       "get": {
         "operationId": "listAudit",
-        "description": "Requires organization-wide audit:read. Ascending durable event IDs, encoded as decimal strings.",
+        "description": "Requires organization-wide audit:read. Durable event IDs, encoded as decimal strings, oldest first unless `order=newest`. Filters combine with AND; the values of one filter combine with OR.",
         "responses": {
           "400": {
             "description": "Invalid request or cursor",
@@ -2289,9 +2744,188 @@
           {
             "name": "cursor",
             "in": "query",
-            "description": "Opaque continuation bound to organization, principal, and resource. Current grants are rechecked.",
+            "description": "Opaque continuation bound to organization, principal, resource, and the list's filters and order. Current grants are rechecked.",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "description": "`oldest` (default) or `newest` first.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "oldest",
+                "newest"
+              ],
+              "default": "oldest"
+            }
+          },
+          {
+            "name": "outcome",
+            "in": "query",
+            "description": "Keep records with these outcomes. Comma-separated, at most 16 distinct values: `Allowed`, `Denied`, `Failed`. An unknown or empty value is rejected.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "description": "Keep records of these stable action names, such as `job.admitted`. Comma-separated, at most 16 distinct values; an unknown action is rejected.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resource_type",
+            "in": "query",
+            "description": "Keep records about these resource kinds, such as `job` or `table`. Comma-separated, at most 16 distinct values of lowercase letters and underscores.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "actor",
+            "in": "query",
+            "description": "Keep records by this principal.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Keep records whose actor's current display name contains this text, case-insensitively. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/audit/facets": {
+      "get": {
+        "operationId": "listAuditFacets",
+        "description": "Requires organization-wide audit:read. Record counts by outcome, action, and resource kind under the list's filters.",
+        "responses": {
+          "400": {
+            "description": "Invalid request or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Facet counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditFacets"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "outcome",
+            "in": "query",
+            "description": "Keep records with these outcomes. Comma-separated, at most 16 distinct values: `Allowed`, `Denied`, `Failed`. An unknown or empty value is rejected.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "description": "Keep records of these stable action names, such as `job.admitted`. Comma-separated, at most 16 distinct values; an unknown action is rejected.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resource_type",
+            "in": "query",
+            "description": "Keep records about these resource kinds, such as `job` or `table`. Comma-separated, at most 16 distinct values of lowercase letters and underscores.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "actor",
+            "in": "query",
+            "description": "Keep records by this principal.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Keep records whose actor's current display name contains this text, case-insensitively. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
             }
           }
         ]
@@ -4347,7 +4981,7 @@
           {
             "name": "cursor",
             "in": "query",
-            "description": "Opaque continuation bound to organization, principal, and resource. Current grants are rechecked.",
+            "description": "Opaque continuation bound to organization, principal, resource, and the list's filters and order. Current grants are rechecked.",
             "schema": {
               "type": "string"
             }
@@ -4362,6 +4996,28 @@
                 "User",
                 "Service"
               ]
+            }
+          },
+          {
+            "name": "active",
+            "in": "query",
+            "description": "Keep active (`true`) or deactivated (`false`) principals.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Keep principals whose display name contains this text, case-insensitively. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
             }
           }
         ]
@@ -4491,6 +5147,120 @@
             }
           }
         }
+      }
+    },
+    "/api/v1/principals/facets": {
+      "get": {
+        "operationId": "listPrincipalFacets",
+        "description": "Requires grants:manage over the organization. Principal counts by kind and activity under the list's filters.",
+        "responses": {
+          "200": {
+            "description": "Facet counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrincipalFacets"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "Restrict the page to people (`User`) or service accounts (`Service`).",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "User",
+                "Service"
+              ]
+            }
+          },
+          {
+            "name": "active",
+            "in": "query",
+            "description": "Keep active (`true`) or deactivated (`false`) principals.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Keep principals whose display name contains this text, case-insensitively. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ]
       }
     },
     "/api/v1/principals/{id}": {
@@ -13807,6 +14577,149 @@
           "stale": {
             "type": "string",
             "pattern": "^[0-9]+$"
+          }
+        }
+      },
+      "FacetCount": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "value",
+          "count"
+        ],
+        "description": "One value of a facet dimension and how many visible resources have it. `value` is exactly the filter parameter value that selects them.",
+        "properties": {
+          "value": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "JobFacets": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "state",
+          "operation"
+        ],
+        "description": "Counts of the jobs the caller may view. Each dimension applies every filter except its own; values with no jobs are omitted.",
+        "properties": {
+          "state": {
+            "type": "array",
+            "description": "Jobs per state, in lifecycle order.",
+            "items": {
+              "$ref": "#/components/schemas/FacetCount"
+            }
+          },
+          "operation": {
+            "type": "array",
+            "description": "Jobs per operation.",
+            "items": {
+              "$ref": "#/components/schemas/FacetCount"
+            }
+          }
+        }
+      },
+      "TableFacets": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "health",
+          "catalog"
+        ],
+        "description": "Counts of the tables the caller may view. Each dimension applies every filter except its own; values with no tables are omitted.",
+        "properties": {
+          "health": {
+            "type": "array",
+            "description": "Tables per evaluated state, worst first.",
+            "items": {
+              "$ref": "#/components/schemas/FacetCount"
+            }
+          },
+          "catalog": {
+            "type": "array",
+            "description": "Tables per catalog ID, counting each table once per catalog it has a visible alias in.",
+            "items": {
+              "$ref": "#/components/schemas/FacetCount"
+            }
+          }
+        }
+      },
+      "CatalogFacets": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "enabled"
+        ],
+        "description": "Counts of the catalogs the caller may view. Each dimension applies every filter except its own; values with no catalogs are omitted.",
+        "properties": {
+          "enabled": {
+            "type": "array",
+            "description": "Catalogs per `enabled` value, enabled first.",
+            "items": {
+              "$ref": "#/components/schemas/FacetCount"
+            }
+          }
+        }
+      },
+      "AuditFacets": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "outcome",
+          "action",
+          "resource_type"
+        ],
+        "description": "Counts of the organization's audit records. Each dimension applies every filter except its own; values with no records are omitted.",
+        "properties": {
+          "outcome": {
+            "type": "array",
+            "description": "Records per outcome.",
+            "items": {
+              "$ref": "#/components/schemas/FacetCount"
+            }
+          },
+          "action": {
+            "type": "array",
+            "description": "Records per action name.",
+            "items": {
+              "$ref": "#/components/schemas/FacetCount"
+            }
+          },
+          "resource_type": {
+            "type": "array",
+            "description": "Records per resource kind.",
+            "items": {
+              "$ref": "#/components/schemas/FacetCount"
+            }
+          }
+        }
+      },
+      "PrincipalFacets": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "active"
+        ],
+        "description": "Counts of the organization's principals. Each dimension applies every filter except its own; values with no principals are omitted.",
+        "properties": {
+          "kind": {
+            "type": "array",
+            "description": "Principals per kind, people first.",
+            "items": {
+              "$ref": "#/components/schemas/FacetCount"
+            }
+          },
+          "active": {
+            "type": "array",
+            "description": "Principals per activity, active first.",
+            "items": {
+              "$ref": "#/components/schemas/FacetCount"
+            }
           }
         }
       }

@@ -115,6 +115,36 @@ This supersedes 0046's "neutral graphite surfaces and one accent".
   only, so tabs and filters (search parameters) do not replay it and nothing
   remounts. It reads the duration token, so reduced motion turns it off.
 
+### List API
+
+- The jobs, tables, catalogs, audit, and principals lists take filters beside
+  their page bounds. Filters combine with AND; one filter's comma-separated
+  values (at most 16) combine with OR. An empty or unknown value is a 400, so
+  a mistyped filter never widens a list.
+- `q` searches display names only: a table alias's `namespace.name`, a
+  catalog's name, a principal's display name, an audit actor's display name.
+  It is trimmed, 1 to 128 characters, free of control characters, and
+  matched with `ILIKE` after escaping `%`, `_`, and `\`. A table matches only
+  through aliases the caller may see, so a name in a hidden catalog finds
+  nothing.
+- Jobs and audit take `order=newest`. Identifiers are UUIDv7 or a sequence,
+  so the cursor stays one index range condition in either direction.
+- Each list has a `/facets` read: per dimension, the values with their counts
+  under every filter except that dimension's own, so a person sees what
+  widening it would add. A value is exactly the parameter value that selects
+  it. Counts run through the list's grant predicate in the same query, and
+  the audit and principal facets keep their lists' organization-wide
+  permission. Table health is evaluated, not stored, so its facet scans the
+  visible inventory in the same bounded chunks as the health filter.
+- Queries are built from compile-time fragments and bind every value. An
+  absent filter adds no predicate, so each combination gets its own plan with
+  a direct index condition rather than a nullable one. A filtered cursor
+  carries a digest of its filter and order and is refused under any other.
+- Migration 0040 indexes each job and audit filter as
+  `(organization_id, value, id)`. A test seeds 5,000 rows with rare values and
+  fails if a filtered page discards the organization's other rows. Name
+  search has no index: the names live in inventory-sized tables.
+
 ### Engineering limits
 
 These are enforced by gates, not by review:

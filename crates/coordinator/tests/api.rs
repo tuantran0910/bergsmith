@@ -19,6 +19,9 @@ mod job_statistics;
 #[path = "api/job_tasks.rs"]
 mod job_tasks;
 
+#[path = "api/list_filters.rs"]
+mod list_filters;
+
 #[path = "api/notification_rules.rs"]
 mod notification_rules_api;
 
@@ -1434,11 +1437,13 @@ fn openapi_documents_every_route() {
     const ROUTES: &[(&str, &str)] = &[
         ("/api/v1/catalogs", "get"),
         ("/api/v1/catalogs", "post"),
+        ("/api/v1/catalogs/facets", "get"),
         ("/api/v1/catalogs/check", "post"),
         ("/api/v1/catalogs/{id}", "get"),
         ("/api/v1/catalogs/{id}", "patch"),
         ("/api/v1/catalogs/{id}/check", "post"),
         ("/api/v1/tables", "get"),
+        ("/api/v1/tables/facets", "get"),
         ("/api/v1/tables/{id}", "get"),
         ("/api/v1/tables/{id}/snapshots", "get"),
         ("/api/v1/tables/{id}/definition", "get"),
@@ -1453,12 +1458,14 @@ fn openapi_documents_every_route() {
         ("/api/v1/statistics", "get"),
         ("/api/v1/jobs", "get"),
         ("/api/v1/jobs", "post"),
+        ("/api/v1/jobs/facets", "get"),
         ("/api/v1/jobs/{id}", "get"),
         ("/api/v1/jobs/{id}/tasks", "get"),
         ("/api/v1/jobs/{id}/cancel", "post"),
         ("/api/v1/jobs/{id}/retry", "post"),
         ("/api/v1/jobs/{id}/events", "get"),
         ("/api/v1/audit", "get"),
+        ("/api/v1/audit/facets", "get"),
         ("/api/v1/workers", "get"),
         ("/api/v1/previews", "post"),
         ("/api/v1/schedules", "get"),
@@ -1476,6 +1483,7 @@ fn openapi_documents_every_route() {
         ("/api/v1/catalogs/{id}/registrations", "delete"),
         ("/api/v1/principals", "get"),
         ("/api/v1/principals", "post"),
+        ("/api/v1/principals/facets", "get"),
         ("/api/v1/principals/{id}", "get"),
         ("/api/v1/principals/{id}", "patch"),
         ("/api/v1/grants", "get"),
