@@ -283,9 +283,13 @@ tracking task.
 - Follow ADR 0046: reuse `web/src/ui/` primitives, shared page components, and
   the theme tokens in `web/src/styles.css`. Keep components focused; extract
   reusable behavior instead of copying forms, transport, or permission logic.
+  Render one responsive layout at a time from a media query rather than hiding
+  a duplicate copy.
 - Use the typed routes in `web/src/routes.tsx`. Validate resource identifiers
   and supported search parameters before querying; preserve namespace levels
   and other structured identifiers rather than splitting their display names.
+  Keep tab and filter state that should survive a reload in validated search
+  parameters.
 - Use the generated client and shared transport in `web/src/api/client.ts`.
   Protect reads with `forSession`, pass the query's abort signal, and use
   `useSessionMutation` for writes so a late response cannot update another
@@ -336,10 +340,11 @@ tracking task.
 
 - Verify frontend work in a real browser with Playwright; jsdom tests alone do
   not prove the page. Build the UI (`npm --prefix web run build`, which the gate
-  serves) and drive the changed page. Playwright is the preferred instrument for
-  a frontend change: it shows layout, focus order, the console, network, and CSP
-  behavior that unit tests cannot, so use it to inspect the actual surface as
-  you work rather than only at the end.
+  serves) and drive the changed page at 320, 390, and desktop widths.
+  Playwright is the preferred instrument for a frontend change: it shows
+  layout, focus order, the console, network, and CSP behavior that unit tests
+  cannot, so use it to inspect the actual surface as you work rather than only
+  at the end.
 - Add or extend browser journeys in `web/e2e/` for changed user workflows.
   Reuse `web/e2e/coordinator.ts` and contract-typed fixtures. The acceptance gate
   runs the production build in the repository-pinned Chromium, under the
