@@ -16,6 +16,7 @@ import { lazy, type ComponentType } from "react";
 
 import { Root } from "./Root";
 import { EmptyState } from "./components/Page";
+import { validateJobSearch } from "./pages/jobs/search";
 import {
     validateTableSearch,
     validateTablesSearch,
@@ -206,6 +207,7 @@ const jobsRoute = createRoute({
 const jobRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/jobs/$jobId",
+    validateSearch: validateJobSearch,
     beforeLoad: ({ params }) => {
         if (!isResourceId(params.jobId)) {
             throw notFound();

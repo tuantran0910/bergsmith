@@ -41,6 +41,7 @@ as `x-csrf-token`. All responses use `Cache-Control: no-store`.
 | `GET /api/v1/catalogs/{id}/statistics` | Totals over the newest sample of every visible table on one connection; 404 when the connection is not visible |
 | `GET /api/v1/statistics` | The same totals over every table the caller may view in the organization |
 | `GET /api/v1/jobs`, `GET /api/v1/jobs/{id}` | Authorized job state, revision, requester and their display name, the table's caller-visible aliases, cancellation/publication boundary, retry link, and the `trigger` (finding kind and severity) that admitted it, or null |
+| `GET /api/v1/jobs/{id}/tasks` | One page of the job's tasks in plan order, each with its attempts in generation order: task state and attempts started, each attempt's worker pool and name, grant and finish times, duration, the stable failure reason and disposition, and accepted output files and bytes. Same `jobs:read` authorization as the job; unknown and invisible jobs both return 404. `limit` is 1–100 (default 50) with a cursor bound to the caller and resource; counts, bytes, and durations are decimal strings |
 | `POST /api/v1/jobs` | Idempotent durable submission of `compact` (default), `expire_snapshots`, `remove_orphan_files`, `rewrite_manifests`, or `remove_dangling_deletes`; returns 202 with job and operation IDs and Location |
 | `POST /api/v1/jobs/{id}/cancel` | Record a cancellation request and report what it achieved |
 | `POST /api/v1/jobs/{id}/retry` | Create a fresh-plan retry of a terminal job; 202 with the new job |
@@ -422,6 +423,26 @@ status. Before a plan exists, estimates and averages are unavailable. A preview
 is a new read of catalog metadata, so it can still recommend work after a real
 job if the current files still meet the planner's criteria. Browser demo fixtures
 simulate responses; a demo success does not execute workers or change a table.
+
+
+## Job tasks and attempts
+
+`GET /api/v1/jobs/{id}/tasks` answers the question the job detail cannot: which
+task failed, on which attempt, with what reason, how long it ran, and what it
+produced. Tasks are ordered by their plan ordinal and attempts by generation,
+so the first failed attempt of the first task reads first. Each task carries
+its durable state and attempts started; each attempt carries the worker pool
+and name of the session that ran it, grant/lease/finish times, the duration
+between grant and finish, the stable failure reason and disposition when it
+failed, and the files and bytes of its accepted output inventory. Receipt
+payloads are not exposed; output counts only include accepted attempts.
+
+The page uses the job detail's own authorization predicate, so an unknown job
+and a job the caller cannot read both return 404. Tasks are bounded per plan and
+paged with the standard limit/cursor pair; the cursor continues at the next plan
+ordinal and is bound to the calling principal and organization. A metadata-only
+operation (snapshot expiration, manifest rewrite, dangling-delete removal) and
+coordinator-only orphan cleanup have no worker tasks and return an empty page.
 
 ## Job commands
 

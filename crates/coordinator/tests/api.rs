@@ -16,6 +16,9 @@ mod grants_api;
 #[path = "api/job_statistics.rs"]
 mod job_statistics;
 
+#[path = "api/job_tasks.rs"]
+mod job_tasks;
+
 #[path = "api/notification_rules.rs"]
 mod notification_rules_api;
 
@@ -1451,6 +1454,7 @@ fn openapi_documents_every_route() {
         ("/api/v1/jobs", "get"),
         ("/api/v1/jobs", "post"),
         ("/api/v1/jobs/{id}", "get"),
+        ("/api/v1/jobs/{id}/tasks", "get"),
         ("/api/v1/jobs/{id}/cancel", "post"),
         ("/api/v1/jobs/{id}/retry", "post"),
         ("/api/v1/jobs/{id}/events", "get"),

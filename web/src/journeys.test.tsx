@@ -37,6 +37,7 @@ import {
     tableSnapshotsQuiet,
     tableDefinition,
     tableHealth,
+    jobTasks,
     overview,
     tableMaintenance,
     tableRecommendations,
@@ -2622,4 +2623,73 @@ it("keeps the previous storage observation visible after a failed check", async 
     expect(
         screen.getByRole("region", { name: "Storage breakdown" }),
     ).toBeVisible();
+});
+
+describe("job triage", () => {
+    it("lists a failed task's attempt with its reason, duration, and outputs", async () => {
+        fake.on("GET", "/api/v1/jobs/{id}", () => json(200, job("Failed"))).on(
+            "GET",
+            "/api/v1/jobs/{id}/tasks",
+            () => json(200, jobTasks),
+        );
+        const user = start(`/jobs/${JOB_ID}`);
+
+        await user.click(await screen.findByRole("tab", { name: "Tasks" }));
+        const tasks = await screen.findByRole("table", { name: "Job tasks" });
+        expect(within(tasks).getByText("Task 1")).toBeInTheDocument();
+        expect(
+            within(tasks).getByText(/ProcessMemoryLimitExceeded/),
+        ).toBeInTheDocument();
+        expect(within(tasks).getByText(/PermanentFailure/)).toBeInTheDocument();
+        expect(within(tasks).getByText("4 s")).toBeInTheDocument();
+        expect(within(tasks).getByText("0 files · 0 B")).toBeInTheDocument();
+        expect(
+            within(tasks).getByText(/default\/worker-1/),
+        ).toBeInTheDocument();
+        expect(window.location.search).toBe("?tab=tasks");
+    });
+
+    it("puts events first while running and statistics first when terminal", async () => {
+        fake.on("GET", "/api/v1/jobs/{id}", () => json(200, job("Running")));
+        start(`/jobs/${JOB_ID}`);
+        const runningEvents = await screen.findByRole("heading", {
+            name: "Events",
+        });
+        const runningStatistics = screen.getByRole("heading", {
+            name: "Maintenance statistics",
+        });
+        expect(
+            runningEvents.compareDocumentPosition(runningStatistics) &
+                Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
+
+        fake.on("GET", "/api/v1/jobs/{id}", () => json(200, job("Succeeded")));
+        start(`/jobs/${JOB_ID}`);
+        const endedStatistics = await screen.findByRole("heading", {
+            name: "Maintenance statistics",
+        });
+        const endedEvents = screen.getByRole("heading", { name: "Events" });
+        expect(
+            endedStatistics.compareDocumentPosition(endedEvents) &
+                Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
+    });
+
+    it("links an attention state to the tasks tab", async () => {
+        fake.on("GET", "/api/v1/jobs/{id}", () =>
+            json(200, job("CommitOutcomeUnknown")),
+        ).on("GET", "/api/v1/jobs/{id}/tasks", () => json(200, jobTasks));
+        const user = start(`/jobs/${JOB_ID}`);
+
+        const inspect = await screen.findByRole("button", {
+            name: "Inspect tasks",
+        });
+        await user.click(inspect);
+        expect(
+            await screen.findByRole("tab", { name: "Tasks" }),
+        ).toHaveAttribute("aria-selected", "true");
+        expect(
+            await screen.findByRole("table", { name: "Job tasks" }),
+        ).toBeInTheDocument();
+    });
 });

@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import {
     CircleAlertIcon,
     OctagonXIcon,
@@ -53,8 +53,11 @@ import {
     DialogTrigger,
 } from "../ui/Dialog";
 import { Input, Label } from "../ui/Input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/Tabs";
 import { cn } from "../ui/cn";
 import { JobStatistics } from "./jobs/JobStatistics";
+import { JobTasks } from "./jobs/JobTasks";
+import type { JobTab } from "./jobs/search";
 
 /** One job: live progress, cancellation, and fresh-plan retry. */
 export function JobPage({ id }: { id: string }) {
@@ -79,6 +82,16 @@ export function JobPage({ id }: { id: string }) {
 function JobDetail({ job }: { job: Job }) {
     const queryClient = useQueryClient();
     const navigate = useNavigate();
+    const search = useSearch({ from: "/jobs/$jobId" });
+    const current: JobTab = search.tab ?? "overview";
+    const selectTab = (next: JobTab) => {
+        void navigate({
+            to: "/jobs/$jobId",
+            params: { jobId: job.id },
+            search: next === "overview" ? {} : { tab: next },
+            replace: true,
+        });
+    };
     const terminal = isTerminal(job.state);
     const live = useJobEvents(job.id, terminal);
     const catalogs = useCatalogNames();
@@ -112,6 +125,61 @@ function JobDetail({ job }: { job: Job }) {
                 params: { jobId: accepted.job_id },
             });
         },
+    );
+
+    const eventsCard = (
+        <Card>
+            <CardHeader className="flex flex-wrap items-center justify-between gap-2">
+                <CardTitle>Events</CardTitle>
+                <ConnectionState
+                    connection={live.connection}
+                    terminal={terminal}
+                    onReconnect={live.reconnect}
+                />
+            </CardHeader>
+            <CardContent>
+                {live.events.length === 0 && (
+                    <p className="m-0 text-muted-foreground">
+                        No events received yet.
+                    </p>
+                )}
+                <ol
+                    aria-label="Job events"
+                    className="m-0 grid list-none gap-0 p-0"
+                >
+                    {live.events.map((event) => (
+                        <li
+                            key={event.sequence}
+                            className="relative border-l pb-4 pl-5 last:border-transparent last:pb-0"
+                        >
+                            <span
+                                aria-hidden="true"
+                                className="absolute top-1.5 -left-[5px] size-2.5 rounded-full bg-primary ring-4 ring-card"
+                            />
+                            <span className="font-medium">
+                                {words(event.kind)}
+                                {event.from_state !== null &&
+                                    event.from_state !== event.to_state && (
+                                        <>
+                                            : {event.from_state} →{" "}
+                                            {event.to_state}
+                                        </>
+                                    )}
+                                {event.kind === "created" && (
+                                    <>: {event.to_state}</>
+                                )}
+                                {event.reason !== null && (
+                                    <> ({words(event.reason)})</>
+                                )}
+                            </span>
+                            <span className="block text-xs text-muted-foreground tabular-nums">
+                                {timestamp(event.occurred_at)}
+                            </span>
+                        </li>
+                    ))}
+                </ol>
+            </CardContent>
+        </Card>
     );
 
     return (
@@ -158,80 +226,69 @@ function JobDetail({ job }: { job: Job }) {
                     <AlertTitle>{attention.title}</AlertTitle>
                     <AlertDescription>
                         <p>{attention.action}</p>
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                                selectTab("tasks");
+                            }}
+                        >
+                            Inspect tasks
+                        </Button>
                     </AlertDescription>
                 </Alert>
             )}
 
-            <div className="grid gap-4 md:grid-cols-2">
-                <Lane title="Execution" status={executionStatus(job)}>
-                    {isMetadataOnly(job.operation)
-                        ? "Metadata-only work: no worker tasks."
-                        : job.operation === "remove_orphan_files"
-                          ? "Coordinator-only deletion: no worker tasks."
-                          : "The rewrite work that workers do."}
-                </Lane>
-                <Lane title="Publication" status={publicationStatus(job)}>
-                    {job.operation === "remove_orphan_files"
-                        ? "Not used: cleanup deletes storage objects and never commits."
-                        : "The catalog commit. Only a confirmed publication changed the table."}
-                </Lane>
-            </div>
-
-            <JobStatistics statistics={job.statistics} />
-            <JobFacts job={job} names={names} />
-
-            <Card>
-                <CardHeader className="flex flex-wrap items-center justify-between gap-2">
-                    <CardTitle>Events</CardTitle>
-                    <ConnectionState
-                        connection={live.connection}
-                        terminal={terminal}
-                        onReconnect={live.reconnect}
-                    />
-                </CardHeader>
-                <CardContent>
-                    {live.events.length === 0 && (
-                        <p className="m-0 text-muted-foreground">
-                            No events received yet.
-                        </p>
-                    )}
-                    <ol
-                        aria-label="Job events"
-                        className="m-0 grid list-none gap-0 p-0"
-                    >
-                        {live.events.map((event) => (
-                            <li
-                                key={event.sequence}
-                                className="relative border-l pb-4 pl-5 last:border-transparent last:pb-0"
+            <Tabs
+                value={current}
+                onValueChange={(next) => {
+                    selectTab(next === "tasks" ? "tasks" : "overview");
+                }}
+            >
+                <TabsList>
+                    <TabsTrigger value="overview">Overview</TabsTrigger>
+                    <TabsTrigger value="tasks">Tasks</TabsTrigger>
+                </TabsList>
+                <TabsContent value="overview">
+                    <div className="grid gap-6">
+                        <div className="grid gap-4 md:grid-cols-2">
+                            <Lane
+                                title="Execution"
+                                status={executionStatus(job)}
                             >
-                                <span
-                                    aria-hidden="true"
-                                    className="absolute top-1.5 -left-[5px] size-2.5 rounded-full bg-primary ring-4 ring-card"
-                                />
-                                <span className="font-medium">
-                                    {words(event.kind)}
-                                    {event.from_state !== null &&
-                                        event.from_state !== event.to_state && (
-                                            <>
-                                                : {event.from_state} →{" "}
-                                                {event.to_state}
-                                            </>
-                                        )}
-                                    {event.kind === "created" && (
-                                        <>: {event.to_state}</>
-                                    )}
-                                    {event.reason !== null && (
-                                        <> ({words(event.reason)})</>
-                                    )}
-                                </span>
-                                <span className="block text-xs text-muted-foreground tabular-nums">
-                                    {timestamp(event.occurred_at)}
-                                </span>
-                            </li>
-                        ))}
-                    </ol>
-                </CardContent>
-            </Card>
+                                {isMetadataOnly(job.operation)
+                                    ? "Metadata-only work: no worker tasks."
+                                    : job.operation === "remove_orphan_files"
+                                      ? "Coordinator-only deletion: no worker tasks."
+                                      : "The rewrite work that workers do."}
+                            </Lane>
+                            <Lane
+                                title="Publication"
+                                status={publicationStatus(job)}
+                            >
+                                {job.operation === "remove_orphan_files"
+                                    ? "Not used: cleanup deletes storage objects and never commits."
+                                    : "The catalog commit. Only a confirmed publication changed the table."}
+                            </Lane>
+                        </div>
+                        {terminal ? (
+                            <>
+                                <JobStatistics statistics={job.statistics} />
+                                {eventsCard}
+                            </>
+                        ) : (
+                            <>
+                                {eventsCard}
+                                <JobStatistics statistics={job.statistics} />
+                            </>
+                        )}
+                        <JobFacts job={job} names={names} />
+                    </div>
+                </TabsContent>
+                <TabsContent value="tasks">
+                    <JobTasks job={job} active={current === "tasks"} />
+                </TabsContent>
+            </Tabs>
         </section>
     );
 }

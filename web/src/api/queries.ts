@@ -256,6 +256,25 @@ export function useJob(id: string) {
     });
 }
 
+export function useJobTasks(id: string, enabled: boolean) {
+    const client = useQueryClient();
+    return useInfiniteQuery({
+        queryKey: ["jobs", id, "tasks"],
+        initialPageParam: null as string | null,
+        enabled,
+        queryFn: ({ pageParam, signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/jobs/{id}/tasks", {
+                        params: { path: { id }, query: page(pageParam) },
+                        signal,
+                    }),
+                ),
+            ),
+        getNextPageParam: (last) => last.next_cursor,
+    });
+}
+
 export function useWorkers() {
     const client = useQueryClient();
     return useInfiniteQuery({

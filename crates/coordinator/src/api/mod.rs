@@ -11,6 +11,7 @@ mod definition;
 mod discovery;
 mod events;
 mod grants;
+mod job_tasks;
 mod maintenance;
 mod notification_rules;
 mod notifications;
@@ -149,6 +150,7 @@ pub fn router(state: ApiState) -> Router {
             get(resources::jobs).post(submission::submit),
         )
         .route("/api/v1/jobs/{id}", get(resources::job))
+        .route("/api/v1/jobs/{id}/tasks", get(job_tasks::tasks))
         .route("/api/v1/jobs/{id}/cancel", post(commands::cancel))
         .route("/api/v1/jobs/{id}/retry", post(commands::retry))
         .route("/api/v1/jobs/{id}/events", get(events::events))

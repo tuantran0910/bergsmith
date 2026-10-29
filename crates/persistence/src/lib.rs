@@ -32,6 +32,7 @@ pub mod scheduling;
 pub mod statistics;
 pub mod tables;
 pub mod tenancy;
+pub mod triage;
 pub mod worker_tokens;
 pub mod workers;
 
