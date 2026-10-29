@@ -1,8 +1,9 @@
 // Visual baselines for the shell-heavy detail pages (BS-032.T8). They compare
-// only in CI: the committed images were rendered by the pinned Linux browser,
-// so a developer's platform fonts would otherwise report noise. Update them
-// with `CI=1 npm --prefix web run e2e -- e2e/visual.spec.ts --update-snapshots`
-// inside the Playwright container used by the release gate.
+// only under the pinned image gate (`make web-e2e-image`), which renders the
+// committed images; a developer's platform fonts would otherwise report
+// noise. Update them
+// with `PLAYWRIGHT_VISUAL=1 CI=1 npx playwright test e2e/visual.spec.ts
+// --update-snapshots` inside the Playwright container used by the release gate.
 
 import { schema } from "../src/test/fakes";
 import {

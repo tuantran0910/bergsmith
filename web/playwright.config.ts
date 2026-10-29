@@ -14,6 +14,8 @@ export default defineConfig({
     // e2e/visual.spec.ts for the update command.
     snapshotPathTemplate:
         "{testDir}/{testFilePath}-snapshots/{arg}{-projectName}{ext}",
+    // Only the pinned-image gate compares; a Linux host's fonts need not match.
+    ignoreSnapshots: process.env["PLAYWRIGHT_VISUAL"] !== "1",
     fullyParallel: true,
     forbidOnly: !!process.env["CI"],
     retries: 0,

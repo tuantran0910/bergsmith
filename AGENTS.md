@@ -142,9 +142,11 @@ dependencies are installed, a focused browser rerun is
 `npm --prefix web run build` followed by
 `npm --prefix web run e2e -- <affected>.spec.ts`. Rebuild after every UI source
 change: the browser gate serves `web/dist/`, not the Vite development server.
-Use `make web` and `make web-e2e` when the complete web gates are useful locally;
-Actions runs them for web changes. Do not repeat unchanged checks without a
-new failure or unresolved concern.
+Use `make web` and `make web-e2e` for local behavior checks;
+`make web-e2e-image` runs the complete browser gate exactly as Actions does,
+including visual baselines. Actions runs `make web` and `make web-e2e-image`
+for web changes. Do not repeat unchanged checks without a new failure or
+unresolved concern.
 
 - Use cargo-nextest, never `cargo test --workspace`. Nextest reports every
   failure in one run (`fail-fast = false`), so fix them all before re-running.
@@ -355,14 +357,15 @@ tracking task.
   Wait for the expected UI state, not an arbitrary timeout. When checking
   contrast after opening a dialog, wait for its finite opening animations to
   finish so axe measures the visible controls rather than transparent text.
-- Visual baselines live under `web/e2e/**-snapshots` and compare only in CI,
-  where the pinned Linux browser renders them. Other screenshots are review
-  artifacts, not source files.
+- Visual baselines live under `web/e2e/**-snapshots` and compare only under
+  `make web-e2e-image`, where the pinned Linux browser renders them. Other
+  screenshots are review artifacts, not source files.
 - Playwright MCP is optional developer tooling for exploratory interaction,
   screenshots, console/network inspection, and responsive checks. Use it when
   available, with a dedicated test browser and fake or development data. MCP
   inspection supplements the committed acceptance tests; it does not replace
-  `make web-e2e`, and its Chrome version need not match the pinned test browser.
+  `make web-e2e-image`, and its Chrome version need not match the pinned test
+  browser.
 - Do not require a machine-specific MCP configuration or extension in order to
   develop or test the repository. Keep local MCP setup outside tracked project
   configuration. `/.playwright-mcp/` is ignored; logs, screenshots, traces, and

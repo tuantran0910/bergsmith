@@ -148,7 +148,7 @@ web-e2e: web-install ## Browser gate: journeys in Chromium under the coordinator
 # afterwards to restore its platform packages.
 PLAYWRIGHT_IMAGE ?= mcr.microsoft.com/playwright:v1.64.1-noble
 web-e2e-image: ## Browser gate in the pinned Playwright image (compares visual baselines)
-	docker run --rm --user "$$(id -u):$$(id -g)" --env HOME=/tmp --env CI=1 \
+	docker run --rm --user "$$(id -u):$$(id -g)" --env HOME=/tmp --env CI=1 --env PLAYWRIGHT_VISUAL=1 \
 		--volume "$(CURDIR):/work" --workdir /work $(PLAYWRIGHT_IMAGE) \
 		bash -lc "npm --prefix web ci --no-fund --no-audit && npm --prefix web run build && npm --prefix web exec -- playwright install chromium && npm --prefix web run e2e"
 
