@@ -90,6 +90,7 @@ Everything used to build, run, or deploy Bergsmith outside `cargo` lives under
 | `make web` | Web UI gates: generated-client freshness, format, lint, typecheck, tests with 80% line coverage, build within the JavaScript size budget |
 | `make web-e2e` | Browser gate: the built UI's journeys in Playwright's Chromium under the coordinator's CSP, with axe (WCAG 2.2 AA) |
 | `make web-audit` | `npm audit`: production dependencies at any severity, all at high |
+| `make observability` | Check and behaviorally test the Prometheus alerts, then execute and render the Grafana dashboards |
 | `make web-dev` | Serve the UI, proxying `/api` and `/auth` to `BERGSMITH_COORDINATOR_URL` |
 
 Required tools: rustup (the toolchain comes from `rust-toolchain.toml`),

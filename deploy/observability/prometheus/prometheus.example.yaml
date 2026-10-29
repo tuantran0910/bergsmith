@@ -1,0 +1,22 @@
+# Operator example. Scrape the leader coordinator's metrics listener, which
+# `observability.metrics_bind` serves without authentication; bind it to a
+# network only the collector reaches. A standby coordinator answers neither
+# probes nor metrics, so point this target at the leading instance only and
+# update it on failover.
+#
+# Keep `rule_files` pointed at the shipped templates and tune the thresholds
+# in your own copy rather than editing the installed files in place.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - rules/bergsmith.yaml
+
+scrape_configs:
+  - job_name: bergsmith
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["coordinator:9464"]
+        labels:
+          role: leader

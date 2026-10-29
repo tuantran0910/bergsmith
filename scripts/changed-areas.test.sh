@@ -23,7 +23,7 @@ check() {
 	local case_failed=0
 
 	local area expected_value actual
-	for area in rust web proto deps; do
+	for area in rust web proto deps observability; do
 		expected_value=false
 		case " $expected " in
 			*" $area "*) expected_value=true ;;
@@ -42,10 +42,14 @@ check() {
 }
 
 check "web source" "web" "web/src/App.tsx"
-check "web lockfile" "web" "web/package-lock.json"
+check "web lockfile" "web observability" "web/package-lock.json"
 check "rust source" "rust" "crates/common/src/lib.rs"
 check "rust toolchain" "rust" "rust-toolchain.toml"
 check "rust build input" "rust" "deploy/docker/compose.yml"
+check "observability assets" "observability" "deploy/observability/prometheus/rules/bergsmith.yaml"
+check "observability dashboard" "observability" "deploy/observability/grafana/dashboards/fleet.json"
+check "metrics contract" "rust observability" \
+	"crates/coordinator/src/observability/mod.rs"
 check "mixed rust and web" "rust web" \
 	"crates/common/src/lib.rs" "web/src/App.tsx"
 check "generated API contract" "rust web" \
@@ -57,13 +61,13 @@ check "Cargo lockfile" "rust deps" "Cargo.lock"
 check "dependency policy" "deps" "deny.toml"
 check "documentation" "" "docs/operations/setup.md"
 check "root documentation" "" "README.md"
-check "workflow" "rust web proto deps" ".github/workflows/ci.yml"
-check "Makefile" "rust web proto deps" "Makefile"
-check "selector script" "rust web proto deps" "scripts/changed-areas.sh"
-check "unknown path fails closed" "rust web proto deps" "new-area/file.txt"
+check "workflow" "rust web proto deps observability" ".github/workflows/ci.yml"
+check "Makefile" "rust web proto deps observability" "Makefile"
+check "selector script" "rust web proto deps observability" "scripts/changed-areas.sh"
+check "unknown path fails closed" "rust web proto deps observability" "new-area/file.txt"
 
 all="$("$selector" --all)"
-for area in rust web proto deps; do
+for area in rust web proto deps observability; do
 	if ! printf '%s\n' "$all" | grep -qx "$area=true"; then
 		echo "FAIL --all: $area was not selected" >&2
 		failed=1
@@ -71,7 +75,7 @@ for area in rust web proto deps; do
 done
 
 fallback="$("$selector" --base refs/heads/bergsmith-no-such-branch 2>/dev/null)"
-for area in rust web proto deps; do
+for area in rust web proto deps observability; do
 	if ! printf '%s\n' "$fallback" | grep -qx "$area=true"; then
 		echo "FAIL unavailable base: $area was not selected" >&2
 		failed=1
