@@ -1,0 +1,48 @@
+# Acceptance stack for the BS-030.T2 alert rules and dashboards. Every
+# credential and setting here is a development value. `scripts/
+# observability-acceptance.sh` starts it, drives the dashboards, and removes
+# it; `docs/operations/observability.md` describes production use.
+name: bergsmith-observability
+
+services:
+  # Serves the exposition written by the coordinator integration test so
+  # Prometheus scrapes real rendered metrics rather than a hand-written file.
+  fixture:
+    image: python:3.13-alpine
+    command: ["python", "-m", "http.server", "8000", "--directory", "/fixture"]
+    volumes:
+      - ../../target/observability/fixture:/fixture:ro
+    ports:
+      - "127.0.0.1:59100:8000"
+
+  prometheus:
+    image: prom/prometheus:v3.15.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yaml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./prometheus/acceptance/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+    ports:
+      - "127.0.0.1:59090:9090"
+    depends_on:
+      - fixture
+    # Test-only: the fixture is one static scrape, so no durable TSDB.
+    tmpfs:
+      - /prometheus:mode=1777
+
+  grafana:
+    image: grafana/grafana:13.3.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:53000:3000"
+    depends_on:
+      - prometheus

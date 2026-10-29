@@ -5,6 +5,7 @@
 #   web   - web UI and the generated API contract
 #   proto - protobuf sources and buf configuration
 #   deps  - Cargo dependency policy
+#   observability - Prometheus/Grafana assets and the metrics contract
 #
 # Pull requests use this to skip unrelated jobs; pushes to main and manual
 # runs pass --all. The selector fails closed: a path it does not recognize
@@ -60,12 +61,14 @@ rust=false
 web=false
 proto=false
 deps=false
+observability=false
 
 select_all() {
 	rust=true
 	web=true
 	proto=true
 	deps=true
+	observability=true
 }
 
 classify() {
@@ -84,6 +87,20 @@ classify() {
 		crates/protocol/* | *.proto | buf.yaml | buf.gen.yaml | buf.lock)
 			rust=true
 			proto=true
+			;;
+		# The metrics contract and the exposition acceptance fixture.
+		crates/coordinator/src/observability/* | crates/coordinator/tests/observability.rs)
+			rust=true
+			observability=true
+			;;
+		# Packaged alert rules, dashboards, and their acceptance stack.
+		deploy/observability/*)
+			observability=true
+			;;
+		# The observability gate renders with the web toolchain's Chromium.
+		web/package.json | web/package-lock.json | web/.nvmrc)
+			web=true
+			observability=true
 			;;
 		# Any manifest or lockfile can change the dependency policy.
 		*Cargo.toml | *Cargo.lock)
@@ -144,3 +161,4 @@ printf 'rust=%s\n' "$rust"
 printf 'web=%s\n' "$web"
 printf 'proto=%s\n' "$proto"
 printf 'deps=%s\n' "$deps"
+printf 'observability=%s\n' "$observability"

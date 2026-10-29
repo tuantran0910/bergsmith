@@ -127,15 +127,33 @@ batches reads per organization; the individual-series cap still selects the
 lowest table UUIDs globally. Unusable-sample and policy-decoding diagnostics
 are logged at debug level to avoid recurring per-table warnings.
 
-Suggested alerts:
+### Alerts and dashboards
 
-- `bergsmith_publications_unresolved > 0` for longer than your unresolved
-  publication bound; see [recovery](recovery.md#unknown-publication-outcomes).
-- `bergsmith_task_oldest_pending_seconds` above the job duration budget while
-  `bergsmith_worker_sessions{status="live"}` is zero.
-- `bergsmith_schedule_lag_seconds` above a few scheduler intervals.
-- `bergsmith_ledger_up == 0`.
-- `bergsmith_health_metrics_up == 0`.
+Prometheus alert rules and Grafana dashboards ship in
+[`deploy/observability`](../../deploy/observability/README.md); the decision is
+[ADR 0066](../adr/0066-packaged-alerts-and-dashboards.md). They read only the
+metrics above and add no series.
+
+Ten alert templates cover the ledger and health evidence, unresolved
+publications, schedule lag, queued work without a live worker, expired leases,
+and critical tables. Each component's refresh failure and evidence age alert
+independently; every dependent rule requires a successful read and a snapshot
+age under two minutes, so a broken cache raises one evidence alert instead of a
+burst about stale work. Defaults are publication age 3,600 seconds, schedule
+lag 300 seconds, and pending work 300 seconds; tune them with your commit
+cadence and worker count.
+
+The Fleet dashboard follows the same evidence-first order and shows health,
+logical statistics, queue and publication depth, worker sessions, schedule lag,
+and RPC latency. The Connections dashboard scopes those aggregates to one
+connection. Both are aggregate-only and do not query individual-table series, even when
+`per_table_metrics` is enabled; the dashboards state that connection totals are
+not additive and that statistics are metadata sample sums rather than physical
+storage. Missing evidence is visible as unassessed coverage, not as
+healthy.
+
+Scrape the leader only, as for the probes above, and route the alerts'
+`severity` and `component` labels through your Alertmanager.
 
 ## Logs and traces
 

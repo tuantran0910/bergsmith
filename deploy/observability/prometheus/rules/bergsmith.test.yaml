@@ -1,0 +1,324 @@
+# Behavioral tests for the Bergsmith alert templates, run by `promtool test
+# rules`. Each case drives the emitted metric families through a synthetic
+# timeline and asserts the exact alert set at one evaluation instant. Quiet
+# cases prove a dependency gate: stale or failed evidence suppresses the alert
+# that interprets it.
+rule_files:
+  - bergsmith.yaml
+evaluation_interval: 1m
+
+tests:
+  - name: ledger refresh failure pages after two minutes
+    interval: 1m
+    input_series:
+      - series: 'bergsmith_ledger_up'
+        values: '1 1 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: BergsmithLedgerRefreshFailed
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              component: coordinator
+            exp_annotations:
+              summary: "The coordinator cannot read its ledger metrics."
+              description: "The last ledger read failed, so the exposed ledger values are the last complete snapshot. Check PostgreSQL connectivity and the ledger statement timeout, then confirm `bergsmith_ledger_snapshot_age_seconds` stops growing."
+
+  - name: ledger refresh failure stays quiet while the refresh succeeds
+    interval: 1m
+    input_series:
+      - series: 'bergsmith_ledger_up'
+        values: '1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: BergsmithLedgerRefreshFailed
+        exp_alerts: []
+
+  - name: ledger evidence age alerts while the refresh still reports success
+    interval: 1m
+    input_series:
+      - series: 'bergsmith_ledger_up'
+        values: '1 1 1 1 1 1 1'
+      - series: 'bergsmith_ledger_snapshot_age_seconds'
+        values: '200 200 200 200 200 200 200'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: BergsmithLedgerEvidenceStale
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              component: coordinator
+            exp_annotations:
+              summary: "Ledger metrics stopped refreshing."
+              description: "Ledger metrics report success, but the snapshot is older than two minutes, so the refresh loop is not running on the leader. Confirm the leader lease, the scrape target, and `ledger_refresh_seconds`."
+
+  - name: ledger evidence age stays quiet within the freshness bound
+    interval: 1m
+    input_series:
+      - series: 'bergsmith_ledger_up'
+        values: '1 1 1 1 1 1 1'
+      - series: 'bergsmith_ledger_snapshot_age_seconds'
+        values: '10 10 10 10 10 10 10'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: BergsmithLedgerEvidenceStale
+        exp_alerts: []
+
+  - name: health refresh failure pages independently of the ledger
+    interval: 1m
+    input_series:
+      - series: 'bergsmith_health_metrics_up'
+        values: '1 1 0 0 0 0'
+      - series: 'bergsmith_ledger_up'
+        values: '1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: BergsmithHealthRefreshFailed
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              component: coordinator
+            exp_annotations:
+              summary: "The coordinator cannot refresh table health metrics."
+              description: "The health scan failed while ledger metrics may still be healthy. The exposed health values are the last complete snapshot. Check `observability.health_query_timeout_millis`, PostgreSQL load, and the coordinator log; the ledger refresh is independent."
+
+  - name: health refresh failure stays quiet while the scan succeeds
+    interval: 1m
+    input_series:
+      - series: 'bergsmith_health_metrics_up'
+        values: '1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: BergsmithHealthRefreshFailed
+        exp_alerts: []
+
+  - name: health evidence age alerts while the scan still reports success
+    interval: 1m
+    input_series:
+      - series: 'bergsmith_health_metrics_up'
+        values: '1 1 1 1 1 1 1'
+      - series: 'bergsmith_health_metrics_snapshot_age_seconds'
+        values: '200 200 200 200 200 200 200'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: BergsmithHealthEvidenceStale
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              component: coordinator
+            exp_annotations:
+              summary: "Table health metrics stopped refreshing."
+              description: "The health cache reports success, but the snapshot is older than two minutes. Health alerts are suppressed while evidence is stale; investigate the refresh loop before trusting health states."
+
+  - name: health evidence age stays quiet within the freshness bound
+    interval: 1m
+    input_series:
+      - series: 'bergsmith_health_metrics_up'
+        values: '1 1 1 1 1 1 1'
+      - series: 'bergsmith_health_metrics_snapshot_age_seconds'
+        values: '10 10 10 10 10 10 10'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: BergsmithHealthEvidenceStale
+        exp_alerts: []
+
+  - name: an unresolved publication over an hour pages with fresh ledger evidence
+    interval: 1m
+    input_series:
+      - series: 'bergsmith_publication_oldest_unresolved_seconds'
+        values: '4000 4000 4000 4000 4000 4000 4000 4000 4000 4000 4000 4000 4000 4000 4000 4000 4000'
+      - series: 'bergsmith_ledger_up'
+        values: '1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'bergsmith_ledger_snapshot_age_seconds'
+        values: '10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: BergsmithUnresolvedPublication
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              component: coordinator
+            exp_annotations:
+              summary: "A publication has been unresolved for over an hour."
+              description: "An authorized publication has no recorded outcome. Follow the recovery guide: never replay the commit, and verify publication evidence before resolving the intent. See `docs/operations/recovery.md#unknown-publication-outcomes`."
+
+  - name: unresolved publication stays quiet while ledger evidence is stale
+    interval: 1m
+    input_series:
+      - series: 'bergsmith_publication_oldest_unresolved_seconds'
+        values: '4000 4000 4000 4000 4000 4000 4000 4000 4000 4000 4000 4000 4000 4000 4000 4000 4000'
+      - series: 'bergsmith_ledger_up'
+        values: '1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'bergsmith_ledger_snapshot_age_seconds'
+        values: '500 500 500 500 500 500 500 500 500 500 500 500 500 500 500 500 500'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: BergsmithUnresolvedPublication
+        exp_alerts: []
+
+  - name: schedule lag beyond five minutes tickets with fresh ledger evidence
+    interval: 1m
+    input_series:
+      - series: 'bergsmith_schedule_lag_seconds'
+        values: '600 600 600 600 600 600 600 600 600 600 600 600 600'
+      - series: 'bergsmith_ledger_up'
+        values: '1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'bergsmith_ledger_snapshot_age_seconds'
+        values: '10 10 10 10 10 10 10 10 10 10 10 10 10'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: BergsmithScheduleLag
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              component: coordinator
+            exp_annotations:
+              summary: "A schedule is far past its due instant."
+              description: "The most overdue enabled schedule is more than five minutes late. Check the coordinator scheduler, window limits, and admission rejections; coalesced downtime is reported separately."
+
+  - name: schedule lag within five minutes stays quiet
+    interval: 1m
+    input_series:
+      - series: 'bergsmith_schedule_lag_seconds'
+        values: '100 100 100 100 100 100 100 100 100 100 100 100 100'
+      - series: 'bergsmith_ledger_up'
+        values: '1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'bergsmith_ledger_snapshot_age_seconds'
+        values: '10 10 10 10 10 10 10 10 10 10 10 10 10'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: BergsmithScheduleLag
+        exp_alerts: []
+
+  - name: pending work without a live worker pages
+    interval: 1m
+    input_series:
+      - series: 'bergsmith_task_oldest_pending_seconds'
+        values: '600 600 600 600 600 600 600 600 600 600 600 600 600'
+      - series: 'bergsmith_worker_sessions{status="live"}'
+        values: '0 0 0 0 0 0 0 0 0 0 0 0 0'
+      - series: 'bergsmith_ledger_up'
+        values: '1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'bergsmith_ledger_snapshot_age_seconds'
+        values: '10 10 10 10 10 10 10 10 10 10 10 10 10'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: BergsmithPendingTaskWithoutWorkers
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              component: worker
+            exp_annotations:
+              summary: "Work is queued with no live worker."
+              description: "A task has waited more than five minutes while no worker session is live. Start workers, check pool-token validity, and verify the worker can reach the coordinator."
+
+  - name: pending work with a live worker stays quiet
+    interval: 1m
+    input_series:
+      - series: 'bergsmith_task_oldest_pending_seconds'
+        values: '600 600 600 600 600 600 600 600 600 600 600 600 600'
+      - series: 'bergsmith_worker_sessions{status="live"}'
+        values: '1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'bergsmith_ledger_up'
+        values: '1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'bergsmith_ledger_snapshot_age_seconds'
+        values: '10 10 10 10 10 10 10 10 10 10 10 10 10'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: BergsmithPendingTaskWithoutWorkers
+        exp_alerts: []
+
+  - name: expired attempt leases ticket with fresh ledger evidence
+    interval: 1m
+    input_series:
+      - series: 'bergsmith_attempts_lease_expired'
+        values: '2 2 2 2 2 2 2 2 2 2 2 2 2'
+      - series: 'bergsmith_ledger_up'
+        values: '1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'bergsmith_ledger_snapshot_age_seconds'
+        values: '10 10 10 10 10 10 10 10 10 10 10 10 10'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: BergsmithExpiredLeases
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              component: coordinator
+            exp_annotations:
+              summary: "Expired attempt leases have not been fenced."
+              description: "Attempts hold expired leases and are not fenced. Check the coordinator recovery loop and worker heartbeats; a stuck lease blocks retry admission for its task."
+
+  - name: no expired leases stays quiet
+    interval: 1m
+    input_series:
+      - series: 'bergsmith_attempts_lease_expired'
+        values: '0 0 0 0 0 0 0 0 0 0 0 0 0'
+      - series: 'bergsmith_ledger_up'
+        values: '1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'bergsmith_ledger_snapshot_age_seconds'
+        values: '10 10 10 10 10 10 10 10 10 10 10 10 10'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: BergsmithExpiredLeases
+        exp_alerts: []
+
+  - name: a critical table tickets with fresh health evidence
+    interval: 1m
+    input_series:
+      - series: 'bergsmith_tables_health{state="critical"}'
+        values: '1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'bergsmith_health_metrics_up'
+        values: '1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'bergsmith_health_metrics_snapshot_age_seconds'
+        values: '10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: BergsmithCriticalTables
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              component: coordinator
+              state: critical
+            exp_annotations:
+              summary: "One or more tables are in the critical health state."
+              description: "Current table health reports at least one critical table. Open the table's health tab for its findings and recommendations; check unassessed coverage on the Fleet dashboard before treating the counts as complete. Health is advisory and never blocks jobs."
+
+  - name: critical tables stay quiet while health evidence is stale
+    interval: 1m
+    input_series:
+      - series: 'bergsmith_tables_health{state="critical"}'
+        values: '1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'bergsmith_health_metrics_up'
+        values: '1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'bergsmith_health_metrics_snapshot_age_seconds'
+        values: '500 500 500 500 500 500 500 500 500 500 500 500 500 500 500 500 500 500 500'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: BergsmithCriticalTables
+        exp_alerts: []
+
+  - name: an unscrapeable listener pages after ten minutes of absence
+    interval: 1m
+    input_series:
+      - series: 'up{job="bergsmith"}'
+        values: '1 1 1 1 1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: BergsmithMetricsAbsent
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              component: coordinator
+            exp_annotations:
+              summary: "The coordinator's metrics listener is unreachable."
+              description: "No ledger metric has been scraped for ten minutes. The coordinator may be down, not leading, or the metrics listener is disabled or misconfigured. Every other rule depends on a scrape, so this is the only alert that covers a dead or unscrapeable listener."
+
+  - name: the absence alert stays quiet while the listener answers
+    interval: 1m
+    input_series:
+      - series: 'bergsmith_ledger_up'
+        values: '1 1 1 1 1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: BergsmithMetricsAbsent
+        exp_alerts: []

@@ -72,3 +72,4 @@ record's status; never rewrite an accepted decision.
 | [0063](0063-manifest-rewrite-and-dangling-delete-removal.md) | Manifest rewrite and dangling-delete removal | Proposed |
 | [0064](0064-storage-breakdown.md) | Sampled table-prefix storage breakdown | Proposed |
 | [0065](0065-bounded-health-and-statistics-metrics.md) | Bounded health and statistics metrics | Proposed |
+| [0066](0066-packaged-alerts-and-dashboards.md) | Packaged Prometheus alerts and Grafana dashboards | Proposed |

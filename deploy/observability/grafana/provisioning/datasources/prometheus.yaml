@@ -1,0 +1,15 @@
+# Development provisioning for the bundled acceptance stack. Production
+# Grafana installations register the same Prometheus datasource themselves;
+# the dashboards reference it by this UID.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: bergsmith-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 1s

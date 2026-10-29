@@ -549,3 +549,98 @@ async fn due_ledger_and_health_refreshes_progress_concurrently(pool: PgPool) {
     assert!(text.contains("bergsmith_ledger_up 1\n"));
     assert!(text.contains("bergsmith_health_metrics_up 1\n"));
 }
+
+/// The BS-030.T2 acceptance fixture: one registered table per health state,
+/// spread over four connections, rendered from a real ledger. When
+/// `BERGSMITH_OBSERVABILITY_FIXTURE` names a path, the exposition is written
+/// there for the dashboard harness; the test otherwise runs as an ordinary
+/// integration test.
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn the_dashboard_fixture_covers_four_connections_and_four_health_states(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let healthy = support::tenant(&mut conn, "fixture-healthy").await;
+    let warning = support::tenant(&mut conn, "fixture-warning").await;
+    let critical = support::tenant(&mut conn, "fixture-critical").await;
+    let unassessed = support::tenant(&mut conn, "fixture-unassessed").await;
+    let now: DateTime<Utc> = sqlx::query_scalar("SELECT now()")
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+
+    // Healthy: a fresh sample with no threshold finding.
+    statistics::record(
+        &mut conn,
+        healthy.organization,
+        healthy.table,
+        &sample(healthy.connection, now),
+    )
+    .await
+    .unwrap();
+    statistics::record_check(&mut conn, healthy.organization, healthy.table, now)
+        .await
+        .unwrap();
+
+    // Warning: delete bytes are 200 per-mille of data bytes, above the 100
+    // warning bound and below the 500 critical bound.
+    let mut pressured = sample(warning.connection, now);
+    pressured.delete_files = 1;
+    pressured.delete_bytes = 120 * 1024 * 1024;
+    statistics::record(&mut conn, warning.organization, warning.table, &pressured)
+        .await
+        .unwrap();
+    statistics::record_check(&mut conn, warning.organization, warning.table, now)
+        .await
+        .unwrap();
+
+    // Critical: the newest sample is older than the six-hour critical bound.
+    let stale = now - chrono::TimeDelta::hours(7);
+    statistics::record(
+        &mut conn,
+        critical.organization,
+        critical.table,
+        &sample(critical.connection, stale),
+    )
+    .await
+    .unwrap();
+
+    // `unassessed` is registered and has never produced a complete sample.
+    let _ = unassessed;
+    drop(conn);
+
+    let metrics = Observability::new(Database::from_pool(pool), MetricsConfig::default());
+    // Warm both caches, then let their snapshots age so the fixture carries a
+    // realistic age instead of a sub-microsecond value. This test also runs in
+    // the ordinary suite, so keep the wait short.
+    let _ = metrics.render().await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let text = metrics.render().await;
+    assert!(text.contains("bergsmith_health_metrics_up 1\n"));
+    for state in ["healthy", "warning", "critical", "unassessed"] {
+        assert!(
+            text.contains(&format!("bergsmith_tables_health{{state=\"{state}\"}} 1\n")),
+            "one table is {state}:\n{text}"
+        );
+    }
+    for (tenant, state) in [
+        (&healthy, "healthy"),
+        (&warning, "warning"),
+        (&critical, "critical"),
+        (&unassessed, "unassessed"),
+    ] {
+        assert!(
+            text.contains(&format!(
+                "bergsmith_connection_tables_health{{connection_id=\"{}\",state=\"{state}\"}} 1\n",
+                tenant.connection
+            )),
+            "the {state} connection reports its own table:\n{text}"
+        );
+    }
+    // The default aggregate-only exposition never exposes opt-in series.
+    assert!(!text.contains("table_id="));
+    assert!(text.contains("bergsmith_table_metrics_omitted 0\n"));
+    // The dashboard harness scrapes this file. Absent the variable the test is
+    // still a complete integration assertion.
+    if let Some(path) = std::env::var_os("BERGSMITH_OBSERVABILITY_FIXTURE") {
+        std::fs::write(path, text).unwrap();
+    }
+}

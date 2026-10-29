@@ -32,7 +32,8 @@ WORKER_BIN ?= $(abspath $(or $(CARGO_TARGET_DIR),target)/debug/bergsmith-worker)
 
 .PHONY: help fmt fmt-check check clippy test test-changed doc coverage coverage-html deny machete ci \
 	services-up services-down proto-lint proto-breaking bench-executor test-distributed coverage-distributed \
-	web-install web web-e2e web-dev web-audit images app-up app-down app-worker app-bootstrap-check profraw-clean
+	web-install web web-e2e web-dev web-audit images app-up app-down app-worker app-bootstrap-check profraw-clean \
+	observability observability-rules observability-dashboards
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -150,7 +151,24 @@ web-audit: web-install ## Audit npm dependencies: production at any severity, al
 
 # `coverage-distributed` runs the whole test suite and `clippy` checks every target,
 # so `test` and `check` would only repeat them.
-ci: fmt-check proto-lint proto-breaking clippy doc coverage-distributed deny machete web web-e2e web-audit ## Run every quality gate
+ci: fmt-check proto-lint proto-breaking clippy doc coverage-distributed deny machete web web-e2e observability web-audit ## Run every quality gate
+
+# Packaged observability assets (BS-030.T2). The pinned tool images are the
+# same ones `deploy/observability/compose.yaml` runs.
+OBSERVABILITY := deploy/observability
+PROMTOOL := docker run --rm --entrypoint /bin/promtool \
+	--volume "$(CURDIR)/$(OBSERVABILITY)/prometheus/rules:/rules:ro" --workdir /rules \
+	prom/prometheus:v3.15.1
+
+observability: observability-rules observability-dashboards ## Check alert rules and execute and render the dashboards
+
+observability-rules: ## Lint and behaviorally test the alert rules (promtool, via Docker)
+	$(PROMTOOL) check rules bergsmith.yaml
+	$(PROMTOOL) test rules bergsmith.test.yaml
+
+observability-dashboards: web-install services-up ## Emit fixture metrics, then execute and render both dashboards
+	$(WEB) exec -- playwright install chromium
+	scripts/observability-acceptance.sh
 
 # Application images and Compose stack (BS-020.T1).
 APP_COMPOSE := docker compose --file deploy/docker/compose.app.yaml

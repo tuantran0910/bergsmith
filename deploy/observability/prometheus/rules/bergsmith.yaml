@@ -1,0 +1,172 @@
+# Bergsmith alert templates for the coordinator's metrics listener.
+#
+# Every rule reads an existing metric from `docs/operations/observability.md`;
+# none introduces a new metric, label, or recording rule. Thresholds are
+# defaults chosen from the delivery plan's operations section; tune them
+# alongside `sha` bounds, worker counts, and catalog cadence.
+#
+# Evidence rules fire on the component's own success and age gauges, because a
+# retained snapshot cannot represent new data. Dependent rules are gated on a
+# fresh, successful read of the snapshot they interpret, so a broken cache
+# raises one evidence alert instead of a burst of misleading work alerts.
+groups:
+  - name: bergsmith-evidence
+    rules:
+      - alert: BergsmithLedgerRefreshFailed
+        expr: bergsmith_ledger_up == 0
+        for: 2m
+        labels:
+          severity: page
+          component: coordinator
+        annotations:
+          summary: The coordinator cannot read its ledger metrics.
+          description: >-
+            The last ledger read failed, so the exposed ledger values are the
+            last complete snapshot. Check PostgreSQL connectivity and the
+            ledger statement timeout, then confirm
+            `bergsmith_ledger_snapshot_age_seconds` stops growing.
+
+      - alert: BergsmithHealthRefreshFailed
+        expr: bergsmith_health_metrics_up == 0
+        for: 2m
+        labels:
+          severity: page
+          component: coordinator
+        annotations:
+          summary: The coordinator cannot refresh table health metrics.
+          description: >-
+            The health scan failed while ledger metrics may still be healthy.
+            The exposed health values are the last complete snapshot. Check
+            `observability.health_query_timeout_millis`, PostgreSQL load, and
+            the coordinator log; the ledger refresh is independent.
+
+      - alert: BergsmithLedgerEvidenceStale
+        expr: >-
+          (bergsmith_ledger_up == 1)
+          and on() (bergsmith_ledger_snapshot_age_seconds > 120)
+        for: 5m
+        labels:
+          severity: ticket
+          component: coordinator
+        annotations:
+          summary: Ledger metrics stopped refreshing.
+          description: >-
+            Ledger metrics report success, but the snapshot is older than two
+            minutes, so the refresh loop is not running on the leader. Confirm
+            the leader lease, the scrape target, and `ledger_refresh_seconds`.
+
+      - alert: BergsmithHealthEvidenceStale
+        expr: >-
+          (bergsmith_health_metrics_up == 1)
+          and on() (bergsmith_health_metrics_snapshot_age_seconds > 120)
+        for: 5m
+        labels:
+          severity: ticket
+          component: coordinator
+        annotations:
+          summary: Table health metrics stopped refreshing.
+          description: >-
+            The health cache reports success, but the snapshot is older than
+            two minutes. Health alerts are suppressed while evidence is stale;
+            investigate the refresh loop before trusting health states.
+
+      - alert: BergsmithMetricsAbsent
+        expr: absent(bergsmith_ledger_up)
+        for: 10m
+        labels:
+          severity: page
+          component: coordinator
+        annotations:
+          summary: The coordinator's metrics listener is unreachable.
+          description: >-
+            No ledger metric has been scraped for ten minutes. The coordinator
+            may be down, not leading, or the metrics listener is disabled or
+            misconfigured. Every other rule depends on a scrape, so this is the
+            only alert that covers a dead or unscrapeable listener.
+
+  - name: bergsmith-work
+    rules:
+      - alert: BergsmithUnresolvedPublication
+        expr: >-
+          (bergsmith_publication_oldest_unresolved_seconds > 3600)
+          and on() (bergsmith_ledger_up == 1)
+          and on() (bergsmith_ledger_snapshot_age_seconds < 120)
+        for: 10m
+        labels:
+          severity: page
+          component: coordinator
+        annotations:
+          summary: A publication has been unresolved for over an hour.
+          description: >-
+            An authorized publication has no recorded outcome. Follow the
+            recovery guide: never replay the commit, and verify publication
+            evidence before resolving the intent. See
+            `docs/operations/recovery.md#unknown-publication-outcomes`.
+
+      - alert: BergsmithScheduleLag
+        expr: >-
+          (bergsmith_schedule_lag_seconds > 300)
+          and on() (bergsmith_ledger_up == 1)
+          and on() (bergsmith_ledger_snapshot_age_seconds < 120)
+        for: 10m
+        labels:
+          severity: ticket
+          component: coordinator
+        annotations:
+          summary: A schedule is far past its due instant.
+          description: >-
+            The most overdue enabled schedule is more than five minutes late.
+            Check the coordinator scheduler, window limits, and admission
+            rejections; coalesced downtime is reported separately.
+
+      - alert: BergsmithPendingTaskWithoutWorkers
+        expr: >-
+          (bergsmith_task_oldest_pending_seconds > 300)
+          and on() (sum(bergsmith_worker_sessions{status="live"}) == 0)
+          and on() (bergsmith_ledger_up == 1)
+          and on() (bergsmith_ledger_snapshot_age_seconds < 120)
+        for: 10m
+        labels:
+          severity: page
+          component: worker
+        annotations:
+          summary: Work is queued with no live worker.
+          description: >-
+            A task has waited more than five minutes while no worker session
+            is live. Start workers, check pool-token validity, and verify the
+            worker can reach the coordinator.
+
+      - alert: BergsmithExpiredLeases
+        expr: >-
+          (bergsmith_attempts_lease_expired > 0)
+          and on() (bergsmith_ledger_up == 1)
+          and on() (bergsmith_ledger_snapshot_age_seconds < 120)
+        for: 10m
+        labels:
+          severity: ticket
+          component: coordinator
+        annotations:
+          summary: Expired attempt leases have not been fenced.
+          description: >-
+            Attempts hold expired leases and are not fenced. Check the
+            coordinator recovery loop and worker heartbeats; a stuck lease
+            blocks retry admission for its task.
+
+  - name: bergsmith-tables
+    rules:
+      - alert: BergsmithCriticalTables
+        expr: >-
+          (bergsmith_tables_health{state="critical"} > 0)
+          and on() (bergsmith_health_metrics_up == 1)
+          and on() (bergsmith_health_metrics_snapshot_age_seconds < 120)
+        for: 15m
+        labels:
+          severity: ticket
+          component: coordinator
+        annotations:
+          summary: One or more tables are in the critical health state.
+          description: >-
+            Current table health reports at least one critical table. Open the
+            table's health tab for its findings and recommendations; check
+            unassessed coverage on the Fleet dashboard before treating the
+            counts as complete. Health is advisory and never blocks jobs.
