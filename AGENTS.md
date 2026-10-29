@@ -455,7 +455,7 @@ edits files. The loop continues until a round reports no actionable findings.
    user provides (`herdr agent start <name> --kind <kind> --pane <pane_id>`).
    If the user did not name a kind, ask before starting; do not assume one.
    Agent names and pane IDs are local; never commit them.
-2. Give a production-readiness brief: inspect the code and its context before
+2. Write a production-readiness brief: inspect the code and its context before
    concluding; prioritize defects introduced by the current diff (bugs,
    security, data integrity, concurrency, reliability, performance, API
    compatibility, missing regression tests); forbid speculative findings,
@@ -463,18 +463,18 @@ edits files. The loop continues until a round reports no actionable findings.
    file and line, the defect and why it occurs, a realistic failure scenario,
    and a concrete fix with a regression test, sorted by severity, plus a merge
    recommendation and the checks the reviewer actually ran.
-3. Fix or explicitly rebut every P0–P2 finding and every P3 that is a real
+3. Deliver the brief with `herdr agent prompt <name> "<text>" --wait --timeout
+   <ms>`. A review is long, so a timeout does not prove the prompt was not
+   delivered: inspect with `herdr agent get` and `herdr agent read <name>
+   --source recent-unwrapped` before resubmitting, and never submit the same
+   brief twice.
+4. Fix or explicitly rebut every P0–P2 finding and every P3 that is a real
    defect. Commit and push before the next round so it reviews the current
    tree, and rerun the focused checks for the change.
-4. Re-prompt with the previous round's findings: verify each fix, look for
+5. Re-prompt with the previous round's findings: verify each fix, look for
    regressions those fixes introduced, then ask for anything new. Repeat until
    a round reports no actionable findings; stop there rather than extending a
    stale approval.
-5. Prompt with `herdr agent prompt <name> "<text>" --wait --timeout <ms>`.
-   A review is long, so a timeout does not prove the prompt was not delivered:
-   inspect with `herdr agent get` and `herdr agent read <name>
-   --source recent-unwrapped` before resubmitting, and never submit the same
-   brief twice.
 6. The review supplements the gates, never replaces them: run the focused
    local checks and let Actions own the selected CI gates.
 
