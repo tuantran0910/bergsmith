@@ -112,6 +112,28 @@
     --density-cell-y: 0.3rem;
 }
 
+/* The rail's current width; `data-sidebar` is set before the first render. */
+:root {
+    --sidebar-current: var(--sidebar-width);
+}
+
+:root[data-sidebar="collapsed"] {
+    --sidebar-current: var(--sidebar-width-collapsed);
+}
+
+/* Styles for the collapsed rail only: the rail exists from `md` up, and
+   below that the same header is the phone top bar, which never collapses. */
+@custom-variant rail-collapsed {
+    @media (width >= 48rem) {
+        &:where(
+            [data-sidebar="collapsed"] [data-slot="rail"],
+            [data-sidebar="collapsed"] [data-slot="rail"] *
+        ) {
+            @slot;
+        }
+    }
+}
+
 :root[data-theme="light"] {
     color-scheme: light;
 }
@@ -207,6 +229,7 @@
 }
 
 @theme inline {
+    --container-page: 96rem;
     --color-background: var(--background);
     --color-foreground: var(--foreground);
     --color-foreground-secondary: var(--foreground-secondary);

@@ -7,11 +7,13 @@ import { App } from "./App";
 import { reloadOnMissingChunk } from "./chunkReload";
 import { applyDensityPreference, readDensityPreference } from "./density";
 import { createQueryClient } from "./queryClient";
+import { applySidebarPreference, readSidebarPreference } from "./sidebar";
 import "./styles.css";
 import { applyThemePreference, readThemePreference } from "./theme";
 
 applyThemePreference(readThemePreference());
 applyDensityPreference(readDensityPreference());
+applySidebarPreference(readSidebarPreference());
 reloadOnMissingChunk(window, window.sessionStorage, () => {
     window.location.reload();
 });

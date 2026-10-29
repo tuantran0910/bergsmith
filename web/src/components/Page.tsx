@@ -31,7 +31,9 @@ export function PageHeader({
                 )}
             </div>
             {actions !== undefined && (
-                <div className="flex shrink-0 flex-wrap items-center gap-2">
+                // A bare link among the actions is a 24 px target (WCAG
+                // 2.5.8), like the buttons beside it.
+                <div className="flex shrink-0 flex-wrap items-center gap-2 [&>a]:inline-flex [&>a]:min-h-6 [&>a]:items-center">
                     {actions}
                 </div>
             )}

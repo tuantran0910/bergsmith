@@ -96,6 +96,25 @@ This supersedes 0046's "neutral graphite surfaces and one accent".
   `insertAdjacentHTML`, `document.write`, `eval`, `new Function`, and the
   JSX `style` attribute, in addition to `dangerouslySetInnerHTML` (0046).
 
+### Shell
+
+- The rail collapses to its icons with a top-bar button or Ctrl+\ (⌘+\ on
+  macOS). Like theme and density, the choice is a per-browser preference
+  applied as `data-sidebar` on the root before the first render, so a
+  collapsed rail never flashes open. A `rail-collapsed` variant hides the
+  labels visually only: each link keeps its name and gains a tooltip.
+  The width changes at once: animating the grid column would lay out the
+  whole page on every frame, and only `opacity` and `transform` animate.
+- The account (name, theme, density, sign-out) is one button at the foot of
+  the rail; its panel is a modal popover that loads on first use, like
+  `MenuButton`. The phone drawer keeps those controls inline.
+- From `md` up, a sticky top bar holds the rail toggle, the breadcrumb,
+  search, and New. Page content is no longer capped at `max-w-6xl`; it fills
+  the column up to 96rem, so wide tables use wide screens.
+- A new page fades in through the Web Animations API, keyed by the path
+  only, so tabs and filters (search parameters) do not replay it and nothing
+  remounts. It reads the duration token, so reduced motion turns it off.
+
 ### Engineering limits
 
 These are enforced by gates, not by review:
@@ -105,6 +124,13 @@ These are enforced by gates, not by review:
   budget in the same build plugin, set at about 10% over the 9.9 kB measured
   when this decision was made, and each lazy chunk is limited to 50 kB
   gzipped.
+- Static files are compressed once, at build time: the build writes Brotli
+  and gzip copies of every text file of at least 1 KiB, and the coordinator
+  serves the best copy the request's `Accept-Encoding` admits, with
+  `Vary: Accept-Encoding`, falling back to the file as built. Brotli cuts the
+  entry script by about 13% over gzip. API responses stay uncompressed, so
+  no response that carries a session's secrets is exposed to
+  compression-oracle attacks.
 - The coordinator's CSP and response headers do not change. Every new popup
   primitive and animation library passes the browser gate's policy check
   before a page uses it; positioning writes CSSOM properties, never `style`
@@ -123,5 +149,8 @@ These are enforced by gates, not by review:
   downloads only the subsets it uses; most pages need only the Latin file.
 - The browser gate now serves built files as bytes and fails on a font
   Chromium cannot decode, which it previously reported only as a warning.
-- Later phases add the collapsible shell, the motion primitives, the toolbar
-  data table, and the API additions on top of these tokens.
+- The stylesheet is close to its budget (10.8 of 11 kB after the shell);
+  later phases must reuse utilities rather than add bespoke rules, or
+  revisit the budget in this record.
+- Later phases add the toolbar data table and the API additions on top of
+  these tokens.

@@ -6,6 +6,7 @@ import { defineConfig } from "vite";
 // Vite loads its configuration natively, which needs the file extension.
 import { bundleBudget } from "./tooling/bundleBudget.ts";
 import { fontPreload } from "./tooling/fontPreload.ts";
+import { precompress } from "./tooling/precompress.ts";
 
 /**
  * Gzipped budgets. First-load JavaScript counts the entry graph only; each
@@ -24,7 +25,13 @@ const coordinator =
     process.env.BERGSMITH_COORDINATOR_URL ?? "http://127.0.0.1:8080";
 
 export default defineConfig({
-    plugins: [react(), tailwindcss(), bundleBudget(BUDGETS), fontPreload()],
+    plugins: [
+        react(),
+        tailwindcss(),
+        bundleBudget(BUDGETS),
+        fontPreload(),
+        precompress(),
+    ],
     server: {
         host: "127.0.0.1",
         port: 5173,

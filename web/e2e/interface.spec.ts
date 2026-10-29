@@ -1,7 +1,8 @@
-// The interface system (BS-033.T1 and T2, ADR 0067): the font is served by
+// The interface system (BS-033.T1 to T3, ADR 0067): the font is served by
 // the deployment's own origin and preloaded, the type scale sets 13 px body
-// text, reduced motion leaves no transition behind an interaction, and the
-// floating primitives work under the CSP (the fixture fails on violations).
+// text, reduced motion leaves no transition behind an interaction, the
+// floating primitives work under the CSP (the fixture fails on violations),
+// and the shell's rail collapses and remembers it.
 
 import { schema } from "../src/test/fakes";
 import {
@@ -153,7 +154,12 @@ test("switches the theme with the segmented control", async ({
 }) => {
     signedIn(coordinator);
     await page.goto(`/catalogs/${CATALOG_ID}`);
-    const theme = page.getByRole("group", { name: "Theme" });
+    await page
+        .getByRole("region", { name: "Account" })
+        .getByRole("button", { name: "Alice" })
+        .click();
+    const panel = page.getByRole("dialog", { name: "Alice" });
+    const theme = panel.getByRole("group", { name: "Theme" });
     await theme.getByRole("button", { name: "Dark theme" }).click();
     await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
     await expect(
@@ -163,4 +169,65 @@ test("switches the theme with the segmented control", async ({
     await expect(
         theme.getByRole("button", { name: "Dark theme" }),
     ).toHaveAttribute("aria-pressed", "true");
+});
+
+test("collapses the rail by shortcut and remembers it", async ({
+    page,
+    coordinator,
+}) => {
+    signedIn(coordinator);
+    await page.goto(`/catalogs/${CATALOG_ID}`);
+    await expect(page.getByRole("heading", { name: "lake" })).toBeVisible();
+    const rail = page.getByRole("navigation", { name: "Main" });
+    const expanded = await rail.boundingBox();
+
+    await page.keyboard.press("ControlOrMeta+Backslash");
+    await expect(page.locator("html")).toHaveAttribute(
+        "data-sidebar",
+        "collapsed",
+    );
+    await expect(
+        page.getByRole("button", { name: "Expand sidebar" }),
+    ).toBeVisible();
+    // Labels leave the layout but keep naming the links.
+    const catalogs = rail.getByRole("link", { name: "Catalogs" });
+    await expect(catalogs).toHaveAttribute("title", "Catalogs");
+    await expect
+        .poll(async () => (await rail.boundingBox())?.width)
+        .toBeLessThan((expanded?.width ?? 0) / 2);
+    await expectAccessible(page);
+
+    await page.reload();
+    await expect(page.locator("html")).toHaveAttribute(
+        "data-sidebar",
+        "collapsed",
+    );
+    await catalogs.click();
+    await expect(page).toHaveURL(/\/catalogs$/);
+
+    await page.getByRole("button", { name: "Expand sidebar" }).click();
+    await expect(page.locator("html")).not.toHaveAttribute("data-sidebar");
+    await expect(catalogs).not.toHaveAttribute("title");
+});
+
+test("opens the account panel and returns focus", async ({
+    page,
+    coordinator,
+}) => {
+    signedIn(coordinator);
+    await page.goto(`/catalogs/${CATALOG_ID}`);
+    const account = page
+        .getByRole("region", { name: "Account" })
+        .getByRole("button", { name: "Alice" });
+
+    await account.focus();
+    await page.keyboard.press("Enter");
+    const panel = page.getByRole("dialog", { name: "Alice" });
+    await expect(panel.getByRole("button", { name: "Sign out" })).toBeVisible();
+    await expectAccessible(page);
+
+    await page.keyboard.press("Escape");
+    await expect(panel).toHaveCount(0);
+    await expect(account).toBeFocused();
+    await expect(account).toHaveAttribute("aria-expanded", "false");
 });

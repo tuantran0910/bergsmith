@@ -706,11 +706,18 @@ test("switches and remembers table density", async ({ page, coordinator }) => {
     await expect(page.getByRole("link", { name: /^orders/ })).toBeVisible();
     const comfortable = await page.getByRole("row").nth(1).boundingBox();
 
+    // On wide screens the density lives in the account panel.
+    const account = page
+        .getByRole("region", { name: "Account" })
+        .getByRole("button", { name: "Alice" });
+    await account.click();
     await page.getByRole("button", { name: "Compact density" }).click();
     await expect(page.locator("html")).toHaveAttribute(
         "data-density",
         "compact",
     );
+    await page.keyboard.press("Escape");
+    await expect(account).toBeFocused();
     const compact = await page.getByRole("row").nth(1).boundingBox();
     if (compact === null || comfortable === null) {
         throw new Error("the table row has no bounding box");
@@ -736,6 +743,7 @@ test("switches and remembers table density", async ({ page, coordinator }) => {
     await drawer.getByRole("button", { name: "Close navigation" }).click();
     await expect(drawer).toBeHidden();
     await page.setViewportSize({ width: 1440, height: 900 });
+    await account.click();
     await expect(
         page.getByRole("button", { name: "Comfortable density" }),
     ).toHaveAttribute("aria-pressed", "true");

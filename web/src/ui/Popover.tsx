@@ -6,9 +6,10 @@ import { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 import { cn } from "./cn";
 
 /**
- * A non-modal panel anchored to a trigger, for controls that need more room
- * than a menu, such as a filter list. Escape and an outside click close it,
- * and focus returns to the trigger.
+ * A panel anchored to a trigger, for controls that need more room than a
+ * menu, such as a filter list. Escape and an outside click close it, and
+ * focus returns to the trigger. Pass `modal`: Base UI's non-modal focus
+ * guards fail WCAG checks (ADR 0067).
  */
 export function Popover(props: PopoverPrimitive.Root.Props) {
     return <PopoverPrimitive.Root {...props} />;
@@ -23,15 +24,20 @@ export function PopoverContent({
     side = "bottom",
     align = "start",
     sideOffset = 4,
+    anchor,
     ...props
 }: PopoverPrimitive.Popup.Props &
-    Pick<PopoverPrimitive.Positioner.Props, "align" | "side" | "sideOffset">) {
+    Pick<
+        PopoverPrimitive.Positioner.Props,
+        "align" | "side" | "sideOffset" | "anchor"
+    >) {
     return (
         <PopoverPrimitive.Portal>
             <PopoverPrimitive.Positioner
                 side={side}
                 align={align}
                 sideOffset={sideOffset}
+                anchor={anchor}
                 className="isolate z-50"
             >
                 <PopoverPrimitive.Popup

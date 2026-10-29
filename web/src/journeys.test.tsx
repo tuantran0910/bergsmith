@@ -160,6 +160,12 @@ describe("sign-in", () => {
         ).on("POST", "/auth/logout", () => new Response(null, { status: 204 }));
         const user = start("/tables");
 
+        // Sign-out sits in the account panel, which loads on first use.
+        await user.click(
+            within(
+                await screen.findByRole("region", { name: "Account" }),
+            ).getByRole("button", { name: "Alice" }),
+        );
         await user.click(
             await screen.findByRole("button", { name: "Sign out" }),
         );
@@ -170,6 +176,64 @@ describe("sign-in", () => {
         expect(
             fake.sent("POST", "/auth/logout")[0]?.headers.get("x-csrf-token"),
         ).toBe("csrf-value");
+    });
+
+    it("collapses the rail by button and shortcut, keeping link names", async () => {
+        fake.on("GET", "/api/v1/tables", () =>
+            json(200, { items: [], next_cursor: null }),
+        );
+        const user = start("/tables");
+        const root = document.documentElement;
+
+        await user.click(
+            await screen.findByRole("button", { name: "Collapse sidebar" }),
+        );
+        expect(root).toHaveAttribute("data-sidebar", "collapsed");
+        const main = screen.getByRole("navigation", { name: "Main" });
+        expect(
+            within(main).getByRole("link", { name: "Catalogs" }),
+        ).toHaveAttribute("title", "Catalogs");
+
+        await user.keyboard("{Control>}\\{/Control}");
+        expect(root).not.toHaveAttribute("data-sidebar");
+        expect(
+            screen.getByRole("button", { name: "Collapse sidebar" }),
+        ).toHaveAttribute("aria-keyshortcuts", "Control+\\ Meta+\\");
+        expect(
+            within(main).getByRole("link", { name: "Catalogs" }),
+        ).not.toHaveAttribute("title");
+    });
+
+    it("keeps theme, density, and sign-out in the account panel", async () => {
+        fake.on("GET", "/api/v1/tables", () =>
+            json(200, { items: [], next_cursor: null }),
+        );
+        const user = start("/tables");
+        const account = within(
+            await screen.findByRole("region", { name: "Account" }),
+        ).getByRole("button", { name: "Alice" });
+
+        await user.click(account);
+        const panel = await screen.findByRole("dialog", { name: "Alice" });
+        expect(account).toHaveAttribute("aria-expanded", "true");
+        expect(
+            within(panel).getByRole("group", { name: "Theme" }),
+        ).toBeInTheDocument();
+        expect(
+            within(panel).getByRole("group", { name: "Density" }),
+        ).toBeInTheDocument();
+        expect(
+            within(panel).getByRole("button", { name: "Sign out" }),
+        ).toBeEnabled();
+
+        await user.keyboard("{Escape}");
+        await waitFor(() => {
+            expect(account).toHaveAttribute("aria-expanded", "false");
+        });
+        expect(
+            screen.queryByRole("dialog", { name: "Alice" }),
+        ).not.toBeInTheDocument();
+        expect(account).toHaveFocus();
     });
 
     it("explains an unreachable coordinator and retries", async () => {
