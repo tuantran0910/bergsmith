@@ -40,8 +40,10 @@ title, columns with an empty header and end alignment stay visible as card
 actions, and the remaining columns become labelled details; sorting moves to a
 compact select and direction button above the cards. List filters, such as the
 Tables page's catalog and health selectors, open in a bottom drawer with a
-`Show results` action, while search, clear, and the live result count stay in
-the bar. Job statistics keep two columns at this width.
+`Show results` action, while search and clear stay in the bar. The live result
+count renders in the bar and moves into the drawer's footer while the drawer is
+open, so changes are announced where the filters are used. Job statistics keep
+two columns at this width.
 
 The browser gate visits the tables, policies, and schedules lists at 320 and
 390 pixels in light and dark. It asserts that the document never grows wider

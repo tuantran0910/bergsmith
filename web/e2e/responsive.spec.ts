@@ -14,7 +14,13 @@ import {
     session,
     table,
 } from "../src/test/fixtures";
-import { type FakeCoordinator, expect, json, test } from "./coordinator";
+import {
+    type FakeCoordinator,
+    expect,
+    expectAccessible,
+    json,
+    test,
+} from "./coordinator";
 
 /** The routes the primary lists read. */
 function signedIn(coordinator: FakeCoordinator) {
@@ -84,6 +90,7 @@ for (const width of [320, 390] as const) {
                 await expect(page.locator("article").first()).toBeVisible();
                 await expectNoHorizontalOverflow(page);
                 await expectActionsInsideViewport(page);
+                await expectAccessible(page);
                 await page.screenshot({
                     path: testInfo.outputPath(`${width}-${name}.png`),
                     fullPage: true,
@@ -111,6 +118,7 @@ for (const width of [320, 390] as const) {
                 drawer.getByRole("button", { name: "Show results" }),
             ).toBeVisible();
             await expectNoHorizontalOverflow(page);
+            await expectAccessible(page);
             await page.getByRole("button", { name: "Show results" }).click();
             await expect(drawer).toBeHidden();
         });
