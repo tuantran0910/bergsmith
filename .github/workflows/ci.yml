@@ -136,10 +136,9 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: make web
-      # Chromium and its system libraries; `make web-e2e` installs only the
-      # browser, which is enough where the libraries already exist.
-      - run: npm --prefix web exec -- playwright install --with-deps chromium
-      - run: make web-e2e
+      # The gate runs in the image the visual baselines were rendered in, so
+      # font and library differences cannot make the comparison flaky.
+      - run: make web-e2e-image
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
@@ -147,6 +146,7 @@ jobs:
           path: |
             web/playwright-report
             web/test-results
+            web/e2e/**/*-snapshots
       - run: make web-audit
 
   observability:

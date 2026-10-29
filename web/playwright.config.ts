@@ -6,6 +6,16 @@ import { ORIGIN } from "./e2e/coordinator";
 // the fake coordinator in `e2e/coordinator.ts`; `make web-e2e` builds first.
 export default defineConfig({
     testDir: "e2e",
+    // Baselines are rendered by the pinned Linux browser; other platforms
+    // would compare against their own fonts and report noise.
+    testIgnore: process.platform === "linux" ? [] : ["**/visual.spec.ts"],
+    // Visual baselines are rendered by the pinned Linux browser in CI; a
+    // developer's platform fonts would otherwise report noise. See
+    // e2e/visual.spec.ts for the update command.
+    snapshotPathTemplate:
+        "{testDir}/{testFilePath}-snapshots/{arg}{-projectName}{ext}",
+    // Only the pinned-image gate compares; a Linux host's fonts need not match.
+    ignoreSnapshots: process.env["PLAYWRIGHT_VISUAL"] !== "1",
     fullyParallel: true,
     forbidOnly: !!process.env["CI"],
     retries: 0,
