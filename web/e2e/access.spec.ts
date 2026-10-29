@@ -191,6 +191,7 @@ test("issues and revokes a pool token", async ({ page, coordinator }) => {
         });
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto(`/service-identities/${SERVICE_ID}`);
+    await page.getByRole("tab", { name: "Tokens" }).click();
     await page.getByLabel("Worker pool", { exact: true }).fill("default");
     await page
         .getByLabel("Token label (optional)", { exact: true })
@@ -257,7 +258,7 @@ test("connection and table Access keep grants scoped on narrow screens", async (
     await page.setViewportSize({ width: 390, height: 844 });
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto(`/catalogs/${CATALOG_ID}`);
-    await page.getByRole("button", { name: "Access", exact: true }).click();
+    await page.getByRole("tab", { name: "Access", exact: true }).click();
     await expect(
         page.getByRole("link", { name: "Users", exact: true }),
     ).toHaveCount(0);
@@ -268,7 +269,7 @@ test("connection and table Access keep grants scoped on narrow screens", async (
     await expectAccessible(page);
     await page.getByRole("button", { name: "Close", exact: true }).click();
     await page.goto(`/tables/${TABLE_ID}`);
-    await page.getByRole("button", { name: "Access", exact: true }).click();
+    await page.getByRole("tab", { name: "Access", exact: true }).click();
     await expect(page.getByText(/Direct table grants/)).toBeVisible();
     await expectAccessible(page);
     expect(
@@ -385,6 +386,7 @@ test("wraps a long token label on narrow screens and revokes the token", async (
         });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`/service-identities/${SERVICE_ID}`);
+    await page.getByRole("tab", { name: "Tokens" }).click();
     await expect(page.getByText(label, { exact: true })).toBeVisible();
     expect(
         await page.evaluate(

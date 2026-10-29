@@ -22,6 +22,7 @@ import {
     DialogTrigger,
 } from "../../ui/Dialog";
 import { Input, Label } from "../../ui/Input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../ui/Tabs";
 import {
     Table,
     TableBody,
@@ -32,6 +33,11 @@ import {
 } from "../../ui/Table";
 import { Confirm, uncertain, WriteError } from "../../components/Writes";
 import { Grants } from "./Grants";
+import {
+    principalTab,
+    type PrincipalSearch,
+    type PrincipalTab,
+} from "./search";
 import { Tokens } from "./Tokens";
 
 /** Directory APIs require organization-wide authority, independently of scoped access. */
@@ -87,6 +93,7 @@ function Provision({ services }: { services: boolean }) {
                     ? "/service-identities/$principalId"
                     : "/users/$principalId",
                 params: { principalId: principal.id },
+                search: services ? { tab: "tokens" } : {},
             });
         },
     });
@@ -263,9 +270,11 @@ function Directory({ services }: { services: boolean }) {
 export function PrincipalPage({
     id,
     services = false,
+    tab,
 }: {
     id: string;
     services?: boolean;
+    tab?: PrincipalTab | undefined;
 }) {
     const session = useSession();
     if (
@@ -281,12 +290,31 @@ export function PrincipalPage({
                 {services ? "workers:manage" : "grants:manage"} is required.
             </GrantRequired>
         );
-    return <PrincipalDetail id={id} services={services} />;
+    return <PrincipalDetail id={id} services={services} tab={tab} />;
 }
 
-function PrincipalDetail({ id, services }: { id: string; services: boolean }) {
+function PrincipalDetail({
+    id,
+    services,
+    tab,
+}: {
+    id: string;
+    services: boolean;
+    tab?: PrincipalTab | undefined;
+}) {
+    const navigate = useNavigate();
     const query = usePrincipal(id, services);
     const session = useSession();
+    const manage =
+        session !== null && hasOrganizationPermission(session, "grants:manage");
+    const requested = principalTab(tab) ?? "access";
+    const current = !services
+        ? requested === "tokens"
+            ? "access"
+            : requested
+        : manage
+          ? requested
+          : "tokens";
     useBreadcrumbLabel(query.data?.display_name);
     const client = useQueryClient();
     const update = useSessionMutation({
@@ -313,8 +341,6 @@ function PrincipalDetail({ id, services }: { id: string; services: boolean }) {
             />
         );
     const principal = query.data;
-    const manage =
-        session !== null && hasOrganizationPermission(session, "grants:manage");
     return (
         <section className="grid gap-6">
             <PageHeader
@@ -387,10 +413,53 @@ function PrincipalDetail({ id, services }: { id: string; services: boolean }) {
                     )}
                 </CardContent>
             </Card>
-            {manage && (
-                <Grants principal={id} principalName={principal.display_name} />
-            )}
-            {services && <Tokens id={id} active={principal.active} />}
+            <Tabs
+                value={current}
+                onValueChange={(next) => {
+                    const selected = principalTab(next);
+                    const search: PrincipalSearch =
+                        selected === undefined || selected === "access"
+                            ? {}
+                            : { tab: selected };
+                    if (services) {
+                        void navigate({
+                            to: "/service-identities/$principalId",
+                            params: { principalId: id },
+                            search,
+                            replace: true,
+                        });
+                    } else {
+                        void navigate({
+                            to: "/users/$principalId",
+                            params: { principalId: id },
+                            search,
+                            replace: true,
+                        });
+                    }
+                }}
+            >
+                <TabsList>
+                    {(!services || manage) && (
+                        <TabsTrigger value="access">Access</TabsTrigger>
+                    )}
+                    {services && (
+                        <TabsTrigger value="tokens">Tokens</TabsTrigger>
+                    )}
+                </TabsList>
+                <TabsContent value="access">
+                    {manage && (
+                        <Grants
+                            principal={id}
+                            principalName={principal.display_name}
+                        />
+                    )}
+                </TabsContent>
+                {services && (
+                    <TabsContent value="tokens">
+                        <Tokens id={id} active={principal.active} />
+                    </TabsContent>
+                )}
+            </Tabs>
         </section>
     );
 }

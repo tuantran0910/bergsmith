@@ -130,6 +130,7 @@ test("checks an unsaved connection, saves it, and registers a discovered table",
     await expect(
         page.getByRole("heading", { name: "Effective storage profile" }),
     ).toBeVisible();
+    await page.getByRole("tab", { name: "Settings" }).click();
     await expect(page.getByLabel("Connection enabled")).toHaveCSS(
         "cursor",
         "pointer",
@@ -139,6 +140,7 @@ test("checks an unsaved connection, saves it, and registers a discovered table",
         "pointer",
     );
     await expectAccessible(page);
+    await page.getByRole("tab", { name: "Overview" }).click();
     await page.getByRole("button", { name: "Discover tables" }).click();
     await page.getByRole("button", { name: "sales.eu", exact: true }).click();
     await expectAccessible(page);
@@ -205,6 +207,7 @@ test("pauses maintenance and removes a registration with its revision", async ({
         });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`/catalogs/${CATALOG_ID}`);
+    await page.getByRole("tab", { name: "Settings" }).click();
     const budget = page.getByLabel("Maximum execution duration (seconds)");
     await budget.fill("");
     await page.getByRole("button", { name: "Save settings" }).click();
@@ -213,6 +216,9 @@ test("pauses maintenance and removes a registration with its revision", async ({
     ).toHaveLength(0);
     await budget.fill("180");
     await page.getByLabel("Maintenance enabled").uncheck();
+    await expect(
+        page.getByText("Unsaved settings changes.", { exact: true }),
+    ).toBeVisible();
     await page.getByRole("button", { name: "Save settings" }).click();
     await expect(
         page.getByText("Maintenance paused", { exact: true }),
@@ -221,6 +227,7 @@ test("pauses maintenance and removes a registration with its revision", async ({
     expect(
         coordinator.sent("PATCH", `/api/v1/catalogs/${CATALOG_ID}`)[0]?.body,
     ).toEqual({ expected_revision: 0, maintenance_enabled: false });
+    await page.getByRole("tab", { name: "Tables" }).click();
     await page
         .getByRole("button", {
             name: "Remove registration sales.orders",
