@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 
 import { DataTable, sortRows, type DataTableColumn } from "./DataTable";
 
@@ -117,4 +117,80 @@ it("shows the caller's empty state instead of an empty grid", () => {
     );
     expect(screen.getByText("No matches.")).toBeInTheDocument();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
+});
+
+function stubNarrow() {
+    vi.stubGlobal(
+        "matchMedia",
+        vi.fn().mockImplementation((query: string) => ({
+            matches: false,
+            media: query,
+            addEventListener: vi.fn(),
+            removeEventListener: vi.fn(),
+        })),
+    );
+}
+
+const WITH_ACTIONS: DataTableColumn<Row>[] = [
+    ...COLUMNS,
+    {
+        id: "actions",
+        header: "",
+        align: "end",
+        cell: (row) => <button type="button">{`Edit ${row.name}`}</button>,
+    },
+];
+
+it("renders the same rows as cards, with labels and visible actions", () => {
+    stubNarrow();
+    render(
+        <DataTable
+            rows={ROWS}
+            columns={WITH_ACTIONS}
+            getRowKey={(row) => row.id}
+            sort={{ column: "name", direction: "asc" }}
+            onSortChange={() => undefined}
+            caption="Example rows"
+        />,
+    );
+
+    const cards = screen.getByRole("region", { name: "Example rows cards" });
+    expect(within(cards).getAllByRole("article")).toHaveLength(3);
+    const terms = within(cards).getAllByRole("term");
+    expect(terms).toHaveLength(3);
+    expect(terms[0]).toHaveTextContent("Size");
+    expect(
+        within(cards).getByRole("button", { name: "Edit Alpha" }),
+    ).toBeVisible();
+});
+
+it("offers the same ordering from the card layout", () => {
+    stubNarrow();
+    const onSortChange = vi.fn();
+    render(
+        <DataTable
+            rows={ROWS}
+            columns={COLUMNS}
+            getRowKey={(row) => row.id}
+            sort={{ column: "name", direction: "asc" }}
+            onSortChange={onSortChange}
+            caption="Example rows"
+        />,
+    );
+
+    const cards = screen.getByRole("region", { name: "Example rows cards" });
+    fireEvent.change(within(cards).getByRole("combobox", { name: "Sort by" }), {
+        target: { value: "size" },
+    });
+    expect(onSortChange).toHaveBeenCalledWith({
+        column: "size",
+        direction: "asc",
+    });
+    fireEvent.click(
+        within(cards).getByRole("button", { name: "Sort descending" }),
+    );
+    expect(onSortChange).toHaveBeenLastCalledWith({
+        column: "name",
+        direction: "desc",
+    });
 });

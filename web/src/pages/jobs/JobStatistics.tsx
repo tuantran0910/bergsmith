@@ -69,7 +69,7 @@ export function JobStatistics({
             <CardContent>
                 {s ? (
                     <>
-                        <dl className="m-0 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                        <dl className="m-0 grid grid-cols-2 gap-4 xl:grid-cols-4">
                             {metrics.map(([label, value]) => (
                                 <div key={label}>
                                     <dt className="text-xs text-muted-foreground">
