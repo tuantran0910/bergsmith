@@ -46,7 +46,9 @@ test("catalog detail keeps its layout and tabs", async ({
     await page.goto(`/catalogs/${CATALOG_ID}`);
     await expect(page.getByRole("heading", { name: "lake" })).toBeVisible();
     await expect(page.getByRole("tab", { name: "Overview" })).toBeVisible();
-    await expect(page.getByText("Tables sampled", { exact: true })).toBeVisible();
+    await expect(
+        page.getByText("Tables sampled", { exact: true }),
+    ).toBeVisible();
     await expect(page).toHaveScreenshot("catalog-overview.png", {
         animations: "disabled",
         caret: "hide",

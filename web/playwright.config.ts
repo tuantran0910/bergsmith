@@ -14,7 +14,6 @@ export default defineConfig({
     // e2e/visual.spec.ts for the update command.
     snapshotPathTemplate:
         "{testDir}/{testFilePath}-snapshots/{arg}{-projectName}{ext}",
-    ignoreSnapshots: !process.env["CI"],
     fullyParallel: true,
     forbidOnly: !!process.env["CI"],
     retries: 0,
