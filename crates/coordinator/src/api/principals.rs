@@ -20,6 +20,7 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use bergsmith_common::ids::PrincipalId;
 use bergsmith_common::permission::{Permission, ResourceScope};
+use bergsmith_common::search::SearchText;
 use bergsmith_persistence::tenancy::{
     self, NewPrincipal, Principal, PrincipalFilter, PrincipalKind,
 };
@@ -108,7 +109,7 @@ pub(super) async fn list(
     let scope = Scope {
         kind: filter.kind.map(PrincipalKind::as_str),
         active: filter.active,
-        q: filter.display_name.as_ref().map(|q| q.as_str()),
+        q: filter.display_name.as_ref().map(SearchText::as_str),
     };
     let page = Page::parse(
         PageQuery::new(query.limit, query.cursor),

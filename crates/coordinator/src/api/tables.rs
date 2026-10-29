@@ -171,10 +171,9 @@ pub(super) async fn table_facets(
             if filter
                 .catalog
                 .is_none_or(|catalog| connections.contains(&catalog))
+                && let Some(count) = health.get_mut(usize::from(rank))
             {
-                if let Some(count) = health.get_mut(usize::from(rank)) {
-                    *count += 1;
-                }
+                *count += 1;
             }
             if wanted.is_none_or(|wanted| wanted == rank) {
                 for connection in connections {

@@ -39,7 +39,7 @@ use super::{ApiError, ApiState, Caller, resources};
 /// The most values one list filter accepts.
 const MAX_VALUES: usize = 16;
 
-/// The direction of an identifier-ordered list. Identifiers are UUIDv7, so
+/// The direction of an identifier-ordered list. Identifiers are `UUIDv7`, so
 /// `newest` lists the most recently created first.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]

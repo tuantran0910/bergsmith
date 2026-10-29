@@ -61,7 +61,7 @@ async fn job_on(
 fn ids(body: &Value) -> Vec<String> {
     body["items"]
         .as_array()
-        .unwrap_or_else(|| panic!("not a page: {body}"))
+        .unwrap()
         .iter()
         .map(|item| item["id"].as_str().unwrap().to_owned())
         .collect()
@@ -71,7 +71,7 @@ fn ids(body: &Value) -> Vec<String> {
 fn counts(dimension: &Value) -> Vec<(String, i64)> {
     dimension
         .as_array()
-        .unwrap_or_else(|| panic!("not a facet: {dimension}"))
+        .unwrap()
         .iter()
         .map(|entry| {
             (
