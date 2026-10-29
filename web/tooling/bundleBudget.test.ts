@@ -1,6 +1,7 @@
 import {
     firstLoadBytes,
     firstLoadFailure,
+    lazyChunkFailure,
     lazyChunks,
     stylesheetFailure,
 } from "./bundleBudget";
@@ -133,6 +134,26 @@ describe("stylesheetFailure", () => {
     it("reports stylesheets over the budget", () => {
         expect(stylesheetFailure(11_001, 11_000)).toBe(
             "Stylesheets are 11.0 kB gzipped, over the 11.0 kB budget",
+        );
+    });
+});
+
+describe("lazyChunkFailure", () => {
+    const chunks = [
+        chunk("entry.js", 900, { isEntry: true, imports: ["shared.js"] }),
+        chunk("shared.js", 900),
+        chunk("small.js", 100),
+        chunk("big.js", 201),
+        chunk("bigger.js", 300),
+    ];
+
+    it("ignores first-load chunks and lazy chunks within the budget", () => {
+        expect(lazyChunkFailure(chunks, 300)).toBeNull();
+    });
+
+    it("lists every lazy chunk over the budget, largest first", () => {
+        expect(lazyChunkFailure(chunks, 200)).toBe(
+            "Lazy chunks over the 0.2 kB per-chunk budget: bigger.js 0.3 kB, big.js 0.2 kB",
         );
     });
 });

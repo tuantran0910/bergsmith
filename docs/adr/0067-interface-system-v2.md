@@ -73,6 +73,29 @@ This supersedes 0046's "neutral graphite surfaces and one accent".
   `prefers-reduced-motion`, every duration token is zero, transitions are
   removed, and finite animations end at once.
 
+### Primitives
+
+- No animation library. Base UI exposes `data-starting-style` and
+  `data-ending-style` on every popup, so CSS transitions on the motion tokens
+  cover enter and exit without the bundle cost or a library that could
+  inject `<style>` elements.
+- The app renders inside Base UI's `CSPProvider` with
+  `disableStyleElements`; the one scrollbar rule Base UI would inject lives
+  in `styles.css`. The custom Select that 0056 kept for this reason can now
+  be revisited; it stays until a task needs more than it offers.
+- Floating primitives (menu, popover, tooltip) cost about 26 kB gzipped and
+  stay out of the first-load bundle. Page-level uses load with their page
+  chunk; shell-level menus use `MenuButton`, a plain eager button whose menu
+  loads on hover, focus, or the first press and anchors to it.
+- Menus and the peek panel are modal. Base UI's non-modal popups add
+  focusable focus guards marked `aria-hidden`, which fail WCAG checks.
+- Shell controls avoid primitives with a measurable cost: the segmented
+  control is native `aria-pressed` buttons, and scroll panes use native thin
+  scrollbars instead of a scroll-area component.
+- Lint rejects `innerHTML` and `outerHTML` assignment,
+  `insertAdjacentHTML`, `document.write`, `eval`, `new Function`, and the
+  JSX `style` attribute, in addition to `dangerouslySetInnerHTML` (0046).
+
 ### Engineering limits
 
 These are enforced by gates, not by review:
@@ -80,7 +103,8 @@ These are enforced by gates, not by review:
 - Bundle: first-load JavaScript stays within the 175 kB gzipped budget (0056),
   and BS-033 adds at most 15 kB to it. Stylesheets have their own gzipped
   budget in the same build plugin, set at about 10% over the 9.9 kB measured
-  when this decision was made.
+  when this decision was made, and each lazy chunk is limited to 50 kB
+  gzipped.
 - The coordinator's CSP and response headers do not change. Every new popup
   primitive and animation library passes the browser gate's policy check
   before a page uses it; positioning writes CSSOM properties, never `style`

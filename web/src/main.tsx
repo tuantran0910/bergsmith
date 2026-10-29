@@ -1,3 +1,4 @@
+import { CSPProvider } from "@base-ui/react/csp-provider";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -19,9 +20,13 @@ const root = document.getElementById("root");
 if (root !== null) {
     createRoot(root).render(
         <StrictMode>
-            <QueryClientProvider client={createQueryClient()}>
-                <App />
-            </QueryClientProvider>
+            {/* The CSP forbids inline <style> elements; the one rule Base UI
+                would inject lives in styles.css instead (ADR 0067). */}
+            <CSPProvider disableStyleElements>
+                <QueryClientProvider client={createQueryClient()}>
+                    <App />
+                </QueryClientProvider>
+            </CSPProvider>
         </StrictMode>,
     );
 }

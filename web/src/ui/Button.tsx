@@ -6,7 +6,7 @@ import { type VariantProps, cva } from "class-variance-authority";
 import { cn } from "./cn";
 
 export const buttonVariants = cva(
-    "inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-transparent text-sm font-semibold whitespace-nowrap transition-colors outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+    "inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border border-transparent text-sm font-semibold whitespace-nowrap transition-colors duration-(--duration-instant) outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
     {
         variants: {
             variant: {
@@ -23,10 +23,10 @@ export const buttonVariants = cva(
             },
             size: {
                 default: "h-8 px-2.5",
-                sm: "h-7 gap-1 rounded-md px-2.5 text-xs [&_svg:not([class*='size-'])]:size-3.5",
+                sm: "h-7 gap-1 px-2 text-xs [&_svg:not([class*='size-'])]:size-3.5",
                 lg: "h-9 px-3",
                 icon: "size-8",
-                "icon-sm": "size-7 rounded-md",
+                "icon-sm": "size-7",
             },
         },
         defaultVariants: {

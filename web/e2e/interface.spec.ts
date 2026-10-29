@@ -1,6 +1,7 @@
-// The interface tokens (BS-033.T1, ADR 0067): the font is served by the
-// deployment's own origin and preloaded, the type scale sets 13 px body text,
-// and reduced motion leaves no transition behind an interaction.
+// The interface system (BS-033.T1 and T2, ADR 0067): the font is served by
+// the deployment's own origin and preloaded, the type scale sets 13 px body
+// text, reduced motion leaves no transition behind an interaction, and the
+// floating primitives work under the CSP (the fixture fails on violations).
 
 import { schema } from "../src/test/fakes";
 import {
@@ -12,7 +13,13 @@ import {
     session,
     table,
 } from "../src/test/fixtures";
-import { type FakeCoordinator, expect, json, test } from "./coordinator";
+import {
+    type FakeCoordinator,
+    expect,
+    expectAccessible,
+    json,
+    test,
+} from "./coordinator";
 
 function signedIn(coordinator: FakeCoordinator) {
     coordinator
@@ -113,4 +120,47 @@ test("reduced motion leaves no transition after an interaction", async ({
                     .length,
         ),
     ).toBe(0);
+});
+
+test("creates through the New menu by keyboard", async ({
+    page,
+    coordinator,
+}) => {
+    signedIn(coordinator);
+    await page.goto(`/catalogs/${CATALOG_ID}`);
+    const trigger = page.getByRole("button", { name: "New" });
+    await trigger.focus();
+    await page.keyboard.press("Enter");
+    const menu = page.getByRole("menu");
+    await expect(menu).toBeVisible();
+    await expect(trigger).toHaveAttribute("aria-expanded", "true");
+    await page.keyboard.press("ArrowDown");
+    await expect(menu.getByRole("menuitem", { name: "Catalog" })).toBeFocused();
+    await expectAccessible(page);
+    await page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+
+    await trigger.click();
+    await page.getByRole("menuitem", { name: "Catalog" }).click();
+    await expect(page).toHaveURL(/\/catalogs\/new$/);
+    await expect(page.getByLabel("Connection name")).toBeVisible();
+});
+
+test("switches the theme with the segmented control", async ({
+    page,
+    coordinator,
+}) => {
+    signedIn(coordinator);
+    await page.goto(`/catalogs/${CATALOG_ID}`);
+    const theme = page.getByRole("group", { name: "Theme" });
+    await theme.getByRole("button", { name: "Dark theme" }).click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+    await expect(
+        theme.getByRole("button", { name: "Dark theme" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await theme.getByRole("button", { name: "Dark theme" }).click();
+    await expect(
+        theme.getByRole("button", { name: "Dark theme" }),
+    ).toHaveAttribute("aria-pressed", "true");
 });

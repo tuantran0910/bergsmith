@@ -1,7 +1,7 @@
 import { Rows3Icon, Rows4Icon, type LucideIcon } from "lucide-react";
 
 import { DENSITIES, type Density, useDensityPreference } from "../density";
-import { Button } from "../ui/Button";
+import { SegmentedControl } from "../ui/SegmentedControl";
 
 const OPTIONS: Record<Density, { label: string; icon: LucideIcon }> = {
     comfortable: { label: "Comfortable density", icon: Rows3Icon },
@@ -21,29 +21,15 @@ export function DensityToggle(props: DensityToggleProps = {}) {
     const density = props.density ?? stored;
     const choose = props.onChange ?? chooseStored;
     return (
-        <div
-            role="group"
-            aria-label="Density"
-            className="inline-flex rounded-lg border border-border p-0.5"
-        >
-            {DENSITIES.map((option) => {
-                const { label, icon: Icon } = OPTIONS[option];
-                return (
-                    <Button
-                        key={option}
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={label}
-                        aria-pressed={density === option}
-                        title={label}
-                        onClick={() => {
-                            choose(option);
-                        }}
-                    >
-                        <Icon aria-hidden="true" />
-                    </Button>
-                );
-            })}
-        </div>
+        <SegmentedControl
+            label="Density"
+            iconOnly
+            value={density}
+            onChange={choose}
+            options={DENSITIES.map((option) => ({
+                value: option,
+                ...OPTIONS[option],
+            }))}
+        />
     );
 }

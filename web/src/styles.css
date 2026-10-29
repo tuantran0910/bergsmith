@@ -143,6 +143,23 @@
     }
 }
 
+/* The rule Base UI's scroll area and select would inject as a <style>
+   element, which the CSP blocks; `CSPProvider` in main.tsx turns that off. */
+.base-ui-disable-scrollbar {
+    scrollbar-width: none;
+}
+
+.base-ui-disable-scrollbar::-webkit-scrollbar {
+    display: none;
+}
+
+/* A quiet native scrollbar for panes such as the navigation rail; it keeps
+   the keyboard, wheel, and touch behavior of a plain scroll container. */
+.thin-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: var(--foreground-faint) transparent;
+}
+
 /* Phones zoom into a focused field whose text is under 16 px. Unlayered, so
    it outranks the size utilities on touch screens only. */
 @media (pointer: coarse) {

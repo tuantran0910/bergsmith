@@ -8,10 +8,15 @@ import { bundleBudget } from "./tooling/bundleBudget.ts";
 import { fontPreload } from "./tooling/fontPreload.ts";
 
 /**
- * Gzipped budgets. JavaScript counts the entry graph only; lazy page chunks
- * are excluded. CSS was 9.9 kB when ADR 0067 set its budget at about +10%.
+ * Gzipped budgets. First-load JavaScript counts the entry graph only; each
+ * lazy chunk has its own limit. CSS was 9.9 kB when ADR 0067 set its budget
+ * at about +10%.
  */
-const BUDGETS = { javascriptBytes: 175_000, stylesheetBytes: 11_000 };
+const BUDGETS = {
+    javascriptBytes: 175_000,
+    stylesheetBytes: 11_000,
+    lazyChunkBytes: 50_000,
+};
 
 // The development server proxies the coordinator so the session and CSRF
 // cookies stay same-origin, exactly as when the coordinator serves the build.

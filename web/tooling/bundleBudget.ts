@@ -87,6 +87,23 @@ export function firstLoadFailure(
     return `First-load JavaScript is ${kilobytes(total)} gzipped, over the ${kilobytes(budgetBytes)} budget: ${largest}`;
 }
 
+/** Why a lazy chunk is too big, largest first, or `null` within budget. */
+export function lazyChunkFailure(
+    chunks: readonly EmittedChunk[],
+    budgetBytes: number,
+): string | null {
+    const over = lazyChunks(chunks).chunks.filter(
+        (chunk) => chunk.gzipBytes > budgetBytes,
+    );
+    if (over.length === 0) {
+        return null;
+    }
+    const listed = over
+        .map((chunk) => `${chunk.fileName} ${kilobytes(chunk.gzipBytes)}`)
+        .join(", ");
+    return `Lazy chunks over the ${kilobytes(budgetBytes)} per-chunk budget: ${listed}`;
+}
+
 /** Why the stylesheets are too big, or `null` within budget. */
 export function stylesheetFailure(
     gzipBytes: number,
@@ -107,6 +124,8 @@ export interface Budgets {
     javascriptBytes: number;
     /** Every emitted stylesheet; the UI ships one, loaded up front. */
     stylesheetBytes: number;
+    /** Each lazy chunk on its own, so one page cannot grow unnoticed. */
+    lazyChunkBytes: number;
 }
 
 /** Fails the production build when first-load JavaScript or CSS is too big. */
@@ -155,6 +174,7 @@ export function bundleBudget(budgets: Budgets): Plugin {
             );
             const failure =
                 firstLoadFailure(chunks, budgetBytes) ??
+                lazyChunkFailure(chunks, budgets.lazyChunkBytes) ??
                 stylesheetFailure(stylesheets, budgets.stylesheetBytes);
             if (failure !== null) {
                 this.error(failure);

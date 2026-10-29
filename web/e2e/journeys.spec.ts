@@ -918,6 +918,8 @@ test("the policy blocks inline styles and string script sinks", async ({
         style.textContent = "body { color: red }";
         document.head.append(style);
         try {
+            // The probe: this sink must throw under the policy.
+            // eslint-disable-next-line no-restricted-syntax
             document.body.insertAdjacentHTML("beforeend", "<b>raw</b>");
             return false;
         } catch {

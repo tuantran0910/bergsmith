@@ -36,8 +36,9 @@ import {
 import { setSession, useSessionMutation } from "../queryClient";
 import { useDensityPreference, type Density } from "../density";
 import { useThemePreference, type ThemePreference } from "../theme";
-import { Button, buttonVariants } from "../ui/Button";
+import { Button } from "../ui/Button";
 import { DialogClose } from "../ui/Dialog";
+import { MenuButton } from "../ui/MenuButton";
 import { BreadcrumbLabelProvider, Breadcrumbs } from "./Breadcrumbs";
 import { DensityToggle } from "./DensityToggle";
 import { ErrorNotice } from "./ErrorNotice";
@@ -66,6 +67,8 @@ interface Destination {
 /** A shell-level create action; the rail does not list these. */
 interface CreateTarget {
     to: "/catalogs/new";
+    label: string;
+    icon: LucideIcon;
     allowed: (session: SessionInfo) => boolean;
 }
 
@@ -160,6 +163,8 @@ const OVERVIEW: Destination = {
 const CREATE_TARGETS: readonly CreateTarget[] = [
     {
         to: "/catalogs/new",
+        label: "Catalog",
+        icon: DatabaseIcon,
         allowed: (session) => canManageCatalog(session),
     },
 ];
@@ -295,9 +300,11 @@ export function AppShell({
                 </Link>
                 <nav
                     aria-label="Main"
-                    className="hidden flex-1 flex-col overflow-y-auto md:flex"
+                    className="hidden min-h-0 flex-1 flex-col md:flex"
                 >
-                    <NavBody session={session} />
+                    <div className="thin-scrollbar flex-1 overflow-y-auto overscroll-contain">
+                        <NavBody session={session} />
+                    </div>
                 </nav>
                 <section
                     aria-label="Account"
@@ -357,17 +364,21 @@ export function AppShell({
                                     <SearchIcon aria-hidden="true" />
                                     Search
                                 </Button>
-                                {creates[0] && (
-                                    <Link
-                                        to={creates[0].to}
-                                        className={buttonVariants({
-                                            variant: "outline",
-                                            size: "sm",
-                                        })}
+                                {creates.length > 0 && (
+                                    <MenuButton
+                                        align="end"
+                                        items={creates.map(
+                                            ({ to, label, icon }) => ({
+                                                key: to,
+                                                label,
+                                                icon,
+                                                render: <Link to={to} />,
+                                            }),
+                                        )}
                                     >
                                         <PlusIcon aria-hidden="true" />
                                         New
-                                    </Link>
+                                    </MenuButton>
                                 )}
                             </div>
                         </div>
