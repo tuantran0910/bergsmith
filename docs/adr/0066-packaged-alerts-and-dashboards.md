@@ -24,9 +24,10 @@ Ship one Prometheus rule file and two Grafana dashboards under
 `deploy/observability/`.
 
 The rule file contains ten alert templates in three groups: evidence, work,
-and tables. Five evidence rules alert on `bergsmith_ledger_up` and
-`bergsmith_health_metrics_up` independently of value freshness, and on each
-snapshot's age while that component still reports success. Every dependent
+and tables. In the evidence group, two rules alert on refresh failure, two on
+snapshot age while the component still reports success, and one on the absence
+of any scraped ledger metric. The absence rule is the only one that covers a
+dead or unscrapeable listener; every other rule needs a scrape to exist. Every dependent
 rule is gated with `and on()` on a successful, recent read of the snapshot it
 interprets, so one broken cache raises one evidence alert rather than a burst
 of misleading work alerts. Work rules use only ledger metrics; the table rule
@@ -35,7 +36,7 @@ uses only health metrics. No rule uses a recording rule or a new series.
 Default thresholds are fixed expressions, tuned by editing an operator copy:
 publication age 3,600 seconds, schedule lag 300 seconds, oldest pending task
 300 seconds (only while no worker session is live), evidence freshness 120
-seconds, and critical tables for 15 minutes. Hold times are at least two
+seconds, critical tables for 15 minutes, and an absent scrape for 10 minutes. Hold times are at least two
 evaluation intervals. Unresolved leases and critical tables are tickets, not
 pages.
 
@@ -43,10 +44,10 @@ The Fleet dashboard shows evidence freshness first, then health counts and
 assessed statistics, then queue, attempt, publication, session, schedule, and
 RPC signals, and finally connection inventory. The Connections dashboard scopes
 the same aggregates to one connection chosen from the
-`bergsmith_connection_tables_health` label values. Both read only aggregate
-metrics by default; neither assumes that opt-in table series exist, and both
-state that statistics are logical sample sums and that connection totals are
-not additive.
+`bergsmith_connection_tables_health` label values. Both are aggregate-only
+even when `per_table_metrics` is enabled: neither queries individual-table
+series, and both state that statistics are logical sample sums and that
+connection totals are not additive.
 
 Panels use one datasource UID, `bergsmith-prometheus`, which operators map to
 their Prometheus instance. The example scrape configuration targets the leader

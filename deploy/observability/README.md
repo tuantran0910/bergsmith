@@ -46,17 +46,20 @@ the metric contract is [docs/operations/observability.md](../../docs/operations/
    |Pending task without workers|300 s|Queued work with no live worker session|
    |Expired attempt leases|any for 10 m|Attempts holding expired leases and not yet fenced|
    |Critical tables|any for 15 m|Current health reports at least one critical table|
+   |Scrape absent|any for 10 m|No ledger metric has been scraped; the listener is down or misconfigured|
 
-   Evidence alerts fire on their own component's `up`/age gauges. Dependent
-   alerts include `and on()` gates on a successful read and a snapshot age under
-   120 seconds, so a stale or failed cache suppresses the alerts that would
-   otherwise interpret it. Grafana needs the same freshness on the panels; they
+   Evidence rules fire on their own component's `up`/age gauges, plus one rule
+   on the absence of any scraped ledger metric; only that absence rule survives
+   a dead or unscrapeable listener. Dependent alerts include `and on()` gates on
+   a successful read and a snapshot age under 120 seconds, so a stale or failed
+   cache suppresses the alerts that would otherwise interpret it. Grafana needs the same freshness on the panels; they
    show both component refreshes and their ages.
 
 4. Import the two dashboards, or provision the directory and map the
    `bergsmith-prometheus` datasource UID to your Prometheus instance. Both
-   dashboards are aggregate-only by default. The Connections variable comes
-   from connection label values and needs no metric change.
+   dashboards are aggregate-only even when `per_table_metrics` is enabled; they
+   never query individual-table series. The Connections variable comes from
+   connection label values and needs no metric change.
 
 5. Route alerts in Alertmanager. The rules set `severity: page` or
    `severity: ticket` and `component: coordinator` or `worker`; routing is
