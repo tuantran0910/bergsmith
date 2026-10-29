@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 
 import { DataTable, sortRows, type DataTableColumn } from "./DataTable";
 
@@ -119,16 +119,35 @@ it("shows the caller's empty state instead of an empty grid", () => {
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
 });
 
-function stubNarrow() {
+/** A matchMedia stub whose min-width answer follows a settable viewport. */
+function stubMedia(initialWidth = 320) {
+    const listeners = new Set<() => void>();
+    let width = initialWidth;
     vi.stubGlobal(
         "matchMedia",
-        vi.fn().mockImplementation((query: string) => ({
-            matches: false,
+        vi.fn((query: string) => ({
+            matches: query === "(min-width: 40rem)" ? width >= 640 : false,
             media: query,
-            addEventListener: vi.fn(),
-            removeEventListener: vi.fn(),
+            addEventListener: (_event: string, listener: () => void) => {
+                listeners.add(listener);
+            },
+            removeEventListener: (_event: string, listener: () => void) => {
+                listeners.delete(listener);
+            },
         })),
     );
+    return {
+        setWidth(next: number) {
+            width = next;
+            for (const listener of listeners) {
+                listener();
+            }
+        },
+    };
+}
+
+function stubNarrow() {
+    stubMedia(320);
 }
 
 const WITH_ACTIONS: DataTableColumn<Row>[] = [
@@ -193,4 +212,31 @@ it("offers the same ordering from the card layout", () => {
         column: "name",
         direction: "desc",
     });
+});
+
+it("switches layouts exactly at the 40rem breakpoint", async () => {
+    const media = stubMedia(639);
+    render(
+        <DataTable
+            rows={ROWS}
+            columns={COLUMNS}
+            getRowKey={(row) => row.id}
+            caption="Example rows"
+        />,
+    );
+    expect(
+        screen.getByRole("region", { name: "Example rows cards" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+
+    await act(async () => {
+        media.setWidth(641);
+        await Promise.resolve();
+    });
+    expect(
+        screen.getByRole("table", { name: "Example rows" }),
+    ).toBeInTheDocument();
+    expect(
+        screen.queryByRole("region", { name: "Example rows cards" }),
+    ).not.toBeInTheDocument();
 });

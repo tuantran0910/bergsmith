@@ -7,7 +7,7 @@
 // carries the inline copy in the accessibility tree.
 
 import { SlidersHorizontalIcon, SearchIcon, XIcon } from "lucide-react";
-import { useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 import { Button } from "../ui/Button";
 import {
@@ -45,8 +45,34 @@ export function FilterBar({
     result?: ReactNode;
 }) {
     const id = useId();
+    const search = useRef<HTMLInputElement>(null);
     const [filtersOpen, setFiltersOpen] = useState(false);
     const narrow = !useMediaQuery("(min-width: 40rem)");
+
+    // The drawer exists only below the breakpoint. When the layout widens while
+    // it is open, close it and return focus to the search field, the one
+    // filter control both layouts share; the Filters button has unmounted.
+    useEffect(() => {
+        if (narrow) {
+            return;
+        }
+        setFiltersOpen((wasOpen) => {
+            if (wasOpen) {
+                queueMicrotask(() => {
+                    search.current?.focus();
+                });
+            }
+            return false;
+        });
+    }, [narrow]);
+
+    const resultSummary =
+        result === undefined ? null : (
+            <p className="m-0 text-sm text-muted-foreground" aria-live="polite">
+                {result}
+            </p>
+        );
+
     return (
         <div className="mb-4 grid gap-2">
             <div className="flex flex-wrap items-center gap-2">
@@ -59,6 +85,7 @@ export function FilterBar({
                         className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
                     />
                     <Input
+                        ref={search}
                         id={id}
                         type="search"
                         value={query}
@@ -89,13 +116,8 @@ export function FilterBar({
                         Clear filters
                     </Button>
                 )}
-                {result !== undefined && (
-                    <p
-                        className="m-0 ml-auto text-sm text-muted-foreground"
-                        aria-live="polite"
-                    >
-                        {result}
-                    </p>
+                {result !== undefined && !(narrow && filtersOpen) && (
+                    <div className="ml-auto">{resultSummary}</div>
                 )}
             </div>
             {narrow && children !== undefined && (
@@ -112,6 +134,7 @@ export function FilterBar({
                         </DialogHeader>
                         <div className="grid gap-3">{children}</div>
                         <DialogFooter>
+                            <div className="sm:mr-auto">{resultSummary}</div>
                             <DialogClose render={<Button variant="outline" />}>
                                 Show results
                             </DialogClose>

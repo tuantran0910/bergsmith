@@ -101,6 +101,12 @@ for (const width of [320, 390] as const) {
             const drawer = page.getByRole("dialog", { name: "Filters" });
             await expect(drawer).toBeVisible();
             await expect(drawer.getByText("Health")).toBeVisible();
+            await drawer.getByRole("combobox", { name: "Health" }).click();
+            await drawer.getByRole("option", { name: "Critical" }).click();
+            await expect(
+                drawer.getByRole("combobox", { name: "Health" }),
+            ).toContainText("Critical");
+            await expect(drawer.getByText(/of 1 tables/)).toBeVisible();
             await expect(
                 drawer.getByRole("button", { name: "Show results" }),
             ).toBeVisible();
