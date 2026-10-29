@@ -211,6 +211,9 @@ tracking task.
 - Use `#[must_use]` on pure functions and on types whose values must be handled.
 - Make invalid states unrepresentable: newtypes for IDs, enums for states,
   validated constructors instead of public fields that can disagree.
+- Any Python tooling file (none ships today) is formatted with `ruff format`
+  and linted with `ruff check`; keep it out of the shipped runtime and test
+  paths.
 
 ### Errors
 
