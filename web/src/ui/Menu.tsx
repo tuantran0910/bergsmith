@@ -150,6 +150,26 @@ export function MenuRadioItem({
     );
 }
 
+/** An item that toggles on its own, such as a column's visibility. */
+export function MenuCheckboxItem({
+    className,
+    children,
+    ...props
+}: MenuPrimitive.CheckboxItem.Props) {
+    return (
+        <MenuPrimitive.CheckboxItem
+            data-slot="menu-checkbox-item"
+            className={cn(itemClass, "pr-8", className)}
+            {...props}
+        >
+            {children}
+            <MenuPrimitive.CheckboxItemIndicator className="absolute right-2 flex items-center">
+                <CheckIcon aria-hidden="true" />
+            </MenuPrimitive.CheckboxItemIndicator>
+        </MenuPrimitive.CheckboxItem>
+    );
+}
+
 /** A shortcut hint aligned to the end of an item. */
 export function MenuShortcut({ className, ...props }: ComponentProps<"span">) {
     return (

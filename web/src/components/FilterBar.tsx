@@ -5,11 +5,18 @@
 // Below the small breakpoint the filters open in a bottom drawer (BS-032.T4);
 // the controls render exactly once, in the drawer, so a mobile session never
 // carries the inline copy in the accessibility tree.
+//
+// A server-filtered list passes `delay`: the field keeps its own text and
+// reports it after a pause in typing, so a request is not sent per keystroke
+// (ADR 0067).
 
 import { SlidersHorizontalIcon, SearchIcon, XIcon } from "lucide-react";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
+import { MAX_SEARCH } from "./listSearch";
+
 import { Button } from "../ui/Button";
+import { cn } from "../ui/cn";
 import {
     Dialog,
     DialogClose,
@@ -31,6 +38,9 @@ export function FilterBar({
     children,
     onClear,
     result,
+    delay,
+    tools,
+    pills,
 }: {
     query: string;
     onQueryChange: (value: string) => void;
@@ -43,8 +53,42 @@ export function FilterBar({
     onClear?: (() => void) | undefined;
     /** For example `3 of 10 tables`; announced politely when it changes. */
     result?: ReactNode;
+    /** Milliseconds of quiet typing before `onQueryChange`; omit to report each change. */
+    delay?: number;
+    /** Controls that stay inline at every width, such as the column menu. */
+    tools?: ReactNode;
+    /** The active filters, as removable pills under the bar. */
+    pills?: ReactNode;
 }) {
     const id = useId();
+    // The field's own text. It follows `query` when the page changes it (for
+    // example "Clear filters"), but not when the change is its own report.
+    const [draft, setDraft] = useState(query);
+    const [reported, setReported] = useState(query);
+    const [seen, setSeen] = useState(query);
+    if (query !== seen) {
+        setSeen(query);
+        if (query !== reported) {
+            setReported(query);
+            setDraft(query);
+        }
+    }
+    const report = useRef(onQueryChange);
+    useEffect(() => {
+        report.current = onQueryChange;
+    });
+    useEffect(() => {
+        if (delay === undefined || draft === reported) {
+            return undefined;
+        }
+        const timer = window.setTimeout(() => {
+            setReported(draft);
+            report.current(draft);
+        }, delay);
+        return () => {
+            window.clearTimeout(timer);
+        };
+    }, [draft, reported, delay]);
     const search = useRef<HTMLInputElement>(null);
     const [filtersOpen, setFiltersOpen] = useState(false);
     const narrow = !useMediaQuery("(min-width: 40rem)");
@@ -88,10 +132,16 @@ export function FilterBar({
                         ref={search}
                         id={id}
                         type="search"
-                        value={query}
+                        value={draft}
+                        maxLength={MAX_SEARCH}
                         placeholder={placeholder ?? queryLabel}
                         onChange={(event) => {
-                            onQueryChange(event.target.value);
+                            const value = event.target.value;
+                            setDraft(value);
+                            if (delay === undefined) {
+                                setReported(value);
+                                onQueryChange(value);
+                            }
                         }}
                         className="pl-8"
                     />
@@ -119,7 +169,19 @@ export function FilterBar({
                 {result !== undefined && !(narrow && filtersOpen) && (
                     <div className="ml-auto">{resultSummary}</div>
                 )}
+                {tools !== undefined && (
+                    <div
+                        className={cn(
+                            "flex items-center gap-2",
+                            (result === undefined || (narrow && filtersOpen)) &&
+                                "ml-auto",
+                        )}
+                    >
+                        {tools}
+                    </div>
+                )}
             </div>
+            {pills}
             {narrow && children !== undefined && (
                 <Dialog open={filtersOpen} onOpenChange={setFiltersOpen}>
                     <DialogContent

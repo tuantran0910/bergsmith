@@ -18,7 +18,7 @@ import { Root } from "./Root";
 import { EmptyState } from "./components/Page";
 import { validatePrincipalSearch } from "./pages/access/search";
 import { validateCatalogSearch } from "./pages/catalogs/search";
-import { validateJobSearch } from "./pages/jobs/search";
+import { validateJobSearch, validateJobsSearch } from "./pages/jobs/search";
 import {
     validateTableSearch,
     validateTablesSearch,
@@ -204,6 +204,7 @@ const tableRoute = createRoute({
 const jobsRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/jobs",
+    validateSearch: validateJobsSearch,
     component: JobsPage,
 });
 

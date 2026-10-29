@@ -652,7 +652,7 @@ test("lands on the overview and opens the tables", async ({
     await expectAccessible(page);
 });
 
-test("filters the table list and keeps the filter in the address", async ({
+test("searches and filters tables on the coordinator, kept in the address", async ({
     page,
     coordinator,
 }) => {
@@ -671,15 +671,28 @@ test("filters the table list and keeps the filter in the address", async ({
             },
         ],
     });
-    coordinator.on("GET", "/api/v1/tables", () =>
-        json(
-            200,
-            schema("TablePage", {
-                items: [table, other],
-                next_cursor: null,
-            }),
-        ),
-    );
+    coordinator
+        .on("GET", "/api/v1/tables", (sent) =>
+            json(
+                200,
+                schema("TablePage", {
+                    items:
+                        new URLSearchParams(sent.search).get("q") === "events"
+                            ? [other]
+                            : [table, other],
+                    next_cursor: null,
+                }),
+            ),
+        )
+        .on("GET", "/api/v1/tables/facets", () =>
+            json(
+                200,
+                schema("TableFacets", {
+                    health: [{ value: "unassessed", count: 2 }],
+                    catalog: [{ value: CATALOG_ID, count: 2 }],
+                }),
+            ),
+        );
 
     await page.goto("/tables");
     await expect(page.getByRole("link", { name: /^orders/ })).toBeVisible();
@@ -688,8 +701,28 @@ test("filters the table list and keeps the filter in the address", async ({
     await expect(page.getByRole("link", { name: /^orders/ })).toBeHidden();
     await expect(page.getByRole("link", { name: /^events/ })).toBeVisible();
     await expect(page).toHaveURL(/q=events/);
-    await expect(page.getByText("1 of 2 tables")).toBeVisible();
+    // The coordinator searched once for the whole text.
+    expect(
+        coordinator.requests
+            .filter((sent) => sent.pathname === "/api/v1/tables")
+            .map((sent) => new URLSearchParams(sent.search).get("q"))
+            .filter((q) => q !== null),
+    ).toEqual(["events"]);
     await expectAccessible(page);
+
+    // A facet opens in a popover with its counts; the choice becomes a pill.
+    await page.getByRole("button", { name: "Health filter" }).click();
+    const notAssessed = page.getByRole("radio", { name: "Not assessed 2" });
+    await expect(notAssessed).toBeVisible();
+    await expectAccessible(page);
+    await notAssessed.check();
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(/health=unassessed/);
+    await expect(
+        page.getByRole("button", {
+            name: "Remove filter Health: Not assessed",
+        }),
+    ).toBeVisible();
 
     await page.getByRole("button", { name: "Clear filters" }).click();
     await expect(page.getByRole("link", { name: /^orders/ })).toBeVisible();
@@ -983,12 +1016,25 @@ test("filters tables by health and opens the health tab", async ({
         )
         .on("GET", "/api/v1/tables/{id}/recommendations", () =>
             json(200, tableRecommendations()),
+        )
+        .on("GET", "/api/v1/tables/facets", () =>
+            json(
+                200,
+                schema("TableFacets", {
+                    health: [
+                        { value: "critical", count: 1 },
+                        { value: "warning", count: 1 },
+                    ],
+                    catalog: [],
+                }),
+            ),
         );
 
     await page.goto("/tables");
     await expect(page.getByRole("cell", { name: "Warning" })).toBeVisible();
-    await page.getByRole("combobox", { name: "Health" }).click();
-    await page.getByRole("option", { name: "Critical" }).click();
+    await page.getByRole("button", { name: "Health filter" }).click();
+    await page.getByRole("radio", { name: "Critical 1" }).check();
+    await page.keyboard.press("Escape");
     await expect(page).toHaveURL(/health=critical/);
     await expect(page.getByRole("cell", { name: "Critical" })).toBeVisible();
     await expectAccessible(page);
@@ -1024,5 +1070,174 @@ test("shows sampled storage with candidate and scope explanations", async ({
     ).toBeVisible();
     await expectAccessible(page);
     await page.setViewportSize({ width: 1440, height: 900 });
+    await expectAccessible(page);
+});
+
+test("filters jobs by state and hides a column", async ({
+    page,
+    coordinator,
+}) => {
+    signedIn(coordinator);
+    const running = job("Running", {
+        id: "0190f3c4-0000-7000-8000-00000000aaaa",
+    });
+    const failed = job("Failed", {
+        id: "0190f3c4-0000-7000-8000-00000000bbbb",
+    });
+    coordinator
+        .on("GET", "/api/v1/jobs", (sent) =>
+            json(
+                200,
+                schema("JobPage", {
+                    items:
+                        new URLSearchParams(sent.search).get("state") ===
+                        "Failed"
+                            ? [failed]
+                            : [running, failed],
+                    next_cursor: null,
+                }),
+            ),
+        )
+        .on("GET", "/api/v1/jobs/facets", () =>
+            json(
+                200,
+                schema("JobFacets", {
+                    state: [
+                        { value: "Running", count: 1 },
+                        { value: "Failed", count: 1 },
+                    ],
+                    operation: [{ value: "compact", count: 2 }],
+                }),
+            ),
+        );
+
+    await page.goto("/jobs");
+    await expect(
+        page.getByRole("link", { name: "Job 0000aaaa" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "State filter" }).click();
+    await page.getByRole("checkbox", { name: "Failed 1" }).check();
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(/state=Failed/);
+    await expect(page.getByRole("link", { name: "Job 0000aaaa" })).toBeHidden();
+    await expect(
+        page.getByRole("link", { name: "Job 0000bbbb" }),
+    ).toBeVisible();
+    await expectAccessible(page);
+
+    await page.getByRole("button", { name: "Columns" }).click();
+    await page.getByRole("menuitemcheckbox", { name: "Requested by" }).click();
+    await page.keyboard.press("Escape");
+    await expect(
+        page.getByRole("columnheader", { name: "Requested by" }),
+    ).toBeHidden();
+    // The choice is this browser's, and survives a reload.
+    await page.reload();
+    await expect(
+        page.getByRole("columnheader", { name: "State" }),
+    ).toBeVisible();
+    await expect(
+        page.getByRole("columnheader", { name: "Requested by" }),
+    ).toBeHidden();
+});
+
+test("keeps a thousand jobs responsive by rendering only rows in view", async ({
+    page,
+    coordinator,
+}) => {
+    signedIn(coordinator);
+    const jobs = Array.from({ length: 1000 }, (_value, index) =>
+        job("Running", {
+            id: `0190f3c4-0000-7000-8000-${String(index).padStart(12, "0")}`,
+        }),
+    );
+    let served = 0;
+    coordinator.on("GET", "/api/v1/jobs", () => {
+        const items = jobs.slice(served, served + 50);
+        served += 50;
+        return json(
+            200,
+            schema("JobPage", {
+                items,
+                next_cursor: served < jobs.length ? `page-${served}` : null,
+            }),
+        );
+    });
+
+    await page.goto("/jobs");
+    const more = page.getByRole("button", { name: "Load more jobs" });
+    // Twenty pages of fifty; each press must stay responsive.
+    for (let pageNumber = 1; pageNumber < 20; pageNumber++) {
+        await more.click();
+        await expect(
+            page.getByText(new RegExp(`^${(pageNumber + 1) * 50} shown`)),
+        ).toBeVisible();
+    }
+    const grid = page.getByRole("table", { name: "Jobs" });
+    await expect(grid).toHaveAttribute("aria-rowcount", "1001");
+    const rendered = await grid.locator("tbody tr[data-index]").count();
+    expect(rendered).toBeLessThan(100);
+
+    // Interaction to next paint and layout shift, at 4× CPU throttle: hiding
+    // a column re-renders every row the grid keeps.
+    await page.evaluate(() => {
+        const vitals = { inp: 0, cls: 0 };
+        (window as unknown as { __vitals: typeof vitals }).__vitals = vitals;
+        new PerformanceObserver((list) => {
+            for (const entry of list.getEntries()) {
+                if (
+                    (entry as PerformanceEntry & { interactionId?: number })
+                        .interactionId
+                ) {
+                    vitals.inp = Math.max(vitals.inp, entry.duration);
+                }
+            }
+        }).observe({
+            type: "event",
+            buffered: true,
+            // Not yet in TypeScript's DOM types.
+            durationThreshold: 16,
+        } as PerformanceObserverInit);
+        new PerformanceObserver((list) => {
+            for (const entry of list.getEntries()) {
+                const shift = entry as PerformanceEntry & {
+                    value: number;
+                    hadRecentInput: boolean;
+                };
+                if (!shift.hadRecentInput) {
+                    vitals.cls += shift.value;
+                }
+            }
+        }).observe({ type: "layout-shift", buffered: true });
+    });
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+    await page.getByRole("button", { name: "Columns" }).click();
+    await page.getByRole("menuitemcheckbox", { name: "Operation" }).click();
+    await page.keyboard.press("Escape");
+    await expect(
+        page.getByRole("columnheader", { name: "Operation" }),
+    ).toBeHidden();
+    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+    const vitals = await page.evaluate(
+        () =>
+            (window as unknown as { __vitals: { inp: number; cls: number } })
+                .__vitals,
+    );
+    expect(vitals.inp, "interaction to next paint (ms)").toBeLessThanOrEqual(
+        200,
+    );
+    expect(vitals.cls, "cumulative layout shift").toBeLessThanOrEqual(0.1);
+
+    // Arrow keys walk the rows, scrolling the list as they go.
+    await grid.locator("tbody tr[data-index] a").first().focus();
+    await page.keyboard.press("End");
+    await expect(
+        grid.locator('tbody tr[data-index="999"] a').first(),
+    ).toBeFocused();
+    await page.keyboard.press("ArrowUp");
+    await expect(
+        grid.locator('tbody tr[data-index="998"] a').first(),
+    ).toBeFocused();
     await expectAccessible(page);
 });

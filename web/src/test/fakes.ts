@@ -101,7 +101,13 @@ export class FakeApi {
                   );
         this.requests.push(request.clone());
         const pathname = new URL(request.url).pathname;
-        for (const route of this.routes) {
+        // Like the coordinator's router, a literal path such as
+        // `/tables/facets` wins over a parameter such as `/tables/{id}`.
+        const ordered = [
+            ...this.routes.filter((route) => route.names.length === 0),
+            ...this.routes.filter((route) => route.names.length > 0),
+        ];
+        for (const route of ordered) {
             const found =
                 route.method === request.method
                     ? route.pattern.exec(pathname)

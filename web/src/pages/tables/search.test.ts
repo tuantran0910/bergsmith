@@ -1,7 +1,6 @@
 import {
     healthFilter,
     namespaceKey,
-    parseNamespaceKey,
     sortColumn,
     tab,
     validateTablesSearch,
@@ -12,25 +11,31 @@ it("keeps recognized search parameters", () => {
         validateTablesSearch({
             q: "orders",
             catalog: "c",
-            namespace: namespaceKey(["sales"]),
             sort: "registered",
             order: "desc",
         }),
     ).toEqual({
         q: "orders",
         catalog: "c",
-        namespace: namespaceKey(["sales"]),
         sort: "registered",
         order: "desc",
     });
 });
 
 it("keeps namespace levels separate when a level contains a dot", () => {
-    expect(
-        validateTablesSearch({ namespace: namespaceKey(["a", "b"]) }),
-    ).toEqual({ namespace: namespaceKey(["a", "b"]) });
-    expect(parseNamespaceKey(namespaceKey(["a.b"]))).toEqual(["a.b"]);
     expect(namespaceKey(["a", "b"])).not.toBe(namespaceKey(["a.b"]));
+});
+
+it("searches as the coordinator does, and drops the old namespace filter", () => {
+    expect(validateTablesSearch({ q: " sales.\u0007orders " })).toEqual({
+        q: "sales.orders",
+    });
+    expect(validateTablesSearch({ q: "x".repeat(200) })).toEqual({
+        q: "x".repeat(128),
+    });
+    expect(
+        validateTablesSearch({ namespace: namespaceKey(["sales"]) }),
+    ).toEqual({});
 });
 
 it("drops blank, unknown, and malformed values", () => {
@@ -43,8 +48,6 @@ it("drops blank, unknown, and malformed values", () => {
             order: "sideways",
         }),
     ).toEqual({});
-    expect(validateTablesSearch({ namespace: '["a", 7]' })).toEqual({});
-    expect(validateTablesSearch({ namespace: "{}" })).toEqual({});
 });
 
 it("recognizes only the columns the table can sort", () => {

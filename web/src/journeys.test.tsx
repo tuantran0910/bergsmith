@@ -59,7 +59,14 @@ beforeEach(() => {
         .on("GET", "/api/v1/tables/{id}", () => json(200, table))
         // The landing page reads the overview; tests that visit it assert its
         // sections, and the others only need the request routed.
-        .on("GET", "/api/v1/overview", () => json(200, overview));
+        .on("GET", "/api/v1/overview", () => json(200, overview))
+        // Filtered lists read their facet counts beside the page.
+        .on("GET", "/api/v1/tables/facets", () =>
+            json(200, schema("TableFacets", { health: [], catalog: [] })),
+        )
+        .on("GET", "/api/v1/jobs/facets", () =>
+            json(200, schema("JobFacets", { state: [], operation: [] })),
+        );
 });
 
 afterEach(() => {
@@ -209,6 +216,7 @@ describe("sign-in", () => {
             json(200, { items: [], next_cursor: null }),
         );
         const user = start("/tables");
+        await screen.findByText("No tables are visible to you.");
         const account = within(
             await screen.findByRole("region", { name: "Account" }),
         ).getByRole("button", { name: "Alice" });
@@ -226,6 +234,13 @@ describe("sign-in", () => {
             within(panel).getByRole("button", { name: "Sign out" }),
         ).toBeEnabled();
 
+        // The modal panel takes focus once it opens; Escape closes it from
+        // there.
+        await waitFor(() => {
+            expect(panel).toContainElement(
+                document.activeElement as HTMLElement,
+            );
+        });
         await user.keyboard("{Escape}");
         await waitFor(() => {
             expect(account).toHaveAttribute("aria-expanded", "false");
@@ -602,7 +617,7 @@ describe("browsing", () => {
         expect(window.location.pathname).toBe(`/tables/${TABLE_ID}`);
     });
 
-    it("filters tables by name and keeps the filter in the address", async () => {
+    it("searches table names on the coordinator once typing pauses", async () => {
         const other = schema("Table", {
             ...table,
             id: "0190f3c4-0000-7000-8000-000000000002",
@@ -617,11 +632,14 @@ describe("browsing", () => {
                 },
             ],
         });
-        fake.on("GET", "/api/v1/tables", () =>
+        fake.on("GET", "/api/v1/tables", (request) =>
             json(
                 200,
                 schema("TablePage", {
-                    items: [table, other],
+                    items:
+                        new URL(request.url).searchParams.get("q") === "events"
+                            ? [other]
+                            : [table, other],
                     next_cursor: null,
                 }),
             ),
@@ -631,10 +649,6 @@ describe("browsing", () => {
         expect(
             await screen.findByRole("link", { name: /^orders/ }),
         ).toBeInTheDocument();
-        expect(
-            screen.getByRole("link", { name: /^events/ }),
-        ).toBeInTheDocument();
-
         await user.type(
             screen.getByRole("searchbox", { name: "Search tables" }),
             "events",
@@ -651,20 +665,36 @@ describe("browsing", () => {
         expect(new URL(window.location.href).searchParams.get("q")).toBe(
             "events",
         );
-        expect(screen.getByText("1 of 2 tables")).toBeInTheDocument();
+        // One request for the whole word, not one per keystroke; the facet
+        // counts follow the same filter.
+        const searched = (path: string) =>
+            fake
+                .sent("GET", path)
+                .map((request) => new URL(request.url).searchParams.get("q"))
+                .filter((q) => q !== null);
+        expect(searched("/api/v1/tables")).toEqual(["events"]);
+        expect(searched("/api/v1/tables/facets")).toEqual(["events"]);
 
         await user.click(screen.getByRole("button", { name: "Clear filters" }));
         expect(
             await screen.findByRole("link", { name: /^orders/ }),
         ).toBeInTheDocument();
         expect(new URL(window.location.href).searchParams.get("q")).toBeNull();
+        expect(
+            screen.getByRole("searchbox", { name: "Search tables" }),
+        ).toHaveValue("");
     });
 
     it("explains no matches and clears the filters", async () => {
-        fake.on("GET", "/api/v1/tables", () =>
+        fake.on("GET", "/api/v1/tables", (request) =>
             json(
                 200,
-                schema("TablePage", { items: [table], next_cursor: null }),
+                schema("TablePage", {
+                    items: new URL(request.url).searchParams.has("q")
+                        ? []
+                        : [table],
+                    next_cursor: null,
+                }),
             ),
         );
         const user = start("/tables");
@@ -687,97 +717,51 @@ describe("browsing", () => {
         ).toBeInTheDocument();
     });
 
-    it("finds an unnamed table by its short ID", async () => {
-        const unnamed = schema("Table", {
-            ...table,
-            id: "0190f3c4-0000-7000-8000-000000000002",
-            table_uuid: "6f1c0d0e-1111-4222-8333-444455556667",
-            aliases: [],
-        });
+    it("filters tables by catalog with facet counts and removable pills", async () => {
         fake.on("GET", "/api/v1/tables", () =>
             json(
                 200,
-                schema("TablePage", {
-                    items: [table, unnamed],
-                    next_cursor: null,
+                schema("TablePage", { items: [table], next_cursor: null }),
+            ),
+        ).on("GET", "/api/v1/tables/facets", () =>
+            json(
+                200,
+                schema("TableFacets", {
+                    health: [{ value: "unassessed", count: 1 }],
+                    catalog: [{ value: CATALOG_ID, count: 1 }],
                 }),
             ),
         );
         const user = start("/tables");
         await screen.findByRole("link", { name: /^orders/ });
 
-        await user.type(
-            screen.getByRole("searchbox", { name: "Search tables" }),
-            "00000002",
-        );
-
-        expect(
-            await screen.findByRole("link", { name: "00000002" }),
-        ).toBeInTheDocument();
-        expect(
-            screen.queryByRole("link", { name: /^orders/ }),
-        ).not.toBeInTheDocument();
-    });
-
-    it("keeps loading more available when a filter has no matches", async () => {
-        const other = schema("Table", {
-            ...table,
-            id: "0190f3c4-0000-7000-8000-000000000004",
-            table_uuid: "6f1c0d0e-1111-4222-8333-444455556668",
-            created_at: "2026-10-05T00:00:00Z",
-            aliases: [
-                {
-                    catalog_id: CATALOG_ID,
-                    namespace: ["marketing"],
-                    name: "events",
-                    revision: 1,
-                },
-            ],
-        });
-        fake.on(
-            "GET",
-            "/api/v1/tables",
-            () =>
-                json(
-                    200,
-                    schema("TablePage", {
-                        items: [table],
-                        next_cursor: "next-page",
-                    }),
-                ),
-            () =>
-                json(
-                    200,
-                    schema("TablePage", {
-                        items: [other],
-                        next_cursor: null,
-                    }),
-                ),
-        );
-        const user = start("/tables");
-        await screen.findByRole("link", { name: /^orders/ });
-
-        await user.type(
-            screen.getByRole("searchbox", { name: "Search tables" }),
-            "events",
-        );
-
-        expect(await screen.findByText("No matches.")).toBeInTheDocument();
-        expect(
-            screen.getByText(/cover the 1 loaded table/),
-        ).toBeInTheDocument();
         await user.click(
-            screen.getByRole("button", { name: "Load more tables" }),
+            screen.getByRole("button", { name: "Catalog filter" }),
         );
+        const lake = await screen.findByRole("radio", { name: "lake 1" });
+        await user.click(lake);
 
-        expect(
-            await screen.findByRole("link", { name: /^events/ }),
-        ).toBeInTheDocument();
+        await waitFor(() => {
+            expect(
+                new URL(window.location.href).searchParams.get("catalog"),
+            ).toBe(CATALOG_ID);
+        });
         expect(
             new URL(
-                fake.sent("GET", "/api/v1/tables")[1]?.url ?? "",
-            ).searchParams.get("cursor"),
-        ).toBe("next-page");
+                fake.sent("GET", "/api/v1/tables").at(-1)?.url ?? "",
+            ).searchParams.get("catalog"),
+        ).toBe(CATALOG_ID);
+        await user.keyboard("{Escape}");
+        await user.click(
+            await screen.findByRole("button", {
+                name: "Remove filter Catalog: lake",
+            }),
+        );
+        await waitFor(() => {
+            expect(
+                new URL(window.location.href).searchParams.get("catalog"),
+            ).toBeNull();
+        });
     });
 
     it("sorts by registered date through the address", async () => {
@@ -2145,6 +2129,82 @@ describe("job commands", () => {
 });
 
 describe("jobs and audit", () => {
+    it("filters jobs by state on the coordinator, newest first", async () => {
+        fake.on("GET", "/api/v1/jobs", (request) =>
+            json(
+                200,
+                schema("JobPage", {
+                    items:
+                        new URL(request.url).searchParams.get("state") ===
+                        "Failed"
+                            ? [job("Failed", { id: RETRY_JOB_ID })]
+                            : [
+                                  job("ReadyToCommit"),
+                                  job("Failed", { id: RETRY_JOB_ID }),
+                              ],
+                    next_cursor: null,
+                }),
+            ),
+        ).on("GET", "/api/v1/jobs/facets", () =>
+            json(
+                200,
+                schema("JobFacets", {
+                    state: [
+                        { value: "ReadyToCommit", count: 1 },
+                        { value: "Failed", count: 1 },
+                    ],
+                    operation: [{ value: "compact", count: 2 }],
+                }),
+            ),
+        );
+        const user = start("/jobs");
+        await screen.findByRole("link", { name: `Job ${JOB_ID.slice(-8)}` });
+        const params = () =>
+            new URL(fake.sent("GET", "/api/v1/jobs").at(-1)?.url ?? "")
+                .searchParams;
+        expect(params().get("order")).toBe("newest");
+
+        await user.click(screen.getByRole("button", { name: "State filter" }));
+        await user.click(
+            await screen.findByRole("checkbox", { name: "Failed 1" }),
+        );
+        await user.keyboard("{Escape}");
+
+        await waitFor(() => {
+            expect(
+                screen.queryByRole("link", {
+                    name: `Job ${JOB_ID.slice(-8)}`,
+                }),
+            ).not.toBeInTheDocument();
+        });
+        expect(params().get("state")).toBe("Failed");
+        expect(window.location.search).toContain("state=Failed");
+        expect(
+            new URL(
+                fake.sent("GET", "/api/v1/jobs/facets").at(-1)?.url ?? "",
+            ).searchParams.get("state"),
+        ).toBe("Failed");
+
+        // The order is the coordinator's too; oldest first is in the address.
+        await user.click(screen.getByRole("button", { name: "Created" }));
+        await waitFor(() => {
+            expect(params().get("order")).toBe("oldest");
+        });
+        expect(window.location.search).toContain("order=oldest");
+
+        await user.click(
+            screen.getByRole("button", { name: "Remove filter State: Failed" }),
+        );
+        await waitFor(() => {
+            expect(window.location.search).not.toContain("state=");
+        });
+        expect(
+            await screen.findByRole("link", {
+                name: `Job ${JOB_ID.slice(-8)}`,
+            }),
+        ).toBeInTheDocument();
+    });
+
     it("lists jobs with execution and publication side by side", async () => {
         fake.on("GET", "/api/v1/jobs", () =>
             json(
@@ -2431,6 +2491,19 @@ it("filters tables by evaluated health through the coordinator", async () => {
             }),
         ),
     );
+    fake.on("GET", "/api/v1/tables/facets", () =>
+        json(
+            200,
+            schema("TableFacets", {
+                health: [
+                    { value: "critical", count: 1 },
+                    { value: "warning", count: 1 },
+                    { value: "unassessed", count: 1 },
+                ],
+                catalog: [],
+            }),
+        ),
+    );
     const user = start("/tables");
 
     // The column names each state; an unassessed table never reads as healthy.
@@ -2439,13 +2512,14 @@ it("filters tables by evaluated health through the coordinator", async () => {
 
     // The filter is the coordinator's: it is sent with the request and kept in
     // the address.
-    await user.click(screen.getByRole("combobox", { name: "Health" }));
-    await user.click(screen.getByRole("option", { name: "Critical" }));
+    await user.click(screen.getByRole("button", { name: "Health filter" }));
+    await user.click(await screen.findByRole("radio", { name: "Critical 1" }));
+    await user.keyboard("{Escape}");
 
-    // The row badge and the select's own value both read "Critical".
+    // The row badge, the filter button, and the pill all read "Critical".
     await waitFor(() => {
         expect(screen.getAllByText("Critical").length).toBeGreaterThanOrEqual(
-            2,
+            3,
         );
     });
     expect(screen.queryAllByText("Warning")).toHaveLength(0);
@@ -2508,17 +2582,29 @@ it("keeps the health filter available when it matches no table", async () => {
     const user = start("/tables");
     expect(await screen.findByText("Not assessed")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("combobox", { name: "Health" }));
-    await user.click(screen.getByRole("option", { name: "Critical" }));
+    // A value with no tables is still selectable from the address, and the
+    // filter keeps offering it with a zero count.
+    await user.click(screen.getByRole("button", { name: "Health filter" }));
+    await user.click(await screen.findByRole("radio", { name: "All states" }));
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("searchbox", { name: "Search tables" }));
+    window.history.replaceState(null, "", "/tables?health=critical");
+    cleanup();
+    const again = start("/tables?health=critical");
 
     // The empty result keeps the controls, so the selection can be undone.
     expect(await screen.findByText("No matches.")).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Health" })).toHaveTextContent(
-        "Critical",
-    );
+    expect(
+        screen.getByRole("button", { name: /^Health filter/ }),
+    ).toHaveTextContent("Critical");
+    await again.click(screen.getByRole("button", { name: /^Health filter/ }));
+    expect(
+        await screen.findByRole("radio", { name: "Critical 0" }),
+    ).toBeChecked();
+    await again.keyboard("{Escape}");
     const clear = screen.getAllByRole("button", { name: "Clear filters" });
     expect(clear.length).toBeGreaterThan(0);
-    await user.click(clear[0] as HTMLElement);
+    await again.click(clear[0] as HTMLElement);
     expect(await screen.findByText("Not assessed")).toBeInTheDocument();
     await waitFor(() => {
         expect(window.location.search).not.toContain("health=");
@@ -2615,9 +2701,9 @@ it("shows no empty state while a filtered list is loading or failed", async () =
     // The controls stay usable while the request is out, but nothing claims
     // the filter matched nothing before a successful response.
     expect(await screen.findByText("Loading tables…")).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Health" })).toHaveTextContent(
-        "Critical",
-    );
+    expect(
+        screen.getByRole("button", { name: /^Health filter/ }),
+    ).toHaveTextContent("Critical");
     expect(screen.queryByText("No matches.")).not.toBeInTheDocument();
     expect(fake.sent("GET", "/api/v1/tables")).toHaveLength(1);
 

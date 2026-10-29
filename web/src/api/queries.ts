@@ -4,6 +4,7 @@
 // and is bound to the session it started in (`forSession`).
 
 import {
+    keepPreviousData,
     useInfiniteQuery,
     useQuery,
     useQueryClient,
@@ -14,6 +15,22 @@ import { forSession } from "../queryClient";
 import { api, call } from "./client";
 
 const PAGE = 50;
+
+/**
+ * How long a filtered list or its facet counts stay fresh. Switching back to
+ * a filter within it shows the cached page without a request; a write still
+ * invalidates it at once.
+ */
+const LIST_STALE_MS = 15_000;
+
+/** A filter's query parameters, without the absent ones. */
+function present<T extends object>(
+    filter: T,
+): { [K in keyof T]?: Exclude<T[K], undefined> } {
+    return Object.fromEntries(
+        Object.entries(filter).filter(([, value]) => value !== undefined),
+    ) as { [K in keyof T]?: Exclude<T[K], undefined> };
+}
 
 /** One page's query: the first page has no cursor. */
 function page(cursor: string | null): { limit: number; cursor?: string } {
@@ -57,38 +74,66 @@ export function useCatalogNames() {
     });
 }
 
+/** The coordinator's table filters (ADR 0067); absent ones are not sent. */
+export interface TableFilter {
+    health?: "healthy" | "warning" | "critical" | "unassessed" | undefined;
+    sort?: "health" | undefined;
+    catalog?: string | undefined;
+    q?: string | undefined;
+}
+
 /**
  * The tables the session may see, worst health first when `health` or the
  * health order is requested. The server evaluates every visible table for
- * those, so the page is not a client-side slice of one page.
+ * those, so the page is not a client-side slice of one page. While a new
+ * filter loads, the previous result stays visible (`isPlaceholderData`).
  */
-export function useTables({
-    health,
-    sort,
-}: {
-    health?: "healthy" | "warning" | "critical" | "unassessed" | undefined;
-    sort?: "health" | undefined;
-} = {}) {
+export function useTables(filter: TableFilter = {}) {
     const client = useQueryClient();
+    const query = present({ ...filter });
     return useInfiniteQuery({
-        queryKey: ["tables", health ?? "any", sort ?? "name"],
+        queryKey: ["tables", "list", query],
         initialPageParam: null as string | null,
         queryFn: ({ pageParam, signal }) =>
             forSession(client, () =>
                 call(
                     api.GET("/api/v1/tables", {
-                        params: {
-                            query: {
-                                ...page(pageParam),
-                                ...(health === undefined ? {} : { health }),
-                                ...(sort === undefined ? {} : { sort }),
-                            },
-                        },
+                        params: { query: { ...page(pageParam), ...query } },
                         signal,
                     }),
                 ),
             ),
         getNextPageParam: (last) => last.next_cursor,
+        placeholderData: keepPreviousData,
+        staleTime: LIST_STALE_MS,
+    });
+}
+
+/**
+ * Table counts per health state and catalog under the other filters. Pass
+ * `enabled: false` while the page shows no filters, so an empty inventory
+ * costs no request.
+ */
+export function useTableFacets(
+    filter: Omit<TableFilter, "sort">,
+    enabled = true,
+) {
+    const client = useQueryClient();
+    const query = present({ ...filter });
+    return useQuery({
+        queryKey: ["tables", "facets", query],
+        enabled,
+        queryFn: ({ signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/tables/facets", {
+                        params: { query },
+                        signal,
+                    }),
+                ),
+            ),
+        placeholderData: keepPreviousData,
+        staleTime: LIST_STALE_MS,
     });
 }
 
@@ -222,21 +267,68 @@ export function useTableSnapshots(id: string) {
     });
 }
 
-export function useJobs() {
+/**
+ * The coordinator's job filters (ADR 0067). `state` and `operation` are
+ * comma-separated values; absent filters are not sent.
+ */
+export interface JobFilter {
+    state?: string | undefined;
+    operation?: string | undefined;
+    q?: string | undefined;
+}
+
+/**
+ * The jobs the session may see, newest first unless `order` is `oldest`.
+ * While a new filter loads, the previous result stays visible
+ * (`isPlaceholderData`).
+ */
+export function useJobs(
+    filter: JobFilter = {},
+    order: "newest" | "oldest" = "newest",
+) {
     const client = useQueryClient();
+    const query = present({ ...filter, order });
     return useInfiniteQuery({
-        queryKey: ["jobs"],
+        queryKey: ["jobs", "list", query],
         initialPageParam: null as string | null,
         queryFn: ({ pageParam, signal }) =>
             forSession(client, () =>
                 call(
                     api.GET("/api/v1/jobs", {
-                        params: { query: page(pageParam) },
+                        params: {
+                            query: { ...page(pageParam), ...query, order },
+                        },
                         signal,
                     }),
                 ),
             ),
         getNextPageParam: (last) => last.next_cursor,
+        placeholderData: keepPreviousData,
+        staleTime: LIST_STALE_MS,
+    });
+}
+
+/**
+ * Job counts per state and operation under the other filters; `enabled` as
+ * for `useTableFacets`.
+ */
+export function useJobFacets(filter: JobFilter, enabled = true) {
+    const client = useQueryClient();
+    const query = present({ ...filter });
+    return useQuery({
+        queryKey: ["jobs", "facets", query],
+        enabled,
+        queryFn: ({ signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/jobs/facets", {
+                        params: { query },
+                        signal,
+                    }),
+                ),
+            ),
+        placeholderData: keepPreviousData,
+        staleTime: LIST_STALE_MS,
     });
 }
 

@@ -34,6 +34,18 @@ function signedIn(coordinator: FakeCoordinator) {
                 schema("TablePage", { items: [table], next_cursor: null }),
             ),
         )
+        .on("GET", "/api/v1/tables/facets", () =>
+            json(
+                200,
+                schema("TableFacets", {
+                    health: [
+                        { value: "critical", count: 1 },
+                        { value: "unassessed", count: 1 },
+                    ],
+                    catalog: [],
+                }),
+            ),
+        )
         .on("GET", "/api/v1/policies", () => json(200, policies))
         .on("GET", "/api/v1/schedules", () => json(200, schedules));
 }
@@ -107,13 +119,14 @@ for (const width of [320, 390] as const) {
             await page.getByRole("button", { name: "Filters" }).click();
             const drawer = page.getByRole("dialog", { name: "Filters" });
             await expect(drawer).toBeVisible();
-            await expect(drawer.getByText("Health")).toBeVisible();
-            await drawer.getByRole("combobox", { name: "Health" }).click();
-            await drawer.getByRole("option", { name: "Critical" }).click();
+            // The drawer holds each facet's choices in place.
+            const health = drawer.getByRole("group", { name: "Health" });
+            await expect(health).toBeVisible();
+            await health.getByRole("radio", { name: "Critical 1" }).check();
+            await expect(page).toHaveURL(/health=critical/);
             await expect(
-                drawer.getByRole("combobox", { name: "Health" }),
-            ).toContainText("Critical");
-            await expect(drawer.getByText(/of 1 tables/)).toBeVisible();
+                health.getByRole("radio", { name: "Critical 1" }),
+            ).toBeChecked();
             await expect(
                 drawer.getByRole("button", { name: "Show results" }),
             ).toBeVisible();

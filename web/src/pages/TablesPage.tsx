@@ -1,17 +1,23 @@
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { Table2Icon } from "lucide-react";
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { Schemas } from "../api/client";
-import { useCatalogNames, useTables } from "../api/queries";
-import {
-    DataTable,
-    type DataTableColumn,
-    type SortState,
-} from "../components/DataTable";
+import { useCatalogNames, useTableFacets, useTables } from "../api/queries";
+import { ColumnsMenu } from "../components/ColumnsMenu";
+import { DataGrid } from "../components/DataGrid";
+import type { DataTableColumn, SortState } from "../components/DataTable";
 import { ErrorNotice } from "../components/ErrorNotice";
+import {
+    FacetFilter,
+    facetOptions,
+    FilterPills,
+    type FilterPill,
+} from "../components/FacetFilter";
 import { FilterBar } from "../components/FilterBar";
 import { HealthBadge, type HealthState } from "../components/HealthBadge";
+import { SEARCH_DELAY_MS, searchText } from "../components/listSearch";
+import { useColumnVisibility } from "../components/useColumnVisibility";
 import {
     EmptyState,
     LoadMore,
@@ -26,18 +32,11 @@ import {
     date,
     exactBytes,
     exactCount,
-    number,
     shortId,
     timestamp,
 } from "../format";
 import { buttonVariants } from "../ui/Button";
-import { Select } from "../ui/Select";
-import {
-    healthFilter,
-    namespaceKey,
-    sortColumn,
-    type TablesSearch,
-} from "./tables/search";
+import { healthFilter, sortColumn, type TablesSearch } from "./tables/search";
 
 /** The names and context one table shows, without losing its other aliases. */
 function display(table: Schemas["Table"], names: ReadonlyMap<string, string>) {
@@ -69,6 +68,13 @@ function display(table: Schemas["Table"], names: ReadonlyMap<string, string>) {
     };
 }
 
+const HEALTH_LABELS: Record<string, string> = {
+    critical: "Critical",
+    warning: "Warning",
+    healthy: "Healthy",
+    unassessed: "Not assessed",
+};
+
 /** Critical first; an unassessed table sorts last, never as healthy. */
 function healthRank(state: HealthState): number {
     switch (state) {
@@ -83,16 +89,24 @@ function healthRank(state: HealthState): number {
     }
 }
 
-/** Canonical tables the session may see, named through their aliases. */
+/**
+ * Canonical tables the session may see, named through their aliases. The
+ * coordinator searches, filters, and orders by health across every visible
+ * table (ADR 0059, ADR 0067); the other columns sort the loaded pages.
+ */
 export function TablesPage() {
     const search = useSearch({ from: "/tables" });
     const navigate = useNavigate();
-    // The coordinator owns the health filter and order (ADR 0059): the state
-    // is computed on read, so only it can filter or sort across every table.
-    const tables = useTables({
+    const filter = {
         health: healthFilter(search.health),
+        catalog: search.catalog,
+        q: search.q,
+    };
+    const tables = useTables({
+        ...filter,
         sort: search.sort === "health" ? "health" : undefined,
     });
+
     const catalogs = useCatalogNames();
     const names = useMemo(
         () => catalogs.data ?? new Map<string, string>(),
@@ -102,88 +116,25 @@ export function TablesPage() {
         () => tables.data?.pages.flatMap((page) => page.items) ?? [],
         [tables.data],
     );
-
-    const namespaceOptions = useMemo(() => {
-        const options = new Map<string, string[]>();
-        for (const table of items) {
-            for (const alias of table.aliases) {
-                options.set(namespaceKey(alias.namespace), alias.namespace);
-            }
-        }
-        return [...options.entries()]
-            .map(([value, levels]) => ({ value, levels }))
-            .sort((left, right) =>
-                left.levels
-                    .join(".")
-                    .localeCompare(right.levels.join("."), undefined, {
-                        numeric: true,
-                    }),
-            );
-    }, [items]);
-    const catalogOptions = useMemo(
-        () =>
-            [...names.entries()].sort(([, left], [, right]) =>
-                left.localeCompare(right),
-            ),
-        [names],
-    );
-
-    const deferredQuery = useDeferredValue(search.q ?? "");
-    const visible = useMemo(() => {
-        const needle = deferredQuery.trim().toLowerCase();
-        return items.filter((table) => {
-            if (
-                search.catalog !== undefined &&
-                !table.aliases.some(
-                    (alias) => alias.catalog_id === search.catalog,
-                )
-            ) {
-                return false;
-            }
-            if (
-                search.namespace !== undefined &&
-                !table.aliases.some(
-                    (alias) =>
-                        namespaceKey(alias.namespace) === search.namespace,
-                )
-            ) {
-                return false;
-            }
-            if (needle === "") {
-                return true;
-            }
-            const info = display(table, names);
-            return [
-                info.name,
-                info.catalogs,
-                info.namespaces,
-                table.id,
-                table.table_uuid,
-                ...table.aliases.map((alias) => aliasName(alias, names)),
-            ]
-                .join(" ")
-                .toLowerCase()
-                .includes(needle);
-        });
-    }, [items, deferredQuery, search.catalog, search.namespace, names]);
+    const [visibility, setVisibility] = useColumnVisibility("tables");
 
     const filtersActive =
-        (search.q ?? "") !== "" ||
+        search.q !== undefined ||
         search.catalog !== undefined ||
-        search.namespace !== undefined ||
         search.health !== undefined;
+    // Counts serve the filter controls, which show once there is a list.
+    const facets = useTableFacets(filter, filtersActive || items.length > 0);
 
-    function change(patch: Partial<TablesSearch>): void {
+    /** Applies `patch`; an `undefined` value removes that parameter. */
+    function change(patch: {
+        [K in keyof TablesSearch]?: TablesSearch[K] | undefined;
+    }): void {
         const merged = { ...search, ...patch };
+        const q = searchText(merged.q);
         const next: TablesSearch = {
-            ...(merged.q !== undefined && merged.q !== ""
-                ? { q: merged.q }
-                : {}),
+            ...(q !== undefined ? { q } : {}),
             ...(merged.catalog !== undefined && merged.catalog !== ""
                 ? { catalog: merged.catalog }
-                : {}),
-            ...(merged.namespace !== undefined && merged.namespace !== ""
-                ? { namespace: merged.namespace }
                 : {}),
             ...(merged.health !== undefined ? { health: merged.health } : {}),
             ...(merged.sort !== undefined ? { sort: merged.sort } : {}),
@@ -193,7 +144,7 @@ export function TablesPage() {
     }
 
     function clearFilters(): void {
-        change({ q: "", catalog: "", namespace: "", health: undefined });
+        change({ q: undefined, catalog: undefined, health: undefined });
     }
 
     function onSortChange(next: SortState): void {
@@ -236,149 +187,190 @@ export function TablesPage() {
         return () => {
             observer.disconnect();
         };
-    }, [visible.length]);
+    }, [items.length, visibility]);
 
-    const columns: DataTableColumn<Schemas["Table"]>[] = [
-        {
-            id: "name",
-            header: "Table",
-            sortValue: (table) => display(table, names).name,
-            cell: (table) => {
-                const info = display(table, names);
-                return (
-                    <ResourceLabel
-                        name={
-                            <Link
-                                to="/tables/$tableId"
-                                params={{ tableId: table.id }}
-                                title={info.fullName ?? table.id}
-                                className="break-words"
-                            >
-                                {info.name}
-                                {info.location !== "" && (
-                                    <span className="sr-only">
-                                        {" "}
-                                        in {info.location}
-                                    </span>
-                                )}
-                            </Link>
-                        }
-                        context={info.context}
-                        copy={{
-                            value: table.table_uuid,
-                            label: "table UUID",
-                        }}
-                        details={
-                            <span>
-                                Registered names:{" "}
-                                {table.aliases.length === 0
-                                    ? "None"
-                                    : table.aliases
-                                          .map((alias) =>
-                                              aliasName(alias, names),
-                                          )
-                                          .join(", ")}
-                            </span>
-                        }
-                    />
-                );
+    const columns = useMemo<DataTableColumn<Schemas["Table"]>[]>(
+        () => [
+            {
+                id: "name",
+                header: "Table",
+                sortValue: (table) => display(table, names).name,
+                cell: (table) => {
+                    const info = display(table, names);
+                    return (
+                        <ResourceLabel
+                            name={
+                                <Link
+                                    to="/tables/$tableId"
+                                    params={{ tableId: table.id }}
+                                    title={info.fullName ?? table.id}
+                                    className="break-words"
+                                >
+                                    {info.name}
+                                    {info.location !== "" && (
+                                        <span className="sr-only">
+                                            {" "}
+                                            in {info.location}
+                                        </span>
+                                    )}
+                                </Link>
+                            }
+                            context={info.context}
+                            copy={{
+                                value: table.table_uuid,
+                                label: "table UUID",
+                            }}
+                            details={
+                                <span>
+                                    Registered names:{" "}
+                                    {table.aliases.length === 0
+                                        ? "None"
+                                        : table.aliases
+                                              .map((alias) =>
+                                                  aliasName(alias, names),
+                                              )
+                                              .join(", ")}
+                                </span>
+                            }
+                        />
+                    );
+                },
             },
-        },
-        {
-            id: "catalog",
-            header: "Catalog",
-            sortValue: (table) => display(table, names).catalogs,
-            cell: (table) => (
-                <span className="text-muted-foreground">
-                    {display(table, names).catalogs}
-                </span>
-            ),
-        },
-        {
-            id: "namespace",
-            header: "Namespace",
-            sortValue: (table) => display(table, names).namespaces,
-            cell: (table) => (
-                <span className="text-muted-foreground">
-                    {display(table, names).namespaces}
-                </span>
-            ),
-        },
-        {
-            id: "health",
-            header: "Health",
-            sortValue: (table) => healthRank(table.health.state),
-            cell: (table) => <HealthBadge state={table.health.state} />,
-        },
-        {
-            id: "records",
-            header: "Rows",
-            align: "end",
-            // Sorting compares doubles, while the cell keeps every digit, so
-            // only an ordering tie above 2^53 could differ.
-            sortValue: (table) => Number(table.statistics?.record_count ?? -1),
-            cell: (table) => (
-                <span className="tabular-nums">
-                    {table.statistics === null || table.statistics === undefined
-                        ? "—"
-                        : exactCount(table.statistics.record_count)}
-                </span>
-            ),
-        },
-        {
-            id: "size",
-            header: "Data size",
-            align: "end",
-            sortValue: (table) => Number(table.statistics?.data_bytes ?? -1),
-            cell: (table) => (
-                <span className="tabular-nums">
-                    {table.statistics === null || table.statistics === undefined
-                        ? "—"
-                        : exactBytes(table.statistics.data_bytes)}
-                </span>
-            ),
-        },
-        {
-            id: "files",
-            header: "Data files",
-            align: "end",
-            sortValue: (table) => Number(table.statistics?.data_files ?? -1),
-            cell: (table) => (
-                <span className="tabular-nums">
-                    {table.statistics === null || table.statistics === undefined
-                        ? "—"
-                        : exactCount(table.statistics.data_files)}
-                </span>
-            ),
-        },
-        {
-            id: "small",
-            header: "Small files",
-            align: "end",
-            sortValue: (table) => Number(table.statistics?.small_files ?? -1),
-            cell: (table) => (
-                <span className="tabular-nums">
-                    {table.statistics === null || table.statistics === undefined
-                        ? "—"
-                        : exactCount(table.statistics.small_files)}
-                </span>
-            ),
-        },
-        {
-            id: "registered",
-            header: "Registered",
-            sortValue: (table) => table.created_at,
-            cell: (table) => (
-                <time
-                    dateTime={table.created_at}
-                    title={timestamp(table.created_at)}
-                    className="whitespace-nowrap text-muted-foreground"
-                >
-                    {date(table.created_at)}
-                </time>
-            ),
-        },
+            {
+                id: "catalog",
+                header: "Catalog",
+                sortValue: (table) => display(table, names).catalogs,
+                cell: (table) => (
+                    <span className="text-muted-foreground">
+                        {display(table, names).catalogs}
+                    </span>
+                ),
+            },
+            {
+                id: "namespace",
+                header: "Namespace",
+                sortValue: (table) => display(table, names).namespaces,
+                cell: (table) => (
+                    <span className="text-muted-foreground">
+                        {display(table, names).namespaces}
+                    </span>
+                ),
+            },
+            {
+                id: "health",
+                header: "Health",
+                sortValue: (table) => healthRank(table.health.state),
+                cell: (table) => <HealthBadge state={table.health.state} />,
+            },
+            {
+                id: "records",
+                header: "Rows",
+                align: "end",
+                // Sorting compares doubles, while the cell keeps every digit, so
+                // only an ordering tie above 2^53 could differ.
+                sortValue: (table) =>
+                    Number(table.statistics?.record_count ?? -1),
+                cell: (table) => (
+                    <span className="tabular-nums">
+                        {table.statistics === null ||
+                        table.statistics === undefined
+                            ? "—"
+                            : exactCount(table.statistics.record_count)}
+                    </span>
+                ),
+            },
+            {
+                id: "size",
+                header: "Data size",
+                align: "end",
+                sortValue: (table) =>
+                    Number(table.statistics?.data_bytes ?? -1),
+                cell: (table) => (
+                    <span className="tabular-nums">
+                        {table.statistics === null ||
+                        table.statistics === undefined
+                            ? "—"
+                            : exactBytes(table.statistics.data_bytes)}
+                    </span>
+                ),
+            },
+            {
+                id: "files",
+                header: "Data files",
+                align: "end",
+                sortValue: (table) =>
+                    Number(table.statistics?.data_files ?? -1),
+                cell: (table) => (
+                    <span className="tabular-nums">
+                        {table.statistics === null ||
+                        table.statistics === undefined
+                            ? "—"
+                            : exactCount(table.statistics.data_files)}
+                    </span>
+                ),
+            },
+            {
+                id: "small",
+                header: "Small files",
+                align: "end",
+                sortValue: (table) =>
+                    Number(table.statistics?.small_files ?? -1),
+                cell: (table) => (
+                    <span className="tabular-nums">
+                        {table.statistics === null ||
+                        table.statistics === undefined
+                            ? "—"
+                            : exactCount(table.statistics.small_files)}
+                    </span>
+                ),
+            },
+            {
+                id: "registered",
+                header: "Registered",
+                sortValue: (table) => table.created_at,
+                cell: (table) => (
+                    <time
+                        dateTime={table.created_at}
+                        title={timestamp(table.created_at)}
+                        className="whitespace-nowrap text-muted-foreground"
+                    >
+                        {date(table.created_at)}
+                    </time>
+                ),
+            },
+        ],
+        [names],
+    );
+
+    const catalogLabel = (id: string) => names.get(id) ?? shortId(id);
+    const healthLabel = (value: string) => HEALTH_LABELS[value] ?? value;
+    const pills: FilterPill[] = [
+        ...(search.health === undefined
+            ? []
+            : [
+                  {
+                      key: "health",
+                      label: "Health",
+                      value: healthLabel(search.health),
+                      onRemove: () => {
+                          change({ health: undefined });
+                      },
+                  },
+              ]),
+        ...(search.catalog === undefined
+            ? []
+            : [
+                  {
+                      key: "catalog",
+                      label: "Catalog",
+                      value: catalogLabel(search.catalog),
+                      onRemove: () => {
+                          change({ catalog: undefined });
+                      },
+                  },
+              ]),
     ];
+    const unfiltered = tables.isSuccess && items.length === 0 && !filtersActive;
 
     return (
         <section>
@@ -395,7 +387,7 @@ export function TablesPage() {
                     }}
                 />
             )}
-            {tables.isSuccess && items.length === 0 && !filtersActive && (
+            {unfiltered && (
                 <EmptyState
                     icon={Table2Icon}
                     title="No tables are visible to you."
@@ -416,164 +408,96 @@ export function TablesPage() {
                     hold a grant on the catalog or the table.
                 </EmptyState>
             )}
-            {(items.length > 0 || filtersActive) && (
+            {(filtersActive || items.length > 0) && (
                 <>
                     <FilterBar
                         query={search.q ?? ""}
                         onQueryChange={(value) => {
                             change({ q: value });
                         }}
+                        delay={SEARCH_DELAY_MS}
                         queryLabel="Search tables"
-                        placeholder="Search by table or namespace"
+                        placeholder="Search by namespace or table name"
+                        // An empty result's notice owns the clear action.
                         onClear={
-                            filtersActive && visible.length > 0
+                            filtersActive && items.length > 0
                                 ? clearFilters
                                 : undefined
                         }
-                        result={
-                            filtersActive && items.length > 0
-                                ? `${number(visible.length)} of ${number(items.length)} ${
-                                      tables.hasNextPage ? "loaded" : "tables"
-                                  }`
-                                : undefined
+                        tools={
+                            <ColumnsMenu
+                                columns={columns}
+                                visibility={visibility}
+                                onChange={setVisibility}
+                            />
                         }
+                        pills={<FilterPills pills={pills} />}
                     >
-                        {catalogOptions.length > 0 && (
-                            <span className="flex items-center gap-1.5">
-                                <label
-                                    htmlFor="table-catalog"
-                                    className="text-sm font-semibold whitespace-nowrap text-foreground"
-                                >
-                                    Catalog
-                                </label>
-                                <span className="w-36">
-                                    <Select
-                                        id="table-catalog"
-                                        value={search.catalog ?? ""}
-                                        onValueChange={(value) => {
-                                            change({ catalog: value });
-                                        }}
-                                        options={[
-                                            {
-                                                value: "",
-                                                label: "All catalogs",
-                                            },
-                                            ...catalogOptions.map(
-                                                ([id, label]) => ({
-                                                    value: id,
-                                                    label,
-                                                }),
-                                            ),
-                                        ]}
-                                    />
-                                </span>
-                            </span>
-                        )}
-                        <span className="flex items-center gap-1.5">
-                            <label
-                                htmlFor="table-health"
-                                className="text-sm font-semibold whitespace-nowrap text-foreground"
-                            >
-                                Health
-                            </label>
-                            <span className="w-36">
-                                <Select
-                                    id="table-health"
-                                    value={search.health ?? ""}
-                                    onValueChange={(value) => {
-                                        change({ health: healthFilter(value) });
-                                    }}
-                                    options={[
-                                        { value: "", label: "All states" },
-                                        {
-                                            value: "critical",
-                                            label: "Critical",
-                                        },
-                                        { value: "warning", label: "Warning" },
-                                        { value: "healthy", label: "Healthy" },
-                                        {
-                                            value: "unassessed",
-                                            label: "Not assessed",
-                                        },
-                                    ]}
-                                />
-                            </span>
-                        </span>
-                        {namespaceOptions.length > 0 && (
-                            <span className="flex items-center gap-1.5">
-                                <label
-                                    htmlFor="table-namespace"
-                                    className="text-sm font-semibold whitespace-nowrap text-foreground"
-                                >
-                                    Namespace
-                                </label>
-                                <span className="w-36">
-                                    <Select
-                                        id="table-namespace"
-                                        value={search.namespace ?? ""}
-                                        onValueChange={(value) => {
-                                            change({ namespace: value });
-                                        }}
-                                        options={[
-                                            {
-                                                value: "",
-                                                label: "All namespaces",
-                                            },
-                                            ...namespaceOptions.map(
-                                                ({ value, levels }) => ({
-                                                    value,
-                                                    label: levels.join("."),
-                                                }),
-                                            ),
-                                        ]}
-                                    />
-                                </span>
-                            </span>
-                        )}
-                    </FilterBar>
-                    {items.length === 0 ? (
-                        tables.isSuccess ? (
-                            <NoResults onClear={clearFilters}>
-                                No tables match these filters. Adjust or clear
-                                the health filter to see every table.
-                            </NoResults>
-                        ) : null
-                    ) : (
-                        <>
-                            {search.health !== undefined && (
-                                <p className="mb-3 text-xs text-muted-foreground">
-                                    The coordinator evaluates every visible
-                                    table for the health filter and order; the
-                                    other filters cover the loaded rows.
-                                </p>
+                        <FacetFilter
+                            label="Health"
+                            allLabel="All states"
+                            options={facetOptions(
+                                facets.data?.health,
+                                search.health === undefined
+                                    ? []
+                                    : [search.health],
+                                healthLabel,
                             )}
-                            {(filtersActive || search.sort !== undefined) &&
+                            selected={
+                                search.health === undefined
+                                    ? []
+                                    : [search.health]
+                            }
+                            onChange={(values) => {
+                                change({ health: healthFilter(values[0]) });
+                            }}
+                        />
+                        <FacetFilter
+                            label="Catalog"
+                            allLabel="All catalogs"
+                            options={facetOptions(
+                                facets.data?.catalog,
+                                search.catalog === undefined
+                                    ? []
+                                    : [search.catalog],
+                                catalogLabel,
+                            )}
+                            selected={
+                                search.catalog === undefined
+                                    ? []
+                                    : [search.catalog]
+                            }
+                            onChange={(values) => {
+                                change({ catalog: values[0] });
+                            }}
+                        />
+                    </FilterBar>
+                    {tables.isSuccess && (
+                        <>
+                            {search.sort !== undefined &&
+                                search.sort !== "health" &&
                                 tables.hasNextPage && (
                                     <p className="mb-3 text-xs text-muted-foreground">
-                                        Search and sort cover the{" "}
+                                        This order covers the{" "}
                                         {count(items.length, "loaded table")}.
-                                        Load more to widen them.
+                                        Load more to widen it.
                                     </p>
                                 )}
                             <div ref={tableFrame}>
-                                <DataTable
-                                    rows={visible}
+                                <DataGrid
+                                    rows={items}
                                     columns={columns}
                                     getRowKey={(table) => table.id}
                                     sort={sort}
                                     onSortChange={onSortChange}
+                                    columnVisibility={visibility}
                                     caption="Tables"
+                                    refreshing={tables.isPlaceholderData}
                                     empty={
-                                        <NoResults
-                                            onClear={
-                                                filtersActive
-                                                    ? clearFilters
-                                                    : undefined
-                                            }
-                                        >
+                                        <NoResults onClear={clearFilters}>
                                             No tables match these filters.
                                             Adjust the search or clear the
-                                            filters to see every loaded table.
+                                            filters to see every table.
                                         </NoResults>
                                     }
                                 />
@@ -583,11 +507,9 @@ export function TablesPage() {
                                     Scroll horizontally for more columns.
                                 </p>
                             )}
-                            {(visible.length > 0 ||
-                                tables.hasNextPage ||
-                                !filtersActive) && (
+                            {items.length > 0 && (
                                 <LoadMore
-                                    shown={visible.length}
+                                    shown={items.length}
                                     noun="tables"
                                     hasMore={tables.hasNextPage}
                                     loading={tables.isFetchingNextPage}

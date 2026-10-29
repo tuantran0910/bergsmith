@@ -191,7 +191,13 @@ export class FakeCoordinator {
 
     private answer(sent: Sent): Reply {
         this.requests.push(sent);
-        for (const route of this.routes) {
+        // Like the coordinator's router, a literal path such as
+        // `/tables/facets` wins over a parameter such as `/tables/{id}`.
+        const ordered = [
+            ...this.routes.filter((route) => route.names.length === 0),
+            ...this.routes.filter((route) => route.names.length > 0),
+        ];
+        for (const route of ordered) {
             const found =
                 route.method === sent.method
                     ? route.pattern.exec(sent.pathname)
@@ -338,6 +344,15 @@ export const test = base.extend<Fixtures>({
             },
         ]);
         const coordinator = new FakeCoordinator();
+        // Filtered lists read facet counts beside each page (ADR 0067); a
+        // test that asserts counts routes its own, which takes precedence.
+        coordinator
+            .on("GET", "/api/v1/tables/facets", () =>
+                json(200, { health: [], catalog: [] }),
+            )
+            .on("GET", "/api/v1/jobs/facets", () =>
+                json(200, { state: [], operation: [] }),
+            );
         await coordinator.install(page);
         await provide(coordinator);
         expect(coordinator.unrouted, "unrouted requests").toEqual([]);

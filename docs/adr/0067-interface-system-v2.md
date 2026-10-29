@@ -145,6 +145,43 @@ This supersedes 0046's "neutral graphite surfaces and one accent".
   fails if a filtered page discards the organization's other rows. Name
   search has no index: the names live in inventory-sized tables.
 
+### List pages
+
+- Long, server-filtered lists use `DataGrid`, built on TanStack Table
+  (`@tanstack/react-table` 8.21.3) for the column model and visibility and
+  `@tanstack/react-virtual` 3.14.20 for virtualization; both are MIT and load
+  in one shared lazy chunk (about 25 kB gzipped). Jobs and Tables use it
+  first; `DataTable` stays for short client-side lists until they migrate.
+- Search, filters, and order live in validated search parameters and go to
+  the coordinator, never filter loaded rows. Validation matches the API:
+  search text loses control characters and stops at 128 characters, and list
+  filters keep known values once in canonical order, so a link never carries
+  a filter the API would reject. The search field reports after 150 ms
+  without typing.
+- Facets open from a toolbar button in a modal popover of native checkboxes
+  (OR within a filter) or radios (single-value filters), each with its count;
+  a selected value the counts no longer include stays offered with zero. The
+  choice shows at once, before the address settles. Active filters are
+  removable pills. In the narrow drawer the same choices render in place.
+  Counts are fetched only once the list has rows or filters.
+- Column visibility is a per-browser choice in local storage, like density;
+  the first column cannot hide.
+- The header sticks inside the grid's own scroll area, capped to the
+  viewport. Past 100 rows only rows in view render; spacer rows take their
+  heights through CSSOM, and `aria-rowcount` and `aria-rowindex` keep the
+  full size for assistive technology. Arrow keys, Home, and End move between
+  rows' first links.
+- While a filter loads, the previous rows stay (`keepPreviousData`), the
+  grid is `aria-busy`, and a 2 px bar fades in without moving the layout.
+  Lists and facets are fresh for 15 s.
+- The namespace select of the old Tables page is gone: `q` matches
+  `namespace.name`, so typing a namespace finds its tables. Finding a table
+  by its ID is no longer offered from the list; its page is reachable by
+  link.
+- A browser journey loads 1,000 jobs, asserts fewer than 100 rendered rows,
+  and measures interaction to next paint at most 200 ms and layout shift at
+  most 0.1 at 4× CPU throttle.
+
 ### Engineering limits
 
 These are enforced by gates, not by review:

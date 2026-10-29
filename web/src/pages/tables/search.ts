@@ -1,6 +1,8 @@
 // The table list's URL state (ADR 0056): search, filters, and sort live in
 // validated search parameters so links, back/forward, and saved views work.
 
+import { searchText } from "../../components/listSearch";
+
 const SORTS = [
     "name",
     "catalog",
@@ -39,10 +41,13 @@ const HEALTH = ["healthy", "warning", "critical", "unassessed"] as const;
 
 export type TableHealthFilter = (typeof HEALTH)[number];
 
+/**
+ * The coordinator filters by `q`, `catalog`, and `health` (ADR 0067); `q`
+ * matches a visible alias's `namespace.name`, so it also finds a namespace.
+ */
 export interface TablesSearch {
     q?: string;
     catalog?: string;
-    namespace?: string;
     health?: TableHealthFilter | undefined;
     sort?: TableSort;
     order?: "asc" | "desc";
@@ -58,25 +63,12 @@ function text(value: unknown): string | undefined {
 }
 
 /**
- * A namespace's canonical URL key. Iceberg keeps namespace levels separate
- * and a level may contain a dot, so the key is JSON rather than a flattening
- * join (ADR 0056).
+ * A namespace's canonical key. Iceberg keeps namespace levels separate and a
+ * level may contain a dot, so the key is JSON rather than a flattening join
+ * (ADR 0056).
  */
 export function namespaceKey(levels: readonly string[]): string {
     return JSON.stringify(levels);
-}
-
-/** The levels in a namespace key, or `undefined` for a malformed one. */
-export function parseNamespaceKey(value: string): string[] | undefined {
-    try {
-        const parsed: unknown = JSON.parse(value);
-        return Array.isArray(parsed) &&
-            parsed.every((level) => typeof level === "string")
-            ? parsed
-            : undefined;
-    } catch {
-        return undefined;
-    }
 }
 
 export function sortColumn(value: unknown): TableSort | undefined {
@@ -100,11 +92,8 @@ export function validateTableSearch(
 export function validateTablesSearch(
     search: Record<string, unknown>,
 ): TablesSearch {
-    const q = text(search["q"]);
+    const q = searchText(search["q"]);
     const catalog = text(search["catalog"]);
-    const namespace = text(search["namespace"]);
-    const levels =
-        namespace === undefined ? undefined : parseNamespaceKey(namespace);
     const health = healthFilter(search["health"]);
     const sort = sortColumn(search["sort"]);
     const order =
@@ -114,7 +103,6 @@ export function validateTablesSearch(
     return {
         ...(q !== undefined ? { q } : {}),
         ...(catalog !== undefined ? { catalog } : {}),
-        ...(levels !== undefined ? { namespace: namespaceKey(levels) } : {}),
         ...(health !== undefined ? { health } : {}),
         ...(sort !== undefined ? { sort } : {}),
         ...(order !== undefined ? { order } : {}),

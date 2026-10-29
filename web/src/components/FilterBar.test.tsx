@@ -165,3 +165,60 @@ it("keeps the filters inline above the small breakpoint", () => {
         screen.queryByRole("button", { name: "Filters" }),
     ).not.toBeInTheDocument();
 });
+
+it("reports the search once typing pauses, capped at the API's length", () => {
+    vi.useFakeTimers();
+    try {
+        const onQueryChange = vi.fn();
+        const { rerender } = render(
+            <FilterBar
+                query=""
+                queryLabel="Search jobs"
+                onQueryChange={onQueryChange}
+                delay={150}
+            />,
+        );
+        const field = screen.getByRole("searchbox", { name: "Search jobs" });
+        expect(field).toHaveAttribute("maxLength", "128");
+
+        fireEvent.change(field, { target: { value: "o" } });
+        fireEvent.change(field, { target: { value: "or" } });
+        act(() => {
+            vi.advanceTimersByTime(149);
+        });
+        expect(onQueryChange).not.toHaveBeenCalled();
+        fireEvent.change(field, { target: { value: "orders" } });
+        act(() => {
+            vi.advanceTimersByTime(150);
+        });
+        expect(onQueryChange).toHaveBeenCalledTimes(1);
+        expect(onQueryChange).toHaveBeenCalledWith("orders");
+
+        // The page echoing the report leaves the field alone; the page
+        // clearing it empties the field.
+        rerender(
+            <FilterBar
+                query="orders"
+                queryLabel="Search jobs"
+                onQueryChange={onQueryChange}
+                delay={150}
+            />,
+        );
+        expect(field).toHaveValue("orders");
+        rerender(
+            <FilterBar
+                query=""
+                queryLabel="Search jobs"
+                onQueryChange={onQueryChange}
+                delay={150}
+            />,
+        );
+        expect(field).toHaveValue("");
+        act(() => {
+            vi.advanceTimersByTime(300);
+        });
+        expect(onQueryChange).toHaveBeenCalledTimes(1);
+    } finally {
+        vi.useRealTimers();
+    }
+});
