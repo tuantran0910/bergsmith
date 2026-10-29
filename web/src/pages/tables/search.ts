@@ -23,6 +23,7 @@ const TABS = [
     "statistics",
     "maintenance",
     "storage",
+    "access",
 ] as const;
 
 /** The table detail's addressable tab. */

@@ -246,7 +246,7 @@ it("scoped administrators can manage a connection's Access without directory acc
         json(201, { ...roleGrant, scope: { catalog_connection: CATALOG_ID } }),
     );
     const { user } = start(`/catalogs/${CATALOG_ID}`);
-    await user.click(await screen.findByRole("button", { name: "Access" }));
+    await user.click(await screen.findByRole("tab", { name: "Access" }));
     expect(
         screen.queryByRole("link", { name: "Users" }),
     ).not.toBeInTheDocument();
@@ -264,8 +264,7 @@ it("scoped administrators can manage a connection's Access without directory acc
 });
 
 it("table Access is permission scoped and disappears on permission removal", async () => {
-    const { user, client } = start(`/tables/${TABLE_ID}`);
-    await user.click(await screen.findByRole("button", { name: "Access" }));
+    const { client } = start(`/tables/${TABLE_ID}?tab=access`);
     expect(await screen.findByText(/Direct table grants/)).toBeVisible();
     expect(
         new URL(
@@ -281,6 +280,30 @@ it("table Access is permission scoped and disappears on permission removal", asy
             screen.queryByRole("button", { name: "Grant role" }),
         ).not.toBeInTheDocument(),
     );
+});
+
+it("opens token management from the URL and keeps it out of a user's tabs", async () => {
+    const { user } = start(`/service-identities/${SERVICE_ID}?tab=tokens`);
+    expect(
+        await screen.findByRole("heading", { name: "Pool tokens" }),
+    ).toBeVisible();
+    expect(screen.getByRole("tab", { name: "Tokens" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+    );
+    await user.click(screen.getByRole("tab", { name: "Access" }));
+    expect(window.location.search).toBe("");
+});
+
+it("ignores a token tab for a user principal", async () => {
+    start(`/users/${USER_ID}?tab=tokens`);
+    expect(await screen.findByRole("tab", { name: "Access" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+    );
+    expect(
+        screen.queryByRole("tab", { name: "Tokens" }),
+    ).not.toBeInTheDocument();
 });
 
 it("hides directory pages and avoids protected requests for viewers", async () => {
@@ -324,6 +347,7 @@ it("issues a token once without leaving its bearer in query or mutation caches",
         ),
     );
     const { user, client } = start(`/service-identities/${SERVICE_ID}`);
+    await user.click(await screen.findByRole("tab", { name: "Tokens" }));
     await user.type(await screen.findByLabelText("Worker pool"), "default");
     await user.click(screen.getByRole("button", { name: "Issue token" }));
     expect(await screen.findByLabelText("Pool bearer token")).toHaveTextContent(
@@ -397,6 +421,7 @@ it("rotates a token with confirmation and shows the replacement once", async () 
         },
     );
     const { user } = start(`/service-identities/${SERVICE_ID}`);
+    await user.click(await screen.findByRole("tab", { name: "Tokens" }));
     await user.click(
         await screen.findByRole("button", { name: "Rotate token" }),
     );
@@ -433,6 +458,7 @@ it("revokes a token while keeping the metadata and blocks issuance for inactive 
             return json(200, { ...poolToken, active: false });
         });
     const { user } = start(`/service-identities/${SERVICE_ID}`);
+    await user.click(await screen.findByRole("tab", { name: "Tokens" }));
     await user.click(
         await screen.findByRole("button", { name: "Revoke token" }),
     );
@@ -516,6 +542,7 @@ it("discards an issued bearer that arrives after sign-out", async () => {
             }),
     );
     const { user, client } = start(`/service-identities/${SERVICE_ID}`);
+    await user.click(await screen.findByRole("tab", { name: "Tokens" }));
     await user.type(await screen.findByLabelText("Worker pool"), "default");
     await user.click(screen.getByRole("button", { name: "Issue token" }));
     await waitFor(() => {
@@ -551,6 +578,7 @@ it("keeps a lost issuance blocked and tells the operator how to recover", async 
         json(504, {}),
     );
     const { user } = start(`/service-identities/${SERVICE_ID}`);
+    await user.click(await screen.findByRole("tab", { name: "Tokens" }));
     await user.type(await screen.findByLabelText("Worker pool"), "default");
     await user.click(screen.getByRole("button", { name: "Issue token" }));
     await waitFor(() =>
@@ -620,6 +648,11 @@ it.each(["grants", "tokens"] as const)(
                 ? `/users/${USER_ID}`
                 : `/service-identities/${SERVICE_ID}`,
         );
+        if (resource === "tokens") {
+            await user.click(
+                await screen.findByRole("tab", { name: "Tokens" }),
+            );
+        }
         await user.click(
             await screen.findByRole("button", {
                 name: `Load more ${resource}`,

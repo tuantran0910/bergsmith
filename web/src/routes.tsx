@@ -16,6 +16,8 @@ import { lazy, type ComponentType } from "react";
 
 import { Root } from "./Root";
 import { EmptyState } from "./components/Page";
+import { validatePrincipalSearch } from "./pages/access/search";
+import { validateCatalogSearch } from "./pages/catalogs/search";
 import { validateJobSearch } from "./pages/jobs/search";
 import {
     validateTableSearch,
@@ -174,6 +176,7 @@ const newCatalogRoute = createRoute({
 const catalogRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/catalogs/$catalogId",
+    validateSearch: validateCatalogSearch,
     beforeLoad: ({ params }) => {
         if (!isResourceId(params.catalogId)) throw notFound();
     },
@@ -298,23 +301,34 @@ const servicesRoute = createRoute({
 const userRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/users/$principalId",
+    validateSearch: validatePrincipalSearch,
     beforeLoad: ({ params }) => {
         if (!isResourceId(params.principalId)) throw notFound();
     },
     component: function UserRoute() {
         const { principalId } = userRoute.useParams();
-        return <PrincipalPage key={principalId} id={principalId} />;
+        const { tab } = userRoute.useSearch();
+        return <PrincipalPage key={principalId} id={principalId} tab={tab} />;
     },
 });
 const serviceRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/service-identities/$principalId",
+    validateSearch: validatePrincipalSearch,
     beforeLoad: ({ params }) => {
         if (!isResourceId(params.principalId)) throw notFound();
     },
     component: function ServiceRoute() {
         const { principalId } = serviceRoute.useParams();
-        return <PrincipalPage key={principalId} id={principalId} services />;
+        const { tab } = serviceRoute.useSearch();
+        return (
+            <PrincipalPage
+                key={principalId}
+                id={principalId}
+                services
+                tab={tab}
+            />
+        );
     },
 });
 

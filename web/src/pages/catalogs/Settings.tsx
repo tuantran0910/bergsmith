@@ -8,6 +8,7 @@ import {
     type Schemas,
 } from "../../api/client";
 import { ErrorNotice } from "../../components/ErrorNotice";
+import { duration } from "../../format";
 import { useSessionMutation } from "../../queryClient";
 import { Button } from "../../ui/Button";
 import {
@@ -87,6 +88,7 @@ export function Settings({ catalog }: { catalog: Schemas["Catalog"] }) {
         },
     });
     const patch = changedSettings(catalog, draft);
+    const dirty = Object.keys(patch).length > 1;
     const uncertain =
         update.error instanceof ApiFailure && update.error.outcomeUncertain;
     const conflicted =
@@ -100,6 +102,23 @@ export function Settings({ catalog }: { catalog: Schemas["Catalog"] }) {
         routingPatch.warehouse = routing.warehouse;
     if (routing.credential_ref !== (catalog.credential_ref ?? null))
         routingPatch.credential_ref = routing.credential_ref;
+    const routingDirty = Object.keys(routingPatch).length > 1;
+    const discard = () => {
+        setDraft({
+            expected_revision: catalog.revision,
+            name: catalog.name,
+            enabled: catalog.enabled,
+            ...catalog.settings,
+        });
+    };
+    const discardRouting = () => {
+        setRouting({
+            name: catalog.name,
+            uri: catalog.uri ?? "",
+            warehouse: catalog.warehouse ?? null,
+            credential_ref: catalog.credential_ref ?? null,
+        });
+    };
     return (
         <Card>
             <CardHeader>
@@ -135,52 +154,75 @@ export function Settings({ catalog }: { catalog: Schemas["Catalog"] }) {
                                 }}
                             />
                         </Label>
-                        <Label>
-                            Maximum execution duration (seconds)
-                            <Input
-                                required
-                                type="number"
-                                min={1}
-                                max={86400}
-                                step={1}
-                                value={
-                                    Number.isFinite(draft.max_execution_seconds)
-                                        ? draft.max_execution_seconds
-                                        : ""
-                                }
-                                onChange={(event) => {
-                                    setDraft({
-                                        ...draft,
-                                        max_execution_seconds:
-                                            event.target.valueAsNumber,
-                                    });
-                                }}
-                            />
-                        </Label>
-                        <Label>
-                            Maximum unresolved publication age (seconds)
-                            <Input
-                                required
-                                type="number"
-                                min={1}
-                                max={2592000}
-                                step={1}
-                                value={
-                                    Number.isFinite(
-                                        draft.max_unresolved_publication_seconds,
-                                    )
-                                        ? draft.max_unresolved_publication_seconds
-                                        : ""
-                                }
-                                onChange={(event) => {
-                                    setDraft({
-                                        ...draft,
-                                        max_unresolved_publication_seconds:
-                                            event.target.valueAsNumber,
-                                    });
-                                }}
-                            />
-                        </Label>
+                        <div className="grid gap-1">
+                            <Label>
+                                Maximum execution duration (seconds)
+                                <Input
+                                    required
+                                    type="number"
+                                    min={1}
+                                    max={86400}
+                                    step={1}
+                                    value={
+                                        Number.isFinite(
+                                            draft.max_execution_seconds,
+                                        )
+                                            ? draft.max_execution_seconds
+                                            : ""
+                                    }
+                                    onChange={(event) => {
+                                        setDraft({
+                                            ...draft,
+                                            max_execution_seconds:
+                                                event.target.valueAsNumber,
+                                        });
+                                    }}
+                                />
+                            </Label>
+                            <span className="text-xs text-muted-foreground">
+                                {Number.isFinite(draft.max_execution_seconds)
+                                    ? duration(
+                                          draft.max_execution_seconds * 1000,
+                                      )
+                                    : "Enter a duration"}
+                            </span>
+                        </div>
+                        <div className="grid gap-1">
+                            <Label>
+                                Maximum unresolved publication age (seconds)
+                                <Input
+                                    required
+                                    type="number"
+                                    min={1}
+                                    max={2592000}
+                                    step={1}
+                                    value={
+                                        Number.isFinite(
+                                            draft.max_unresolved_publication_seconds,
+                                        )
+                                            ? draft.max_unresolved_publication_seconds
+                                            : ""
+                                    }
+                                    onChange={(event) => {
+                                        setDraft({
+                                            ...draft,
+                                            max_unresolved_publication_seconds:
+                                                event.target.valueAsNumber,
+                                        });
+                                    }}
+                                />
+                            </Label>
+                            <span className="text-xs text-muted-foreground">
+                                {Number.isFinite(
+                                    draft.max_unresolved_publication_seconds,
+                                )
+                                    ? duration(
+                                          draft.max_unresolved_publication_seconds *
+                                              1000,
+                                      )
+                                    : "Enter a duration"}
+                            </span>
+                        </div>
                         <div className="grid gap-3 sm:col-span-2 sm:grid-cols-2">
                             <div className="grid gap-2 rounded-lg border p-3">
                                 <label className="flex items-center gap-2 text-sm">
@@ -238,13 +280,31 @@ export function Settings({ catalog }: { catalog: Schemas["Catalog"] }) {
                             investigation threshold; it never resolves a
                             publication.
                         </p>
-                        <Button
-                            type="submit"
-                            disabled={Object.keys(patch).length === 1}
-                            className="w-fit"
-                        >
-                            {update.isPending ? "Saving…" : "Save settings"}
-                        </Button>
+                        {dirty && (
+                            <div
+                                role="status"
+                                className="sticky bottom-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-background p-3 shadow-sm sm:col-span-2"
+                            >
+                                <span className="text-sm">
+                                    Unsaved settings changes.
+                                </span>
+                                <span className="flex gap-2">
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        disabled={update.isPending}
+                                        onClick={discard}
+                                    >
+                                        Discard
+                                    </Button>
+                                    <Button type="submit">
+                                        {update.isPending
+                                            ? "Saving…"
+                                            : "Save settings"}
+                                    </Button>
+                                </span>
+                            </div>
+                        )}
                     </fieldset>
                 </form>
                 {!editRouting && (
@@ -282,15 +342,29 @@ export function Settings({ catalog }: { catalog: Schemas["Catalog"] }) {
                                 are active. A routing change invalidates the
                                 saved capability report.
                             </p>
-                            <Button
-                                type="submit"
-                                disabled={
-                                    Object.keys(routingPatch).length === 1
-                                }
-                                className="w-fit"
-                            >
-                                Save routing
-                            </Button>
+                            {routingDirty && (
+                                <div
+                                    role="status"
+                                    className="sticky bottom-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-background p-3 shadow-sm"
+                                >
+                                    <span className="text-sm">
+                                        Unsaved routing changes.
+                                    </span>
+                                    <span className="flex gap-2">
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            disabled={update.isPending}
+                                            onClick={discardRouting}
+                                        >
+                                            Discard
+                                        </Button>
+                                        <Button type="submit">
+                                            Save routing
+                                        </Button>
+                                    </span>
+                                </div>
+                            )}
                         </fieldset>
                     </form>
                 )}

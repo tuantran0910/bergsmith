@@ -143,6 +143,7 @@ it("checks a draft before saving and invalidates the diagnostic after edits", as
     await user.click(
         await screen.findByRole("button", { name: "Save connection" }),
     );
+    await user.click(await screen.findByRole("tab", { name: "Settings" }));
     expect(
         await screen.findByRole("heading", { name: "Connection settings" }),
     ).toBeVisible();
@@ -239,6 +240,64 @@ it("displays failed diagnostics without creating a connection", async () => {
     expect(fake.sent("POST", "/api/v1/catalogs")).toHaveLength(0);
 });
 
+it("opens the tab in the URL and ignores an unknown one", async () => {
+    const user = start(`/catalogs/${CATALOG_ID}?tab=tables`);
+    expect(
+        await screen.findByRole("heading", { name: "Registered tables" }),
+    ).toBeVisible();
+    expect(screen.getByRole("tab", { name: "Tables" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+    );
+    await user.click(screen.getByRole("tab", { name: "Overview" }));
+    expect(
+        await screen.findByRole("heading", { name: "Table statistics" }),
+    ).toBeVisible();
+    expect(window.location.search).toBe("");
+});
+
+it("falls back to the overview for an unknown tab", async () => {
+    start(`/catalogs/${CATALOG_ID}?tab=retired`);
+    expect(
+        await screen.findByRole("heading", { name: "Table statistics" }),
+    ).toBeVisible();
+    expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+    );
+    expect(
+        screen.queryByRole("tab", { name: "retired" }),
+    ).not.toBeInTheDocument();
+});
+
+it("shows human units and discards unsaved settings from the save bar", async () => {
+    const user = start();
+    await user.click(await screen.findByRole("tab", { name: "Settings" }));
+    expect(screen.getByText("3 min 0 s")).toBeVisible();
+    expect(screen.getByText("1 h 0 min")).toBeVisible();
+    await user.click(screen.getByLabelText("Connection enabled"));
+    expect(screen.getByText("Unsaved settings changes.")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Discard" }));
+    expect(
+        screen.queryByText("Unsaved settings changes."),
+    ).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Connection enabled")).toBeChecked();
+});
+
+it("keeps settings and access away from viewers", async () => {
+    fake.on("GET", "/auth/session", () => json(200, session("Viewer")));
+    start(`/catalogs/${CATALOG_ID}?tab=settings`);
+    expect(
+        await screen.findByRole("heading", { name: "Table statistics" }),
+    ).toBeVisible();
+    expect(
+        screen.queryByRole("tab", { name: "Settings" }),
+    ).not.toBeInTheDocument();
+    expect(
+        screen.queryByRole("tab", { name: "Access" }),
+    ).not.toBeInTheDocument();
+});
+
 it("patches only changed settings, refreshes the revision, and checks capabilities", async () => {
     const updated = {
         ...managedCatalog,
@@ -268,9 +327,10 @@ it("patches only changed settings, refreshes the revision, and checks capabiliti
             ),
         );
     const user = start();
+    await user.click(await screen.findByRole("tab", { name: "Settings" }));
     expect(
-        await screen.findByRole("button", { name: "Save settings" }),
-    ).toBeDisabled();
+        screen.queryByRole("button", { name: "Save settings" }),
+    ).not.toBeInTheDocument();
     await user.click(screen.getByLabelText("Connection enabled"));
     await user.click(screen.getByLabelText("Maintenance enabled"));
     const execution = screen.getByLabelText(
@@ -286,8 +346,8 @@ it("patches only changed settings, refreshes the revision, and checks capabiliti
     await user.click(screen.getByRole("button", { name: "Save settings" }));
     await waitFor(() =>
         expect(
-            screen.getByRole("button", { name: "Save settings" }),
-        ).toBeDisabled(),
+            screen.queryByRole("button", { name: "Save settings" }),
+        ).not.toBeInTheDocument(),
     );
     expect(
         await fake.sent("PATCH", `/api/v1/catalogs/${CATALOG_ID}`)[0]?.json(),
@@ -298,6 +358,7 @@ it("patches only changed settings, refreshes the revision, and checks capabiliti
         max_execution_seconds: 90,
         max_unresolved_publication_seconds: 7200,
     });
+    await user.click(screen.getByRole("tab", { name: "Overview" }));
     await user.click(
         screen.getByRole("button", { name: "Check capabilities" }),
     );
@@ -318,6 +379,7 @@ it("preserves a conflicted edit until the operator explicitly reloads", async ()
         ),
     );
     const user = start();
+    await user.click(await screen.findByRole("tab", { name: "Settings" }));
     await user.clear(await screen.findByLabelText("Connection name"));
     await user.type(screen.getByLabelText("Connection name"), "renamed");
     await user.click(screen.getByRole("button", { name: "Save settings" }));
@@ -337,6 +399,7 @@ it("edits routing without resending unchanged settings", async () => {
         json(200, { ...managedCatalog, revision: 1 }),
     );
     const user = start();
+    await user.click(await screen.findByRole("tab", { name: "Settings" }));
     await user.click(
         await screen.findByRole("button", { name: "Edit routing" }),
     );
@@ -458,6 +521,7 @@ it("removes a ledger registration with its observed revision", async () => {
         json(200, schema("CatalogUnregistration", { table_id: TABLE_ID })),
     );
     const user = start();
+    await user.click(await screen.findByRole("tab", { name: "Tables" }));
     await user.click(
         await screen.findByRole("button", {
             name: "Remove registration sales.orders",
@@ -586,6 +650,7 @@ it("follows namespace and table cursors without dropping namespace levels", asyn
 it("shows read-only inventory to viewers and denies the create route", async () => {
     fake.on("GET", "/auth/session", () => json(200, session("Viewer")));
     const user = start();
+    await user.click(await screen.findByRole("tab", { name: "Tables" }));
     expect(
         await screen.findByRole("heading", { name: "Registered tables" }),
     ).toBeVisible();

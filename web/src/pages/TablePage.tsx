@@ -27,6 +27,7 @@ import { Card, CardContent } from "../ui/Card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/Tabs";
 import { PreviewView } from "./PreviewView";
 import { Access } from "./access/Access";
+import { canManageScope } from "./access/Grants";
 import { namespaceKey, tab, type TableTab } from "./tables/search";
 import { TableDefinition } from "./tables/Definition";
 import { TableHealth } from "./tables/Health";
@@ -39,12 +40,21 @@ import { TableSnapshots } from "./tables/Snapshots";
 export function TablePage({ id }: { id: string }) {
     const navigate = useNavigate();
     const search = useSearch({ from: "/tables/$tableId" });
-    const current: TableTab = search.tab ?? "overview";
+    const current: TableTab = tab(search.tab) ?? "overview";
     const table = useTable(id);
     const catalogs = useCatalogNames();
     const names = catalogs.data ?? new Map<string, string>();
     const session = useSession();
     const [primaryAlias] = table.data?.aliases ?? [];
+    const access =
+        session !== null &&
+        canManageScope(
+            session,
+            { table: id },
+            (table.data?.aliases ?? []).map((alias) => alias.catalog_id),
+        );
+    const shown: TableTab =
+        current === "access" && !access ? "overview" : current;
     useBreadcrumbLabel(
         table.data === undefined
             ? undefined
@@ -287,7 +297,7 @@ export function TablePage({ id }: { id: string }) {
             />
 
             <Tabs
-                value={current}
+                value={shown}
                 onValueChange={(next) => {
                     const selected = tab(next);
                     void navigate({
@@ -310,6 +320,7 @@ export function TablePage({ id }: { id: string }) {
                     <TabsTrigger value="statistics">Statistics</TabsTrigger>
                     <TabsTrigger value="storage">Storage</TabsTrigger>
                     <TabsTrigger value="maintenance">Maintenance</TabsTrigger>
+                    {access && <TabsTrigger value="access">Access</TabsTrigger>}
                 </TabsList>
                 <TabsContent value="overview">
                     <MetricGrid className="mb-6">
@@ -475,14 +486,18 @@ export function TablePage({ id }: { id: string }) {
                 <TabsContent value="maintenance">
                     <TableMaintenance id={id} />
                 </TabsContent>
-            </Tabs>
-            <Access
-                scope={{ table: id }}
-                scopeLabel={fullName}
-                connections={table.data.aliases.map(
-                    (alias) => alias.catalog_id,
+                {access && (
+                    <TabsContent value="access">
+                        <Access
+                            scope={{ table: id }}
+                            scopeLabel={fullName}
+                            connections={table.data.aliases.map(
+                                (alias) => alias.catalog_id,
+                            )}
+                        />
+                    </TabsContent>
                 )}
-            />
+            </Tabs>
         </section>
     );
 }

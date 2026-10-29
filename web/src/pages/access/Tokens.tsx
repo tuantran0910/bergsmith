@@ -72,7 +72,9 @@ function TokenRow({
     return (
         <li className="grid gap-3 rounded-lg border p-4">
             <div className="flex flex-wrap items-center gap-3">
-                <strong>{token.label || token.pool}</strong>
+                <strong className="wrap-anywhere">
+                    {token.label || token.pool}
+                </strong>
                 <span>{token.active ? "Active" : "Revoked"}</span>
                 <span>Pool: {token.pool}</span>
             </div>
