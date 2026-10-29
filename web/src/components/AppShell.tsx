@@ -339,6 +339,7 @@ export function AppShell({
                 )}
                 <main
                     id="main"
+                    aria-label="Main content"
                     ref={mainRef}
                     tabIndex={-1}
                     className="mx-auto w-full max-w-6xl px-4 py-6 outline-none md:px-8 md:py-8"

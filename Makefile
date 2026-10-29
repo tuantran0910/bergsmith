@@ -32,7 +32,7 @@ WORKER_BIN ?= $(abspath $(or $(CARGO_TARGET_DIR),target)/debug/bergsmith-worker)
 
 .PHONY: help fmt fmt-check check clippy test test-changed doc coverage coverage-html deny machete ci \
 	services-up services-down proto-lint proto-breaking bench-executor test-distributed coverage-distributed \
-	web-install web web-e2e web-dev web-audit images app-up app-down app-worker app-bootstrap-check profraw-clean \
+	web-install web web-e2e web-e2e-image web-dev web-audit images app-up app-down app-worker app-bootstrap-check profraw-clean \
 	observability observability-rules observability-dashboards
 
 help: ## List targets
@@ -141,6 +141,15 @@ web-e2e: web-install ## Browser gate: journeys in Chromium under the coordinator
 	$(WEB) run build
 	$(WEB) exec -- playwright install chromium
 	$(WEB) run e2e
+
+# The same gate in the image the visual baselines were rendered in, so the
+# comparison sees the same fonts and libraries as CI. The container installs
+# its own node_modules for its platform.
+PLAYWRIGHT_IMAGE ?= mcr.microsoft.com/playwright:v1.64.1-noble
+web-e2e-image: ## Browser gate in the pinned Playwright image (the visual baseline)
+	docker run --rm --user "$$(id -u):$$(id -g)" --env HOME=/tmp \
+		--volume "$(CURDIR):/work" --workdir /work $(PLAYWRIGHT_IMAGE) \
+		bash -lc "npm --prefix web ci --no-fund --no-audit && npm --prefix web run build && npm --prefix web exec -- playwright install chromium && npm --prefix web run e2e"
 
 web-dev: web-install ## Serve the web UI, proxying /api and /auth to BERGSMITH_COORDINATOR_URL
 	$(WEB) run dev
