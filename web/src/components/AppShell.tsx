@@ -172,7 +172,7 @@ function railGroups(session: SessionInfo) {
 }
 
 const railLinkClass =
-    "flex items-center gap-2 rounded-md px-2.5 py-1.5 no-underline text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground aria-[current=page]:bg-muted aria-[current=page]:font-semibold aria-[current=page]:text-foreground";
+    "flex items-center gap-2 rounded-md px-2.5 py-1.5 no-underline text-sm text-muted-foreground hover:bg-muted hover:text-foreground aria-[current=page]:bg-muted aria-[current=page]:text-foreground";
 
 function NavBody({
     session,
@@ -197,7 +197,7 @@ function NavBody({
             </ul>
             {railGroups(session).map(({ label, items }) => (
                 <section key={label} aria-label={label} className="mt-4">
-                    <h2 className="m-0 px-2 py-1 text-[0.7rem] font-semibold tracking-widest text-muted-foreground uppercase">
+                    <h2 className="m-0 px-2 py-1 text-2xs font-semibold tracking-widest text-muted-foreground uppercase">
                         {label}
                     </h2>
                     <ul className="m-0 list-none p-0">
@@ -289,7 +289,7 @@ export function AppShell({
                 >
                     <AnvilIcon
                         aria-hidden="true"
-                        className="size-5 text-primary"
+                        className="size-5 text-foreground"
                     />
                     <span>Bergsmith</span>
                 </Link>

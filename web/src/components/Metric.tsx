@@ -39,7 +39,7 @@ export function Metric({
 }) {
     return (
         <div className="rounded-xl bg-card px-4 py-3 ring-1 ring-foreground/10">
-            <dt className="text-xs font-medium text-muted-foreground">
+            <dt className="text-xs font-semibold text-muted-foreground">
                 {label}
             </dt>
             <dd className="m-0 mt-1 text-lg font-semibold break-words tabular-nums">

@@ -66,7 +66,7 @@ export function CatalogsPage() {
                                 <Link
                                     to="/catalogs/$catalogId"
                                     params={{ catalogId: catalog.id }}
-                                    className="text-base font-medium"
+                                    className="text-base font-semibold"
                                 >
                                     {catalog.name}
                                 </Link>

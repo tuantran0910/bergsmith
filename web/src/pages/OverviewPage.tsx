@@ -291,7 +291,7 @@ export function OverviewPage() {
                                             title={job.job_id}
                                             className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-card px-4 py-3 ring-1 ring-foreground/10 hover:ring-foreground/25 hover:no-underline"
                                         >
-                                            <span className="font-medium">
+                                            <span className="font-semibold">
                                                 {REASON_LABELS[job.reason]}
                                             </span>
                                             <span className="text-sm text-muted-foreground">
@@ -514,10 +514,12 @@ export function OverviewPage() {
                             >
                                 <Icon
                                     aria-hidden="true"
-                                    className="mt-0.5 size-5 shrink-0 text-primary"
+                                    className="mt-0.5 size-5 shrink-0 text-muted-foreground"
                                 />
                                 <span className="grid gap-0.5">
-                                    <span className="font-medium">{label}</span>
+                                    <span className="font-semibold">
+                                        {label}
+                                    </span>
                                     <span className="text-sm text-muted-foreground">
                                         {description}
                                     </span>

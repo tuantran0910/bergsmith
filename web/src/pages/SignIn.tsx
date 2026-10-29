@@ -20,7 +20,7 @@ export function SignIn({ returnTo }: { returnTo: string }) {
         <main className="flex min-h-dvh items-start justify-center bg-muted/40 px-4 pt-[12vh]">
             <Card className="w-full max-w-sm">
                 <CardHeader>
-                    <span className="flex items-center gap-2 text-primary">
+                    <span className="flex items-center gap-2 text-foreground">
                         <AnvilIcon aria-hidden="true" className="size-6" />
                     </span>
                     <h1 className="m-0 text-xl font-semibold tracking-tight">

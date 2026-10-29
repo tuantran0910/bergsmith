@@ -61,7 +61,7 @@ function ToastList() {
             <ToastPrimitive.Content className="flex items-start gap-3 p-4">
                 <ToastIcon type={item.type} />
                 <div className="flex min-w-0 flex-1 flex-col gap-1">
-                    <ToastPrimitive.Title className="text-sm font-medium" />
+                    <ToastPrimitive.Title className="text-sm font-semibold" />
                     <ToastPrimitive.Description className="text-sm text-muted-foreground" />
                 </div>
                 <ToastPrimitive.Close

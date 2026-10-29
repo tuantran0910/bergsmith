@@ -72,7 +72,7 @@ export function Capabilities({
                             ))}
                             <div className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2">
                                 <dt>Idempotency lifetime (optional)</dt>
-                                <dd className="m-0 font-medium tabular-nums text-muted-foreground">
+                                <dd className="m-0 font-semibold tabular-nums text-muted-foreground">
                                     {capabilities.idempotency_key_lifetime_seconds ===
                                     null
                                         ? "Not advertised"
@@ -93,7 +93,7 @@ export function Capabilities({
                     </p>
                 )}
                 <aside className="mt-3 grid gap-1 rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
-                    <p className="m-0 font-medium text-foreground">
+                    <p className="m-0 font-semibold text-foreground">
                         Reading this report
                     </p>
                     <p className="m-0">

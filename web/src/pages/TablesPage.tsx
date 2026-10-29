@@ -442,7 +442,7 @@ export function TablesPage() {
                             <span className="flex items-center gap-1.5">
                                 <label
                                     htmlFor="table-catalog"
-                                    className="text-sm font-medium whitespace-nowrap text-foreground"
+                                    className="text-sm font-semibold whitespace-nowrap text-foreground"
                                 >
                                     Catalog
                                 </label>
@@ -472,7 +472,7 @@ export function TablesPage() {
                         <span className="flex items-center gap-1.5">
                             <label
                                 htmlFor="table-health"
-                                className="text-sm font-medium whitespace-nowrap text-foreground"
+                                className="text-sm font-semibold whitespace-nowrap text-foreground"
                             >
                                 Health
                             </label>
@@ -503,7 +503,7 @@ export function TablesPage() {
                             <span className="flex items-center gap-1.5">
                                 <label
                                     htmlFor="table-namespace"
-                                    className="text-sm font-medium whitespace-nowrap text-foreground"
+                                    className="text-sm font-semibold whitespace-nowrap text-foreground"
                                 >
                                     Namespace
                                 </label>

@@ -45,7 +45,7 @@ function Actor({ event }: { event: Schemas["AuditEvent"] }) {
     return (
         <span className="inline-flex flex-col">
             <span className="inline-flex items-center gap-1">
-                <span title={id} className="font-medium">
+                <span title={id} className="font-semibold">
                     {event.actor_display_name ?? shortId(id)}
                 </span>
                 <CopyButton value={id} label="principal ID" />
@@ -102,7 +102,7 @@ function Resource({ event }: { event: Schemas["AuditEvent"] }) {
         );
     return (
         <span className="inline-flex flex-col">
-            <span className="font-medium">{type}</span>
+            <span className="font-semibold">{type}</span>
             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                 {linked}
                 <CopyButton value={id} label={`${type.toLowerCase()} ID`} />

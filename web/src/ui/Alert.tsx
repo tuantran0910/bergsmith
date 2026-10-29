@@ -10,7 +10,7 @@ export const alertVariants = cva(
     {
         variants: {
             variant: {
-                default: "border-l-primary",
+                default: "border-l-info *:[svg]:text-info",
                 destructive: "border-l-destructive *:[svg]:text-destructive",
                 warning: "border-l-warning *:[svg]:text-warning",
                 success: "border-l-success *:[svg]:text-success",
@@ -49,7 +49,7 @@ export function AlertTitle({ className, ...props }: ComponentProps<"div">) {
     return (
         <div
             data-slot="alert-title"
-            className={cn("col-start-2 font-medium", className)}
+            className={cn("col-start-2 font-semibold", className)}
             {...props}
         />
     );

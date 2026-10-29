@@ -156,7 +156,7 @@ function JobDetail({ job }: { job: Job }) {
                                 aria-hidden="true"
                                 className="absolute top-1.5 -left-[5px] size-2.5 rounded-full bg-primary ring-4 ring-card"
                             />
-                            <span className="font-medium">
+                            <span className="font-semibold">
                                 {words(event.kind)}
                                 {event.from_state !== null &&
                                     event.from_state !== event.to_state && (

@@ -80,7 +80,7 @@ export function PolicyFields({
                 </Field>
             </div>
             <div className="grid content-start gap-1.5 text-sm">
-                <span className="font-medium">Operation</span>
+                <span className="font-semibold">Operation</span>
                 <p className="m-0 text-muted-foreground">Binpack compaction</p>
                 <span className="text-xs text-muted-foreground">
                     This release implements one operation.

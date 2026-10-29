@@ -17,7 +17,7 @@ const TONES: Record<
     ok: { variant: "success", icon: CircleCheckIcon },
     warning: { variant: "warning", icon: CircleAlertIcon },
     error: { variant: "destructive", icon: CircleXIcon },
-    progress: { variant: "info", icon: LoaderCircleIcon },
+    progress: { variant: "running", icon: LoaderCircleIcon },
     neutral: { variant: "neutral", icon: CircleDashedIcon },
 };
 

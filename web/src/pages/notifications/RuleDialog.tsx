@@ -147,7 +147,7 @@ function RuleFields({
             </Field>
             {lockedEventKind ? (
                 <div className="grid gap-1.5 text-sm">
-                    <span className="font-medium">Event</span>
+                    <span className="font-semibold">Event</span>
                     <p className="m-0 text-muted-foreground">
                         {eventKindLabel(value.event_kind)}
                     </p>

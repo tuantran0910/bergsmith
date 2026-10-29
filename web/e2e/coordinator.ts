@@ -58,7 +58,8 @@ const CONTENT_TYPES: Record<string, string> = {
 /** A reply from the fake API. */
 export interface Reply {
     status: number;
-    body: string;
+    /** Text for API replies; bytes for built files, which include fonts. */
+    body: string | Buffer;
     contentType: string;
     headers?: Record<string, string>;
 }
@@ -245,7 +246,7 @@ async function serveStatic(pathname: string): Promise<Reply> {
         relative.startsWith("assets/") && relative !== "index.html";
     return {
         status: 200,
-        body: await readFile(file, "utf8"),
+        body: await readFile(file),
         contentType:
             CONTENT_TYPES[path.extname(file)] ?? "application/octet-stream",
         headers: {
@@ -266,6 +267,12 @@ function notFound(): Reply {
  */
 const EXPECTED_CONSOLE =
     /^Failed to load resource: the server responded with a status of \d+/;
+
+/**
+ * Chromium reports a font it cannot decode as a warning, not an error, and
+ * then silently renders the fallback; the gate treats it as a failure.
+ */
+const BROKEN_FONT = /^(Failed to decode downloaded font|OTS parsing error)/;
 
 interface Fixtures {
     coordinator: FakeCoordinator;
@@ -305,8 +312,9 @@ export const test = base.extend<Fixtures>({
             });
             page.on("console", (message) => {
                 if (
-                    message.type() === "error" &&
-                    !EXPECTED_CONSOLE.test(message.text())
+                    (message.type() === "error" &&
+                        !EXPECTED_CONSOLE.test(message.text())) ||
+                    BROKEN_FONT.test(message.text())
                 ) {
                     problems.push(`console: ${message.text()}`);
                 }

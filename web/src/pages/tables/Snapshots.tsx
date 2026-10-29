@@ -301,7 +301,7 @@ export function TableSnapshots({ id }: { id: string }) {
                                         </Badge>
                                         <time
                                             dateTime={snapshot.committed_at}
-                                            className="text-sm font-medium"
+                                            className="text-sm font-semibold"
                                         >
                                             {timestamp(snapshot.committed_at)}
                                         </time>

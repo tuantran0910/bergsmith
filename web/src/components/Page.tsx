@@ -21,7 +21,7 @@ export function PageHeader({
     return (
         <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
             <div className="grid min-w-0 flex-1 basis-72 gap-1">
-                <h1 className="m-0 text-2xl font-semibold tracking-tight break-words">
+                <h1 className="m-0 text-xl font-semibold tracking-tight break-words">
                     {title}
                 </h1>
                 {description !== undefined && (
@@ -101,7 +101,7 @@ export function EmptyState({
             <span className="flex size-10 items-center justify-center rounded-full bg-muted text-muted-foreground">
                 <Icon aria-hidden="true" className="size-5" />
             </span>
-            <p className="m-0 font-medium">{title}</p>
+            <p className="m-0 font-semibold">{title}</p>
             {children !== undefined && (
                 <div className="max-w-md text-sm text-muted-foreground">
                     {children}

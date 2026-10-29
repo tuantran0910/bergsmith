@@ -81,7 +81,7 @@ export function TableHead({
             data-slot="table-head"
             scope={scope}
             className={cn(
-                "h-10 px-[var(--density-cell-x)] py-2 text-left align-middle font-medium whitespace-nowrap text-muted-foreground",
+                "h-10 px-[var(--density-cell-x)] py-2 text-left align-middle font-semibold whitespace-nowrap text-muted-foreground",
                 className,
             )}
             {...props}

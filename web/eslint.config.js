@@ -57,6 +57,19 @@ export default tseslint.config(
                     message:
                         "Render text through React; raw HTML is not allowed.",
                 },
+                // The type scale has two weights (ADR 0067).
+                {
+                    selector:
+                        "Literal[value=/(^|\\s|:)font-(thin|extralight|light|medium|bold|extrabold|black)(\\s|$)/]",
+                    message:
+                        "Use font-normal or font-semibold; the type scale has two weights.",
+                },
+                {
+                    selector:
+                        "TemplateElement[value.raw=/(^|\\s|:)font-(thin|extralight|light|medium|bold|extrabold|black)(\\s|$)/]",
+                    message:
+                        "Use font-normal or font-semibold; the type scale has two weights.",
+                },
             ],
         },
     },

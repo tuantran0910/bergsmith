@@ -99,7 +99,7 @@ export function SchedulePickers({
                 {moreTables && (
                     <button
                         type="button"
-                        className="w-fit text-xs font-medium text-primary underline-offset-4 hover:underline disabled:opacity-50"
+                        className="w-fit text-xs font-semibold text-foreground underline-offset-4 hover:underline disabled:opacity-50"
                         disabled={disabled || loadingTables}
                         onClick={onLoadTables}
                     >
@@ -192,7 +192,7 @@ export function ScheduleTimingFields({
                 </label>
             )}
             <fieldset className="m-0 grid gap-3 border-0 p-0 sm:col-span-2">
-                <legend className="p-0 text-sm font-medium">
+                <legend className="p-0 text-sm font-semibold">
                     Daily window
                 </legend>
                 <label className="flex items-center gap-2 text-sm">

@@ -88,7 +88,7 @@ export function NewCatalogPage() {
                             }
                             className="m-0 grid gap-4 border-0 p-0"
                         >
-                            <legend className="mb-4 font-medium">
+                            <legend className="mb-4 font-semibold">
                                 1. Connection settings
                             </legend>
                             <ConnectionFields
@@ -118,7 +118,7 @@ export function NewCatalogPage() {
                     />
                     <Card>
                         <CardContent className="grid gap-4">
-                            <h2 className="m-0 text-base font-medium">
+                            <h2 className="m-0 text-base font-semibold">
                                 2. Save connection
                             </h2>
                             <p className="m-0 text-sm text-muted-foreground">

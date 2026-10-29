@@ -75,7 +75,7 @@ export function JobStatistics({
                                     <dt className="text-xs text-muted-foreground">
                                         {label}
                                     </dt>
-                                    <dd className="m-0 mt-1 font-medium tabular-nums">
+                                    <dd className="m-0 mt-1 font-semibold tabular-nums">
                                         {value}
                                     </dd>
                                 </div>

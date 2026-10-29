@@ -5,9 +5,13 @@ import { defineConfig } from "vite";
 
 // Vite loads its configuration natively, which needs the file extension.
 import { bundleBudget } from "./tooling/bundleBudget.ts";
+import { fontPreload } from "./tooling/fontPreload.ts";
 
-/** Gzipped first-load JavaScript: the entry graph only; lazy page chunks are excluded. */
-const JAVASCRIPT_BUDGET_BYTES = 175_000;
+/**
+ * Gzipped budgets. JavaScript counts the entry graph only; lazy page chunks
+ * are excluded. CSS was 9.9 kB when ADR 0067 set its budget at about +10%.
+ */
+const BUDGETS = { javascriptBytes: 175_000, stylesheetBytes: 11_000 };
 
 // The development server proxies the coordinator so the session and CSRF
 // cookies stay same-origin, exactly as when the coordinator serves the build.
@@ -15,7 +19,7 @@ const coordinator =
     process.env.BERGSMITH_COORDINATOR_URL ?? "http://127.0.0.1:8080";
 
 export default defineConfig({
-    plugins: [react(), tailwindcss(), bundleBudget(JAVASCRIPT_BUDGET_BYTES)],
+    plugins: [react(), tailwindcss(), bundleBudget(BUDGETS), fontPreload()],
     server: {
         host: "127.0.0.1",
         port: 5173,

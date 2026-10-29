@@ -235,7 +235,7 @@ export function CatalogPage({ id }: { id: string }) {
                                         <dt className="text-xs text-muted-foreground">
                                             Catalog endpoint
                                         </dt>
-                                        <dd className="m-0 mt-1 break-all font-medium">
+                                        <dd className="m-0 mt-1 break-all font-semibold">
                                             {catalog.uri}
                                         </dd>
                                     </div>
@@ -245,7 +245,7 @@ export function CatalogPage({ id }: { id: string }) {
                                         <dt className="text-xs text-muted-foreground">
                                             Warehouse
                                         </dt>
-                                        <dd className="m-0 mt-1 font-medium wrap-anywhere">
+                                        <dd className="m-0 mt-1 font-semibold wrap-anywhere">
                                             {catalog.warehouse}
                                         </dd>
                                     </div>
@@ -437,7 +437,7 @@ export function CatalogPage({ id }: { id: string }) {
                                                 <dt className="text-xs text-muted-foreground">
                                                     Awaiting resolution
                                                 </dt>
-                                                <dd className="m-0 mt-1 text-2xl font-semibold tabular-nums">
+                                                <dd className="m-0 mt-1 text-xl font-semibold tabular-nums">
                                                     {
                                                         catalog
                                                             .unresolved_publications
@@ -449,7 +449,7 @@ export function CatalogPage({ id }: { id: string }) {
                                                 <dt className="text-xs text-muted-foreground">
                                                     Oldest age
                                                 </dt>
-                                                <dd className="m-0 mt-1 text-lg font-medium tabular-nums">
+                                                <dd className="m-0 mt-1 text-lg font-semibold tabular-nums">
                                                     {catalog
                                                         .unresolved_publications
                                                         .count === 0

@@ -41,7 +41,7 @@ export function CardTitle({
     return (
         <h2
             data-slot="card-title"
-            className={cn("text-base leading-snug font-medium", className)}
+            className={cn("text-base leading-snug font-semibold", className)}
             {...props}
         >
             {children}

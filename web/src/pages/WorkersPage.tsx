@@ -94,7 +94,7 @@ export function WorkersPage() {
                                 {items.map((worker) => (
                                     <TableRow key={worker.id}>
                                         <TableCell
-                                            className="pl-4 font-medium"
+                                            className="pl-4 font-semibold"
                                             title={worker.id}
                                         >
                                             {worker.worker_name}

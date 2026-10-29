@@ -1,43 +1,111 @@
 @import "tailwindcss";
+@import "@fontsource-variable/inter/wght.css";
 
 /*
- * Design tokens (ADR 0046). Each token holds a light and a dark value in
- * `light-dark()`, chosen by `color-scheme`: the system decides by default,
- * and `data-theme` on the root element pins one. No script is needed for the
- * system theme, so the first paint is already in the right theme.
+ * Design tokens (ADR 0067, refining ADR 0046). Each token holds a light and a
+ * dark value in `light-dark()`, chosen by `color-scheme`: the system decides
+ * by default, and `data-theme` on the root element pins one. No script is
+ * needed for the system theme, so the first paint is already in the right
+ * theme.
  *
- * Neutral graphite surfaces with one glacier-blue accent. Status colors are
- * always paired with text and an icon.
+ * The palette is neutral graphite with no brand accent: color is reserved for
+ * status, and status is always paired with text and an icon. Elevation is a
+ * lightness step plus a hairline, not a shadow, so it reads in both themes.
  */
 :root {
     color-scheme: light dark;
 
-    --background: light-dark(oklch(0.99 0.002 250), oklch(0.17 0.006 250));
-    --foreground: light-dark(oklch(0.22 0.012 250), oklch(0.94 0.005 250));
-    --card: light-dark(oklch(1 0 0), oklch(0.2 0.007 250));
-    --card-foreground: var(--foreground);
-    --popover: light-dark(oklch(1 0 0), oklch(0.22 0.008 250));
-    --popover-foreground: var(--foreground);
-    --primary: light-dark(oklch(0.5 0.13 245), oklch(0.74 0.11 240));
-    --primary-foreground: light-dark(
-        oklch(0.98 0.01 245),
-        oklch(0.18 0.02 245)
+    /* Text tiers. `faint` is decorative only (separators, disabled); it never
+       carries information, because it is below 4.5:1 by design. */
+    --foreground: light-dark(oklch(0.22 0.006 250), oklch(0.92 0.004 250));
+    --foreground-secondary: light-dark(
+        oklch(0.38 0.006 250),
+        oklch(0.8 0.004 250)
     );
-    --secondary: light-dark(oklch(0.96 0.004 250), oklch(0.26 0.008 250));
-    --secondary-foreground: var(--foreground);
-    --muted: light-dark(oklch(0.96 0.004 250), oklch(0.26 0.008 250));
-    --muted-foreground: light-dark(oklch(0.49 0.012 250), oklch(0.73 0.01 250));
-    --destructive: light-dark(oklch(0.48 0.2 25), oklch(0.72 0.16 22));
-    --success: light-dark(oklch(0.5 0.12 150), oklch(0.76 0.13 150));
-    --warning: light-dark(oklch(0.52 0.11 70), oklch(0.81 0.12 75));
-    --border: light-dark(oklch(0.91 0.005 250), oklch(1 0 0 / 0.1));
-    --input: light-dark(oklch(0.87 0.006 250), oklch(1 0 0 / 0.16));
-    --ring: light-dark(oklch(0.6 0.12 245), oklch(0.66 0.1 240));
-    --radius: 0.625rem;
+    --muted-foreground: light-dark(oklch(0.5 0.006 250), oklch(0.66 0.004 250));
+    --foreground-faint: light-dark(
+        oklch(0.64 0.005 250),
+        oklch(0.48 0.004 250)
+    );
 
-    /* Table density (ADR 0056): compact rows stay readable at ~34 px. */
+    /* Surface ladder, lowest to highest. */
+    --surface-sunken: light-dark(oklch(0.975 0.002 250), oklch(0.15 0.004 250));
+    --background: light-dark(oklch(1 0 0), oklch(0.17 0.004 250));
+    --surface-raised: light-dark(oklch(1 0 0), oklch(0.195 0.005 250));
+    --popover: light-dark(oklch(1 0 0), oklch(0.22 0.005 250));
+    --surface-overlay: light-dark(oklch(1 0 0), oklch(0.24 0.006 250));
+    --card: var(--surface-raised);
+    --card-foreground: var(--foreground);
+    --popover-foreground: var(--foreground);
+
+    /* Filled actions are graphite; selection and hover are a neutral tint. */
+    --primary: light-dark(oklch(0.24 0.006 250), oklch(0.92 0.004 250));
+    --primary-foreground: light-dark(
+        oklch(0.985 0.002 250),
+        oklch(0.17 0.004 250)
+    );
+    --secondary: light-dark(oklch(0.955 0.003 250), oklch(0.26 0.005 250));
+    --secondary-foreground: var(--foreground);
+    --muted: light-dark(oklch(0.96 0.003 250), oklch(0.245 0.005 250));
+    --accent: light-dark(oklch(0.94 0.003 250), oklch(0.28 0.005 250));
+    --accent-foreground: var(--foreground);
+
+    /* Status: the strong value is text and icons (4.5:1 on its soft fill and
+       on every surface); the soft value is the badge or row fill. */
+    --success: light-dark(oklch(0.49 0.12 150), oklch(0.78 0.13 150));
+    --success-soft: light-dark(
+        oklch(0.6 0.13 150 / 0.12),
+        oklch(0.72 0.14 150 / 0.14)
+    );
+    --warning: light-dark(oklch(0.5 0.11 65), oklch(0.82 0.12 75));
+    --warning-soft: light-dark(
+        oklch(0.75 0.15 75 / 0.16),
+        oklch(0.8 0.13 75 / 0.14)
+    );
+    --destructive: light-dark(oklch(0.5 0.19 25), oklch(0.74 0.15 22));
+    --destructive-soft: light-dark(
+        oklch(0.6 0.2 25 / 0.12),
+        oklch(0.7 0.17 22 / 0.16)
+    );
+    --info: light-dark(oklch(0.48 0.11 245), oklch(0.78 0.09 240));
+    --info-soft: light-dark(
+        oklch(0.6 0.12 245 / 0.12),
+        oklch(0.72 0.1 240 / 0.14)
+    );
+    --running: light-dark(oklch(0.48 0.14 265), oklch(0.78 0.11 270));
+    --running-soft: light-dark(
+        oklch(0.6 0.15 265 / 0.12),
+        oklch(0.72 0.12 270 / 0.16)
+    );
+
+    /* Lines: a hairline between regions, a strong line around controls. */
+    --border: light-dark(oklch(0.92 0.003 250), oklch(1 0 0 / 0.09));
+    --border-strong: light-dark(oklch(0.86 0.004 250), oklch(1 0 0 / 0.15));
+    --input: var(--border-strong);
+    /* The focus ring is the secondary text tier: neutral, and at least 7:1
+       against every surface, well above the 3:1 non-text minimum. */
+    --ring: var(--foreground-secondary);
+
+    --radius: 0.5rem;
+
+    /* Layout. */
+    --sidebar-width: 14rem;
+    --sidebar-width-collapsed: 3.25rem;
+    --header-height: 3rem;
+    --peek-width: clamp(24rem, 40vw, 40rem);
+
+    /* Motion: durations by role, easings by direction. */
+    --duration-instant: 80ms;
+    --duration-fast: 140ms;
+    --duration-base: 200ms;
+    --duration-emphasis: 360ms;
+    --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-in: cubic-bezier(0.4, 0, 1, 1);
+    --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+    /* Table density (ADR 0056): compact rows stay readable at ~32 px. */
     --density-cell-x: 0.75rem;
-    --density-cell-y: 0.65rem;
+    --density-cell-y: 0.6rem;
 }
 
 :root[data-density="compact"] {
@@ -52,9 +120,83 @@
     color-scheme: dark;
 }
 
+/* Reduced motion zeroes every duration token and removes transitions and
+   finite animations everywhere, including ones a component declares with
+   literal durations. Transitions are removed rather than shortened: a
+   shortened duration on every element would turn the default
+   `transition-property: all` into layout transitions on each resize. */
+@media (prefers-reduced-motion: reduce) {
+    :root {
+        --duration-instant: 0ms;
+        --duration-fast: 0ms;
+        --duration-base: 0ms;
+        --duration-emphasis: 0ms;
+    }
+
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition: none !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* Phones zoom into a focused field whose text is under 16 px. Unlayered, so
+   it outranks the size utilities on touch screens only. */
+@media (pointer: coarse) {
+    input,
+    select,
+    textarea {
+        font-size: max(1rem, 1em);
+    }
+}
+
+/*
+ * A system fallback metric-matched to Inter, so the swap from the fallback to
+ * the web font moves no text. `local()` reads an installed font and makes no
+ * request, so the CSP's `font-src 'self'` is unaffected.
+ */
+@font-face {
+    font-family: "Inter Fallback";
+    src: local("Arial");
+    size-adjust: 107.06%;
+    ascent-override: 90.44%;
+    descent-override: 22.52%;
+    line-gap-override: 0%;
+}
+
+@theme {
+    --font-sans:
+        "Inter Variable", "Inter Fallback", ui-sans-serif, system-ui, sans-serif;
+
+    /* Type scale (two weights only, 400 and 600; lint rejects the others): 11 / 12 / 13 (body) / 14 / 16 / 20 px. */
+    --text-2xs: 0.6875rem;
+    --text-2xs--line-height: 1rem;
+    --text-xs: 0.75rem;
+    --text-xs--line-height: 1.125rem;
+    --text-sm: 0.8125rem;
+    --text-sm--line-height: 1.25rem;
+    --text-base: 0.875rem;
+    --text-base--line-height: 1.3125rem;
+    --text-lg: 1rem;
+    --text-lg--line-height: 1.375rem;
+    --text-xl: 1.25rem;
+    --text-xl--line-height: 1.625rem;
+
+    --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-in: cubic-bezier(0.4, 0, 1, 1);
+}
+
 @theme inline {
     --color-background: var(--background);
     --color-foreground: var(--foreground);
+    --color-foreground-secondary: var(--foreground-secondary);
+    --color-foreground-faint: var(--foreground-faint);
+    --color-surface-sunken: var(--surface-sunken);
+    --color-surface-raised: var(--surface-raised);
+    --color-surface-overlay: var(--surface-overlay);
     --color-card: var(--card);
     --color-card-foreground: var(--card-foreground);
     --color-popover: var(--popover);
@@ -65,16 +207,28 @@
     --color-secondary-foreground: var(--secondary-foreground);
     --color-muted: var(--muted);
     --color-muted-foreground: var(--muted-foreground);
-    --color-destructive: var(--destructive);
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
     --color-success: var(--success);
+    --color-success-soft: var(--success-soft);
     --color-warning: var(--warning);
+    --color-warning-soft: var(--warning-soft);
+    --color-destructive: var(--destructive);
+    --color-destructive-soft: var(--destructive-soft);
+    --color-info: var(--info);
+    --color-info-soft: var(--info-soft);
+    --color-running: var(--running);
+    --color-running-soft: var(--running-soft);
     --color-border: var(--border);
+    --color-border-strong: var(--border-strong);
     --color-input: var(--input);
     --color-ring: var(--ring);
     --radius-sm: calc(var(--radius) - 4px);
     --radius-md: calc(var(--radius) - 2px);
     --radius-lg: var(--radius);
     --radius-xl: calc(var(--radius) + 4px);
+    --default-transition-duration: var(--duration-fast);
+    --default-transition-timing-function: var(--ease-standard);
 }
 
 @layer base {
@@ -82,13 +236,25 @@
         @apply border-border outline-ring/50;
     }
 
-    body {
-        @apply bg-background text-foreground antialiased;
-        line-height: 1.5;
+    html {
+        -webkit-text-size-adjust: 100%;
+        text-size-adjust: 100%;
     }
 
+    body {
+        @apply bg-background font-sans text-sm text-foreground antialiased;
+        font-optical-sizing: auto;
+    }
+
+    /* Links take the text color. Inside running text an underline, not a
+       hue, marks them; elsewhere (tables, cards, navigation) their position
+       does, and the underline appears on hover. */
     a {
-        @apply text-primary underline-offset-4 hover:underline;
+        @apply text-foreground underline-offset-4 hover:underline;
+    }
+
+    p a {
+        @apply underline decoration-foreground-faint hover:decoration-foreground;
     }
 
     button:not(:disabled):not([aria-disabled="true"]),

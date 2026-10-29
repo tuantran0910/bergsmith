@@ -26,7 +26,7 @@ export function Label({ className, ...props }: ComponentProps<"label">) {
         <label
             data-slot="label"
             className={cn(
-                "flex flex-col gap-1.5 text-sm leading-none font-medium select-none",
+                "flex flex-col gap-1.5 text-sm leading-none font-semibold select-none",
                 className,
             )}
             {...props}

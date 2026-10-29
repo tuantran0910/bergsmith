@@ -232,7 +232,7 @@ export function DataTable<Row>({
                                         <button
                                             type="button"
                                             className={cn(
-                                                "inline-flex h-6 items-center gap-1 rounded-sm text-left font-medium outline-none select-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50",
+                                                "inline-flex h-6 items-center gap-1 rounded-sm text-left font-semibold outline-none select-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50",
                                                 column.align === "end" &&
                                                     "flex-row-reverse",
                                             )}
