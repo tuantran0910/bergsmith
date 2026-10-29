@@ -10,9 +10,9 @@ The browser application in `web/` covers manual maintenance over the
 |---|---|
 | Sign-in | Asks for the organization slug and starts `/auth/login`; returns to the page that asked |
 | Catalogs | Lists authorized connections and opens guided setup, with a capability check before saving |
-| Catalog connection | Addressable tabs cover Overview (discovery, storage, statistics, connection details, capabilities, unresolved publications), Tables, Access, and Settings; connection administrators can edit, discover, register, remove, and grant access, and settings show human duration hints with a save bar while the form is dirty |
+| Catalog connection | Addressable tabs cover Overview (discovery, storage, statistics, connection details, capabilities, unresolved publications), Tables, Access, and Settings; connection administrators can edit, discover, register, and remove names, holders of `grants:manage` on the connection see the Access tab and grant roles, and settings show human duration hints with a save bar while the form is dirty |
 | Tables | Lists the tables the session may see, named `catalog.namespace.table` through their aliases, each with its evaluated health; the list can be filtered to one state and ordered worst first |
-| Table | Shows the table's names and health, previews maintenance (outcome, unsupported features, bins, estimate), and runs it; addressable tabs cover its definition, health, snapshots, statistics, storage, maintenance history, and access |
+| Table | Shows the table's names and health, previews maintenance (outcome, unsupported features, bins, estimate), and runs it; addressable tabs cover its definition, health, snapshots, statistics, storage, and maintenance history, and the Access tab appears only to holders of `grants:manage` for the table |
 | Jobs | Lists jobs with execution and publication status side by side |
 | Job | Shows execution and publication separately, then statistics and events (events first while it runs, statistics first once it ends), with a Tasks tab listing each task and attempt, the failure reason and disposition, duration, worker, and accepted outputs; requests cancellation and retries with a fresh plan. `CommitOutcomeUnknown` and `ReplanRequired` raise an attention alert with a link to the Tasks tab |
 | Policies | Lists maintenance policies and creates or edits one, sending the revision it read; a conflict stops the save until the current revision is reloaded |
@@ -20,7 +20,7 @@ The browser application in `web/` covers manual maintenance over the
 | Schedule | Shows the configuration, the next five instants the coordinator computed, and the evaluation history with the job each admitted run created and the reason a run was coalesced or skipped; timing and the enabled flag are editable, the bound policy, table, and identity are not |
 | Workers | Current worker sessions with status, running attempt, and capacity; shown only to organization-wide administrators |
 | Audit | Organization audit history; shown only to organization-wide administrators |
-| User and service identity | Shows identity details, then addressable Access and Tokens tabs; service-identity creation opens Tokens, and a token is shown once on issue or rotation |
+| User and service identity | Shows identity details, then addressable Access and Tokens tabs; Access needs organization-wide `grants:manage`, service-identity creation opens Tokens, and a token is shown once on issue or rotation |
 
 Connection setup and registration are described in
 [Connecting a catalog](catalog-connections.md) and
