@@ -16,6 +16,7 @@ topic; this index only says where to look.
 | Metrics, probes, structured logs, and worker health | [observability.md](observability.md) |
 | Browser API and UI | [api.md](api.md), [web-ui.md](web-ui.md) |
 | Unpublished local execution and the distributed acceptance suite | [local-execution.md](local-execution.md), [distributed-acceptance.md](distributed-acceptance.md) |
+| M5 acceptance evidence and the production gates still open | [m5-acceptance.md](m5-acceptance.md) |
 
 What is supported, and what has passed acceptance, is in the
 [support matrix](../support-matrix.md). Design decisions are in the
