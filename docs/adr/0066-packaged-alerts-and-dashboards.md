@@ -27,18 +27,19 @@ The rule file contains ten alert templates in three groups: evidence, work,
 and tables. In the evidence group, two rules alert on refresh failure, two on
 snapshot age while the component still reports success, and one on the absence
 of any scraped ledger metric. The absence rule is the only one that covers a
-dead or unscrapeable listener; every other rule needs a scrape to exist. Every dependent
-rule is gated with `and on()` on a successful, recent read of the snapshot it
-interprets, so one broken cache raises one evidence alert rather than a burst
-of misleading work alerts. Work rules use only ledger metrics; the table rule
-uses only health metrics. No rule uses a recording rule or a new series.
+dead or unscrapeable listener; every other rule needs a scrape to exist. Each
+dependent rule is gated with `and on()` on a successful, recent read of the
+snapshot it interprets, so one broken cache raises one evidence alert rather
+than a burst of misleading work alerts. Work rules use only ledger metrics;
+the table rule uses only health metrics. No rule uses a recording rule or a
+new series.
 
 Default thresholds are fixed expressions, tuned by editing an operator copy:
 publication age 3,600 seconds, schedule lag 300 seconds, oldest pending task
 300 seconds (only while no worker session is live), evidence freshness 120
-seconds, critical tables for 15 minutes, and an absent scrape for 10 minutes. Hold times are at least two
-evaluation intervals. Unresolved leases and critical tables are tickets, not
-pages.
+seconds, critical tables for 15 minutes, and an absent scrape for 10 minutes.
+Hold times are at least two evaluation intervals. Unresolved leases and
+critical tables are tickets, not pages.
 
 The Fleet dashboard shows evidence freshness first, then health counts and
 assessed statistics, then queue, attempt, publication, session, schedule, and

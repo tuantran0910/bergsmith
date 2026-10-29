@@ -440,6 +440,34 @@ Breaking one of these is a correctness bug, whatever the tests say.
   and removing one with uncommitted changes needs the same confirmation as
   any destructive command.
 
+### Review loop with Herdr
+
+Local review runs through Herdr when it is available. The reviewer is a
+separate agent session in its own pane; it reads the change, runs
+non-destructive checks, and never edits files. The loop continues until a round
+reports no actionable findings.
+
+1. Split a pane (`herdr pane split --current --direction right`) and start the
+   reviewer (`herdr agent start <name> --kind omp --pane <pane>`), then prompt
+   it by name. Agent names and pane IDs are local; never commit them.
+2. Give a production-readiness brief: inspect the code and its context before
+   concluding; prioritize defects introduced by the current diff (bugs,
+   security, data integrity, concurrency, reliability, performance, API
+   compatibility, missing regression tests); forbid speculative findings,
+   style preferences, and edits. Require, per finding, severity P0–P3, exact
+   file and line, the defect and why it occurs, a realistic failure scenario,
+   and a concrete fix with a regression test, sorted by severity, plus a merge
+   recommendation and the checks the reviewer actually ran.
+3. Fix or explicitly rebut every P0–P2 finding and every P3 that is a real
+   defect. Commit and push before the next round so it reviews the current
+   tree, and rerun the focused checks for the change.
+4. Re-prompt with the previous round's findings: verify each fix, look for
+   regressions those fixes introduced, then ask for anything new. Repeat until
+   a round reports no actionable findings; stop there rather than extending a
+   stale approval.
+5. The review supplements the gates, never replaces them: run the focused
+   local checks and let Actions own the selected CI gates.
+
 ## 9. Documentation
 
 - Update the plan when a contract, scope, or default changes.

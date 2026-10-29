@@ -50,10 +50,11 @@ the metric contract is [docs/operations/observability.md](../../docs/operations/
 
    Evidence rules fire on their own component's `up`/age gauges, plus one rule
    on the absence of any scraped ledger metric; only that absence rule survives
-   a dead or unscrapeable listener. Dependent alerts include `and on()` gates on
-   a successful read and a snapshot age under 120 seconds, so a stale or failed
-   cache suppresses the alerts that would otherwise interpret it. Grafana needs the same freshness on the panels; they
-   show both component refreshes and their ages.
+   a dead or unscrapeable listener. Dependent alerts include `and on()` gates
+   on a successful read and a snapshot age under 120 seconds, so a stale or
+   failed cache suppresses the alerts that would otherwise interpret it.
+   Grafana needs the same freshness on the panels; they show both component
+   refreshes and their ages.
 
 4. Import the two dashboards, or provision the directory and map the
    `bergsmith-prometheus` datasource UID to your Prometheus instance. Both
