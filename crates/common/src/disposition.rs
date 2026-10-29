@@ -47,6 +47,19 @@ impl FailureDisposition {
         }
     }
 
+    /// Parses a persisted name produced by [`Self::as_str`].
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "RetrySameRequest" => Some(Self::RetrySameRequest),
+            "RetryTask" => Some(Self::RetryTask),
+            "ReplanRequired" => Some(Self::ReplanRequired),
+            "PermanentFailure" => Some(Self::PermanentFailure),
+            "ResolvePublication" => Some(Self::ResolvePublication),
+            _ => None,
+        }
+    }
+
     /// Returns whether handling the failure starts a new execution attempt.
     #[must_use]
     pub const fn consumes_execution_attempt(self) -> bool {
@@ -78,6 +91,17 @@ impl fmt::Display for FailureDisposition {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn persisted_names_round_trip() {
+        for disposition in FailureDisposition::ALL {
+            assert_eq!(
+                FailureDisposition::from_name(disposition.as_str()),
+                Some(disposition)
+            );
+        }
+        assert_eq!(FailureDisposition::from_name("Unknown"), None);
+    }
 
     #[test]
     fn only_task_retries_consume_an_attempt() {

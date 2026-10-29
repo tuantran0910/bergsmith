@@ -22,6 +22,8 @@ export const SERVICE_ID = "0190f3c4-0000-7000-8000-0000000000d3";
 export const DESTINATION_ID = "0190f3c4-0000-7000-8000-0000000000f1";
 export const RULE_ID = "0190f3c4-0000-7000-8000-0000000000f2";
 export const DELIVERY_ID = "0190f3c4-0000-7000-8000-0000000000f3";
+export const TASK_ID = "0190f3c4-0000-7000-8000-0000000000e1";
+export const ATTEMPT_ID = "0190f3c4-0000-7000-8000-0000000000e2";
 
 const ORGANIZATION: GrantScope = { catalog_connection: null, table: null };
 
@@ -571,6 +573,52 @@ export function job(state: JobState, overrides: Partial<Job> = {}): Job {
         ...overrides,
     });
 }
+
+/** One attempt of a triage task; failed by default so the fixture is useful. */
+export function jobAttempt(
+    overrides: Partial<Schemas["JobAttempt"]> = {},
+): Schemas["JobAttempt"] {
+    return schema("JobAttempt", {
+        id: ATTEMPT_ID,
+        generation: 1,
+        state: "Failed",
+        pool: "default",
+        worker_name: "worker-1",
+        granted_at: "2026-10-21T10:00:00Z",
+        lease_expires_at: "2026-10-21T10:01:30Z",
+        finished_at: "2026-10-21T10:00:04Z",
+        duration_millis: "4000",
+        failure_reason: "ProcessMemoryLimitExceeded",
+        failure_disposition: "PermanentFailure",
+        output_files: "0",
+        output_bytes: "0",
+        ...overrides,
+    });
+}
+
+/** One triage task; failed on its first attempt by default. */
+export function jobTask(
+    overrides: Partial<Schemas["JobTask"]> = {},
+): Schemas["JobTask"] {
+    return schema("JobTask", {
+        id: TASK_ID,
+        ordinal: 0,
+        state: "Failed",
+        attempts_started: 1,
+        retry_not_before: null,
+        updated_at: "2026-10-21T10:00:04Z",
+        output_files: "0",
+        output_bytes: "0",
+        attempts: [jobAttempt()],
+        ...overrides,
+    });
+}
+
+/** A page of triage tasks for the job-detail routes. */
+export const jobTasks = schema("JobTaskPage", {
+    items: [jobTask()],
+    next_cursor: null,
+});
 
 export function event(
     sequence: number,

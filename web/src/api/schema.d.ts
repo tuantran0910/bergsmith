@@ -211,6 +211,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/jobs/{id}/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Unknown and inaccessible jobs both return 404, as for the job detail. Tasks are ordered by plan ordinal; attempts by generation. Counts, bytes, and durations are decimal strings. */
+        get: operations["getJobTasks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/jobs/{id}/cancel": {
         parameters: {
             query?: never;
@@ -1130,6 +1147,46 @@ export interface components {
         JobPage: {
             items: components["schemas"]["Job"][];
             next_cursor: string | null;
+        };
+        JobTaskPage: {
+            items: components["schemas"]["JobTask"][];
+            next_cursor: string | null;
+        };
+        JobTask: {
+            /** Format: uuid */
+            id: string;
+            /** Format: int32 */
+            ordinal: number;
+            /** @enum {string} */
+            state: "Pending" | "Leased" | "RetryWaiting" | "Accepted" | "Cancelled" | "Failed";
+            /** Format: int32 */
+            attempts_started: number;
+            retry_not_before: string | null;
+            /** Format: date-time */
+            updated_at: string;
+            output_files: string;
+            output_bytes: string;
+            attempts: components["schemas"]["JobAttempt"][];
+        };
+        JobAttempt: {
+            /** Format: uuid */
+            id: string;
+            /** Format: int32 */
+            generation: number;
+            /** @enum {string} */
+            state: "Granted" | "Running" | "Accepted" | "Failed" | "Expired" | "Cancelled";
+            pool: string;
+            worker_name: string;
+            /** Format: date-time */
+            granted_at: string;
+            /** Format: date-time */
+            lease_expires_at: string;
+            finished_at: string | null;
+            duration_millis: string | null;
+            failure_reason: string | null;
+            failure_disposition: ("RetrySameRequest" | "RetryTask" | "ReplanRequired" | "PermanentFailure" | "ResolvePublication") | null;
+            output_files: string;
+            output_bytes: string;
         };
         MaintenancePolicy: {
             /** Format: uuid */
@@ -3501,6 +3558,94 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unknown or inaccessible resource */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    getJobTasks: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of a job's tasks with their attempts, failure reasons, durations, and accepted outputs. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobTaskPage"];
                 };
             };
             /** @description Invalid request or cursor */

@@ -1698,6 +1698,125 @@
         ]
       }
     },
+    "/api/v1/jobs/{id}/tasks": {
+      "get": {
+        "operationId": "getJobTasks",
+        "description": "Unknown and inaccessible jobs both return 404, as for the job detail. Tasks are ordered by plan ordinal; attempts by generation. Counts, bytes, and durations are decimal strings.",
+        "responses": {
+          "400": {
+            "description": "Invalid request or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown or inaccessible resource",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "One page of a job's tasks with their attempts, failure reasons, durations, and accepted outputs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobTaskPage"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
     "/api/v1/jobs/{id}/cancel": {
       "post": {
         "operationId": "cancelJob",
@@ -8800,6 +8919,217 @@
                 "type": "null"
               }
             ]
+          }
+        }
+      },
+      "JobTaskPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JobTask"
+            }
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "JobTask": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "ordinal",
+          "state",
+          "attempts_started",
+          "retry_not_before",
+          "updated_at",
+          "output_files",
+          "output_bytes",
+          "attempts"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "ordinal": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "Pending",
+              "Leased",
+              "RetryWaiting",
+              "Accepted",
+              "Cancelled",
+              "Failed"
+            ]
+          },
+          "attempts_started": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0,
+            "maximum": 3
+          },
+          "retry_not_before": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "output_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "output_bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "attempts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JobAttempt"
+            }
+          }
+        }
+      },
+      "JobAttempt": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "generation",
+          "state",
+          "pool",
+          "worker_name",
+          "granted_at",
+          "lease_expires_at",
+          "finished_at",
+          "duration_millis",
+          "failure_reason",
+          "failure_disposition",
+          "output_files",
+          "output_bytes"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 1,
+            "maximum": 3
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "Granted",
+              "Running",
+              "Accepted",
+              "Failed",
+              "Expired",
+              "Cancelled"
+            ]
+          },
+          "pool": {
+            "type": "string"
+          },
+          "worker_name": {
+            "type": "string"
+          },
+          "granted_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lease_expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "duration_millis": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "failure_disposition": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "RetrySameRequest",
+                  "RetryTask",
+                  "ReplanRequired",
+                  "PermanentFailure",
+                  "ResolvePublication"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "output_files": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "output_bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
           }
         }
       },
