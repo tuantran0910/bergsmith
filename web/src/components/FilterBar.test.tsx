@@ -1,6 +1,33 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 
 import { FilterBar } from "./FilterBar";
+
+/** A matchMedia stub whose min-width answer follows a settable viewport. */
+function stubMedia(initialWidth = 320) {
+    const listeners = new Set<() => void>();
+    let width = initialWidth;
+    vi.stubGlobal(
+        "matchMedia",
+        vi.fn((query: string) => ({
+            matches: query === "(min-width: 40rem)" ? width >= 640 : false,
+            media: query,
+            addEventListener: (_event: string, listener: () => void) => {
+                listeners.add(listener);
+            },
+            removeEventListener: (_event: string, listener: () => void) => {
+                listeners.delete(listener);
+            },
+        })),
+    );
+    return {
+        setWidth(next: number) {
+            width = next;
+            for (const listener of listeners) {
+                listener();
+            }
+        },
+    };
+}
 
 it("labels the search field and reports each change", () => {
     const onQueryChange = vi.fn();
@@ -56,5 +83,85 @@ it("keeps the clear action out when the page has none", () => {
     );
     expect(
         screen.queryByRole("button", { name: "Clear filters" }),
+    ).not.toBeInTheDocument();
+});
+
+it("moves the filters into a drawer when narrow", () => {
+    stubMedia(320);
+    render(
+        <FilterBar
+            query=""
+            queryLabel="Search tables"
+            onQueryChange={() => undefined}
+            result="2 of 8 tables"
+        >
+            <select aria-label="Health">
+                <option>healthy</option>
+            </select>
+        </FilterBar>,
+    );
+
+    expect(
+        screen.queryByRole("combobox", { name: "Health" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Filters" }));
+    const drawer = screen.getByRole("dialog", { name: "Filters" });
+    expect(drawer).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Health" })).toBeVisible();
+    expect(within(drawer).getByText("2 of 8 tables")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show results" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByText("2 of 8 tables")).toBeInTheDocument();
+});
+
+it("closes the drawer and returns focus when the layout widens", async () => {
+    const media = stubMedia(320);
+    render(
+        <FilterBar
+            query=""
+            queryLabel="Search tables"
+            onQueryChange={() => undefined}
+        >
+            <select aria-label="Health">
+                <option>healthy</option>
+            </select>
+        </FilterBar>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Filters" }));
+    expect(screen.getByRole("dialog", { name: "Filters" })).toBeInTheDocument();
+
+    await act(async () => {
+        media.setWidth(800);
+        await Promise.resolve();
+    });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(
+        screen.getByRole("searchbox", { name: "Search tables" }),
+    ).toHaveFocus();
+
+    await act(async () => {
+        media.setWidth(320);
+        await Promise.resolve();
+    });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
+it("keeps the filters inline above the small breakpoint", () => {
+    stubMedia(800);
+    render(
+        <FilterBar
+            query=""
+            queryLabel="Search tables"
+            onQueryChange={() => undefined}
+        >
+            <select aria-label="Health">
+                <option>healthy</option>
+            </select>
+        </FilterBar>,
+    );
+
+    expect(screen.getByRole("combobox", { name: "Health" })).toBeVisible();
+    expect(
+        screen.queryByRole("button", { name: "Filters" }),
     ).not.toBeInTheDocument();
 });
