@@ -440,16 +440,21 @@ Breaking one of these is a correctness bug, whatever the tests say.
   and removing one with uncommitted changes needs the same confirmation as
   any destructive command.
 
-### Review loop with Herdr
+## 9. AI agent review workflow
 
-Local review runs through Herdr when it is available. The reviewer is a
-separate agent session in its own pane; it reads the change, runs
-non-destructive checks, and never edits files. The loop continues until a round
-reports no actionable findings.
+Local review runs through Herdr when the process is inside a managed pane.
+Verify `HERDR_ENV=1` before any Herdr command; if it is unset, say that the
+review cannot run through Herdr and stop rather than controlling the
+maintainer's session from outside it. The reviewer is a separate agent session
+in its own pane; it reads the change, runs non-destructive checks, and never
+edits files. The loop continues until a round reports no actionable findings.
 
-1. Split a pane (`herdr pane split --current --direction right`) and start the
-   reviewer (`herdr agent start <name> --kind omp --pane <pane>`), then prompt
-   it by name. Agent names and pane IDs are local; never commit them.
+1. Split a pane, preserving the checkout and the caller's focus:
+   `herdr pane split --current --direction right --cwd "$PWD" --no-focus`.
+   Take the pane ID from the result. Start the reviewer with the agent kind the
+   user provides (`herdr agent start <name> --kind <kind> --pane <pane_id>`).
+   If the user did not name a kind, ask before starting; do not assume one.
+   Agent names and pane IDs are local; never commit them.
 2. Give a production-readiness brief: inspect the code and its context before
    concluding; prioritize defects introduced by the current diff (bugs,
    security, data integrity, concurrency, reliability, performance, API
@@ -465,10 +470,15 @@ reports no actionable findings.
    regressions those fixes introduced, then ask for anything new. Repeat until
    a round reports no actionable findings; stop there rather than extending a
    stale approval.
-5. The review supplements the gates, never replaces them: run the focused
+5. Prompt with `herdr agent prompt <name> "<text>" --wait --timeout <ms>`.
+   A review is long, so a timeout does not prove the prompt was not delivered:
+   inspect with `herdr agent get` and `herdr agent read <name>
+   --source recent-unwrapped` before resubmitting, and never submit the same
+   brief twice.
+6. The review supplements the gates, never replaces them: run the focused
    local checks and let Actions own the selected CI gates.
 
-## 9. Documentation
+## 10. Documentation
 
 - Update the plan when a contract, scope, or default changes.
 - Record each new architecture decision as an ADR (`docs/adr/NNNN-title.md`,
