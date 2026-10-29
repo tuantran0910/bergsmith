@@ -46,7 +46,11 @@ function attemptDuration(attempt: JobAttempt): number {
         : Number(attempt.duration_millis);
 }
 
-function taskSeconds(task: JobTask): number {
+/** Recorded attempt time, or `null` while an attempt is still running. */
+function taskSeconds(task: JobTask): number | null {
+    if (task.attempts.some((attempt) => attempt.duration_millis === null)) {
+        return null;
+    }
     return task.attempts.reduce(
         (total, attempt) => total + attemptDuration(attempt),
         0,
@@ -163,15 +167,15 @@ export function JobTasks({ job, active }: { job: Job; active: boolean }) {
             id: "duration",
             header: "Duration",
             align: "end",
-            sortValue: (task) => taskSeconds(task),
-            cell: (task) =>
-                task.attempts.length === 0 ? (
+            sortValue: (task) => taskSeconds(task) ?? Number.MAX_SAFE_INTEGER,
+            cell: (task) => {
+                const recorded = taskSeconds(task);
+                return recorded === null || task.attempts.length === 0 ? (
                     <span className="text-muted-foreground">—</span>
                 ) : (
-                    <span className="tabular-nums">
-                        {duration(taskSeconds(task))}
-                    </span>
-                ),
+                    <span className="tabular-nums">{duration(recorded)}</span>
+                );
+            },
         },
         {
             id: "outputs",

@@ -37,6 +37,8 @@ import {
     tableSnapshotsQuiet,
     tableDefinition,
     tableHealth,
+    jobAttempt,
+    jobTask,
     jobTasks,
     overview,
     tableMaintenance,
@@ -2647,6 +2649,44 @@ describe("job triage", () => {
             within(tasks).getByText(/default\/worker-1/),
         ).toBeInTheDocument();
         expect(window.location.search).toBe("?tab=tasks");
+    });
+
+    it("shows an unknown duration while a task's attempt still runs", async () => {
+        fake.on("GET", "/api/v1/jobs/{id}", () => json(200, job("Running"))).on(
+            "GET",
+            "/api/v1/jobs/{id}/tasks",
+            () =>
+                json(
+                    200,
+                    schema("JobTaskPage", {
+                        items: [
+                            jobTask({
+                                state: "Leased",
+                                attempts: [
+                                    jobAttempt({
+                                        state: "Running",
+                                        finished_at: null,
+                                        duration_millis: null,
+                                        failure_reason: null,
+                                        failure_disposition: null,
+                                    }),
+                                ],
+                            }),
+                        ],
+                        next_cursor: null,
+                    }),
+                ),
+        );
+        const user = start(`/jobs/${JOB_ID}`);
+
+        await user.click(await screen.findByRole("tab", { name: "Tasks" }));
+        const tasks = await screen.findByRole(
+            "table",
+            { name: "Job tasks" },
+            { timeout: 3_000 },
+        );
+        expect(within(tasks).getByText("—")).toBeInTheDocument();
+        expect(within(tasks).queryByText("0 s")).not.toBeInTheDocument();
     });
 
     it("puts events first while running and statistics first when terminal", async () => {
