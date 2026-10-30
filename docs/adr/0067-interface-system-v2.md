@@ -182,6 +182,28 @@ This supersedes 0046's "neutral graphite surfaces and one accent".
   and measures interaction to next paint at most 200 ms and layout shift at
   most 0.1 at 4× CPU throttle.
 
+### Peek and saved views
+
+- A row's preview button opens the item in the peek panel and records it as
+  `?peek=<id>`, so a reload or link reopens it; Escape or the close button
+  removes the parameter and returns focus to the button. The panel reads the
+  resource itself, shows the list row while it loads, and never writes:
+  actions stay on the detail page. Jobs and Tables offer it.
+- Saved views live in the coordinator (`/me/views`, migration 0041), not in
+  browser storage, so they follow the person. A view is the list's own
+  search parameters plus `hidden` columns, checked per list against the
+  parameter names it accepts, at most 512 characters a value and 4096 bytes
+  in all, 50 views a person, names unique per list. Saving takes an
+  idempotency key; edits and deletes name their revision; each write is
+  audited with the list and revision only. A per-person advisory lock keeps
+  concurrent saves from passing the limit together.
+- The toolbar's Views menu applies a view through the same validation as a
+  link, so a stale value is dropped rather than sent; a view matching the
+  current parameters names the menu and can be deleted after confirmation.
+- Catalogs, Audit, and Users moved to the grid with their T4 filters and
+  facets. The audit log is newest first by default. Service identities and
+  the short client-side lists keep `DataTable`.
+
 ### Engineering limits
 
 These are enforced by gates, not by review:

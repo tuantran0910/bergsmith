@@ -63,3 +63,21 @@ export function toggleValue<T extends string>(
     }
     return allowed.filter((item) => next.has(item));
 }
+
+/**
+ * Open-ended list values, such as audit action names: each must match
+ * `pattern`; kept once, in the given order, at most `MAX_VALUES`.
+ */
+export function tokenList(value: unknown, pattern: RegExp): string[] {
+    if (typeof value !== "string") {
+        return [];
+    }
+    return [...new Set(value.split(","))]
+        .filter((item) => pattern.test(item))
+        .slice(0, MAX_VALUES);
+}
+
+/** A `true` or `false` parameter, or `undefined` for anything else. */
+export function flagParam(value: unknown): "true" | "false" | undefined {
+    return value === "true" || value === "false" ? value : undefined;
+}

@@ -1,35 +1,57 @@
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { ScrollTextIcon } from "lucide-react";
-import { Link } from "@tanstack/react-router";
+import { useMemo } from "react";
 
 import { ApiFailure, type Schemas } from "../api/client";
-import { useAudit } from "../api/queries";
+import { useAuditFacets, useAuditList } from "../api/queries";
+import { DataGrid } from "../components/DataGrid";
+import type { DataTableColumn, SortState } from "../components/DataTable";
 import { ErrorNotice } from "../components/ErrorNotice";
+import {
+    FacetFilter,
+    facetOptions,
+    FilterPills,
+    type FilterPill,
+} from "../components/FacetFilter";
+import { FilterBar } from "../components/FilterBar";
 import { GrantRequired } from "../components/GrantRequired";
-import { CopyButton } from "../components/ResourceId";
+import {
+    joinValues,
+    SEARCH_DELAY_MS,
+    searchText,
+} from "../components/listSearch";
+import { ListTools } from "../components/ListTools";
 import {
     EmptyState,
-    GridFrame,
     LoadMore,
     LoadingRows,
+    NoResults,
     PageHeader,
 } from "../components/Page";
+import { CopyButton } from "../components/ResourceId";
 import { StatusBadge } from "../components/StatusBadge";
+import { useColumnVisibility } from "../components/useColumnVisibility";
 import { shortId, timestamp, words } from "../format";
 import type { Tone } from "../jobs/status";
 import {
-    Table,
-    TableBody,
-    TableCell,
-    TableHead,
-    TableHeader,
-    TableRow,
-} from "../ui/Table";
+    AUDIT_OUTCOMES,
+    type AuditSearch,
+    validateAuditSearch,
+} from "./audit/search";
 
 const OUTCOME_TONES: Record<Schemas["AuditEvent"]["outcome"], Tone> = {
     Allowed: "ok",
     Denied: "warning",
     Failed: "error",
 };
+
+/** The parameters a saved view keeps. */
+const VIEW_KEYS = ["q", "outcome", "action", "resource_type", "actor", "order"];
+
+/** A comma-separated parameter's values. */
+function values(param: string | undefined): string[] {
+    return param === undefined ? [] : param.split(",");
+}
 
 const DESCRIPTION =
     "Who did what in this organization, including refused requests.";
@@ -114,10 +136,115 @@ function Resource({ event }: { event: Schemas["AuditEvent"] }) {
     );
 }
 
-/** Organization audit history; requires organization-wide `audit:read`. */
+/**
+ * Organization audit history, newest first; requires organization-wide
+ * `audit:read`. The coordinator filters, searches actor names, and orders
+ * the records (ADR 0067).
+ */
 export function AuditPage() {
-    const audit = useAudit();
-    const items = audit.data?.pages.flatMap((page) => page.items) ?? [];
+    const search = useSearch({ from: "/audit" });
+    const navigate = useNavigate();
+    const outcomes = values(search.outcome);
+    const actions = values(search.action);
+    const resourceTypes = values(search.resource_type);
+    const filter = {
+        outcome: search.outcome,
+        action: search.action,
+        resource_type: search.resource_type,
+        actor: search.actor,
+        q: search.q,
+    };
+    const order = search.order ?? "newest";
+    const audit = useAuditList(filter, order);
+    const items = useMemo(
+        () => audit.data?.pages.flatMap((page) => page.items) ?? [],
+        [audit.data],
+    );
+    const filtersActive =
+        search.q !== undefined ||
+        search.outcome !== undefined ||
+        search.action !== undefined ||
+        search.resource_type !== undefined ||
+        search.actor !== undefined;
+    const facets = useAuditFacets(filter, filtersActive || items.length > 0);
+    const [visibility, setVisibility] = useColumnVisibility("audit");
+
+    /** Applies `patch`; an `undefined` value removes that parameter. */
+    function change(patch: {
+        [K in keyof AuditSearch]?: AuditSearch[K] | undefined;
+    }): void {
+        const merged = { ...search, ...patch };
+        void navigate({
+            to: "/audit",
+            search: validateAuditSearch({ ...merged, q: searchText(merged.q) }),
+            replace: true,
+        });
+    }
+
+    function clearFilters(): void {
+        change({
+            q: undefined,
+            outcome: undefined,
+            action: undefined,
+            resource_type: undefined,
+            actor: undefined,
+        });
+    }
+
+    const columns = useMemo<DataTableColumn<Schemas["AuditEvent"]>[]>(
+        () => [
+            {
+                id: "when",
+                header: "When",
+                serverSort: true,
+                cell: (event) => (
+                    <time
+                        dateTime={event.occurred_at}
+                        className="whitespace-nowrap text-muted-foreground"
+                    >
+                        {timestamp(event.occurred_at)}
+                    </time>
+                ),
+            },
+            {
+                id: "actor",
+                header: "Actor",
+                cell: (event) => <Actor event={event} />,
+            },
+            {
+                id: "action",
+                header: "Action",
+                cell: (event) => <code>{event.action}</code>,
+            },
+            {
+                id: "resource",
+                header: "Resource",
+                cell: (event) => <Resource event={event} />,
+            },
+            {
+                id: "outcome",
+                header: "Outcome",
+                cell: (event) => (
+                    <StatusBadge
+                        status={{
+                            label: words(event.outcome),
+                            tone: OUTCOME_TONES[event.outcome],
+                        }}
+                    />
+                ),
+            },
+            {
+                id: "detail",
+                header: "Detail",
+                cell: (event) => (
+                    <code className="break-all text-muted-foreground">
+                        {JSON.stringify(event.detail)}
+                    </code>
+                ),
+            },
+        ],
+        [],
+    );
 
     if (audit.error instanceof ApiFailure && audit.error.status === 403) {
         return (
@@ -131,6 +258,47 @@ export function AuditPage() {
         );
     }
 
+    const sort: SortState = {
+        column: "when",
+        direction: order === "newest" ? "desc" : "asc",
+    };
+    const pill = (
+        label: string,
+        key: "outcome" | "action" | "resource_type",
+        selected: string[],
+        name: (value: string) => string,
+    ): FilterPill[] =>
+        selected.map((value) => ({
+            key: `${key}:${value}`,
+            label,
+            value: name(value),
+            onRemove: () => {
+                change({
+                    [key]: joinValues(
+                        selected.filter((item) => item !== value),
+                    ),
+                });
+            },
+        }));
+    const pills: FilterPill[] = [
+        ...pill("Outcome", "outcome", outcomes, words),
+        ...pill("Action", "action", actions, (value) => value),
+        ...pill("Resource", "resource_type", resourceTypes, words),
+        ...(search.actor === undefined
+            ? []
+            : [
+                  {
+                      key: "actor",
+                      label: "Actor",
+                      value: shortId(search.actor),
+                      onRemove: () => {
+                          change({ actor: undefined });
+                      },
+                  },
+              ]),
+    ];
+    const unfiltered = audit.isSuccess && items.length === 0 && !filtersActive;
+
     return (
         <section>
             <PageHeader title="Audit history" description={DESCRIPTION} />
@@ -143,72 +311,130 @@ export function AuditPage() {
                     }}
                 />
             )}
-            {audit.isSuccess && items.length === 0 && (
+            {unfiltered && (
                 <EmptyState
                     icon={ScrollTextIcon}
                     title="No audit events yet."
                 />
             )}
-            {items.length > 0 && (
+            {(filtersActive || items.length > 0) && (
                 <>
-                    <GridFrame>
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead className="pl-4">When</TableHead>
-                                    <TableHead>Actor</TableHead>
-                                    <TableHead>Action</TableHead>
-                                    <TableHead>Resource</TableHead>
-                                    <TableHead>Outcome</TableHead>
-                                    <TableHead className="pr-4">
-                                        Detail
-                                    </TableHead>
-                                </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {items.map((event) => (
-                                    <TableRow key={event.id}>
-                                        <TableCell className="pl-4 whitespace-nowrap text-muted-foreground">
-                                            {timestamp(event.occurred_at)}
-                                        </TableCell>
-                                        <TableCell>
-                                            <Actor event={event} />
-                                        </TableCell>
-                                        <TableCell>
-                                            <code>{event.action}</code>
-                                        </TableCell>
-                                        <TableCell>
-                                            <Resource event={event} />
-                                        </TableCell>
-                                        <TableCell>
-                                            <StatusBadge
-                                                status={{
-                                                    label: words(event.outcome),
-                                                    tone: OUTCOME_TONES[
-                                                        event.outcome
-                                                    ],
-                                                }}
-                                            />
-                                        </TableCell>
-                                        <TableCell className="pr-4">
-                                            <code className="text-muted-foreground">
-                                                {JSON.stringify(event.detail)}
-                                            </code>
-                                        </TableCell>
-                                    </TableRow>
-                                ))}
-                            </TableBody>
-                        </Table>
-                    </GridFrame>
-                    <LoadMore
-                        shown={items.length}
-                        noun="events"
-                        hasMore={audit.hasNextPage}
-                        loading={audit.isFetchingNextPage}
-                        onLoad={() => {
-                            void audit.fetchNextPage();
+                    <FilterBar
+                        query={search.q ?? ""}
+                        onQueryChange={(value) => {
+                            change({ q: value });
                         }}
-                    />
+                        delay={SEARCH_DELAY_MS}
+                        queryLabel="Search audit history"
+                        placeholder="Search by actor name"
+                        // An empty result's notice owns the clear action.
+                        onClear={
+                            filtersActive && items.length > 0
+                                ? clearFilters
+                                : undefined
+                        }
+                        tools={
+                            <ListTools
+                                page="audit"
+                                search={search}
+                                keys={VIEW_KEYS}
+                                columns={columns}
+                                visibility={visibility}
+                                onVisibilityChange={setVisibility}
+                                onApply={(params) => {
+                                    void navigate({
+                                        to: "/audit",
+                                        search: validateAuditSearch(params),
+                                        replace: true,
+                                    });
+                                }}
+                            />
+                        }
+                        pills={<FilterPills pills={pills} />}
+                    >
+                        <FacetFilter
+                            label="Outcome"
+                            multiple
+                            options={facetOptions(
+                                facets.data?.outcome,
+                                outcomes,
+                                words,
+                            )}
+                            selected={outcomes}
+                            onChange={(next) => {
+                                change({
+                                    outcome: joinValues(
+                                        AUDIT_OUTCOMES.filter((value) =>
+                                            next.includes(value),
+                                        ),
+                                    ),
+                                });
+                            }}
+                        />
+                        <FacetFilter
+                            label="Action"
+                            multiple
+                            options={facetOptions(
+                                facets.data?.action,
+                                actions,
+                                (value) => value,
+                            )}
+                            selected={actions}
+                            onChange={(next) => {
+                                change({ action: joinValues(next) });
+                            }}
+                        />
+                        <FacetFilter
+                            label="Resource"
+                            multiple
+                            options={facetOptions(
+                                facets.data?.resource_type,
+                                resourceTypes,
+                                words,
+                            )}
+                            selected={resourceTypes}
+                            onChange={(next) => {
+                                change({ resource_type: joinValues(next) });
+                            }}
+                        />
+                    </FilterBar>
+                    {audit.isSuccess && (
+                        <>
+                            <DataGrid
+                                rows={items}
+                                columns={columns}
+                                getRowKey={(event) => event.id}
+                                sort={sort}
+                                onSortChange={(next) => {
+                                    change({
+                                        order:
+                                            next.direction === "asc"
+                                                ? "oldest"
+                                                : undefined,
+                                    });
+                                }}
+                                columnVisibility={visibility}
+                                caption="Audit history"
+                                refreshing={audit.isPlaceholderData}
+                                empty={
+                                    <NoResults onClear={clearFilters}>
+                                        No audit events match these filters.
+                                    </NoResults>
+                                }
+                            />
+                            {items.length > 0 && (
+                                <LoadMore
+                                    shown={items.length}
+                                    noun="events"
+                                    hasMore={audit.hasNextPage}
+                                    loading={audit.isFetchingNextPage}
+                                    onLoad={() => {
+                                        void audit.fetchNextPage();
+                                    }}
+                                />
+                            )}
+                        </>
+                    )}
                 </>
             )}
         </section>

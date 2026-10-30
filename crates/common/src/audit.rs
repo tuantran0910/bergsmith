@@ -120,6 +120,12 @@ pub enum AuditAction {
     CatalogTablesRegistered,
     /// A table's catalog name was unregistered.
     CatalogTableUnregistered,
+    /// A person saved a list view (BS-033.T6).
+    SavedViewCreated,
+    /// A person renamed or changed a saved view.
+    SavedViewUpdated,
+    /// A person deleted a saved view.
+    SavedViewDeleted,
 }
 
 impl AuditAction {
@@ -163,6 +169,9 @@ impl AuditAction {
             Self::CatalogChecked => "catalog.checked",
             Self::CatalogTablesRegistered => "catalog.tables_registered",
             Self::CatalogTableUnregistered => "catalog.table_unregistered",
+            Self::SavedViewCreated => "saved_view.created",
+            Self::SavedViewUpdated => "saved_view.updated",
+            Self::SavedViewDeleted => "saved_view.deleted",
         }
     }
 
@@ -213,6 +222,9 @@ impl AuditAction {
         Self::CatalogChecked,
         Self::CatalogTablesRegistered,
         Self::CatalogTableUnregistered,
+        Self::SavedViewCreated,
+        Self::SavedViewUpdated,
+        Self::SavedViewDeleted,
     ];
 }
 

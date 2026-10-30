@@ -979,6 +979,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/views": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The session's own saved list views. Views are personal: no grant is needed, and another person's views are never listed. */
+        get: operations["listSavedViews"];
+        put?: never;
+        /** @description Save the current filters of a list under a name. The same key and request return the same view. Requires the CSRF token; audited. */
+        post: operations["createSavedView"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/views/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** @description Delete a view at the revision the caller read. Requires the CSRF token; audited. */
+        delete: operations["deleteSavedView"];
+        options?: never;
+        head?: never;
+        /** @description Rename a view or replace its parameters. The request names the revision it read; a stale revision returns 409 and changes nothing. Another person's view is 404. Requires the CSRF token; audited. */
+        patch: operations["updateSavedView"];
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1001,7 +1037,7 @@ export interface components {
         };
         ApiError: {
             /** @enum {string} */
-            reason: "authentication_required" | "csrf_rejected" | "invalid_request" | "resource_not_found" | "permission_denied" | "idempotency_key_reused" | "ledger_unavailable" | "method_not_allowed" | "request_too_large" | "internal_error" | "catalog_credential_unavailable" | "catalog_connection_invalid" | "storage_profile_unavailable" | "storage_unavailable" | "catalog_access_denied" | "catalog_unavailable" | "table_staged" | "job_not_terminal" | "job_already_succeeded" | "table_identity_changed" | "catalog_table_missing" | "inventory_too_large" | "table_metadata_inconsistent" | "preview_capacity_exhausted" | "catalog_unsupported" | "catalog_credentials_unavailable" | "catalog_request_rejected" | "event_stream_capacity_exhausted" | "invalid_policy_parameters" | "invalid_policy_operation" | "invalid_cron_expression" | "invalid_time_zone" | "invalid_maintenance_window" | "run_budget_below_target_file_size" | "invalid_health_thresholds" | "revision_conflict" | "service_identity_not_eligible" | "resource_already_exists" | "catalog_connection_disabled" | "catalog_connection_in_use" | "catalog_connection_changed" | "capability_check_capacity_exhausted" | "catalog_response_too_large" | "table_in_use" | "catalog_namespace_not_found" | "catalog_table_not_found" | "catalog_discovery_capacity_exhausted" | "registration_too_large" | "table_identity_conflict" | "catalog_namespace_mismatch" | "catalog_page_too_large" | "registration_incomplete" | "catalog_token_too_large" | "last_administrator" | "grant_already_exists" | "destination_not_allowed" | "signing_secret_unavailable" | "notification_delivery_failed" | "destination_url_invalid" | "destination_url_unavailable" | "notifications_secrets_dir_unconfigured" | "expiration_ref_safety_unavailable" | "orphan_cleanup_unavailable" | "manifest_rewrite_unavailable" | "dangling_delete_removal_unavailable" | "compaction_in_progress";
+            reason: "authentication_required" | "csrf_rejected" | "invalid_request" | "resource_not_found" | "permission_denied" | "idempotency_key_reused" | "ledger_unavailable" | "method_not_allowed" | "request_too_large" | "internal_error" | "catalog_credential_unavailable" | "catalog_connection_invalid" | "storage_profile_unavailable" | "storage_unavailable" | "catalog_access_denied" | "catalog_unavailable" | "table_staged" | "job_not_terminal" | "job_already_succeeded" | "table_identity_changed" | "catalog_table_missing" | "inventory_too_large" | "table_metadata_inconsistent" | "preview_capacity_exhausted" | "catalog_unsupported" | "catalog_credentials_unavailable" | "catalog_request_rejected" | "event_stream_capacity_exhausted" | "invalid_policy_parameters" | "invalid_policy_operation" | "invalid_cron_expression" | "invalid_time_zone" | "invalid_maintenance_window" | "run_budget_below_target_file_size" | "invalid_health_thresholds" | "revision_conflict" | "service_identity_not_eligible" | "resource_already_exists" | "catalog_connection_disabled" | "catalog_connection_in_use" | "catalog_connection_changed" | "capability_check_capacity_exhausted" | "catalog_response_too_large" | "table_in_use" | "catalog_namespace_not_found" | "catalog_table_not_found" | "catalog_discovery_capacity_exhausted" | "registration_too_large" | "table_identity_conflict" | "catalog_namespace_mismatch" | "catalog_page_too_large" | "registration_incomplete" | "catalog_token_too_large" | "last_administrator" | "grant_already_exists" | "destination_not_allowed" | "signing_secret_unavailable" | "notification_delivery_failed" | "destination_url_invalid" | "destination_url_unavailable" | "notifications_secrets_dir_unconfigured" | "expiration_ref_safety_unavailable" | "orphan_cleanup_unavailable" | "manifest_rewrite_unavailable" | "dangling_delete_removal_unavailable" | "compaction_in_progress" | "view_limit_reached";
             /** @enum {string} */
             disposition: "RetrySameRequest" | "RetryTask" | "ReplanRequired" | "PermanentFailure" | "ResolvePublication";
             operator_action: string;
@@ -2393,6 +2429,44 @@ export interface components {
             kind: components["schemas"]["FacetCount"][];
             /** @description Principals per activity, active first. */
             active: components["schemas"]["FacetCount"][];
+        };
+        /**
+         * @description The list a view belongs to.
+         * @enum {string}
+         */
+        ViewPage: "jobs" | "tables" | "catalogs" | "audit" | "principals";
+        /** @description The list's own search parameters by name. Each list accepts only its own names (jobs: q, state, operation, order, hidden; tables: q, catalog, health, sort, order, hidden; catalogs: q, enabled, hidden; audit: q, outcome, action, resource_type, actor, order, hidden; principals: q, kind, active, hidden). Values are 1 to 512 characters without control characters, and the object is at most 4096 bytes of compact JSON. `hidden` lists hidden column IDs, comma-separated. */
+        ViewParams: {
+            [key: string]: string;
+        };
+        SavedView: {
+            /** Format: uuid */
+            id: string;
+            page: components["schemas"]["ViewPage"];
+            name: string;
+            params: components["schemas"]["ViewParams"];
+            /** Format: int64 */
+            revision: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /** @description The session's views, by list and then oldest first. A person keeps at most 50. */
+        SavedViewList: {
+            items: components["schemas"]["SavedView"][];
+        };
+        CreateSavedView: {
+            page: components["schemas"]["ViewPage"];
+            /** @description Trimmed; unique among the person's views of the list. */
+            name: string;
+            params: components["schemas"]["ViewParams"];
+        };
+        UpdateSavedView: {
+            /** Format: int64 */
+            revision: number;
+            name?: string;
+            params?: components["schemas"]["ViewParams"];
         };
     };
     responses: never;
@@ -9103,6 +9177,344 @@ export interface operations {
             };
             /** @description Internal error; do not retry */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    listSavedViews: {
+        parameters: {
+            query?: {
+                /** @description Only views of this list. */
+                page?: components["schemas"]["ViewPage"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Saved views */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedViewList"];
+                };
+            };
+            /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    createSavedView: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                "x-csrf-token": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSavedView"];
+            };
+        };
+        responses: {
+            /** @description View saved */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedView"];
+                };
+            };
+            /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Name already used on this list (`resource_already_exists`), 50 views kept (`view_limit_reached`), or the key reused for another request */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request body too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    deleteSavedView: {
+        parameters: {
+            query: {
+                revision: number;
+            };
+            header: {
+                "x-csrf-token": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description View deleted; the body is the view as it was */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedView"];
+                };
+            };
+            /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Resource not found in this organization */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    updateSavedView: {
+        parameters: {
+            query?: never;
+            header: {
+                "x-csrf-token": string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateSavedView"];
+            };
+        };
+        responses: {
+            /** @description View updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedView"];
+                };
+            };
+            /** @description Invalid request or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Permission or CSRF denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Resource not found in this organization */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Revision conflict or name already used on this list */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Request body too large */
+            413: {
                 headers: {
                     [name: string]: unknown;
                 };

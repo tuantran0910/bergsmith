@@ -105,6 +105,28 @@ publication evidence. `ReplanRequired` requires a new job and fresh plan; old
 accepted outputs cannot be transferred. T3 supplies SSE; this task does not
 certify M4.
 
+## Saved views
+
+`/api/v1/me/views` keeps the signed-in person's named list views (ADR 0067).
+A view belongs to one person in one organization: no grant is needed, and
+another person's view reads as `resource_not_found`.
+
+| Route | Behavior |
+|---|---|
+| `GET /api/v1/me/views?page=` | The session's views, of one list when `page` (`jobs`, `tables`, `catalogs`, `audit`, `principals`) is given |
+| `POST /api/v1/me/views` | Saves `{page, name, params}`. Requires `Idempotency-Key` and the CSRF token; the same key and request return the same view |
+| `PATCH /api/v1/me/views/{id}` | Renames or replaces parameters at the `revision` read; a stale revision is `revision_conflict` |
+| `DELETE /api/v1/me/views/{id}?revision=` | Deletes at the revision read and returns the view as it was |
+
+`params` are the list's own search parameters: each list accepts only its
+names, plus `hidden` (comma-separated hidden column IDs). Values are 1 to 512
+characters without control characters, and the object is at most 4096 bytes
+of compact JSON. Names are trimmed, 1 to 100 characters, and unique per list
+(`resource_already_exists`). A person keeps at most 50 views
+(`view_limit_reached`). Every write is audited as `saved_view.created`,
+`saved_view.updated`, or `saved_view.deleted`, recording the list and
+revision, not the name or parameters.
+
 ## Catalog configuration
 
 `POST /api/v1/catalogs/check` accepts the same fields as create and checks an

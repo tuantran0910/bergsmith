@@ -39,6 +39,7 @@ import {
     type PrincipalTab,
 } from "./search";
 import { Tokens } from "./Tokens";
+import { Users } from "./Users";
 
 /** Directory APIs require organization-wide authority, independently of scoped access. */
 export function PrincipalsPage({ services = false }: { services?: boolean }) {
@@ -56,7 +57,11 @@ export function PrincipalsPage({ services = false }: { services?: boolean }) {
                 {services ? "workers:manage" : "grants:manage"} is required.
             </GrantRequired>
         );
-    return <Directory services={services} />;
+    return services ? (
+        <Directory services />
+    ) : (
+        <Users provision={<Provision services={false} />} />
+    );
 }
 
 function Provision({ services }: { services: boolean }) {
@@ -187,6 +192,7 @@ function Provision({ services }: { services: boolean }) {
     );
 }
 
+/** Service identities; users have their own filtered list (`Users`). */
 function Directory({ services }: { services: boolean }) {
     const query = usePrincipals(services);
     const rows = query.data?.pages.flatMap((page) => page.items) ?? [];

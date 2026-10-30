@@ -60,6 +60,36 @@ export class FakeApi {
     readonly unrouted: string[] = [];
     private readonly routes: RouteEntry[] = [];
 
+    constructor() {
+        // Filtered lists read facet counts and saved views beside each page
+        // (ADR 0067); a test that asserts them routes its own, which wins.
+        this.on("GET", "/api/v1/tables/facets", () =>
+            json(200, schema("TableFacets", { health: [], catalog: [] })),
+        )
+            .on("GET", "/api/v1/jobs/facets", () =>
+                json(200, schema("JobFacets", { state: [], operation: [] })),
+            )
+            .on("GET", "/api/v1/catalogs/facets", () =>
+                json(200, schema("CatalogFacets", { enabled: [] })),
+            )
+            .on("GET", "/api/v1/audit/facets", () =>
+                json(
+                    200,
+                    schema("AuditFacets", {
+                        outcome: [],
+                        action: [],
+                        resource_type: [],
+                    }),
+                ),
+            )
+            .on("GET", "/api/v1/principals/facets", () =>
+                json(200, schema("PrincipalFacets", { kind: [], active: [] })),
+            )
+            .on("GET", "/api/v1/me/views", () =>
+                json(200, schema("SavedViewList", { items: [] })),
+            );
+    }
+
     /**
      * Routes `method path`. Several handlers answer successive requests; the
      * last one repeats.

@@ -47,3 +47,24 @@ export function useColumnVisibility(
     );
     return [visibility, update];
 }
+
+/** The hidden columns as a view's `hidden` parameter, or `undefined`. */
+export function hiddenParam(visibility: ColumnVisibility): string | undefined {
+    const hidden = Object.entries(visibility)
+        .filter(([, shown]) => !shown)
+        .map(([id]) => id)
+        .sort();
+    return hidden.length === 0 ? undefined : hidden.join(",");
+}
+
+/** A view's `hidden` parameter as column visibility. */
+export function visibilityFromHidden(
+    hidden: string | undefined,
+): ColumnVisibility {
+    return Object.fromEntries(
+        (hidden ?? "")
+            .split(",")
+            .filter((id) => id !== "")
+            .map((id) => [id, false]),
+    );
+}

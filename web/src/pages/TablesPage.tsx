@@ -1,10 +1,9 @@
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
-import { Table2Icon } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { PanelRightOpenIcon, Table2Icon } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { Schemas } from "../api/client";
 import { useCatalogNames, useTableFacets, useTables } from "../api/queries";
-import { ColumnsMenu } from "../components/ColumnsMenu";
 import { DataGrid } from "../components/DataGrid";
 import type { DataTableColumn, SortState } from "../components/DataTable";
 import { ErrorNotice } from "../components/ErrorNotice";
@@ -17,6 +16,7 @@ import {
 import { FilterBar } from "../components/FilterBar";
 import { HealthBadge, type HealthState } from "../components/HealthBadge";
 import { SEARCH_DELAY_MS, searchText } from "../components/listSearch";
+import { ListTools } from "../components/ListTools";
 import { useColumnVisibility } from "../components/useColumnVisibility";
 import {
     EmptyState,
@@ -35,8 +35,14 @@ import {
     shortId,
     timestamp,
 } from "../format";
-import { buttonVariants } from "../ui/Button";
-import { healthFilter, sortColumn, type TablesSearch } from "./tables/search";
+import { Button, buttonVariants } from "../ui/Button";
+import {
+    healthFilter,
+    sortColumn,
+    type TablesSearch,
+    validateTablesSearch,
+} from "./tables/search";
+import { TablePeek } from "./tables/TablePeek";
 
 /** The names and context one table shows, without losing its other aliases. */
 function display(table: Schemas["Table"], names: ReadonlyMap<string, string>) {
@@ -67,6 +73,9 @@ function display(table: Schemas["Table"], names: ReadonlyMap<string, string>) {
             .join(", "),
     };
 }
+
+/** The parameters a saved view keeps. */
+const VIEW_KEYS = ["q", "catalog", "health", "sort", "order"];
 
 const HEALTH_LABELS: Record<string, string> = {
     critical: "Critical",
@@ -139,9 +148,24 @@ export function TablesPage() {
             ...(merged.health !== undefined ? { health: merged.health } : {}),
             ...(merged.sort !== undefined ? { sort: merged.sort } : {}),
             ...(merged.order !== undefined ? { order: merged.order } : {}),
+            ...(merged.peek !== undefined ? { peek: merged.peek } : {}),
         };
         void navigate({ to: "/tables", search: next, replace: true });
     }
+
+    // Stable, so the memoized columns keep it: it reads the address as it is
+    // when the button is pressed.
+    const openPeek = useCallback(
+        (id: string) => {
+            void navigate({
+                from: "/tables",
+                to: "/tables",
+                search: (previous) => ({ ...previous, peek: id }),
+                replace: true,
+            });
+        },
+        [navigate],
+    );
 
     function clearFilters(): void {
         change({ q: undefined, catalog: undefined, health: undefined });
@@ -338,8 +362,27 @@ export function TablesPage() {
                     </time>
                 ),
             },
+            {
+                id: "preview",
+                header: "",
+                align: "end",
+                hideable: false,
+                card: "actions",
+                cell: (table) => (
+                    <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`Preview table ${display(table, names).name}`}
+                        onClick={() => {
+                            openPeek(table.id);
+                        }}
+                    >
+                        <PanelRightOpenIcon aria-hidden="true" />
+                    </Button>
+                ),
+            },
         ],
-        [names],
+        [names, openPeek],
     );
 
     const catalogLabel = (id: string) => names.get(id) ?? shortId(id);
@@ -425,10 +468,20 @@ export function TablesPage() {
                                 : undefined
                         }
                         tools={
-                            <ColumnsMenu
+                            <ListTools
+                                page="tables"
+                                search={search}
+                                keys={VIEW_KEYS}
                                 columns={columns}
                                 visibility={visibility}
-                                onChange={setVisibility}
+                                onVisibilityChange={setVisibility}
+                                onApply={(params) => {
+                                    void navigate({
+                                        to: "/tables",
+                                        search: validateTablesSearch(params),
+                                        replace: true,
+                                    });
+                                }}
                             />
                         }
                         pills={<FilterPills pills={pills} />}
@@ -521,6 +574,17 @@ export function TablesPage() {
                         </>
                     )}
                 </>
+            )}
+            {search.peek !== undefined && (
+                <TablePeek
+                    key={search.peek}
+                    id={search.peek}
+                    row={items.find((table) => table.id === search.peek)}
+                    names={names}
+                    onClose={() => {
+                        change({ peek: undefined });
+                    }}
+                />
             )}
         </section>
     );

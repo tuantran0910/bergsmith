@@ -27,6 +27,7 @@ pub mod orphans;
 pub mod overview;
 pub mod plans;
 pub mod publications;
+pub mod saved_views;
 pub mod schedules;
 pub mod scheduling;
 pub mod statistics;

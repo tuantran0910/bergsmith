@@ -1,10 +1,9 @@
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
-import { ListChecksIcon } from "lucide-react";
-import { useMemo } from "react";
+import { ListChecksIcon, PanelRightOpenIcon } from "lucide-react";
+import { useCallback, useMemo } from "react";
 
 import type { Job } from "../api/client";
 import { useCatalogNames, useJobFacets, useJobs } from "../api/queries";
-import { ColumnsMenu } from "../components/ColumnsMenu";
 import { DataGrid } from "../components/DataGrid";
 import type { DataTableColumn, SortState } from "../components/DataTable";
 import { ErrorNotice } from "../components/ErrorNotice";
@@ -31,14 +30,25 @@ import {
 import { ResourceLabel } from "../components/ResourceLabel";
 import { CopyButton } from "../components/ResourceId";
 import { StatusBadge } from "../components/StatusBadge";
+import { ListTools } from "../components/ListTools";
 import { useColumnVisibility } from "../components/useColumnVisibility";
+import { Button } from "../ui/Button";
 import { shortId, tableName, timestamp, words } from "../format";
 import {
     executionStatus,
     operationLabel,
     publicationStatus,
 } from "../jobs/status";
-import { JOB_OPERATIONS, JOB_STATES, type JobsSearch } from "./jobs/search";
+import { JobPeek } from "./jobs/JobPeek";
+import {
+    JOB_OPERATIONS,
+    JOB_STATES,
+    type JobsSearch,
+    validateJobsSearch,
+} from "./jobs/search";
+
+/** The parameters a saved view keeps. */
+const VIEW_KEYS = ["q", "state", "operation", "order"];
 
 function stateLabel(state: string): string {
     return state === "NoOp" ? "No-op" : words(state);
@@ -95,9 +105,24 @@ export function JobsPage() {
                 ? { operation: merged.operation }
                 : {}),
             ...(merged.order !== undefined ? { order: merged.order } : {}),
+            ...(merged.peek !== undefined ? { peek: merged.peek } : {}),
         };
         void navigate({ to: "/jobs", search: next, replace: true });
     }
+
+    // Stable, so the memoized columns keep it: it reads the address as it is
+    // when the button is pressed.
+    const openPeek = useCallback(
+        (id: string) => {
+            void navigate({
+                from: "/jobs",
+                to: "/jobs",
+                search: (previous) => ({ ...previous, peek: id }),
+                replace: true,
+            });
+        },
+        [navigate],
+    );
 
     function clearFilters(): void {
         change({ q: undefined, state: undefined, operation: undefined });
@@ -188,8 +213,27 @@ export function JobsPage() {
                     </time>
                 ),
             },
+            {
+                id: "preview",
+                header: "",
+                align: "end",
+                hideable: false,
+                card: "actions",
+                cell: (job) => (
+                    <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`Preview job ${shortId(job.id)}`}
+                        onClick={() => {
+                            openPeek(job.id);
+                        }}
+                    >
+                        <PanelRightOpenIcon aria-hidden="true" />
+                    </Button>
+                ),
+            },
         ],
-        [names],
+        [names, openPeek],
     );
 
     const sort: SortState = {
@@ -264,10 +308,20 @@ export function JobsPage() {
                                 : undefined
                         }
                         tools={
-                            <ColumnsMenu
+                            <ListTools
+                                page="jobs"
+                                search={search}
+                                keys={VIEW_KEYS}
                                 columns={columns}
                                 visibility={visibility}
-                                onChange={setVisibility}
+                                onVisibilityChange={setVisibility}
+                                onApply={(params) => {
+                                    void navigate({
+                                        to: "/jobs",
+                                        search: validateJobsSearch(params),
+                                        replace: true,
+                                    });
+                                }}
                             />
                         }
                         pills={<FilterPills pills={pills} />}
@@ -349,6 +403,17 @@ export function JobsPage() {
                         </>
                     )}
                 </>
+            )}
+            {search.peek !== undefined && (
+                <JobPeek
+                    key={search.peek}
+                    id={search.peek}
+                    row={items.find((job) => job.id === search.peek)}
+                    names={names}
+                    onClose={() => {
+                        change({ peek: undefined });
+                    }}
+                />
             )}
         </section>
     );

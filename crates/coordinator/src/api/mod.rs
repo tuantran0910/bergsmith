@@ -32,13 +32,14 @@ mod statistics;
 mod storage_breakdown;
 mod submission;
 mod tables;
+mod views;
 
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use bergsmith_common::disposition::FailureDisposition;
 use bergsmith_common::ids::{JobId, OrganizationId, PrincipalId};
@@ -217,6 +218,11 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/api/v1/notifications/deliveries/{id}",
             get(notifications::get_delivery),
+        )
+        .route("/api/v1/me/views", get(views::list).post(views::create))
+        .route(
+            "/api/v1/me/views/{id}",
+            patch(views::update).delete(views::delete),
         )
         .route("/api/v1/audit", get(lists::audit))
         .route("/api/v1/audit/facets", get(lists::audit_facets))

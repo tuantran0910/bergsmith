@@ -14,10 +14,19 @@ import {
 import { CompassIcon, LoaderCircleIcon } from "lucide-react";
 import { lazy, type ComponentType } from "react";
 
+import { isResourceId } from "./resourceId";
+
 import { Root } from "./Root";
 import { EmptyState } from "./components/Page";
-import { validatePrincipalSearch } from "./pages/access/search";
-import { validateCatalogSearch } from "./pages/catalogs/search";
+import {
+    validatePrincipalSearch,
+    validateUsersSearch,
+} from "./pages/access/search";
+import { validateAuditSearch } from "./pages/audit/search";
+import {
+    validateCatalogSearch,
+    validateCatalogsSearch,
+} from "./pages/catalogs/search";
 import { validateJobSearch, validateJobsSearch } from "./pages/jobs/search";
 import {
     validateTableSearch,
@@ -124,12 +133,7 @@ function RoutePending() {
     );
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/** Whether `value` has the shape of a resource ID, so it is worth asking for. */
-export function isResourceId(value: string): boolean {
-    return UUID.test(value);
-}
+export { isResourceId } from "./resourceId";
 
 /** Shown for any path the application does not serve. */
 export function NotFound() {
@@ -164,6 +168,7 @@ const tablesRoute = createRoute({
 const catalogsRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/catalogs",
+    validateSearch: validateCatalogsSearch,
     component: CatalogsPage,
 });
 
@@ -226,6 +231,7 @@ const jobRoute = createRoute({
 const auditRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/audit",
+    validateSearch: validateAuditSearch,
     component: AuditPage,
 });
 
@@ -292,6 +298,7 @@ const deliveryRoute = createRoute({
 const usersRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/users",
+    validateSearch: validateUsersSearch,
     component: PrincipalsPage,
 });
 const servicesRoute = createRoute({

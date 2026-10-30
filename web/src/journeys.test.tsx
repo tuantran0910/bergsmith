@@ -19,6 +19,7 @@ import userEvent from "@testing-library/user-event";
 import { App } from "./App";
 import { browser } from "./browser";
 import { createQueryClient } from "./queryClient";
+import type { Schemas } from "./api/client";
 import { FakeApi, FakeEventSource, apiError, json, schema } from "./test/fakes";
 import {
     CATALOG_ID,
@@ -59,14 +60,7 @@ beforeEach(() => {
         .on("GET", "/api/v1/tables/{id}", () => json(200, table))
         // The landing page reads the overview; tests that visit it assert its
         // sections, and the others only need the request routed.
-        .on("GET", "/api/v1/overview", () => json(200, overview))
-        // Filtered lists read their facet counts beside the page.
-        .on("GET", "/api/v1/tables/facets", () =>
-            json(200, schema("TableFacets", { health: [], catalog: [] })),
-        )
-        .on("GET", "/api/v1/jobs/facets", () =>
-            json(200, schema("JobFacets", { state: [], operation: [] })),
-        );
+        .on("GET", "/api/v1/overview", () => json(200, overview));
 });
 
 afterEach(() => {
@@ -2205,6 +2199,187 @@ describe("jobs and audit", () => {
         ).toBeInTheDocument();
     });
 
+    it("previews a job beside the list and keeps it in the address", async () => {
+        fake.on("GET", "/api/v1/jobs", () =>
+            json(
+                200,
+                schema("JobPage", {
+                    items: [job("Running")],
+                    next_cursor: null,
+                }),
+            ),
+        ).on("GET", "/api/v1/jobs/{id}", () => json(200, job("Running")));
+        const user = start("/jobs");
+
+        const preview = await screen.findByRole("button", {
+            name: `Preview job ${JOB_ID.slice(-8)}`,
+        });
+        await user.click(preview);
+        const panel = await screen.findByRole("dialog", {
+            name: `Job ${JOB_ID.slice(-8)}`,
+        });
+        expect(
+            within(panel).getByRole("link", { name: "Open job" }),
+        ).toHaveAttribute("href", `/jobs/${JOB_ID}`);
+        expect(within(panel).getByText("Compaction")).toBeInTheDocument();
+        await waitFor(() => {
+            expect(window.location.search).toContain(`peek=${JOB_ID}`);
+        });
+
+        await user.keyboard("{Escape}");
+        await waitFor(() => {
+            expect(window.location.search).not.toContain("peek=");
+        });
+        await waitFor(() => {
+            expect(preview).toHaveFocus();
+        });
+    });
+
+    it("saves the current filters as a view and reapplies them", async () => {
+        const saved = schema("SavedView", {
+            id: "0190f3c4-0000-7000-8000-00000000cafe",
+            page: "jobs",
+            name: "Failed jobs",
+            params: { state: "Failed", hidden: "requester" },
+            revision: 3,
+            created_at: "2026-10-30T00:00:00Z",
+            updated_at: "2026-10-30T00:00:00Z",
+        });
+        let views: Schemas["SavedView"][] = [];
+        fake.on("GET", "/api/v1/jobs", () =>
+            json(
+                200,
+                schema("JobPage", {
+                    items: [job("Failed")],
+                    next_cursor: null,
+                }),
+            ),
+        )
+            .on("GET", "/api/v1/me/views", () =>
+                json(200, schema("SavedViewList", { items: views })),
+            )
+            .on("POST", "/api/v1/me/views", () => {
+                views = [saved];
+                return json(201, saved);
+            })
+            .on("DELETE", "/api/v1/me/views/{id}", () => {
+                views = [];
+                return json(200, saved);
+            });
+        const user = start("/jobs?state=Failed");
+        await screen.findByRole("link", { name: `Job ${JOB_ID.slice(-8)}` });
+
+        // Hide a column, then save: the view keeps filters and columns.
+        await user.click(screen.getByRole("button", { name: "Columns" }));
+        await user.click(
+            await screen.findByRole("menuitemcheckbox", {
+                name: "Requested by",
+            }),
+        );
+        await user.keyboard("{Escape}");
+        await user.click(screen.getByRole("button", { name: "Views" }));
+        await user.click(
+            await screen.findByRole("menuitem", {
+                name: "Save current view…",
+            }),
+        );
+        const dialog = await screen.findByRole("dialog", { name: "Save view" });
+        await user.type(within(dialog).getByLabelText("Name"), "Failed jobs");
+        await user.click(
+            within(dialog).getByRole("button", { name: "Save view" }),
+        );
+        await waitFor(() => {
+            expect(
+                screen.queryByRole("dialog", { name: "Save view" }),
+            ).not.toBeInTheDocument();
+        });
+        const post = fake.sent("POST", "/api/v1/me/views")[0];
+        expect(post?.headers.get("idempotency-key")).toBeTruthy();
+        expect(post?.headers.get("x-csrf-token")).toBe("csrf-value");
+        expect(await post?.json()).toEqual({
+            page: "jobs",
+            name: "Failed jobs",
+            params: { state: "Failed", hidden: "requester" },
+        });
+        // The matching view names the menu.
+        const menu = await screen.findByRole("button", {
+            name: "Failed jobs view",
+        });
+
+        // Deleting asks first and names the revision read.
+        await user.click(menu);
+        await user.click(
+            await screen.findByRole("menuitem", {
+                name: "Delete “Failed jobs”…",
+            }),
+        );
+        const confirm = await screen.findByRole("dialog", {
+            name: "Delete view",
+        });
+        await user.click(
+            within(confirm).getByRole("button", { name: "Delete view" }),
+        );
+        await waitFor(() => {
+            expect(
+                fake.sent("DELETE", `/api/v1/me/views/${saved.id}`),
+            ).toHaveLength(1);
+        });
+        expect(
+            new URL(
+                fake.sent("DELETE", `/api/v1/me/views/${saved.id}`)[0]?.url ??
+                    "",
+            ).searchParams.get("revision"),
+        ).toBe("3");
+        expect(
+            await screen.findByRole("button", { name: "Views" }),
+        ).toBeInTheDocument();
+    });
+
+    it("applies a saved view through the address", async () => {
+        fake.on("GET", "/api/v1/jobs", () =>
+            json(
+                200,
+                schema("JobPage", {
+                    items: [job("Failed")],
+                    next_cursor: null,
+                }),
+            ),
+        ).on("GET", "/api/v1/me/views", () =>
+            json(
+                200,
+                schema("SavedViewList", {
+                    items: [
+                        {
+                            id: "0190f3c4-0000-7000-8000-00000000cafe",
+                            page: "jobs",
+                            name: "Oldest compactions",
+                            params: {
+                                operation: "compact",
+                                order: "oldest",
+                                // A stale value is dropped like a bad link.
+                                state: "Bogus",
+                            },
+                            revision: 1,
+                            created_at: "2026-10-30T00:00:00Z",
+                            updated_at: "2026-10-30T00:00:00Z",
+                        },
+                    ],
+                }),
+            ),
+        );
+        const user = start("/jobs");
+        await screen.findByRole("link", { name: `Job ${JOB_ID.slice(-8)}` });
+        await user.click(screen.getByRole("button", { name: "Views" }));
+        await user.click(
+            await screen.findByRole("menuitem", { name: "Oldest compactions" }),
+        );
+        await waitFor(() => {
+            expect(window.location.search).toBe(
+                "?operation=compact&order=oldest",
+            );
+        });
+    });
+
     it("lists jobs with execution and publication side by side", async () => {
         fake.on("GET", "/api/v1/jobs", () =>
             json(
@@ -2289,6 +2464,70 @@ describe("jobs and audit", () => {
             await screen.findByText(
                 /Audit history requires an organization-wide grant/,
             ),
+        ).toBeInTheDocument();
+    });
+
+    it("filters audit history by outcome, newest first", async () => {
+        fake.on("GET", "/auth/session", () =>
+            json(200, session("Administrator")),
+        )
+            .on("GET", "/api/v1/audit", () =>
+                json(
+                    200,
+                    schema("AuditEventPage", {
+                        items: [
+                            {
+                                id: "9007199254740993",
+                                actor_principal_id: null,
+                                actor_display_name: null,
+                                actor_kind: "Anonymous",
+                                action: "session.denied",
+                                resource_type: "session",
+                                resource_id: null,
+                                outcome: "Denied",
+                                detail: {},
+                                occurred_at: "2026-10-21T10:00:00Z",
+                            },
+                        ],
+                        next_cursor: null,
+                    }),
+                ),
+            )
+            .on("GET", "/api/v1/audit/facets", () =>
+                json(
+                    200,
+                    schema("AuditFacets", {
+                        outcome: [
+                            { value: "Allowed", count: 4 },
+                            { value: "Denied", count: 1 },
+                        ],
+                        action: [{ value: "session.denied", count: 1 }],
+                        resource_type: [{ value: "session", count: 1 }],
+                    }),
+                ),
+            );
+        const user = start("/audit");
+        await screen.findByText("session.denied");
+        const sent = () =>
+            new URL(fake.sent("GET", "/api/v1/audit").at(-1)?.url ?? "")
+                .searchParams;
+        expect(sent().get("order")).toBe("newest");
+
+        await user.click(
+            screen.getByRole("button", { name: "Outcome filter" }),
+        );
+        await user.click(
+            await screen.findByRole("checkbox", { name: "Denied 1" }),
+        );
+        await user.keyboard("{Escape}");
+        await waitFor(() => {
+            expect(sent().get("outcome")).toBe("Denied");
+        });
+        expect(window.location.search).toBe("?outcome=Denied");
+        expect(
+            screen.getByRole("button", {
+                name: "Remove filter Outcome: Denied",
+            }),
         ).toBeInTheDocument();
     });
 

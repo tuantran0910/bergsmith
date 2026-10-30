@@ -2,6 +2,7 @@
 // validated search parameters so links, back/forward, and saved views work.
 
 import { searchText } from "../../components/listSearch";
+import { resourceIdParam } from "../../resourceId";
 
 const SORTS = [
     "name",
@@ -47,6 +48,8 @@ export type TableHealthFilter = (typeof HEALTH)[number];
  */
 export interface TablesSearch {
     q?: string;
+    /** The table previewed beside the list. */
+    peek?: string;
     catalog?: string;
     health?: TableHealthFilter | undefined;
     sort?: TableSort;
@@ -93,6 +96,7 @@ export function validateTablesSearch(
     search: Record<string, unknown>,
 ): TablesSearch {
     const q = searchText(search["q"]);
+    const peek = resourceIdParam(search["peek"]);
     const catalog = text(search["catalog"]);
     const health = healthFilter(search["health"]);
     const sort = sortColumn(search["sort"]);
@@ -102,6 +106,7 @@ export function validateTablesSearch(
             : undefined;
     return {
         ...(q !== undefined ? { q } : {}),
+        ...(peek !== undefined ? { peek } : {}),
         ...(catalog !== undefined ? { catalog } : {}),
         ...(health !== undefined ? { health } : {}),
         ...(sort !== undefined ? { sort } : {}),

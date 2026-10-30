@@ -1241,3 +1241,69 @@ test("keeps a thousand jobs responsive by rendering only rows in view", async ({
     ).toBeFocused();
     await expectAccessible(page);
 });
+
+test("previews a table and saves the list as a view", async ({
+    page,
+    coordinator,
+}) => {
+    signedIn(coordinator);
+    const saved = schema("SavedView", {
+        id: "0190f3c4-0000-7000-8000-00000000cafe",
+        page: "tables",
+        name: "Critical tables",
+        params: { health: "critical" },
+        revision: 1,
+        created_at: "2026-10-30T00:00:00Z",
+        updated_at: "2026-10-30T00:00:00Z",
+    });
+    let views: (typeof saved)[] = [];
+    coordinator
+        .on("GET", "/api/v1/tables", () =>
+            json(
+                200,
+                schema("TablePage", { items: [table], next_cursor: null }),
+            ),
+        )
+        .on("GET", "/api/v1/tables/{id}", () => json(200, table))
+        .on("GET", "/api/v1/me/views", () => json(200, { items: views }))
+        .on("POST", "/api/v1/me/views", () => {
+            views = [saved];
+            return json(201, saved);
+        });
+
+    await page.goto("/tables");
+    const preview = page.getByRole("button", { name: /^Preview table orders/ });
+    await preview.click();
+    const panel = page.getByRole("dialog", { name: "orders" });
+    await expect(panel.getByRole("link", { name: "Open table" })).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`peek=${TABLE_ID}`));
+    await expect(panel).toHaveCSS("opacity", "1");
+    await expectAccessible(page);
+    await page.keyboard.press("Escape");
+    await expect(panel).toBeHidden();
+    await expect(page).not.toHaveURL(/peek=/);
+    await expect(preview).toBeFocused();
+
+    await page.goto("/tables?health=critical");
+    await page.getByRole("button", { name: "Views" }).click();
+    await page.getByRole("menuitem", { name: "Save current view…" }).click();
+    const dialog = page.getByRole("dialog", { name: "Save view" });
+    await dialog.getByLabel("Name").fill("Critical tables");
+    await expect(dialog).toHaveCSS("opacity", "1");
+    await expectAccessible(page);
+    await dialog.getByRole("button", { name: "Save view" }).click();
+    await expect(dialog).toBeHidden();
+    await expect(
+        page.getByRole("button", { name: "Critical tables view" }),
+    ).toBeVisible();
+    const post = coordinator.requests.find(
+        (sent) =>
+            sent.method === "POST" && sent.pathname === "/api/v1/me/views",
+    );
+    expect(post?.headers["idempotency-key"]).toBeTruthy();
+    expect(post?.body).toEqual({
+        page: "tables",
+        name: "Critical tables",
+        params: { health: "critical" },
+    });
+});

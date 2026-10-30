@@ -12,7 +12,7 @@ import {
 
 import { jobQueryKey } from "../jobs/events";
 import { forSession } from "../queryClient";
-import { api, call } from "./client";
+import { api, call, type Schemas } from "./client";
 
 const PAGE = 50;
 
@@ -387,20 +387,194 @@ export function useWorkers() {
     });
 }
 
-export function useAudit() {
+/** The lists that keep saved views. */
+export type ViewPage = Schemas["ViewPage"];
+
+/**
+ * The session's saved views of one list (ADR 0067). Views are personal, so
+ * the query needs no grant; it stays fresh until a save or delete
+ * invalidates it.
+ */
+export function useSavedViews(page: ViewPage) {
     const client = useQueryClient();
+    return useQuery({
+        queryKey: ["views", page],
+        queryFn: ({ signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/me/views", {
+                        params: { query: { page } },
+                        signal,
+                    }),
+                ),
+            ),
+        staleTime: Infinity,
+    });
+}
+
+/** The coordinator's catalog filters (ADR 0067). */
+export interface CatalogFilter {
+    enabled?: "true" | "false" | undefined;
+    q?: string | undefined;
+}
+
+/** Catalogs the session may see, under `filter`; see `useTables`. */
+export function useCatalogList(filter: CatalogFilter) {
+    const client = useQueryClient();
+    const query = present({ ...filter });
     return useInfiniteQuery({
-        queryKey: ["audit"],
+        queryKey: ["catalogs", "list", query],
         initialPageParam: null as string | null,
         queryFn: ({ pageParam, signal }) =>
             forSession(client, () =>
                 call(
-                    api.GET("/api/v1/audit", {
-                        params: { query: page(pageParam) },
+                    api.GET("/api/v1/catalogs", {
+                        params: { query: { ...page(pageParam), ...query } },
                         signal,
                     }),
                 ),
             ),
         getNextPageParam: (last) => last.next_cursor,
+        placeholderData: keepPreviousData,
+        staleTime: LIST_STALE_MS,
+    });
+}
+
+/** Catalog counts per `enabled` value under the search. */
+export function useCatalogFacets(filter: CatalogFilter, enabled = true) {
+    const client = useQueryClient();
+    const query = present({ ...filter });
+    return useQuery({
+        queryKey: ["catalogs", "facets", query],
+        enabled,
+        queryFn: ({ signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/catalogs/facets", {
+                        params: { query },
+                        signal,
+                    }),
+                ),
+            ),
+        placeholderData: keepPreviousData,
+        staleTime: LIST_STALE_MS,
+    });
+}
+
+/**
+ * The coordinator's audit filters (ADR 0067). `outcome`, `action`, and
+ * `resource_type` are comma-separated; `q` matches the actor's name.
+ */
+export interface AuditFilter {
+    outcome?: string | undefined;
+    action?: string | undefined;
+    resource_type?: string | undefined;
+    actor?: string | undefined;
+    q?: string | undefined;
+}
+
+/** The organization's audit records under `filter`, newest first by default. */
+export function useAuditList(
+    filter: AuditFilter,
+    order: "newest" | "oldest" = "newest",
+) {
+    const client = useQueryClient();
+    const query = present({ ...filter, order });
+    return useInfiniteQuery({
+        queryKey: ["audit", "list", query],
+        initialPageParam: null as string | null,
+        queryFn: ({ pageParam, signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/audit", {
+                        params: {
+                            query: { ...page(pageParam), ...query, order },
+                        },
+                        signal,
+                    }),
+                ),
+            ),
+        getNextPageParam: (last) => last.next_cursor,
+        placeholderData: keepPreviousData,
+        staleTime: LIST_STALE_MS,
+    });
+}
+
+/** Audit counts per outcome, action, and resource type. */
+export function useAuditFacets(filter: AuditFilter, enabled = true) {
+    const client = useQueryClient();
+    const query = present({ ...filter });
+    return useQuery({
+        queryKey: ["audit", "facets", query],
+        enabled,
+        queryFn: ({ signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/audit/facets", {
+                        params: { query },
+                        signal,
+                    }),
+                ),
+            ),
+        placeholderData: keepPreviousData,
+        staleTime: LIST_STALE_MS,
+    });
+}
+
+/** The coordinator's principal filters (ADR 0067). */
+export interface PrincipalFilter {
+    active?: "true" | "false" | undefined;
+    q?: string | undefined;
+}
+
+/**
+ * The organization's users under `filter`. The key sits under `access` so
+ * provisioning and deactivation invalidate it with the rest of the directory.
+ */
+export function useUserList(filter: PrincipalFilter) {
+    const client = useQueryClient();
+    const query = present({ ...filter });
+    return useInfiniteQuery({
+        queryKey: ["access", "principals", "users", query],
+        initialPageParam: null as string | null,
+        queryFn: ({ pageParam, signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/principals", {
+                        params: {
+                            query: {
+                                ...page(pageParam),
+                                ...query,
+                                kind: "User",
+                            },
+                        },
+                        signal,
+                    }),
+                ),
+            ),
+        getNextPageParam: (last) => last.next_cursor,
+        placeholderData: keepPreviousData,
+        staleTime: LIST_STALE_MS,
+    });
+}
+
+/** User counts per `active` value under the search. */
+export function useUserFacets(filter: PrincipalFilter, enabled = true) {
+    const client = useQueryClient();
+    const query = present({ ...filter, kind: "User" as const });
+    return useQuery({
+        queryKey: ["access", "principals", "facets", query],
+        enabled,
+        queryFn: ({ signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/principals/facets", {
+                        params: { query },
+                        signal,
+                    }),
+                ),
+            ),
+        placeholderData: keepPreviousData,
+        staleTime: LIST_STALE_MS,
     });
 }

@@ -21,4 +21,5 @@ pub mod secret;
 pub mod settings;
 pub mod table;
 pub mod task;
+pub mod views;
 pub mod window;

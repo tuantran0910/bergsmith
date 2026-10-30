@@ -4,6 +4,7 @@
 
 import type { Job, JobState } from "../../api/client";
 import { joinValues, searchText, valueList } from "../../components/listSearch";
+import { resourceIdParam } from "../../resourceId";
 
 const TABS = ["overview", "tasks"] as const;
 
@@ -60,6 +61,8 @@ export interface JobsSearch {
     state?: string;
     operation?: string;
     order?: "oldest";
+    /** The job previewed beside the list. */
+    peek?: string;
 }
 
 /** Keeps unknown or malformed job-list search parameters out of the page. */
@@ -71,8 +74,10 @@ export function validateJobsSearch(
     const operation = joinValues(
         valueList(search["operation"], JOB_OPERATIONS),
     );
+    const peek = resourceIdParam(search["peek"]);
     return {
         ...(q !== undefined ? { q } : {}),
+        ...(peek !== undefined ? { peek } : {}),
         ...(state !== undefined ? { state } : {}),
         ...(operation !== undefined ? { operation } : {}),
         ...(search["order"] === "oldest" ? { order: "oldest" as const } : {}),

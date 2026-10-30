@@ -84,6 +84,10 @@ define_id!(
     PrincipalId
 );
 define_id!(
+    /// Identifies a person's saved list view (BS-033.T6).
+    SavedViewId
+);
+define_id!(
     /// Identifies a connection to an Iceberg REST catalog.
     CatalogConnectionId
 );

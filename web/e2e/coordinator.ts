@@ -352,7 +352,17 @@ export const test = base.extend<Fixtures>({
             )
             .on("GET", "/api/v1/jobs/facets", () =>
                 json(200, { state: [], operation: [] }),
-            );
+            )
+            .on("GET", "/api/v1/catalogs/facets", () =>
+                json(200, { enabled: [] }),
+            )
+            .on("GET", "/api/v1/audit/facets", () =>
+                json(200, { outcome: [], action: [], resource_type: [] }),
+            )
+            .on("GET", "/api/v1/principals/facets", () =>
+                json(200, { kind: [], active: [] }),
+            )
+            .on("GET", "/api/v1/me/views", () => json(200, { items: [] }));
         await coordinator.install(page);
         await provide(coordinator);
         expect(coordinator.unrouted, "unrouted requests").toEqual([]);
