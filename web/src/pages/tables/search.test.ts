@@ -10,13 +10,13 @@ it("keeps recognized search parameters", () => {
     expect(
         validateTablesSearch({
             q: "orders",
-            catalog: "c",
+            catalog: "0190a1b2-0000-7000-8000-000000000001",
             sort: "registered",
             order: "desc",
         }),
     ).toEqual({
         q: "orders",
-        catalog: "c",
+        catalog: "0190a1b2-0000-7000-8000-000000000001",
         sort: "registered",
         order: "desc",
     });
@@ -48,6 +48,10 @@ it("drops blank, unknown, and malformed values", () => {
             order: "sideways",
         }),
     ).toEqual({});
+});
+
+it("drops a catalog that is not a resource ID, which the API would refuse", () => {
+    expect(validateTablesSearch({ catalog: "prod" })).toEqual({});
 });
 
 it("recognizes only the columns the table can sort", () => {

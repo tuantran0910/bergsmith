@@ -16,11 +16,18 @@ function preload() {
     void loadPalette();
 }
 
-/** Whether `event` opens the palette: Ctrl+K or ⌘K, without Alt or Shift. */
-export function isPaletteShortcut(event: KeyboardEvent): boolean {
+/**
+ * Whether `event` toggles the palette: ⌘K where the shortcut reads as ⌘,
+ * otherwise Ctrl+K, without Alt or Shift. On macOS Ctrl+K stays the text
+ * field's "delete to end of line".
+ */
+export function isPaletteShortcut(
+    event: KeyboardEvent,
+    command: boolean,
+): boolean {
     return (
         event.key.toLowerCase() === "k" &&
-        (event.ctrlKey || event.metaKey) &&
+        (command ? event.metaKey : event.ctrlKey) &&
         !event.altKey &&
         !event.shiftKey
     );
@@ -44,7 +51,7 @@ export function CommandPaletteButton({ session }: { session: SessionInfo }) {
 
     useEffect(() => {
         const onKeyDown = (event: KeyboardEvent) => {
-            if (event.defaultPrevented || !isPaletteShortcut(event)) {
+            if (event.defaultPrevented || !isPaletteShortcut(event, command)) {
                 return;
             }
             event.preventDefault();
@@ -55,7 +62,7 @@ export function CommandPaletteButton({ session }: { session: SessionInfo }) {
         return () => {
             window.removeEventListener("keydown", onKeyDown);
         };
-    }, []);
+    }, [command]);
 
     return (
         <>
@@ -64,7 +71,7 @@ export function CommandPaletteButton({ session }: { session: SessionInfo }) {
                 size="sm"
                 aria-haspopup="dialog"
                 aria-expanded={open}
-                aria-keyshortcuts="Control+K Meta+K"
+                aria-keyshortcuts={command ? "Meta+K" : "Control+K"}
                 onPointerEnter={preload}
                 onFocus={preload}
                 onClick={() => {

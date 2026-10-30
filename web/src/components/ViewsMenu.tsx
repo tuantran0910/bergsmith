@@ -8,7 +8,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { BookmarkIcon } from "lucide-react";
 import { useId, useState } from "react";
 
-import { api, call, csrfHeader, type Schemas } from "../api/client";
+import { api, ApiFailure, call, csrfHeader, type Schemas } from "../api/client";
 import { useKeyedMutation } from "../api/keyed";
 import { useSavedViews, type ViewPage } from "../api/queries";
 import { useSessionMutation } from "../queryClient";
@@ -160,6 +160,18 @@ function DeleteDialog({
         onSuccess: () => {
             void client.invalidateQueries({ queryKey: ["views", view.page] });
             onClose();
+        },
+        // Gone or changed since it was read, for example from another tab:
+        // reload the list so it shows what the coordinator holds.
+        onError: (error) => {
+            if (
+                error instanceof ApiFailure &&
+                (error.status === 404 || error.status === 409)
+            ) {
+                void client.invalidateQueries({
+                    queryKey: ["views", view.page],
+                });
+            }
         },
     });
     return (

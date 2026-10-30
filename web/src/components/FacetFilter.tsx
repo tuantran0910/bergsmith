@@ -191,7 +191,9 @@ export function FacetFilter({
     return (
         <Popover modal>
             <PopoverTrigger render={<Button variant="outline" size="sm" />}>
-                {label} <span className="sr-only">filter</span>
+                {/* "filter" follows the visible text, so the accessible
+                    name starts with what the button shows (WCAG 2.5.3). */}
+                {label}
                 {summary !== undefined && (
                     <>
                         {" "}
@@ -199,7 +201,8 @@ export function FacetFilter({
                             {summary}
                         </span>
                     </>
-                )}
+                )}{" "}
+                <span className="sr-only">filter</span>
                 <ChevronDownIcon aria-hidden="true" />
             </PopoverTrigger>
             <PopoverContent className="w-60 p-1">

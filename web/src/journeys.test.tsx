@@ -2353,6 +2353,67 @@ describe("jobs and audit", () => {
         ).toBeInTheDocument();
     });
 
+    it("reloads the views when one was deleted elsewhere", async () => {
+        const saved = schema("SavedView", {
+            id: "0190f3c4-0000-7000-8000-00000000cafe",
+            page: "jobs",
+            name: "Failed jobs",
+            params: { state: "Failed" },
+            revision: 3,
+            created_at: "2026-10-30T00:00:00Z",
+            updated_at: "2026-10-30T00:00:00Z",
+        });
+        let views: Schemas["SavedView"][] = [saved];
+        fake.on("GET", "/api/v1/jobs", () =>
+            json(
+                200,
+                schema("JobPage", {
+                    items: [job("Failed")],
+                    next_cursor: null,
+                }),
+            ),
+        )
+            .on("GET", "/api/v1/me/views", () =>
+                json(200, schema("SavedViewList", { items: views })),
+            )
+            .on("DELETE", "/api/v1/me/views/{id}", () => {
+                // Another tab deleted it first.
+                views = [];
+                return apiError(
+                    404,
+                    "resource_not_found",
+                    "PermanentFailure",
+                    "reload",
+                );
+            });
+        // Columns an earlier test hid would keep the view from matching.
+        localStorage.clear();
+        const user = start("/jobs?state=Failed");
+        await user.click(
+            await screen.findByRole("button", { name: "Failed jobs view" }),
+        );
+        await user.click(
+            await screen.findByRole("menuitem", {
+                name: "Delete “Failed jobs”…",
+            }),
+        );
+        const confirm = await screen.findByRole("dialog", {
+            name: "Delete view",
+        });
+        await user.click(
+            within(confirm).getByRole("button", { name: "Delete view" }),
+        );
+        await waitFor(() => {
+            expect(fake.sent("GET", "/api/v1/me/views")).toHaveLength(2);
+        });
+        await user.click(
+            within(confirm).getByRole("button", { name: "Cancel" }),
+        );
+        expect(
+            await screen.findByRole("button", { name: "Views" }),
+        ).toBeInTheDocument();
+    });
+
     it("applies a saved view through the address", async () => {
         fake.on("GET", "/api/v1/jobs", () =>
             json(
@@ -2852,9 +2913,11 @@ it("keeps the health filter available when it matches no table", async () => {
     // The empty result keeps the controls, so the selection can be undone.
     expect(await screen.findByText("No matches.")).toBeInTheDocument();
     expect(
-        screen.getByRole("button", { name: /^Health filter/ }),
-    ).toHaveTextContent("Critical");
-    await again.click(screen.getByRole("button", { name: /^Health filter/ }));
+        screen.getByRole("button", { name: "Health Critical filter" }),
+    ).toBeInTheDocument();
+    await again.click(
+        screen.getByRole("button", { name: "Health Critical filter" }),
+    );
     expect(
         await screen.findByRole("radio", { name: "Critical 0" }),
     ).toBeChecked();
@@ -2959,8 +3022,8 @@ it("shows no empty state while a filtered list is loading or failed", async () =
     // the filter matched nothing before a successful response.
     expect(await screen.findByText("Loading tables…")).toBeInTheDocument();
     expect(
-        screen.getByRole("button", { name: /^Health filter/ }),
-    ).toHaveTextContent("Critical");
+        screen.getByRole("button", { name: "Health Critical filter" }),
+    ).toBeInTheDocument();
     expect(screen.queryByText("No matches.")).not.toBeInTheDocument();
     expect(fake.sent("GET", "/api/v1/tables")).toHaveLength(1);
 

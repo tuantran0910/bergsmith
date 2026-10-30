@@ -13,6 +13,7 @@ import {
 import userEvent from "@testing-library/user-event";
 
 import { App } from "./App";
+import { isPaletteShortcut } from "./components/CommandPaletteButton";
 import { createQueryClient } from "./queryClient";
 import { FakeApi, FakeEventSource, json, schema } from "./test/fakes";
 import {
@@ -153,6 +154,64 @@ it("finds catalogs and tables by name and links to them", async () => {
             .getAttribute("id"),
     );
     expect(writes()).toEqual([]);
+});
+
+it("waits for the newer search before Enter opens a found result", async () => {
+    const user = start("/");
+    const field = await openPalette(user);
+    await user.type(field, "lak");
+    const results = screen.getByRole("listbox", { name: "Results" });
+    const lake = await within(results).findByRole("option", { name: /^lake/ });
+    expect(field).toHaveAttribute("aria-activedescendant", lake.id);
+
+    // The shown results answer "lak", not "lake".
+    await user.type(field, "e{Enter}");
+    expect(window.location.pathname).toBe("/");
+    await waitFor(() => {
+        expect(results).toHaveAttribute("aria-busy", "false");
+    });
+    await user.keyboard("{Enter}");
+    await waitFor(() => {
+        expect(window.location.pathname).toBe(`/catalogs/${CATALOG_ID}`);
+    });
+});
+
+it("starts empty after the shortcut closes it", async () => {
+    const user = start("/");
+    const field = await openPalette(user);
+    await user.type(field, "jo");
+    await user.keyboard("{Control>}k{/Control}");
+    await waitFor(() => {
+        expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    });
+    await user.keyboard("{Control>}k{/Control}");
+    expect(
+        await screen.findByRole("combobox", {
+            name: "Search pages, catalogs, tables, and people",
+        }),
+    ).toHaveValue("");
+});
+
+it("leaves Ctrl+K to text fields where the shortcut is ⌘K", () => {
+    const key = (init: KeyboardEventInit) => new KeyboardEvent("keydown", init);
+    expect(isPaletteShortcut(key({ key: "k", metaKey: true }), true)).toBe(
+        true,
+    );
+    expect(isPaletteShortcut(key({ key: "k", ctrlKey: true }), true)).toBe(
+        false,
+    );
+    expect(isPaletteShortcut(key({ key: "K", ctrlKey: true }), false)).toBe(
+        true,
+    );
+    expect(isPaletteShortcut(key({ key: "k", metaKey: true }), false)).toBe(
+        false,
+    );
+    expect(
+        isPaletteShortcut(
+            key({ key: "k", ctrlKey: true, shiftKey: true }),
+            false,
+        ),
+    ).toBe(false);
 });
 
 it("offers people only to those who manage access", async () => {

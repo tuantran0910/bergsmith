@@ -363,6 +363,37 @@ async fn a_later_id_waits_for_an_earlier_one_still_in_progress(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn a_new_stream_is_ready_only_after_earlier_ids_settle(pool: PgPool) {
+    let mut conn = pool.acquire().await.unwrap();
+    let tenant = support::tenant(&mut conn, "acme").await;
+    drop(conn);
+    let admin = Browser::with_events(&pool, &tenant, tenant.user, "alice", hub(polling())).await;
+
+    // An earlier ID is still in progress when a later one commits.
+    let mut slow = pool.begin().await.unwrap();
+    job_on(&mut slow, &tenant, tenant.table).await;
+    let mut conn = pool.acquire().await.unwrap();
+    job_on(&mut conn, &tenant, tenant.table).await;
+    let committed: i64 = sqlx::query_scalar("SELECT max(id) FROM job_events")
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+    drop(conn);
+
+    // Starting after the newest committed ID would skip the earlier one, so
+    // `ready` waits until it settles.
+    let mut reader = LiveReader::open(&admin, "/api/v1/events", None).await;
+    assert!(
+        reader.within(Duration::from_millis(500)).await.is_none(),
+        "ready is held back"
+    );
+    slow.commit().await.unwrap();
+    let ready = reader.next().await;
+    assert_eq!(ready.event, "ready");
+    assert!(ready.id >= committed, "the reload covers both jobs");
+}
+
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
 async fn a_distant_resume_point_resets_and_sessions_hold_four_streams(pool: PgPool) {
     let mut conn = pool.acquire().await.unwrap();
     let tenant = support::tenant(&mut conn, "acme").await;

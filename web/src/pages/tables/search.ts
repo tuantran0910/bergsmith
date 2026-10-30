@@ -61,10 +61,6 @@ export function healthFilter(value: unknown): TableHealthFilter | undefined {
     return HEALTH.find((candidate) => candidate === value);
 }
 
-function text(value: unknown): string | undefined {
-    return typeof value === "string" && value.trim() !== "" ? value : undefined;
-}
-
 /**
  * A namespace's canonical key. Iceberg keeps namespace levels separate and a
  * level may contain a dot, so the key is JSON rather than a flattening join
@@ -97,7 +93,7 @@ export function validateTablesSearch(
 ): TablesSearch {
     const q = searchText(search["q"]);
     const peek = resourceIdParam(search["peek"]);
-    const catalog = text(search["catalog"]);
+    const catalog = resourceIdParam(search["catalog"]);
     const health = healthFilter(search["health"]);
     const sort = sortColumn(search["sort"]);
     const order =

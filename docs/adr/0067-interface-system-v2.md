@@ -227,6 +227,8 @@ This supersedes 0046's "neutral graphite surfaces and one accent".
   settled horizon: it reads the ID sequence's last value, then the
   transactions in progress, and treats that value as settled once all of
   those have ended. Resuming after any delivered ID never skips an event.
+  A new stream sends `ready` only once a horizon settles, never at the
+  newest committed ID, which an earlier ID could still follow.
   This adds no column, trigger, or lock to the ledger's write path; the cost
   is that a long-running write transaction delays delivery until it ends.
   Each read checks the jobs list's grant predicate inside the query, so

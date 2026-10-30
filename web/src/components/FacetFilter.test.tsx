@@ -71,6 +71,30 @@ it("offers one value or all for a single-value facet", () => {
     expect(onChange).toHaveBeenLastCalledWith([]);
 });
 
+it("names its button starting with the visible label and choice", () => {
+    vi.stubGlobal(
+        "matchMedia",
+        vi.fn((query: string) => ({
+            matches: true,
+            media: query,
+            addEventListener: () => undefined,
+            removeEventListener: () => undefined,
+        })),
+    );
+    render(
+        <FacetFilter
+            label="Health"
+            allLabel="All states"
+            options={[{ value: "critical", label: "Critical", count: 4 }]}
+            selected={["critical"]}
+            onChange={vi.fn()}
+        />,
+    );
+    expect(
+        screen.getByRole("button", { name: /^Health Critical/ }),
+    ).toHaveAccessibleName("Health Critical filter");
+});
+
 it("removes one filter from its pill", () => {
     const onRemove = vi.fn();
     render(

@@ -81,9 +81,12 @@ impl Horizon {
 
 /// `GET /api/v1/events`.
 ///
-/// Without a resume point the stream starts after the newest committed event.
-/// Every connection first sends `ready`, whose ID is the resume point, so a
-/// client reloads what it shows and then applies the events that follow.
+/// Without a resume point the stream starts at the first settled horizon:
+/// every ID at or below it has committed or never will, so the client's
+/// reload sees it, and every later ID is delivered. (The newest committed ID
+/// would not do: an earlier ID can still commit after it.) Every connection
+/// first sends `ready`, whose ID is the resume point, so a client reloads what
+/// it shows and then applies the events that follow.
 pub(super) async fn events(
     State(state): State<ApiState>,
     caller: Caller,
@@ -99,23 +102,18 @@ pub(super) async fn events(
             "retry_same_request",
         ));
     };
-    let cursor = if resumed {
-        resume
-    } else {
-        let mut conn = state.database.pool().acquire().await?;
-        sqlx::query_scalar::<_, i64>("SELECT COALESCE(max(id), 0) FROM job_events")
-            .fetch_one(&mut *conn)
-            .await?
-    };
     let limits = state.events.limits();
     let now = Instant::now();
     let mut buffer = VecDeque::new();
-    buffer.push_back(marker("ready", cursor));
+    if resumed {
+        buffer.push_back(marker("ready", resume));
+    }
     let stream = LiveStream {
         wake: Some(state.events.subscribe()),
         state,
         caller: caller.0,
-        cursor,
+        cursor: resume,
+        started: resumed,
         horizon: Horizon::default(),
         buffer,
         limits,
@@ -156,6 +154,9 @@ struct LiveStream {
     caller: Session,
     /// The last ledger ID delivered, skipped as invisible, or resumed after.
     cursor: i64,
+    /// Whether `ready` has been sent; a fresh stream sends it once a horizon
+    /// settles.
+    started: bool,
     horizon: Horizon,
     buffer: VecDeque<Event>,
     limits: EventStreamLimits,
@@ -189,7 +190,14 @@ impl LiveStream {
                 return Some(event);
             }
             let settled = self.settle().await?;
-            if let Some(settled) = settled.filter(|settled| *settled > self.cursor) {
+            if !self.started {
+                if let Some(settled) = settled {
+                    self.cursor = settled;
+                    self.started = true;
+                    self.buffer.push_back(marker("ready", settled));
+                    continue;
+                }
+            } else if let Some(settled) = settled.filter(|settled| *settled > self.cursor) {
                 if settled - self.cursor > MAX_REPLAY {
                     self.cursor = settled;
                     self.buffer.push_back(marker("reset", settled));

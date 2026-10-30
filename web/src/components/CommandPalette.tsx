@@ -41,6 +41,8 @@ interface Option {
     context?: string;
     icon: LucideIcon;
     target: Target;
+    /** Answered by the coordinator, so it may belong to earlier text. */
+    found?: boolean;
 }
 
 interface Group {
@@ -56,6 +58,7 @@ function matches(label: string, text: string): boolean {
 function catalogOptions(found: Schemas["SearchCatalog"][]): Option[] {
     return found.map((catalog) => ({
         key: `catalog-${catalog.id}`,
+        found: true,
         label: catalog.name,
         context: catalog.enabled ? "Catalog" : "Catalog, disabled",
         icon: DatabaseIcon,
@@ -73,6 +76,7 @@ function tableOptions(
     // A table is listed once per matching alias, so the key carries both.
     return found.map((table) => ({
         key: `table-${table.id}-${table.catalog_id}-${[...table.namespace, table.name].join(".")}`,
+        found: true,
         label: [...table.namespace, table.name].join("."),
         context: catalogs?.get(table.catalog_id) ?? "Table",
         icon: Table2Icon,
@@ -85,6 +89,7 @@ function principalOptions(found: Schemas["SearchPrincipal"][]): Option[] {
         const kind = principal.kind === "User" ? "User" : "Service identity";
         return {
             key: `principal-${principal.id}`,
+            found: true,
             label: principal.display_name,
             context: principal.active ? kind : `${kind}, inactive`,
             icon: principal.kind === "User" ? UserIcon : KeyRoundIcon,
@@ -130,6 +135,16 @@ export default function CommandPalette({
     const [text, setText] = useState("");
     const [query, setQuery] = useState<string | undefined>(undefined);
     const [activeKey, setActiveKey] = useState<string | null>(null);
+    // Each opening starts empty, however the last one closed.
+    const [shown, setShown] = useState(open);
+    if (open !== shown) {
+        setShown(open);
+        if (open) {
+            setText("");
+            setQuery(undefined);
+            setActiveKey(null);
+        }
+    }
     const listId = useId();
     const optionId = useId();
 
@@ -241,7 +256,10 @@ export default function CommandPalette({
             move(-1);
         } else if (event.key === "Enter" && active !== undefined) {
             event.preventDefault();
-            choose(active);
+            // A result found for earlier text is not what Enter asked for.
+            if (!(active.found === true && searching)) {
+                choose(active);
+            }
         }
     }
 

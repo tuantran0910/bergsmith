@@ -13,7 +13,7 @@
 import { SlidersHorizontalIcon, SearchIcon, XIcon } from "lucide-react";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
-import { MAX_SEARCH } from "./listSearch";
+import { MAX_SEARCH, searchText } from "./listSearch";
 
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
@@ -62,13 +62,15 @@ export function FilterBar({
 }) {
     const id = useId();
     // The field's own text. It follows `query` when the page changes it (for
-    // example "Clear filters"), but not when the change is its own report.
+    // example "Clear filters"), but not when the change is its own report,
+    // which the page may have trimmed: resyncing then would delete a space
+    // the person just typed, and anything typed since.
     const [draft, setDraft] = useState(query);
     const [reported, setReported] = useState(query);
     const [seen, setSeen] = useState(query);
     if (query !== seen) {
         setSeen(query);
-        if (query !== reported) {
+        if (searchText(query) !== searchText(reported)) {
             setReported(query);
             setDraft(query);
         }

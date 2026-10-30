@@ -418,8 +418,8 @@ export type ViewPage = Schemas["ViewPage"];
 
 /**
  * The session's saved views of one list (ADR 0067). Views are personal, so
- * the query needs no grant; it stays fresh until a save or delete
- * invalidates it.
+ * the query needs no grant. Another tab may save or delete one, so the list
+ * goes stale like any other.
  */
 export function useSavedViews(page: ViewPage) {
     const client = useQueryClient();
@@ -434,7 +434,7 @@ export function useSavedViews(page: ViewPage) {
                     }),
                 ),
             ),
-        staleTime: Infinity,
+        staleTime: LIST_STALE_MS,
     });
 }
 

@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { useState } from "react";
 
 import { FilterBar } from "./FilterBar";
 
@@ -218,6 +219,44 @@ it("reports the search once typing pauses, capped at the API's length", () => {
             vi.advanceTimersByTime(300);
         });
         expect(onQueryChange).toHaveBeenCalledTimes(1);
+    } finally {
+        vi.useRealTimers();
+    }
+});
+
+it("keeps a space the page trimmed from its report", () => {
+    vi.useFakeTimers();
+    try {
+        const reports: string[] = [];
+        // A page that trims what it stores, as the list pages do.
+        function Page() {
+            const [query, setQuery] = useState("");
+            return (
+                <FilterBar
+                    query={query}
+                    queryLabel="Search jobs"
+                    onQueryChange={(value) => {
+                        reports.push(value);
+                        setQuery(value.trim());
+                    }}
+                    delay={150}
+                />
+            );
+        }
+        render(<Page />);
+        const field = screen.getByRole("searchbox", { name: "Search jobs" });
+
+        fireEvent.change(field, { target: { value: "daily " } });
+        act(() => {
+            vi.advanceTimersByTime(150);
+        });
+        expect(field).toHaveValue("daily ");
+        fireEvent.change(field, { target: { value: "daily orders" } });
+        act(() => {
+            vi.advanceTimersByTime(150);
+        });
+        expect(field).toHaveValue("daily orders");
+        expect(reports).toEqual(["daily ", "daily orders"]);
     } finally {
         vi.useRealTimers();
     }
