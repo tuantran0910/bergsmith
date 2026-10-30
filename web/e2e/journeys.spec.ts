@@ -171,12 +171,15 @@ test("submits orphan cleanup from the table page", async ({
     await expect(
         page.getByRole("heading", { name: "lake.sales.orders" }),
     ).toBeVisible();
-    await page.getByRole("button", { name: "Remove orphan files" }).click();
+    await page.getByRole("button", { name: "More operations" }).click();
+    await page.getByRole("menuitem", { name: "Remove orphan files" }).click();
     await page
         .getByRole("button", { name: "Confirm remove orphan files" })
         .click();
     await expect(page).toHaveURL(`/jobs/${JOB_ID}`);
-    await expect(page.getByText("Not applicable")).toBeVisible();
+    await expect(
+        page.getByText("Not applicable", { exact: true }),
+    ).toBeVisible();
     await expectAccessible(page);
 
     expect(coordinator.sent("POST", "/api/v1/jobs")[0]?.body).toEqual({
@@ -206,16 +209,25 @@ test("submits a manifest rewrite from the table page", async ({
         );
 
     await page.goto(`/tables/${TABLE_ID}`);
-    await page.getByRole("button", { name: "Rewrite manifests" }).click();
+    const more = page.getByRole("button", { name: "More operations" });
+    await more.click();
+    await page.getByRole("menuitem", { name: "Rewrite manifests" }).click();
     const dialog = page.getByRole("dialog", { name: "Rewrite manifests" });
+    await expect(dialog).toContainText("No data or delete file changes");
+    // Leaving the confirmation returns focus to the menu that opened it.
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+    await expect(more).toBeFocused();
+    await more.click();
+    await page.getByRole("menuitem", { name: "Rewrite manifests" }).click();
     await expect(dialog).toContainText("No data or delete file changes");
     await expectAccessible(page);
     await page
         .getByRole("button", { name: "Confirm rewrite manifests" })
         .click();
     await expect(page).toHaveURL(`/jobs/${JOB_ID}`);
-    await expect(page.getByText("Manifest rewrite")).toBeVisible();
-    await expect(page.getByText("Plan ready")).toBeVisible();
+    await expect(page.getByText("Manifest rewrite").first()).toBeVisible();
+    await expect(page.getByText("Plan ready", { exact: true })).toBeVisible();
     await expectAccessible(page);
 
     expect(coordinator.sent("POST", "/api/v1/jobs")[0]?.body).toEqual({
@@ -405,15 +417,6 @@ test("follows a job's events to success, then closes the stream", async ({
         page.getByRole("button", { name: "Copy job ID" }),
     ).toBeVisible();
     await expect(page.getByText("Confirmed", { exact: true })).toBeVisible();
-    await expect(
-        page.getByRole("heading", { name: "Maintenance statistics" }),
-    ).toBeVisible();
-    await expect(
-        page.getByText("Input files rewritten").locator(".."),
-    ).toContainText("8");
-    await expect(
-        page.getByText(/Accepted outputs were committed to the table/),
-    ).toBeVisible();
     await expect(page.getByText("The job has ended.")).toBeVisible();
     await expect(
         page.getByRole("list", { name: "Job events" }).getByRole("listitem"),
@@ -425,6 +428,16 @@ test("follows a job's events to success, then closes the stream", async ({
         page.getByRole("link", { name: "lake.sales.orders" }),
     ).toHaveAttribute("href", `/tables/${TABLE_ID}`);
     await expectAccessible(page);
+    await page.getByRole("tab", { name: "Statistics" }).click();
+    await expect(
+        page.getByRole("heading", { name: "Maintenance statistics" }),
+    ).toBeVisible();
+    await expect(
+        page.getByText("Input files rewritten").locator(".."),
+    ).toContainText("8");
+    await expect(
+        page.getByText(/Accepted outputs were committed to the table/),
+    ).toBeVisible();
     expect(
         coordinator.sent("GET", `/api/v1/jobs/${JOB_ID}/events`),
     ).toHaveLength(1);
@@ -941,6 +954,81 @@ for (const width of [320, 768, 1440]) {
         await expectAccessible(page);
     });
 }
+
+for (const width of [320, 390]) {
+    test(`fits detail headers into ${width} px`, async ({
+        page,
+        coordinator,
+    }, testInfo) => {
+        signedIn(coordinator, "Administrator");
+        coordinator
+            .on("GET", "/api/v1/jobs/{id}", () => json(200, job("Running")))
+            .on("GET", "/api/v1/jobs/{id}/events", () =>
+                eventStream([event(1, "Planning", null)]),
+            );
+        await page.setViewportSize({ width, height: 844 });
+        for (const [path, title] of [
+            [`/jobs/${JOB_ID}`, "lake.sales.orders"],
+            [`/tables/${TABLE_ID}`, "lake.sales.orders"],
+        ] as const) {
+            await page.goto(path);
+            await expect(
+                page.getByRole("heading", { level: 1, name: title }),
+            ).toBeVisible();
+            const overflow = await page.evaluate(
+                () =>
+                    document.documentElement.scrollWidth -
+                    document.documentElement.clientWidth,
+            );
+            expect(overflow).toBeLessThanOrEqual(0);
+            await page.screenshot({
+                path: testInfo.outputPath(
+                    `${path.split("/")[1] ?? "page"}-${width}.png`,
+                ),
+                fullPage: true,
+            });
+            await expectAccessible(page);
+        }
+    });
+}
+
+test("keeps a detail page's header in reach and focus clear of it", async ({
+    page,
+    coordinator,
+}) => {
+    signedIn(coordinator, "Administrator");
+    await page.setViewportSize({ width: 1440, height: 320 });
+    await page.goto(`/tables/${TABLE_ID}`);
+    const title = page.getByRole("heading", {
+        level: 1,
+        name: "lake.sales.orders",
+    });
+    await expect(title).toBeVisible();
+    await page.evaluate(() => {
+        window.scrollTo(0, document.documentElement.scrollHeight);
+    });
+    expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+    // Scrolled to the end, the header sits right under the 48 px top bar
+    // rather than where it started, 24 px further down.
+    await expect
+        .poll(async () => (await title.boundingBox())?.y ?? -1)
+        .toBeGreaterThanOrEqual(48);
+    expect((await title.boundingBox())?.y).toBeLessThan(60);
+    await expect(
+        page.getByRole("button", { name: "Run maintenance" }),
+    ).toBeInViewport();
+    const padding = await page.evaluate(() => {
+        const root = document.documentElement;
+        const header = document.querySelector<HTMLElement>(
+            '[data-slot="detail-header"]',
+        );
+        return {
+            padding: Number.parseFloat(getComputedStyle(root).scrollPaddingTop),
+            expected: 48 + (header?.offsetHeight ?? 0),
+        };
+    });
+    expect(padding.padding).toBe(padding.expected);
+});
 
 test("the policy blocks inline styles and string script sinks", async ({
     page,

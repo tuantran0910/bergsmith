@@ -1,7 +1,13 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { InboxIcon } from "lucide-react";
 
-import { NoResults, EmptyState, LoadMore, LoadingRows } from "./Page";
+import {
+    DetailHeader,
+    EmptyState,
+    LoadMore,
+    LoadingRows,
+    NoResults,
+} from "./Page";
 import { COPY_FEEDBACK_MS, CopyButton, ResourceId } from "./ResourceId";
 
 const ID = "0190f3c4-0000-7000-8000-00000000000a";
@@ -148,5 +154,46 @@ describe("page states", () => {
         );
         expect(screen.getByText("60 shown")).toBeInTheDocument();
         expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    });
+});
+
+describe("detail header", () => {
+    it("publishes its height for the scroll padding and removes it when gone", () => {
+        let notify: (() => void) | undefined;
+        const disconnect = vi.fn();
+        vi.stubGlobal(
+            "ResizeObserver",
+            class {
+                constructor(callback: () => void) {
+                    notify = callback;
+                }
+                observe() {
+                    notify?.();
+                }
+                disconnect = disconnect;
+            },
+        );
+        const root = document.documentElement.style;
+        const view = render(
+            <DetailHeader
+                title="lake.sales.orders"
+                status={<span>Healthy</span>}
+                meta={<span>Job 0190f3c4</span>}
+                actions={<button type="button">Run</button>}
+                tabs={<div role="tablist" />}
+            />,
+        );
+        expect(
+            screen.getByRole("heading", {
+                level: 1,
+                name: "lake.sales.orders",
+            }),
+        ).toBeInTheDocument();
+        // jsdom lays nothing out, so the height is zero, but it is set.
+        expect(root.getPropertyValue("--detail-header-height")).toBe("0px");
+        view.unmount();
+        expect(disconnect).toHaveBeenCalled();
+        expect(root.getPropertyValue("--detail-header-height")).toBe("");
+        vi.unstubAllGlobals();
     });
 });

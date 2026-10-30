@@ -6,7 +6,7 @@ import type { Job, JobState } from "../../api/client";
 import { joinValues, searchText, valueList } from "../../components/listSearch";
 import { resourceIdParam } from "../../resourceId";
 
-const TABS = ["overview", "tasks"] as const;
+const TABS = ["summary", "tasks", "statistics"] as const;
 
 export type JobTab = (typeof TABS)[number];
 

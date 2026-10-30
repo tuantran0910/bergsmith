@@ -335,7 +335,7 @@ export function Settings({ catalog }: { catalog: Schemas["Catalog"] }) {
                             <ConnectionFields
                                 value={routing}
                                 onChange={setRouting}
-                                showName={false}
+                                fields={["uri", "warehouse", "credential_ref"]}
                             />
                             <p className="m-0 text-sm text-muted-foreground">
                                 Routing edits are refused while dependent jobs

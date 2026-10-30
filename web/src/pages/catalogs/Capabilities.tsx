@@ -1,7 +1,14 @@
 import type { Schemas } from "../../api/client";
 import type { ReactNode } from "react";
 import { timestamp } from "../../format";
-import { Badge } from "../../ui/Badge";
+import {
+    CircleCheckIcon,
+    CircleDashedIcon,
+    CircleAlertIcon,
+    TimerIcon,
+    type LucideIcon,
+} from "lucide-react";
+import { cn } from "../../ui/cn";
 import {
     Card,
     CardContent,
@@ -9,6 +16,19 @@ import {
     CardHeader,
     CardTitle,
 } from "../../ui/Card";
+
+/**
+ * Each check's mark. The state is also written beside it, so the mark never
+ * carries the meaning alone.
+ */
+const MARKS: Record<
+    Schemas["CatalogCapabilities"]["list_tables"],
+    { icon: LucideIcon; className: string }
+> = {
+    met: { icon: CircleCheckIcon, className: "text-success" },
+    missing: { icon: CircleAlertIcon, className: "text-warning" },
+    unknown: { icon: CircleDashedIcon, className: "text-muted-foreground" },
+};
 
 /** Advertised support is diagnostic; unknown vending requires a real table load. */
 export function Capabilities({
@@ -34,7 +54,10 @@ export function Capabilities({
             <CardContent>
                 {capabilities ? (
                     <>
-                        <dl className="m-0 grid gap-2">
+                        <ul
+                            aria-label="Capability checks"
+                            className="m-0 grid list-none divide-y p-0"
+                        >
                             {(
                                 [
                                     ["List tables", capabilities.list_tables],
@@ -49,37 +72,43 @@ export function Capabilities({
                                         capabilities.credentials_endpoint,
                                     ],
                                 ] as const
-                            ).map(([name, state]) => (
-                                <div
-                                    key={name}
-                                    className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2"
-                                >
-                                    <dt>{name}</dt>
-                                    <dd className="m-0">
-                                        <Badge
-                                            variant={
-                                                state === "met"
-                                                    ? "success"
-                                                    : state === "missing"
-                                                      ? "warning"
-                                                      : "neutral"
-                                            }
-                                        >
+                            ).map(([name, state]) => {
+                                const { icon: Icon, className } = MARKS[state];
+                                return (
+                                    <li
+                                        key={name}
+                                        className="flex items-center gap-2 py-2 motion-safe:animate-check-in"
+                                    >
+                                        <Icon
+                                            aria-hidden="true"
+                                            className={cn(
+                                                "size-4 shrink-0",
+                                                className,
+                                            )}
+                                        />
+                                        <span className="flex-1">{name}</span>
+                                        <span className="text-muted-foreground">
                                             {state}
-                                        </Badge>
-                                    </dd>
-                                </div>
-                            ))}
-                            <div className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2">
-                                <dt>Idempotency lifetime (optional)</dt>
-                                <dd className="m-0 font-semibold tabular-nums text-muted-foreground">
+                                        </span>
+                                    </li>
+                                );
+                            })}
+                            <li className="flex items-center gap-2 py-2 motion-safe:animate-check-in">
+                                <TimerIcon
+                                    aria-hidden="true"
+                                    className="size-4 shrink-0 text-muted-foreground"
+                                />
+                                <span className="flex-1">
+                                    Idempotency lifetime (optional)
+                                </span>
+                                <span className="text-muted-foreground tabular-nums">
                                     {capabilities.idempotency_key_lifetime_seconds ===
                                     null
                                         ? "Not advertised"
                                         : `${capabilities.idempotency_key_lifetime_seconds} s`}
-                                </dd>
-                            </div>
-                        </dl>
+                                </span>
+                            </li>
+                        </ul>
                         {checkedAt && (
                             <p className="m-0 mt-3 text-xs text-muted-foreground">
                                 Checked {timestamp(checkedAt)}

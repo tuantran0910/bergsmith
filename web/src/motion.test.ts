@@ -1,4 +1,4 @@
-import { playRouteEntrance } from "./motion";
+import { playRouteEntrance, playStepEntrance } from "./motion";
 
 function animatable(tokens: Record<string, string> = {}) {
     const element = document.createElement("div");
@@ -48,5 +48,25 @@ describe("route entrance", () => {
         expect(() => {
             playRouteEntrance(plain);
         }).not.toThrow();
+    });
+});
+
+describe("step entrance", () => {
+    it("slides in from the side the step comes from", () => {
+        const { element, animate } = animatable({ "--duration-base": "200ms" });
+
+        playStepEntrance(element, "forward");
+        playStepEntrance(element, "back");
+
+        expect(animate.mock.calls.map((call: unknown[]) => call[0])).toEqual([
+            [
+                { opacity: 0, transform: "translateX(8px)" },
+                { opacity: 1, transform: "none" },
+            ],
+            [
+                { opacity: 0, transform: "translateX(-8px)" },
+                { opacity: 1, transform: "none" },
+            ],
+        ]);
     });
 });

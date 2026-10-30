@@ -1,5 +1,6 @@
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
-import { PlayIcon, ScanSearchIcon } from "lucide-react";
+import { EllipsisIcon, PlayIcon, ScanSearchIcon } from "lucide-react";
+import { useState } from "react";
 
 import { hasTablePermission } from "../api/auth";
 import { api, call, csrfHeader } from "../api/client";
@@ -9,10 +10,10 @@ import { useBreadcrumbLabel } from "../components/Breadcrumbs";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { HealthBadge } from "../components/HealthBadge";
 import { Metric, MetricGrid } from "../components/Metric";
-import { LoadingDetail, PageHeader } from "../components/Page";
+import { DetailHeader, LoadingDetail } from "../components/Page";
 import { ResourceId } from "../components/ResourceId";
 import { TechnicalDetails } from "../components/TechnicalDetails";
-import { Confirm, uncertain } from "../components/Writes";
+import { ConfirmDialog, uncertain } from "../components/Writes";
 import {
     aliasName,
     count,
@@ -24,6 +25,7 @@ import {
 import { useSession, useSessionMutation } from "../queryClient";
 import { Button } from "../ui/Button";
 import { Card, CardContent } from "../ui/Card";
+import { MenuButton } from "../ui/MenuButton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/Tabs";
 import { PreviewView } from "./PreviewView";
 import { Access } from "./access/Access";
@@ -204,18 +206,88 @@ export function TablePage({ id }: { id: string }) {
             table.data.aliases.map((alias) => alias.catalog_id),
         );
 
+    const operations: Operation[] = [
+        {
+            label: "Remove orphan files",
+            description:
+                "Deletes storage objects no retained snapshot references, outside Bergsmith's own prefix, older than the deployment's minimum age and the connection's protection window. It re-checks every object against current table metadata before deleting. This cannot be undone, and the deployment must enable orphan cleanup.",
+            pending: cleanup.isPending || uncertain(cleanup.error),
+            error: cleanup.error,
+            onConfirm: () => {
+                cleanup.mutate(undefined);
+            },
+        },
+        {
+            label: "Rewrite manifests",
+            description:
+                "Merges the small data manifests of the table's current snapshot into target-sized ones in one new snapshot. No data or delete file changes. It is refused while a compaction of this table is unfinished, and the deployment must enable manifest rewrite.",
+            pending:
+                rewriteManifests.isPending || uncertain(rewriteManifests.error),
+            error: rewriteManifests.error,
+            onConfirm: () => {
+                rewriteManifests.mutate(undefined);
+            },
+        },
+        {
+            label: "Remove dangling deletes",
+            description:
+                "Removes delete files that apply to no live data file of the current snapshot, in one new snapshot. Reads return the same rows. Files stay in storage until snapshot expiration and orphan cleanup. It is refused while a compaction of this table is unfinished, and the deployment must enable dangling-delete removal.",
+            pending:
+                removeDangling.isPending || uncertain(removeDangling.error),
+            error: removeDangling.error,
+            onConfirm: () => {
+                removeDangling.mutate(undefined);
+            },
+        },
+        {
+            label: "Expire snapshots",
+            description:
+                "Removes snapshot entries older than the table's retention settings and the connection's execution and publication bounds. Running jobs' snapshots, every branch and tag, and anything newer are kept. No data or metadata files are deleted.",
+            pending: expire.isPending || uncertain(expire.error),
+            error: expire.error,
+            onConfirm: () => {
+                expire.mutate(undefined);
+            },
+        },
+    ];
+    const path =
+        primary !== undefined && fullName.endsWith(primary.name)
+            ? fullName.slice(0, fullName.length - primary.name.length)
+            : "";
+
     return (
-        <section>
-            <PageHeader
-                title={fullName}
-                description={
-                    <span className="inline-flex flex-wrap items-center gap-2">
-                        <HealthBadge state={table.data.health.state} />
-                        <span>
-                            A preview reads current table metadata and creates
-                            no job. Running maintenance plans again from the
-                            table as it is then.
-                        </span>
+        <Tabs
+            value={shown}
+            onValueChange={(next) => {
+                const selected = tab(next);
+                void navigate({
+                    to: "/tables/$tableId",
+                    params: { tableId: id },
+                    search:
+                        selected === undefined || selected === "overview"
+                            ? {}
+                            : { tab: selected },
+                    replace: true,
+                });
+            }}
+        >
+            <DetailHeader
+                title={
+                    <>
+                        {path !== "" && (
+                            <span className="font-mono font-normal text-muted-foreground">
+                                {path}
+                            </span>
+                        )}
+                        {fullName.slice(path.length)}
+                    </>
+                }
+                status={<HealthBadge state={table.data.health.state} />}
+                meta={
+                    <span>
+                        A preview reads current table metadata and creates no
+                        job. Running maintenance plans again from the table as
+                        it is then.
                     </span>
                 }
                 actions={
@@ -244,260 +316,241 @@ export function TablePage({ id }: { id: string }) {
                                     ? "Submitting…"
                                     : "Run maintenance"}
                             </Button>
-                            <Confirm
-                                label="Remove orphan files"
-                                description="Deletes storage objects no retained snapshot references, outside Bergsmith's own prefix, older than the deployment's minimum age and the connection's protection window. It re-checks every object against current table metadata before deleting. This cannot be undone, and the deployment must enable orphan cleanup."
-                                pending={
-                                    cleanup.isPending ||
-                                    uncertain(cleanup.error)
-                                }
-                                error={cleanup.error}
-                                onConfirm={() => {
-                                    cleanup.mutate(undefined);
-                                }}
-                            />
-                            <Confirm
-                                label="Rewrite manifests"
-                                description="Merges the small data manifests of the table's current snapshot into target-sized ones in one new snapshot. No data or delete file changes. It is refused while a compaction of this table is unfinished, and the deployment must enable manifest rewrite."
-                                pending={
-                                    rewriteManifests.isPending ||
-                                    uncertain(rewriteManifests.error)
-                                }
-                                error={rewriteManifests.error}
-                                onConfirm={() => {
-                                    rewriteManifests.mutate(undefined);
-                                }}
-                            />
-                            <Confirm
-                                label="Remove dangling deletes"
-                                description="Removes delete files that apply to no live data file of the current snapshot, in one new snapshot. Reads return the same rows. Files stay in storage until snapshot expiration and orphan cleanup. It is refused while a compaction of this table is unfinished, and the deployment must enable dangling-delete removal."
-                                pending={
-                                    removeDangling.isPending ||
-                                    uncertain(removeDangling.error)
-                                }
-                                error={removeDangling.error}
-                                onConfirm={() => {
-                                    removeDangling.mutate(undefined);
-                                }}
-                            />
-                            <Confirm
-                                label="Expire snapshots"
-                                description="Removes snapshot entries older than the table's retention settings and the connection's execution and publication bounds. Running jobs' snapshots, every branch and tag, and anything newer are kept. No data or metadata files are deleted."
-                                pending={
-                                    expire.isPending || uncertain(expire.error)
-                                }
-                                error={expire.error}
-                                onConfirm={() => {
-                                    expire.mutate(undefined);
-                                }}
-                            />
+                            <MoreOperations operations={operations} />
                         </>
                     ) : undefined
                 }
+                tabs={
+                    <TabsList>
+                        <TabsTrigger value="overview">Overview</TabsTrigger>
+                        <TabsTrigger value="health">Health</TabsTrigger>
+                        <TabsTrigger value="statistics">Statistics</TabsTrigger>
+                        <TabsTrigger value="snapshots">Snapshots</TabsTrigger>
+                        <TabsTrigger value="storage">Storage</TabsTrigger>
+                        <TabsTrigger value="maintenance">
+                            Maintenance
+                        </TabsTrigger>
+                        <TabsTrigger value="definition">Definition</TabsTrigger>
+                        {access && (
+                            <TabsTrigger value="access">Access</TabsTrigger>
+                        )}
+                    </TabsList>
+                }
             />
+            <TabsContent value="overview">
+                <MetricGrid className="mb-6">
+                    <Metric
+                        label="Registered"
+                        value={date(table.data.created_at)}
+                        detail={relativeTime(table.data.created_at)}
+                    />
+                    <Metric
+                        label="Registered names"
+                        value={table.data.aliases.length}
+                        detail={`Across ${count(catalogLinks.length, "catalog")}`}
+                    />
+                    <Metric
+                        label="Catalogs"
+                        value={catalogLinks.length}
+                        detail={
+                            catalogLinks.length === 0
+                                ? "None"
+                                : catalogLinks
+                                      .map(([, name]) => name)
+                                      .join(", ")
+                        }
+                    />
+                    <Metric
+                        label="Namespaces"
+                        value={namespaces.length}
+                        detail={
+                            namespaces.length === 0
+                                ? "None"
+                                : namespaces
+                                      .map((levels) => levels.join("."))
+                                      .join(", ")
+                        }
+                    />
+                </MetricGrid>
 
-            <Tabs
-                value={shown}
-                onValueChange={(next) => {
-                    const selected = tab(next);
-                    void navigate({
-                        to: "/tables/$tableId",
-                        params: { tableId: id },
-                        search:
-                            selected === undefined || selected === "overview"
-                                ? {}
-                                : { tab: selected },
-                        replace: true,
-                    });
-                }}
-                className="mb-6"
-            >
-                <TabsList>
-                    <TabsTrigger value="overview">Overview</TabsTrigger>
-                    <TabsTrigger value="definition">Definition</TabsTrigger>
-                    <TabsTrigger value="health">Health</TabsTrigger>
-                    <TabsTrigger value="snapshots">Snapshots</TabsTrigger>
-                    <TabsTrigger value="statistics">Statistics</TabsTrigger>
-                    <TabsTrigger value="storage">Storage</TabsTrigger>
-                    <TabsTrigger value="maintenance">Maintenance</TabsTrigger>
-                    {access && <TabsTrigger value="access">Access</TabsTrigger>}
-                </TabsList>
-                <TabsContent value="overview">
-                    <MetricGrid className="mb-6">
-                        <Metric
-                            label="Registered"
-                            value={date(table.data.created_at)}
-                            detail={relativeTime(table.data.created_at)}
-                        />
-                        <Metric
-                            label="Registered names"
-                            value={table.data.aliases.length}
-                            detail={`Across ${count(catalogLinks.length, "catalog")}`}
-                        />
-                        <Metric
-                            label="Catalogs"
-                            value={catalogLinks.length}
-                            detail={
-                                catalogLinks.length === 0
-                                    ? "None"
-                                    : catalogLinks
-                                          .map(([, name]) => name)
-                                          .join(", ")
-                            }
-                        />
-                        <Metric
-                            label="Namespaces"
-                            value={namespaces.length}
-                            detail={
-                                namespaces.length === 0
-                                    ? "None"
-                                    : namespaces
-                                          .map((levels) => levels.join("."))
-                                          .join(", ")
-                            }
-                        />
-                    </MetricGrid>
-
-                    <Card className="mb-6">
-                        <CardContent>
-                            <TechnicalDetails
-                                className="border-t-0 pt-0"
-                                items={[
-                                    {
-                                        term: "Table UUID",
-                                        description: (
-                                            <ResourceId
-                                                id={table.data.table_uuid}
-                                                label="table UUID"
-                                            />
-                                        ),
-                                    },
-                                    {
-                                        term: "Registered names",
-                                        description:
-                                            table.data.aliases.length === 0 ? (
-                                                "None"
-                                            ) : (
-                                                <ul className="m-0 grid list-none gap-1 p-0">
-                                                    {table.data.aliases.map(
-                                                        (alias) => (
-                                                            <li
-                                                                key={JSON.stringify(
-                                                                    [
-                                                                        alias.catalog_id,
-                                                                        alias.namespace,
-                                                                        alias.name,
-                                                                    ],
+                <Card className="mb-6">
+                    <CardContent>
+                        <TechnicalDetails
+                            className="border-t-0 pt-0"
+                            items={[
+                                {
+                                    term: "Table UUID",
+                                    description: (
+                                        <ResourceId
+                                            id={table.data.table_uuid}
+                                            label="table UUID"
+                                        />
+                                    ),
+                                },
+                                {
+                                    term: "Registered names",
+                                    description:
+                                        table.data.aliases.length === 0 ? (
+                                            "None"
+                                        ) : (
+                                            <ul className="m-0 grid list-none gap-1 p-0">
+                                                {table.data.aliases.map(
+                                                    (alias) => (
+                                                        <li
+                                                            key={JSON.stringify(
+                                                                [
+                                                                    alias.catalog_id,
+                                                                    alias.namespace,
+                                                                    alias.name,
+                                                                ],
+                                                            )}
+                                                        >
+                                                            <code>
+                                                                {aliasName(
+                                                                    alias,
+                                                                    names,
                                                                 )}
-                                                            >
-                                                                <code>
-                                                                    {aliasName(
-                                                                        alias,
-                                                                        names,
-                                                                    )}
-                                                                </code>{" "}
-                                                                <span className="text-xs text-muted-foreground">
-                                                                    revision{" "}
-                                                                    {
-                                                                        alias.revision
-                                                                    }
-                                                                </span>
-                                                            </li>
-                                                        ),
-                                                    )}
-                                                </ul>
-                                            ),
-                                    },
-                                    {
-                                        term: "Catalog connections",
-                                        description:
-                                            catalogLinks.length === 0 ? (
-                                                "None"
-                                            ) : (
-                                                <ul className="m-0 grid list-none gap-1 p-0">
-                                                    {catalogLinks.map(
-                                                        ([id, name]) => (
-                                                            <li key={id}>
-                                                                <Link
-                                                                    to="/catalogs/$catalogId"
-                                                                    params={{
-                                                                        catalogId:
-                                                                            id,
-                                                                    }}
-                                                                >
-                                                                    {name}
-                                                                </Link>
-                                                            </li>
-                                                        ),
-                                                    )}
-                                                </ul>
-                                            ),
-                                    },
-                                    {
-                                        term: "Registered",
-                                        description: (
-                                            <time
-                                                dateTime={table.data.created_at}
-                                            >
-                                                {timestamp(
-                                                    table.data.created_at,
+                                                            </code>{" "}
+                                                            <span className="text-xs text-muted-foreground">
+                                                                revision{" "}
+                                                                {alias.revision}
+                                                            </span>
+                                                        </li>
+                                                    ),
                                                 )}
-                                            </time>
+                                            </ul>
                                         ),
-                                    },
-                                ]}
-                            />
-                        </CardContent>
-                    </Card>
+                                },
+                                {
+                                    term: "Catalog connections",
+                                    description:
+                                        catalogLinks.length === 0 ? (
+                                            "None"
+                                        ) : (
+                                            <ul className="m-0 grid list-none gap-1 p-0">
+                                                {catalogLinks.map(
+                                                    ([id, name]) => (
+                                                        <li key={id}>
+                                                            <Link
+                                                                to="/catalogs/$catalogId"
+                                                                params={{
+                                                                    catalogId:
+                                                                        id,
+                                                                }}
+                                                            >
+                                                                {name}
+                                                            </Link>
+                                                        </li>
+                                                    ),
+                                                )}
+                                            </ul>
+                                        ),
+                                },
+                                {
+                                    term: "Registered",
+                                    description: (
+                                        <time dateTime={table.data.created_at}>
+                                            {timestamp(table.data.created_at)}
+                                        </time>
+                                    ),
+                                },
+                            ]}
+                        />
+                    </CardContent>
+                </Card>
 
-                    {submit.error !== null && (
-                        <ErrorNotice
-                            error={submit.error}
-                            onRetry={() => {
-                                submit.mutate(undefined);
-                            }}
-                        />
-                    )}
-                    {preview.error !== null && (
-                        <ErrorNotice
-                            error={preview.error}
-                            onRetry={() => {
-                                preview.mutate();
-                            }}
-                        />
-                    )}
-                    {preview.data && <PreviewView preview={preview.data} />}
-                </TabsContent>
-                <TabsContent value="definition">
-                    <TableDefinition id={id} />
-                </TabsContent>
-                <TabsContent value="health">
-                    <TableHealth id={id} />
-                </TabsContent>
-                <TabsContent value="snapshots">
-                    <TableSnapshots id={id} />
-                </TabsContent>
-                <TabsContent value="statistics">
-                    <TableStatistics id={id} />
-                </TabsContent>
-                <TabsContent value="storage">
-                    <TableStorage id={id} />
-                </TabsContent>
-                <TabsContent value="maintenance">
-                    <TableMaintenance id={id} />
-                </TabsContent>
-                {access && (
-                    <TabsContent value="access">
-                        <Access
-                            scope={{ table: id }}
-                            scopeLabel={fullName}
-                            connections={table.data.aliases.map(
-                                (alias) => alias.catalog_id,
-                            )}
-                        />
-                    </TabsContent>
+                {submit.error !== null && (
+                    <ErrorNotice
+                        error={submit.error}
+                        onRetry={() => {
+                            submit.mutate(undefined);
+                        }}
+                    />
                 )}
-            </Tabs>
-        </section>
+                {preview.error !== null && (
+                    <ErrorNotice
+                        error={preview.error}
+                        onRetry={() => {
+                            preview.mutate();
+                        }}
+                    />
+                )}
+                {preview.data && <PreviewView preview={preview.data} />}
+            </TabsContent>
+            <TabsContent value="definition">
+                <TableDefinition id={id} />
+            </TabsContent>
+            <TabsContent value="health">
+                <TableHealth id={id} />
+            </TabsContent>
+            <TabsContent value="snapshots">
+                <TableSnapshots id={id} />
+            </TabsContent>
+            <TabsContent value="statistics">
+                <TableStatistics id={id} />
+            </TabsContent>
+            <TabsContent value="storage">
+                <TableStorage id={id} />
+            </TabsContent>
+            <TabsContent value="maintenance">
+                <TableMaintenance id={id} />
+            </TabsContent>
+            {access && (
+                <TabsContent value="access">
+                    <Access
+                        scope={{ table: id }}
+                        scopeLabel={fullName}
+                        connections={table.data.aliases.map(
+                            (alias) => alias.catalog_id,
+                        )}
+                    />
+                </TabsContent>
+            )}
+        </Tabs>
+    );
+}
+
+/** One maintenance operation offered behind its confirmation. */
+interface Operation {
+    label: string;
+    description: string;
+    pending: boolean;
+    error: unknown;
+    onConfirm: () => void;
+}
+
+/**
+ * The table's less frequent operations in one menu. Each item opens the
+ * operation's confirmation, which names what it deletes or rewrites.
+ */
+function MoreOperations({ operations }: { operations: readonly Operation[] }) {
+    const [selected, setSelected] = useState<string | null>(null);
+    const [shown, setShown] = useState(false);
+    const operation = operations.find(({ label }) => label === selected);
+    return (
+        <>
+            <MenuButton
+                align="end"
+                size="default"
+                items={operations.map(({ label }) => ({
+                    key: label,
+                    label,
+                    onSelect: () => {
+                        setSelected(label);
+                        setShown(true);
+                    },
+                }))}
+            >
+                <EllipsisIcon aria-hidden="true" />
+                More operations
+            </MenuButton>
+            {operation !== undefined && (
+                <ConfirmDialog
+                    {...operation}
+                    open={shown}
+                    onOpenChange={setShown}
+                />
+            )}
+        </>
     );
 }

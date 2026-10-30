@@ -9,8 +9,10 @@ the [UI revamp release notes](../release-notes/0.1.0-ui-revamp.md).
 
 The shell groups destinations under Overview, Data, Operations, and
 Administration. Lists keep search, filters, and sort in the URL, and detail
-pages keep their tab in the URL, so a link opens the same view. Below 40rem a
-list renders as cards with its filters in a bottom drawer.
+pages keep their tab in the URL, so a link opens the same view. On wide
+screens a detail page's header, with its status, actions, and tabs, stays
+under the top bar while the page scrolls. Below 40rem a list renders as
+cards with its filters in a bottom drawer.
 
 Ctrl+K (⌘K on macOS) or the top bar's Search button opens the command
 palette: it goes to any page the session may open and finds catalogs,
@@ -30,12 +32,12 @@ every 30 seconds instead.
 |---|---|
 | Sign-in | Asks for the organization slug and starts `/auth/login`; returns to the page that asked |
 | Overview | The last day's ended, published, and failed jobs and conflict rate, each against the day before; what needs attention; outcomes and inventory coverage; schedules and worker capacity for those who may read them |
-| Catalogs | Lists authorized connections and opens guided setup, with a capability check before saving |
+| Catalogs | Lists authorized connections and opens guided setup in three steps (connection, warehouse and credentials, check and save), with a capability check before saving |
 | Catalog connection | Addressable tabs cover Overview (discovery, storage, statistics, connection details, capabilities, unresolved publications), Tables, Access, and Settings; connection administrators can edit, discover, register, and remove names, holders of `grants:manage` on the connection see the Access tab and grant roles, and settings show human duration hints with a save bar while the form is dirty |
 | Tables | Lists the tables the session may see, named `catalog.namespace.table` through their aliases, each with its evaluated health; the list can be filtered to one state and ordered worst first |
-| Table | Shows the table's names and health, previews maintenance (outcome, unsupported features, bins, estimate), and runs it; addressable tabs cover its definition, health, snapshots, statistics, storage, and maintenance history, and the Access tab appears only to holders of `grants:manage` for the table |
+| Table | Shows the table's names and health, previews maintenance (outcome, unsupported features, bins, estimate), and runs it; snapshot expiration, orphan cleanup, manifest rewrite, and dangling-delete removal are under More operations, each behind its confirmation; addressable tabs cover its health, statistics, snapshots, storage, maintenance history, and definition, and the Access tab appears only to holders of `grants:manage` for the table |
 | Jobs | Lists jobs with execution and publication status side by side |
-| Job | Shows execution and publication separately, then statistics and events (events first while it runs, statistics first once it ends), with a Tasks tab listing each task and attempt, the failure reason and disposition, duration, worker, and accepted outputs; requests cancellation and retries with a fresh plan. `CommitOutcomeUnknown` and `ReplanRequired` raise an attention alert with a link to the Tasks tab |
+| Job | The header shows execution and publication separately on every tab. Summary explains each side and follows the live events; Tasks lists each task and attempt, the failure reason and disposition, duration, worker, and accepted outputs; Statistics shows the ledger's figures. Requests cancellation and retries with a fresh plan. `CommitOutcomeUnknown` and `ReplanRequired` raise an attention alert with a link to the Tasks tab |
 | Policies | Lists maintenance policies and creates or edits one, sending the revision it read; a conflict stops the save until the current revision is reloaded |
 | Schedules | Lists schedules by the table they maintain, with their policy, cron, time zone, window, service identity, state, and next instant; creating one needs a policy, a table, and an eligible service identity |
 | Schedule | Shows the configuration, the next five instants the coordinator computed, and the evaluation history with the job each admitted run created and the reason a run was coalesced or skipped; timing and the enabled flag are editable, the bound policy, table, and identity are not |

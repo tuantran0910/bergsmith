@@ -14,11 +14,11 @@ import { useKeyedMutation } from "../api/keyed";
 import { useCatalogNames, useJob } from "../api/queries";
 import { useBreadcrumbLabel } from "../components/Breadcrumbs";
 import { ErrorNotice } from "../components/ErrorNotice";
-import { LoadingDetail, PageHeader } from "../components/Page";
+import { DetailHeader, LoadingDetail } from "../components/Page";
 import { ResourceId } from "../components/ResourceId";
 import { StatusBadge } from "../components/StatusBadge";
 import { TechnicalDetails } from "../components/TechnicalDetails";
-import { shortId, tableName, timestamp, words } from "../format";
+import { relativeTime, shortId, tableName, timestamp, words } from "../format";
 import { type Connection, jobQueryKey, useJobEvents } from "../jobs/events";
 import {
     type StatusLine,
@@ -57,7 +57,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/Tabs";
 import { cn } from "../ui/cn";
 import { JobStatistics } from "./jobs/JobStatistics";
 import { JobTasks } from "./jobs/JobTasks";
-import type { JobTab } from "./jobs/search";
+import { type JobTab, jobTab } from "./jobs/search";
 
 /** One job: live progress, cancellation, and fresh-plan retry. */
 export function JobPage({ id }: { id: string }) {
@@ -83,12 +83,12 @@ function JobDetail({ job }: { job: Job }) {
     const queryClient = useQueryClient();
     const navigate = useNavigate();
     const search = useSearch({ from: "/jobs/$jobId" });
-    const current: JobTab = search.tab ?? "overview";
+    const current: JobTab = search.tab ?? "summary";
     const selectTab = (next: JobTab) => {
         void navigate({
             to: "/jobs/$jobId",
             params: { jobId: job.id },
-            search: next === "overview" ? {} : { tab: next },
+            search: next === "summary" ? {} : { tab: next },
             replace: true,
         });
     };
@@ -183,13 +183,36 @@ function JobDetail({ job }: { job: Job }) {
     );
 
     return (
-        <section className="space-y-6">
-            <PageHeader
+        <Tabs
+            value={current}
+            onValueChange={(next) => {
+                selectTab(jobTab(next) ?? "summary");
+            }}
+        >
+            <DetailHeader
                 title={name}
-                description={
-                    <span className="inline-flex items-center gap-1">
-                        Job <ResourceId id={job.id} label="job ID" short />
-                    </span>
+                status={
+                    <>
+                        <StatusBadge
+                            topic="Execution"
+                            status={executionStatus(job)}
+                        />
+                        <StatusBadge
+                            topic="Publication"
+                            status={publicationStatus(job)}
+                        />
+                    </>
+                }
+                meta={
+                    <>
+                        <span className="inline-flex items-center gap-1">
+                            Job <ResourceId id={job.id} label="job ID" short />
+                        </span>
+                        <span>{operationLabel(job.operation)}</span>
+                        <span>
+                            Requested <RelativeTime at={job.created_at} />
+                        </span>
+                    </>
                 }
                 actions={
                     <>
@@ -210,6 +233,13 @@ function JobDetail({ job }: { job: Job }) {
                         )}
                     </>
                 }
+                tabs={
+                    <TabsList>
+                        <TabsTrigger value="summary">Summary</TabsTrigger>
+                        <TabsTrigger value="tasks">Tasks</TabsTrigger>
+                        <TabsTrigger value="statistics">Statistics</TabsTrigger>
+                    </TabsList>
+                }
             />
             {retry.error !== null && (
                 <ErrorNotice
@@ -226,70 +256,60 @@ function JobDetail({ job }: { job: Job }) {
                     <AlertTitle>{attention.title}</AlertTitle>
                     <AlertDescription>
                         <p>{attention.action}</p>
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                                selectTab("tasks");
-                            }}
-                        >
-                            Inspect tasks
-                        </Button>
+                        {current !== "tasks" && (
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                    selectTab("tasks");
+                                }}
+                            >
+                                Inspect tasks
+                            </Button>
+                        )}
                     </AlertDescription>
                 </Alert>
             )}
 
-            <Tabs
-                value={current}
-                onValueChange={(next) => {
-                    selectTab(next === "tasks" ? "tasks" : "overview");
-                }}
-            >
-                <TabsList>
-                    <TabsTrigger value="overview">Overview</TabsTrigger>
-                    <TabsTrigger value="tasks">Tasks</TabsTrigger>
-                </TabsList>
-                <TabsContent value="overview">
-                    <div className="grid gap-6">
-                        <div className="grid gap-4 md:grid-cols-2">
-                            <Lane
-                                title="Execution"
-                                status={executionStatus(job)}
-                            >
-                                {isMetadataOnly(job.operation)
-                                    ? "Metadata-only work: no worker tasks."
-                                    : job.operation === "remove_orphan_files"
-                                      ? "Coordinator-only deletion: no worker tasks."
-                                      : "The rewrite work that workers do."}
-                            </Lane>
-                            <Lane
-                                title="Publication"
-                                status={publicationStatus(job)}
-                            >
-                                {job.operation === "remove_orphan_files"
-                                    ? "Not used: cleanup deletes storage objects and never commits."
-                                    : "The catalog commit. Only a confirmed publication changed the table."}
-                            </Lane>
-                        </div>
-                        {terminal ? (
-                            <>
-                                <JobStatistics statistics={job.statistics} />
-                                {eventsCard}
-                            </>
-                        ) : (
-                            <>
-                                {eventsCard}
-                                <JobStatistics statistics={job.statistics} />
-                            </>
-                        )}
-                        <JobFacts job={job} names={names} />
+            <TabsContent value="summary">
+                <div className="grid gap-6">
+                    <div className="grid gap-4 md:grid-cols-2">
+                        <Lane title="Execution" status={executionStatus(job)}>
+                            {isMetadataOnly(job.operation)
+                                ? "Metadata-only work: no worker tasks."
+                                : job.operation === "remove_orphan_files"
+                                  ? "Coordinator-only deletion: no worker tasks."
+                                  : "The rewrite work that workers do."}
+                        </Lane>
+                        <Lane
+                            title="Publication"
+                            status={publicationStatus(job)}
+                        >
+                            {job.operation === "remove_orphan_files"
+                                ? "Not used: cleanup deletes storage objects and never commits."
+                                : "The catalog commit. Only a confirmed publication changed the table."}
+                        </Lane>
                     </div>
-                </TabsContent>
-                <TabsContent value="tasks">
-                    <JobTasks job={job} active={current === "tasks"} />
-                </TabsContent>
-            </Tabs>
-        </section>
+                    {eventsCard}
+                    <JobFacts job={job} names={names} />
+                </div>
+            </TabsContent>
+            <TabsContent value="tasks">
+                <JobTasks job={job} active={current === "tasks"} />
+            </TabsContent>
+            <TabsContent value="statistics">
+                <JobStatistics statistics={job.statistics} />
+            </TabsContent>
+        </Tabs>
+    );
+}
+
+/** A past instant as "3 min ago", with the exact time as its datetime. */
+function RelativeTime({ at }: { at: string }) {
+    return (
+        <time dateTime={at} title={timestamp(at)}>
+            {relativeTime(at)}
+        </time>
     );
 }
 

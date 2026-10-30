@@ -261,6 +261,44 @@ This supersedes 0046's "neutral graphite surfaces and one accent".
   are refetched every 30 seconds and the stream is retried each time, so
   polling happens only while live updates are unavailable.
 
+### Detail pages and sign-in
+
+- Job, Table, and Catalog pages open with one header: the title with its
+  status badges, a line of identifying facts, the actions, and the tabs.
+  From `md` up it sticks under the top bar, so state and actions stay in
+  reach on a long tab. The header publishes its height as a CSS variable
+  through the CSSOM, and the document's `scroll-padding-top` adds it to the
+  top bar's, so a control that focus scrolls into view is never hidden
+  under either (WCAG 2.4.11).
+- A job's header names each side of its outcome ("Execution: Running",
+  "Publication: Not started"), so the two stay separate on every tab. Its
+  tabs are Summary (the two sides with what each means, the live events,
+  and the facts), Tasks, and Statistics, kept in `?tab=` as before.
+- A table's title sets its catalog and namespace path in monospace before
+  the table name; the accessible name is still the whole dotted name. The
+  tabs follow how a table is diagnosed: Overview, Health, Statistics,
+  Snapshots, Storage, Maintenance, Definition, then Access. Preview and Run
+  stay as buttons; the four less frequent operations move into a More
+  operations menu whose items open the same confirmation each button
+  opened, and closing it returns focus to the menu button.
+- A catalog's capability report is a checklist: each check's state is
+  written beside an icon, never shown by color or icon alone. The results
+  arrive once, each a beat after the previous (`sibling-index()`, which
+  browsers without it skip), and not under reduced motion.
+- Adding a connection is three steps: the connection's name and endpoint,
+  its warehouse and credential reference, then a check of the unsaved draft
+  and an explicit save. The draft lives above the steps, so going back keeps
+  every edit, and any edit discards the check it would invalidate. A step
+  opens only through Continue, which runs the fields' own validation; the
+  endpoint's validity follows its value on every render, so a revisited
+  step still refuses a URI with credentials, a query, or a fragment. Each
+  new step takes focus at its heading and slides in from the side it comes
+  from, on the motion tokens.
+- Sign-in is one centered card on the sunken surface that fades in once.
+  There is no list of identity providers to show: the coordinator resolves
+  the provider from the organization, so the card keeps the organization
+  field.
+
 ### Engineering limits
 
 These are enforced by gates, not by review:

@@ -1,4 +1,4 @@
-import { validateJobsSearch } from "./search";
+import { validateJobSearch, validateJobsSearch } from "./search";
 
 it("keeps known job filters in canonical order", () => {
     expect(
@@ -26,4 +26,14 @@ it("drops empty, unknown, and default values", () => {
             page: 3,
         }),
     ).toEqual({});
+});
+
+it("keeps only the job detail's known tabs", () => {
+    expect(validateJobSearch({ tab: "statistics" })).toEqual({
+        tab: "statistics",
+    });
+    expect(validateJobSearch({ tab: "tasks" })).toEqual({ tab: "tasks" });
+    // The retired name and the default leave the address bare.
+    expect(validateJobSearch({ tab: "overview" })).toEqual({});
+    expect(validateJobSearch({ tab: 3 })).toEqual({});
 });

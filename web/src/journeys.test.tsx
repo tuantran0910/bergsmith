@@ -81,6 +81,17 @@ function start(path: string) {
     return user;
 }
 
+/** Opens a table operation's confirmation from the More operations menu. */
+async function openOperation(
+    user: ReturnType<typeof userEvent.setup>,
+    label: string,
+) {
+    await user.click(
+        await screen.findByRole("button", { name: "More operations" }),
+    );
+    await user.click(await screen.findByRole("menuitem", { name: label }));
+}
+
 /** The job page's event list. */
 function events() {
     return within(screen.getByRole("list", { name: "Job events" }));
@@ -109,7 +120,7 @@ it("shows ledger statistics on the job detail page", async () => {
             }),
         ),
     );
-    start(`/jobs/${JOB_ID}`);
+    start(`/jobs/${JOB_ID}?tab=statistics`);
     expect(
         await screen.findByRole("heading", { name: "Maintenance statistics" }),
     ).toBeInTheDocument();
@@ -1351,9 +1362,7 @@ describe("preview and run", () => {
         ).on("GET", "/api/v1/jobs/{id}", () => json(200, job("Planning")));
         const user = start(`/tables/${TABLE_ID}`);
 
-        await user.click(
-            await screen.findByRole("button", { name: "Expire snapshots" }),
-        );
+        await openOperation(user, "Expire snapshots");
         expect(
             await screen.findByRole("dialog", { name: "Expire snapshots" }),
         ).toBeVisible();
@@ -1384,9 +1393,7 @@ describe("preview and run", () => {
         );
         const user = start(`/tables/${TABLE_ID}`);
 
-        await user.click(
-            await screen.findByRole("button", { name: "Remove orphan files" }),
-        );
+        await openOperation(user, "Remove orphan files");
         const dialog = await screen.findByRole("dialog", {
             name: "Remove orphan files",
         });
@@ -1423,7 +1430,7 @@ describe("preview and run", () => {
         );
         const user = start(`/tables/${TABLE_ID}`);
 
-        await user.click(await screen.findByRole("button", { name: label }));
+        await openOperation(user, label);
         const dialog = await screen.findByRole("dialog", { name: label });
         expect(dialog).toHaveTextContent("one new snapshot");
         await user.click(
@@ -1451,9 +1458,7 @@ describe("preview and run", () => {
         );
         const user = start(`/tables/${TABLE_ID}`);
 
-        await user.click(
-            await screen.findByRole("button", { name: "Rewrite manifests" }),
-        );
+        await openOperation(user, "Rewrite manifests");
         await user.click(
             await screen.findByRole("button", {
                 name: "Confirm rewrite manifests",
@@ -1482,9 +1487,7 @@ describe("preview and run", () => {
         );
         const user = start(`/tables/${TABLE_ID}`);
 
-        await user.click(
-            await screen.findByRole("button", { name: "Remove orphan files" }),
-        );
+        await openOperation(user, "Remove orphan files");
         await user.click(
             await screen.findByRole("button", {
                 name: "Confirm remove orphan files",
@@ -3093,30 +3096,32 @@ describe("job triage", () => {
         expect(within(tasks).queryByText("0 s")).not.toBeInTheDocument();
     });
 
-    it("puts events first while running and statistics first when terminal", async () => {
+    it("keeps events on the summary and statistics on their own tab", async () => {
         fake.on("GET", "/api/v1/jobs/{id}", () => json(200, job("Running")));
-        start(`/jobs/${JOB_ID}`);
-        const runningEvents = await screen.findByRole("heading", {
-            name: "Events",
-        });
-        const runningStatistics = screen.getByRole("heading", {
-            name: "Maintenance statistics",
-        });
+        const user = start(`/jobs/${JOB_ID}`);
         expect(
-            runningEvents.compareDocumentPosition(runningStatistics) &
-                Node.DOCUMENT_POSITION_FOLLOWING,
-        ).toBeTruthy();
+            await screen.findByRole("heading", { name: "Events" }),
+        ).toBeInTheDocument();
+        expect(screen.getByRole("tab", { name: "Summary" })).toHaveAttribute(
+            "aria-selected",
+            "true",
+        );
+        expect(
+            screen.queryByRole("heading", { name: "Maintenance statistics" }),
+        ).not.toBeInTheDocument();
+        // The header names each side, so the state stays clear on any tab.
+        expect(screen.getByText("Execution: Running")).toBeInTheDocument();
+        expect(
+            screen.getByText("Publication: Not started"),
+        ).toBeInTheDocument();
 
-        fake.on("GET", "/api/v1/jobs/{id}", () => json(200, job("Succeeded")));
-        start(`/jobs/${JOB_ID}`);
-        const endedStatistics = await screen.findByRole("heading", {
-            name: "Maintenance statistics",
-        });
-        const endedEvents = screen.getByRole("heading", { name: "Events" });
+        await user.click(screen.getByRole("tab", { name: "Statistics" }));
         expect(
-            endedStatistics.compareDocumentPosition(endedEvents) &
-                Node.DOCUMENT_POSITION_FOLLOWING,
-        ).toBeTruthy();
+            await screen.findByRole("heading", {
+                name: "Maintenance statistics",
+            }),
+        ).toBeInTheDocument();
+        expect(window.location.search).toBe("?tab=statistics");
     });
 
     it("links an attention state to the tasks tab", async () => {

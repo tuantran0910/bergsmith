@@ -32,31 +32,53 @@ export function uncertain(error: unknown): boolean {
     return error instanceof ApiFailure && error.outcomeUncertain;
 }
 
-/** Confirmation names the exact action; closing while pending is refused. */
-export function Confirm({
-    label,
-    description,
-    pending,
-    error,
-    onConfirm,
-}: {
+interface ConfirmProps {
     label: string;
     description: ReactNode;
     pending: boolean;
     error: unknown;
     onConfirm: () => void;
-}) {
+}
+
+/** Confirmation names the exact action; closing while pending is refused. */
+export function Confirm(props: ConfirmProps) {
     const [open, setOpen] = useState(false);
+    return (
+        <ConfirmDialog {...props} open={open} onOpenChange={setOpen}>
+            <DialogTrigger render={<Button variant="outline" />}>
+                {props.label}
+            </DialogTrigger>
+        </ConfirmDialog>
+    );
+}
+
+/**
+ * The same confirmation, opened by its owner rather than its own button,
+ * such as from a menu item (AGENTS: a shortcut that writes opens the page's
+ * confirmation dialog). `children` is an optional trigger.
+ */
+export function ConfirmDialog({
+    label,
+    description,
+    pending,
+    error,
+    onConfirm,
+    open,
+    onOpenChange,
+    children,
+}: ConfirmProps & {
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+    children?: ReactNode;
+}) {
     return (
         <Dialog
             open={open}
             onOpenChange={(next) => {
-                if (!pending) setOpen(next);
+                if (!pending) onOpenChange(next);
             }}
         >
-            <DialogTrigger render={<Button variant="outline" />}>
-                {label}
-            </DialogTrigger>
+            {children}
             <DialogContent>
                 <DialogTitle>{label}</DialogTitle>
                 <DialogDescription>{description}</DialogDescription>
