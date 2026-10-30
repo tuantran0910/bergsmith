@@ -172,9 +172,9 @@ export class LiveUpdates {
         const source = new EventSource(url);
         this.source = source;
         source.addEventListener("ready", (message: MessageEvent<string>) => {
-            // Without a resume point the stream starts at the newest event,
-            // so what the page read before it may already be behind. A
-            // resumed stream replays instead.
+            // Without a resume point the stream starts at the first settled
+            // horizon, so what the page read before it may already be
+            // behind. A resumed stream replays instead.
             const resumed = this.lastId !== null;
             this.track(message.lastEventId);
             if (!resumed) {
