@@ -233,6 +233,34 @@ This supersedes 0046's "neutral graphite surfaces and one accent".
   rows of other grants and organizations advance the cursor without being
   sent.
 
+### Command palette, Overview, and live lists
+
+- Ctrl+K (⌘K on macOS) or the top bar's Search button opens the command
+  palette, whose code loads on first use or on hover or focus of the button.
+  It lists the pages and create forms the session's grants allow, filters
+  them as the person types, and, after 150 ms without typing, adds catalogs,
+  tables, and people from `/search`. The field is an ARIA combobox over a
+  listbox of grouped options: arrow keys move, Enter opens, and Escape
+  closes and returns focus. Every option is a typed route, so the palette
+  only navigates and never writes; actions keep their page's confirmation.
+- The Overview leads with the last day's ended, published, and failed jobs
+  and the conflict rate, each with its change against the previous 24 hours
+  in words and an arrow, never color. The outcome chart draws the day
+  before as a thin bar under each outcome, and its table adds that column.
+- The shell holds one `/events` stream per tab. A `job` event marks the
+  cached reads that may show the job: the overview, job counts, a job list
+  that lacks the job or holds an older revision, the job's own detail and
+  tasks, and, once a job ends, its table's reads. Marked reads refetch every
+  250 ms; a read whose fetch is still running waits for the next batch,
+  because that fetch may predate the event. A stream without a resume point
+  reloads every job read once `ready` arrives, and `reset` always does; a
+  resumed stream replays instead.
+- The stream closes while the tab is hidden and reopens with `after` set to
+  the last ID it saw; the browser's own reconnects send `Last-Event-ID`.
+  When the stream is refused (capacity or an ended session), the same reads
+  are refetched every 30 seconds and the stream is retried each time, so
+  polling happens only while live updates are unavailable.
+
 ### Engineering limits
 
 These are enforced by gates, not by review:
@@ -241,7 +269,9 @@ These are enforced by gates, not by review:
   and BS-033 adds at most 15 kB to it. Stylesheets have their own gzipped
   budget in the same build plugin, set at about 10% over the 9.9 kB measured
   when this decision was made, and each lazy chunk is limited to 50 kB
-  gzipped.
+  gzipped. The palette and Overview brought stylesheets to 11.0 kB, the
+  whole budget, with the detail pages still to come, so the stylesheet
+  budget is 12 kB from BS-033.T8; first-load JavaScript was 159.3 kB.
 - Static files are compressed once, at build time: the build writes Brotli
   and gzip copies of every text file of at least 1 KiB, and the coordinator
   serves the best copy the request's `Accept-Encoding` admits, with
@@ -269,6 +299,6 @@ These are enforced by gates, not by review:
   Chromium cannot decode, which it previously reported only as a warning.
 - The stylesheet is close to its budget (10.8 of 11 kB after the shell);
   later phases must reuse utilities rather than add bespoke rules, or
-  revisit the budget in this record.
+  revisit the budget in this record. T8 did, raising it to 12 kB.
 - Later phases add the toolbar data table and the API additions on top of
   these tokens.

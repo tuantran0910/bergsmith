@@ -11,11 +11,12 @@ import { precompress } from "./tooling/precompress.ts";
 /**
  * Gzipped budgets. First-load JavaScript counts the entry graph only; each
  * lazy chunk has its own limit. CSS was 9.9 kB when ADR 0067 set its budget
- * at about +10%.
+ * at about +10%; the command palette and Overview (BS-033.T8) reached that
+ * limit, and the record raised it to 12 kB for the remaining pages.
  */
 const BUDGETS = {
     javascriptBytes: 175_000,
-    stylesheetBytes: 11_000,
+    stylesheetBytes: 12_000,
     lazyChunkBytes: 50_000,
 };
 
@@ -50,6 +51,9 @@ export default defineConfig({
         include: ["src/**/*.test.{ts,tsx}", "tooling/**/*.test.ts"],
         globals: true,
         setupFiles: ["src/test/setup.ts"],
+        // A test may wait up to the 5 s `asyncUtilTimeout` (src/test/setup.ts)
+        // for the first lazy import; the test itself needs room beyond that.
+        testTimeout: 15_000,
         restoreMocks: true,
         coverage: {
             provider: "v8",

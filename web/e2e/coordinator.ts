@@ -95,6 +95,36 @@ export function eventStream(events: readonly JobEvent[]): Reply {
     };
 }
 
+/** One event of the organization stream (`GET /api/v1/events`). */
+export interface LiveMessage {
+    event: "ready" | "job" | "reset";
+    id: string;
+    data: unknown;
+}
+
+/**
+ * A finished organization stream; like {@link eventStream}, its long `retry`
+ * keeps the browser from reconnecting during a test unless a test passes a
+ * short one. Without messages the stream sends nothing, so pages keep what
+ * they loaded.
+ */
+export function liveStream(
+    messages: readonly LiveMessage[] = [],
+    retry = 3_600_000,
+): Reply {
+    const body = messages
+        .map(
+            (message) =>
+                `id: ${message.id}\nevent: ${message.event}\ndata: ${JSON.stringify(message.data)}\n\n`,
+        )
+        .join("");
+    return {
+        status: 200,
+        body: `retry: ${retry}\n\n${body}`,
+        contentType: "text/event-stream",
+    };
+}
+
 /** A request the fake API answered, for assertions. */
 export interface Sent {
     method: string;
@@ -362,7 +392,9 @@ export const test = base.extend<Fixtures>({
             .on("GET", "/api/v1/principals/facets", () =>
                 json(200, { kind: [], active: [] }),
             )
-            .on("GET", "/api/v1/me/views", () => json(200, { items: [] }));
+            .on("GET", "/api/v1/me/views", () => json(200, { items: [] }))
+            // The shell holds the organization's live stream on every page.
+            .on("GET", "/api/v1/events", () => liveStream());
         await coordinator.install(page);
         await provide(coordinator);
         expect(coordinator.unrouted, "unrouted requests").toEqual([]);

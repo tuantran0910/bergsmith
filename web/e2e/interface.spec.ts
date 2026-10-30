@@ -2,14 +2,18 @@
 // the deployment's own origin and preloaded, the type scale sets 13 px body
 // text, reduced motion leaves no transition behind an interaction, the
 // floating primitives work under the CSP (the fixture fails on violations),
-// and the shell's rail collapses and remembers it.
+// the shell's rail collapses and remembers it, the command palette finds and
+// opens without writing, and the live stream refreshes an open list (T8).
 
 import { schema } from "../src/test/fakes";
 import {
     CATALOG_ID,
+    JOB_ID,
+    TABLE_ID,
     catalogs,
     catalogStorage,
     catalogTotals,
+    job,
     managedCatalog,
     session,
     table,
@@ -19,6 +23,7 @@ import {
     expect,
     expectAccessible,
     json,
+    liveStream,
     test,
 } from "./coordinator";
 
@@ -230,4 +235,109 @@ test("opens the account panel and returns focus", async ({
     await expect(panel).toHaveCount(0);
     await expect(account).toBeFocused();
     await expect(account).toHaveAttribute("aria-expanded", "false");
+});
+
+test("finds a table in the command palette and opens a page", async ({
+    page,
+    coordinator,
+}) => {
+    signedIn(coordinator);
+    coordinator.on("GET", "/api/v1/search", () =>
+        json(
+            200,
+            schema("SearchResults", {
+                catalogs: [],
+                tables: [
+                    {
+                        id: TABLE_ID,
+                        catalog_id: CATALOG_ID,
+                        namespace: ["sales"],
+                        name: "orders",
+                    },
+                ],
+                principals: [],
+            }),
+        ),
+    );
+    await page.goto(`/catalogs/${CATALOG_ID}`);
+    await expect(page.getByRole("heading", { name: "lake" })).toBeVisible();
+
+    await page.keyboard.press("Control+k");
+    const field = page.getByRole("combobox", {
+        name: "Search pages, catalogs, tables, and people",
+    });
+    await expect(field).toBeFocused();
+    await field.fill("tables");
+    const results = page.getByRole("listbox", { name: "Results" });
+    await expect(
+        results.getByRole("option", { name: /sales\.orders/ }),
+    ).toHaveAttribute("href", `/tables/${TABLE_ID}`);
+    await expect(
+        results.getByRole("option", { name: "Tables" }),
+    ).toHaveAttribute("aria-selected", "true");
+    await expectAccessible(page);
+
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(/\/tables$/);
+    await expect(field).toHaveCount(0);
+    expect(
+        coordinator.requests.filter((request) => request.method !== "GET"),
+    ).toEqual([]);
+});
+
+test("refreshes the jobs list from the live stream", async ({
+    page,
+    coordinator,
+}) => {
+    signedIn(coordinator);
+    coordinator
+        .on(
+            "GET",
+            "/api/v1/jobs",
+            () =>
+                json(
+                    200,
+                    schema("JobPage", {
+                        items: [job("Running")],
+                        next_cursor: null,
+                    }),
+                ),
+            () =>
+                json(
+                    200,
+                    schema("JobPage", {
+                        items: [job("Failed", { revision: 5 })],
+                        next_cursor: null,
+                    }),
+                ),
+        )
+        // The first stream only starts; the browser reconnects after it ends,
+        // once the list has loaded, and the event arrives then.
+        .on(
+            "GET",
+            "/api/v1/events",
+            () => liveStream([{ event: "ready", id: "10", data: {} }], 1_000),
+            () =>
+                liveStream([
+                    { event: "ready", id: "10", data: {} },
+                    {
+                        event: "job",
+                        id: "11",
+                        data: {
+                            job_id: JOB_ID,
+                            table_id: TABLE_ID,
+                            state: "Failed",
+                            revision: 5,
+                        },
+                    },
+                ]),
+        );
+    await page.goto("/jobs");
+
+    await expect(
+        page.getByRole("cell", { name: "Failed", exact: true }).first(),
+    ).toBeVisible();
+    // The browser's own reconnect resumes with `Last-Event-ID`, which
+    // request interception does not expose.
+    expect(coordinator.sent("GET", "/api/v1/events")).toHaveLength(2);
 });

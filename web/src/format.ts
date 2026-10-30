@@ -125,6 +125,39 @@ export function exactCount(value: string, locale?: string): string {
 }
 
 /**
+ * How a decimal-string figure moved from `previous` to `current`, signed with
+ * `+` or a minus sign, or `null` when it did not move. Counts compare exactly;
+ * with `decimals`, values compare at that precision.
+ */
+export function change(
+    current: string,
+    previous: string,
+    decimals = 0,
+): string | null {
+    let magnitude: string;
+    let rising: boolean;
+    if (decimals === 0) {
+        const difference = BigInt(current) - BigInt(previous);
+        if (difference === 0n) {
+            return null;
+        }
+        rising = difference > 0n;
+        magnitude = (rising ? difference : -difference).toLocaleString();
+    } else {
+        const scale = 10 ** decimals;
+        const difference =
+            Math.round(Number(current) * scale) -
+            Math.round(Number(previous) * scale);
+        if (difference === 0) {
+            return null;
+        }
+        rising = difference > 0;
+        magnitude = (Math.abs(difference) / scale).toFixed(decimals);
+    }
+    return `${rising ? "+" : "\u2212"}${magnitude}`;
+}
+
+/**
  * An exact byte total in binary units with one decimal, from a decimal
  * string, so a large table keeps its precision.
  */

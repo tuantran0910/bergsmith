@@ -896,6 +896,21 @@ describe("overview and shell", () => {
         expect(
             screen.getByRole("table", { name: /Jobs in the last day/ }),
         ).toBeInTheDocument();
+        // Each figure of the last day is compared with the day before.
+        const window = within(
+            screen.getByRole("region", { name: "Last 24 hours" }),
+        );
+        expect(window.getByText("Jobs ended")).toBeInTheDocument();
+        expect(
+            window.getAllByText("\u22121 vs the previous 24 h"),
+        ).toHaveLength(2);
+        expect(
+            window.getByText("Same as the previous 24 h"),
+        ).toBeInTheDocument();
+        expect(window.getByText("33.3%")).toBeInTheDocument();
+        expect(
+            window.getByText("+33.3 pts vs the previous 24 h"),
+        ).toBeInTheDocument();
         expect(
             screen.queryByRole("link", { name: /Browse tables and start/ }),
         ).not.toHaveAttribute("aria-current", "page");

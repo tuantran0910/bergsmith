@@ -12,11 +12,24 @@ Administration. Lists keep search, filters, and sort in the URL, and detail
 pages keep their tab in the URL, so a link opens the same view. Below 40rem a
 list renders as cards with its filters in a bottom drawer.
 
+Ctrl+K (⌘K on macOS) or the top bar's Search button opens the command
+palette: it goes to any page the session may open and finds catalogs,
+tables, and, for holders of organization-wide `grants:manage`, people by
+name. It only navigates; actions keep their page's confirmation.
+
+Open pages follow job changes through one live stream per tab
+(`GET /api/v1/events`): lists, counts, the Overview, and job pages refresh
+the reads a change affects within a quarter of a second. The stream pauses
+while the tab is hidden. If the coordinator refuses it, for example because
+the session already holds four streams in other tabs, those reads refresh
+every 30 seconds instead.
+
 ## Journeys
 
 | Page | What it does |
 |---|---|
 | Sign-in | Asks for the organization slug and starts `/auth/login`; returns to the page that asked |
+| Overview | The last day's ended, published, and failed jobs and conflict rate, each against the day before; what needs attention; outcomes and inventory coverage; schedules and worker capacity for those who may read them |
 | Catalogs | Lists authorized connections and opens guided setup, with a capability check before saving |
 | Catalog connection | Addressable tabs cover Overview (discovery, storage, statistics, connection details, capabilities, unresolved publications), Tables, Access, and Settings; connection administrators can edit, discover, register, and remove names, holders of `grants:manage` on the connection see the Access tab and grant roles, and settings show human duration hints with a save bar while the form is dirty |
 | Tables | Lists the tables the session may see, named `catalog.namespace.table` through their aliases, each with its evaluated health; the list can be filtered to one state and ordered worst first |

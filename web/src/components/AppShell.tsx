@@ -3,42 +3,21 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import {
     AnvilIcon,
-    BellIcon,
-    CalendarClockIcon,
-    DatabaseIcon,
-    GaugeIcon,
-    KeyRoundIcon,
-    ListChecksIcon,
     LogOutIcon,
     MenuIcon,
     PanelLeftCloseIcon,
     PanelLeftOpenIcon,
     PlusIcon,
-    ScrollTextIcon,
-    SearchIcon,
-    ServerIcon,
-    SlidersHorizontalIcon,
-    Table2Icon,
-    UsersIcon,
     XIcon,
-    type LucideIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-import {
-    type SessionInfo,
-    canManageCatalog,
-    canManageNotifications,
-    canManageSchedules,
-    canManageWorkers,
-    canReadAudit,
-    hasOrganizationPermission,
-    signOut,
-} from "../api/auth";
+import { type SessionInfo, signOut } from "../api/auth";
 import { setSession, useSessionMutation } from "../queryClient";
 import { useDensityPreference, type Density } from "../density";
 import { playRouteEntrance } from "../motion";
 import { isSidebarShortcut, useSidebarPreference } from "../sidebar";
+import { useLiveUpdates } from "../live";
 import { useThemePreference, type ThemePreference } from "../theme";
 import { Button } from "../ui/Button";
 import { DialogClose } from "../ui/Dialog";
@@ -46,140 +25,16 @@ import { MenuButton } from "../ui/MenuButton";
 import { AccountButton } from "./AccountButton";
 import { BreadcrumbLabelProvider, Breadcrumbs } from "./Breadcrumbs";
 import { DensityToggle } from "./DensityToggle";
+import { CommandPaletteButton } from "./CommandPaletteButton";
 import { ErrorNotice } from "./ErrorNotice";
+import {
+    type Destination,
+    OVERVIEW,
+    createTargets,
+    railGroups,
+} from "./navigation";
 import { SessionExpiry } from "./SessionExpiry";
 import { ThemeToggle } from "./ThemeToggle";
-
-/** A principal destination of the rail. */
-interface Destination {
-    to:
-        | "/"
-        | "/catalogs"
-        | "/tables"
-        | "/jobs"
-        | "/policies"
-        | "/schedules"
-        | "/workers"
-        | "/audit"
-        | "/users"
-        | "/service-identities"
-        | "/notifications";
-    label: string;
-    icon: LucideIcon;
-    allowed: (session: SessionInfo) => boolean;
-}
-
-/** A shell-level create action; the rail does not list these. */
-interface CreateTarget {
-    to: "/catalogs/new";
-    label: string;
-    icon: LucideIcon;
-    allowed: (session: SessionInfo) => boolean;
-}
-
-/** The rail's groups; empty groups do not render. */
-const GROUPS: readonly { label: string; items: Destination[] }[] = [
-    {
-        label: "Data",
-        items: [
-            {
-                to: "/catalogs",
-                label: "Catalogs",
-                icon: DatabaseIcon,
-                allowed: () => true,
-            },
-            {
-                to: "/tables",
-                label: "Tables",
-                icon: Table2Icon,
-                allowed: () => true,
-            },
-        ],
-    },
-    {
-        label: "Operations",
-        items: [
-            {
-                to: "/jobs",
-                label: "Jobs",
-                icon: ListChecksIcon,
-                allowed: () => true,
-            },
-            {
-                to: "/policies",
-                label: "Policies",
-                icon: SlidersHorizontalIcon,
-                allowed: canManageSchedules,
-            },
-            {
-                to: "/schedules",
-                label: "Schedules",
-                icon: CalendarClockIcon,
-                allowed: canManageSchedules,
-            },
-            {
-                to: "/workers",
-                label: "Workers",
-                icon: ServerIcon,
-                allowed: canManageWorkers,
-            },
-        ],
-    },
-    {
-        label: "Administration",
-        items: [
-            {
-                to: "/users",
-                label: "Users",
-                icon: UsersIcon,
-                allowed: (session) =>
-                    hasOrganizationPermission(session, "grants:manage"),
-            },
-            {
-                to: "/service-identities",
-                label: "Service identities",
-                icon: KeyRoundIcon,
-                allowed: canManageWorkers,
-            },
-            {
-                to: "/notifications",
-                label: "Notifications",
-                icon: BellIcon,
-                allowed: canManageNotifications,
-            },
-            {
-                to: "/audit",
-                label: "Audit",
-                icon: ScrollTextIcon,
-                allowed: canReadAudit,
-            },
-        ],
-    },
-];
-
-const OVERVIEW: Destination = {
-    to: "/",
-    label: "Overview",
-    icon: GaugeIcon,
-    allowed: () => true,
-};
-
-/** Where something can still be created; sorted, expandable in later tasks. */
-const CREATE_TARGETS: readonly CreateTarget[] = [
-    {
-        to: "/catalogs/new",
-        label: "Catalog",
-        icon: DatabaseIcon,
-        allowed: (session) => canManageCatalog(session),
-    },
-];
-
-function railGroups(session: SessionInfo) {
-    return GROUPS.map((group) => ({
-        label: group.label,
-        items: group.items.filter((item) => item.allowed(session)),
-    })).filter((group) => group.items.length > 0);
-}
 
 function NavLink({
     destination: { to, label, icon: Icon },
@@ -257,8 +112,10 @@ function NavBody({
 /**
  * The signed-in layout (ADR 0056, ADR 0067): a grouped sidebar that collapses
  * to icons (Ctrl+\ or ⌘+\) with the account at its foot, a sticky top bar
- * (breadcrumb, search placeholder, create), and full-width content that fades
- * in on each route. On narrow screens a drawer replaces the rail.
+ * (breadcrumb, the command palette, create), and full-width content that
+ * fades in on each route. On narrow screens a drawer replaces the rail. The
+ * shell holds the organization's live job stream, so open pages refresh as
+ * jobs change.
  */
 export function AppShell({
     session,
@@ -281,6 +138,7 @@ export function AppShell({
     const [open, setOpen] = useState(false);
     const mainRef = useRef<HTMLElement>(null);
     const focusMainNext = useRef(false);
+    useLiveUpdates();
     const logout = useSessionMutation({
         mutationFn: signOut,
         onSuccess: () => {
@@ -322,7 +180,7 @@ export function AppShell({
             window.removeEventListener("keydown", onKeyDown);
         };
     }, [toggleSidebar]);
-    const creates = CREATE_TARGETS.filter((item) => item.allowed(session));
+    const creates = createTargets(session);
     const sidebarLabel = collapsed ? "Expand sidebar" : "Collapse sidebar";
 
     return (
@@ -405,15 +263,7 @@ export function AppShell({
                         </Button>
                         <Breadcrumbs />
                         <div className="ml-auto flex items-center gap-2">
-                            <Button
-                                variant="ghost"
-                                size="sm"
-                                disabled
-                                title="Search is not yet available"
-                            >
-                                <SearchIcon aria-hidden="true" />
-                                Search
-                            </Button>
+                            <CommandPaletteButton session={session} />
                             {creates.length > 0 && (
                                 <MenuButton
                                     align="end"

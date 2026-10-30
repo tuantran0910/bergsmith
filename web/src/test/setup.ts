@@ -14,6 +14,9 @@ beforeEach(() => {
     vi.stubGlobal("EventSource", FakeEventSource);
     // jsdom has no layout; the router restores scroll position on navigation.
     vi.stubGlobal("scrollTo", vi.fn());
+    // Nor does it scroll elements; the command palette keeps its active
+    // option in view.
+    Element.prototype.scrollIntoView = vi.fn();
     window.history.replaceState(null, "", "/");
 });
 

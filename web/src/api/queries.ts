@@ -53,10 +53,36 @@ export function useOverview() {
     });
 }
 
-export function useCatalogNames() {
+/**
+ * Catalogs, tables, and people whose names contain `q`, for the command
+ * palette (ADR 0067). Nothing is requested without search text; while the
+ * next text loads, the previous results stay (`isPlaceholderData`).
+ */
+export function useInventorySearch(q: string | undefined) {
+    const client = useQueryClient();
+    return useQuery({
+        queryKey: ["search", q],
+        enabled: q !== undefined,
+        queryFn: ({ signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/search", {
+                        params: { query: { q: q ?? "" } },
+                        signal,
+                    }),
+                ),
+            ),
+        placeholderData: keepPreviousData,
+        staleTime: LIST_STALE_MS,
+    });
+}
+
+/** Catalog names by ID; `enabled: false` reads only what is cached. */
+export function useCatalogNames(enabled = true) {
     const client = useQueryClient();
     return useQuery({
         queryKey: ["catalogs", "names"],
+        enabled,
         queryFn: ({ signal }) =>
             forSession(client, async () => {
                 // Catalogs are few; the first page of 100 names the common

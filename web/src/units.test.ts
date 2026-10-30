@@ -10,6 +10,7 @@ import { ApiFailure, call, csrfToken } from "./api/client";
 import {
     aliasName,
     bytes,
+    change,
     count,
     date,
     duration,
@@ -25,6 +26,18 @@ import { binKey } from "./pages/PreviewView";
 import { event, session } from "./test/fixtures";
 
 describe("format", () => {
+    it.each([
+        ["7", "4", 0, "+3"],
+        ["4", "7", 0, "\u22123"],
+        ["5", "5", 0, null],
+        ["12000", "0", 0, `+${(12000).toLocaleString()}`],
+        ["33.3", "0.0", 1, "+33.3"],
+        ["10.0", "12.5", 1, "\u22122.5"],
+        ["4.0", "4.0", 1, null],
+    ])("tells how %s moved from %s", (current, previous, decimals, text) => {
+        expect(change(current, previous, decimals)).toBe(text);
+    });
+
     it.each([
         [0, "0 B"],
         [1023, "1023 B"],
