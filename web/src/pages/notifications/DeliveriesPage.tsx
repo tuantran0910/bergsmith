@@ -122,7 +122,7 @@ export function DeliveriesPage() {
             header: "Resource",
             cell: (delivery) => (
                 <span className="inline-flex flex-col">
-                    <span className="font-medium">
+                    <span className="font-semibold">
                         {delivery.resource.label ??
                             shortId(delivery.resource.id)}
                     </span>

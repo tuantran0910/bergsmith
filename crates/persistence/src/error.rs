@@ -66,6 +66,14 @@ pub enum PersistenceError {
         /// The snapshot a pending expiration will remove.
         snapshot_id: i64,
     },
+    /// The owner already keeps as many rows of this kind as allowed.
+    #[error("{entity} limit of {limit} reached")]
+    LimitReached {
+        /// Kind of row that was being written.
+        entity: &'static str,
+        /// The most rows the owner may keep.
+        limit: i64,
+    },
     /// No row exists with the requested key.
     #[error("{entity} {id} was not found")]
     NotFound {

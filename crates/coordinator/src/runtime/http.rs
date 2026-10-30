@@ -4,6 +4,11 @@
 //! by the page, so the UI and API share an origin. Static serving never falls
 //! back to `index.html` for `/api` or `/auth`: an unknown API route stays a
 //! `404` instead of returning HTML to a typed client.
+//!
+//! The web build writes Brotli and gzip copies beside each text file
+//! (`app.js.br`, `app.js.gz`). A request that accepts one of those codings
+//! gets the precompressed copy, so the coordinator never compresses at run
+//! time; API responses are never compressed here.
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -131,7 +136,12 @@ async fn security_headers(mut response: Response) -> Response {
     response
 }
 
-/// Serves a built file, or `index.html` for a client route.
+/// Content codings the build precompresses, best first, with the suffix of
+/// the copy it writes.
+const PRECOMPRESSED: [(&str, &str); 2] = [("br", "br"), ("gzip", "gz")];
+
+/// Serves a built file, or `index.html` for a client route, precompressed
+/// when the client accepts a coding the build wrote a copy for.
 async fn serve_static(root: &Path, request: Request) -> Response {
     let path = request.uri().path();
     if path == "/api" || path.starts_with("/api/") || path == "/auth" || path.starts_with("/auth/")
@@ -151,7 +161,30 @@ async fn serve_static(root: &Path, request: Request) -> Response {
         _ if has_extension(&relative) => return StatusCode::NOT_FOUND.into_response(),
         _ => root.join("index.html"),
     };
-    let Ok(bytes) = tokio::fs::read(&file).await else {
+    let compressible = is_compressible(&file);
+    let accept_encoding = request
+        .headers()
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|value| value.to_str().ok());
+    let mut encoding = None;
+    let mut source = file.clone();
+    if compressible {
+        for (coding, suffix) in PRECOMPRESSED {
+            if !accepts(accept_encoding, coding) {
+                continue;
+            }
+            let candidate = with_suffix(&file, suffix);
+            if tokio::fs::metadata(&candidate)
+                .await
+                .is_ok_and(|metadata| metadata.is_file())
+            {
+                encoding = Some(coding);
+                source = candidate;
+                break;
+            }
+        }
+    }
+    let Ok(bytes) = tokio::fs::read(&source).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let cache = if relative.starts_with("assets") && relative != Path::new("index.html") {
@@ -159,12 +192,68 @@ async fn serve_static(root: &Path, request: Request) -> Response {
     } else {
         "no-cache"
     };
-    Response::builder()
+    let mut response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type(&file))
-        .header(header::CACHE_CONTROL, cache)
+        .header(header::CACHE_CONTROL, cache);
+    if compressible {
+        // Caches must key a compressible file on the coding the client
+        // accepts, whether or not this response is compressed.
+        response = response.header(header::VARY, "accept-encoding");
+    }
+    if let Some(coding) = encoding {
+        response = response.header(header::CONTENT_ENCODING, coding);
+    }
+    response
         .body(Body::from(bytes))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// Whether the build writes precompressed copies of this file: text only;
+/// fonts and images are already compressed.
+fn is_compressible(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(std::ffi::OsStr::to_str),
+        Some("html" | "js" | "mjs" | "css" | "json" | "map" | "svg" | "txt")
+    )
+}
+
+/// `path` with `.suffix` appended to its full file name.
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".");
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// Whether an `Accept-Encoding` value admits `coding` (RFC 9110, section
+/// 12.5.3): named, or covered by `*`, with a non-zero quality. A named entry
+/// overrides `*`, and a missing header admits no coding.
+fn accepts(accept_encoding: Option<&str>, coding: &str) -> bool {
+    let Some(value) = accept_encoding else {
+        return false;
+    };
+    let mut wildcard = None;
+    for element in value.split(',') {
+        let mut parts = element.split(';');
+        let name = parts.next().unwrap_or_default().trim();
+        let quality = parts
+            .find_map(|parameter| {
+                let (key, value) = parameter.split_once('=')?;
+                key.trim()
+                    .eq_ignore_ascii_case("q")
+                    .then(|| value.trim().parse::<f32>().ok())
+                    .flatten()
+            })
+            .unwrap_or(1.0);
+        if name.eq_ignore_ascii_case(coding) {
+            return quality > 0.0;
+        }
+        if name == "*" {
+            wildcard = Some(quality);
+        }
+    }
+    wildcard.is_some_and(|quality| quality > 0.0)
 }
 
 /// Rejects absolute and parent paths before joining them to the web root.
@@ -221,6 +310,10 @@ mod tests {
     }
 
     async fn request(root: &Path, path: &str) -> Response {
+        request_accepting(root, path, None).await
+    }
+
+    async fn request_accepting(root: &Path, path: &str, accept_encoding: Option<&str>) -> Response {
         let router = Router::new().fallback({
             let root = root.to_path_buf();
             move |request: Request| {
@@ -228,10 +321,136 @@ mod tests {
                 async move { serve_static(&root, request).await }
             }
         });
+        let mut builder = Request::builder().uri(path);
+        if let Some(value) = accept_encoding {
+            builder = builder.header(header::ACCEPT_ENCODING, value);
+        }
         router
-            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .oneshot(builder.body(Body::empty()).unwrap())
             .await
             .unwrap()
+    }
+
+    /// A web root whose script and entry point have Brotli and gzip copies.
+    fn precompressed_root() -> tempfile::TempDir {
+        let directory = web_root();
+        for (name, body) in [
+            ("assets/app.js.br", "br-bytes"),
+            ("assets/app.js.gz", "gz-bytes"),
+            ("index.html.br", "br-index"),
+        ] {
+            std::fs::write(directory.path().join(name), body).unwrap();
+        }
+        directory
+    }
+
+    async fn body(response: Response) -> String {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_client_accepting_brotli_gets_the_brotli_copy() {
+        let directory = precompressed_root();
+        let response = request_accepting(
+            directory.path(),
+            "/assets/app.js",
+            Some("gzip, deflate, br"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = response.headers();
+        assert_eq!(headers.get(header::CONTENT_ENCODING).unwrap(), "br");
+        assert_eq!(headers.get(header::VARY).unwrap(), "accept-encoding");
+        assert_eq!(
+            headers.get(header::CONTENT_TYPE).unwrap(),
+            "text/javascript; charset=utf-8"
+        );
+        assert_eq!(
+            headers.get(header::CACHE_CONTROL).unwrap(),
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(body(response).await, "br-bytes");
+    }
+
+    #[tokio::test]
+    async fn a_client_refusing_brotli_gets_the_gzip_copy() {
+        let directory = precompressed_root();
+        let response =
+            request_accepting(directory.path(), "/assets/app.js", Some("br;q=0, gzip")).await;
+        assert_eq!(
+            response.headers().get(header::CONTENT_ENCODING).unwrap(),
+            "gzip"
+        );
+        assert_eq!(body(response).await, "gz-bytes");
+    }
+
+    #[tokio::test]
+    async fn without_an_accepted_coding_the_file_is_sent_as_built() {
+        let directory = precompressed_root();
+        for accept in [None, Some("identity"), Some("*;q=0")] {
+            let response = request_accepting(directory.path(), "/assets/app.js", accept).await;
+            assert!(
+                response.headers().get(header::CONTENT_ENCODING).is_none(),
+                "{accept:?}"
+            );
+            assert_eq!(
+                response.headers().get(header::VARY).unwrap(),
+                "accept-encoding",
+                "{accept:?}"
+            );
+            assert_eq!(body(response).await, "console.log('app')", "{accept:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_missing_copy_falls_back_to_the_next_coding_or_the_file() {
+        let directory = precompressed_root();
+        // The entry point has a Brotli copy only.
+        let response = request_accepting(directory.path(), "/jobs/abc", Some("gzip")).await;
+        assert!(response.headers().get(header::CONTENT_ENCODING).is_none());
+        assert_eq!(body(response).await, "<!doctype html><title>app</title>");
+
+        let response = request_accepting(directory.path(), "/jobs/abc", Some("br")).await;
+        assert_eq!(
+            response.headers().get(header::CONTENT_ENCODING).unwrap(),
+            "br"
+        );
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/html; charset=utf-8"
+        );
+        assert_eq!(body(response).await, "br-index");
+    }
+
+    #[tokio::test]
+    async fn already_compressed_files_are_never_varied() {
+        let directory = precompressed_root();
+        std::fs::write(directory.path().join("assets/font.woff2"), "font").unwrap();
+        std::fs::write(directory.path().join("assets/font.woff2.br"), "nope").unwrap();
+        let response = request_accepting(directory.path(), "/assets/font.woff2", Some("br")).await;
+        assert!(response.headers().get(header::CONTENT_ENCODING).is_none());
+        assert!(response.headers().get(header::VARY).is_none());
+        assert_eq!(body(response).await, "font");
+    }
+
+    #[test]
+    fn accept_encoding_follows_quality_and_wildcard_rules() {
+        assert!(accepts(Some("gzip, deflate, br"), "br"));
+        assert!(accepts(Some("BR"), "br"));
+        assert!(accepts(Some("gzip;q=0.5"), "gzip"));
+        assert!(accepts(Some("*"), "br"));
+        assert!(accepts(Some("br;q=0.001"), "br"));
+        assert!(!accepts(None, "br"));
+        assert!(!accepts(Some(""), "br"));
+        assert!(!accepts(Some("gzip"), "br"));
+        assert!(!accepts(Some("br;q=0"), "br"));
+        assert!(!accepts(Some("br; q=0.0"), "br"));
+        assert!(!accepts(Some("*;q=0"), "gzip"));
+        assert!(!accepts(Some("*, br;q=0"), "br"));
+        assert!(accepts(Some("br;q=bogus"), "br"));
     }
 
     use tower::ServiceExt as _;

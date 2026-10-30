@@ -1,6 +1,6 @@
 // Adapted from shadcn/ui (base-nova style, MIT).
 
-import type { ComponentProps } from "react";
+import type { ComponentProps, Ref } from "react";
 
 import { cn } from "./cn";
 
@@ -11,10 +11,18 @@ import { cn } from "./cn";
 export function Table({
     className,
     containerLabel = "Table",
+    containerRef,
+    containerClassName,
     ...props
-}: ComponentProps<"table"> & { containerLabel?: string }) {
+}: ComponentProps<"table"> & {
+    containerLabel?: string;
+    /** The scroll container, for a virtualizer or an overflow check. */
+    containerRef?: Ref<HTMLDivElement>;
+    containerClassName?: string;
+}) {
     return (
         <div
+            ref={containerRef}
             data-slot="table-container"
             role="region"
             aria-label={containerLabel}
@@ -23,7 +31,10 @@ export function Table({
             // the frame's overflow clipping.
             // eslint-disable-next-line jsx-a11y-x/no-noninteractive-tabindex
             tabIndex={0}
-            className="relative w-full overflow-x-auto focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring"
+            className={cn(
+                "relative w-full overflow-x-auto focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring",
+                containerClassName,
+            )}
         >
             <table
                 data-slot="table"
@@ -81,7 +92,7 @@ export function TableHead({
             data-slot="table-head"
             scope={scope}
             className={cn(
-                "h-10 px-[var(--density-cell-x)] py-2 text-left align-middle font-medium whitespace-nowrap text-muted-foreground",
+                "h-10 px-[var(--density-cell-x)] py-2 text-left align-middle font-semibold whitespace-nowrap text-muted-foreground",
                 className,
             )}
             {...props}

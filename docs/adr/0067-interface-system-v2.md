@@ -1,0 +1,344 @@
+# 0067. Interface system v2
+
+- Status: Proposed
+- Date: 2026-10-29
+- Plan reference: `.private/BERGSMITH_PROJECT_PLAN.md` BS-033
+
+## Context
+
+[0046](0046-web-ui-refresh-and-byoc-delivery.md) set the UI stack and tokens,
+and [0056](0056-ui-platform-navigation-and-names-first-operation.md) set the shell,
+templates, and performance rules. The pages that followed are consistent but
+dense in the wrong places: a 14 px body with three weights, a blue accent that
+competes with the status colors, flat surfaces that separate regions only with
+borders, a fixed 15rem rail, a page column capped at `max-w-6xl`, and almost no
+motion. Operators scan long lists of jobs and tables; the interface should
+recede so that state stands out.
+
+BS-033 redesigns the interface in phases (T1–T9). This decision fixes the
+visual system, the motion rules, and the engineering limits every phase is
+held to. Routes, permissions, API contracts, and the commit path are
+unchanged.
+
+## Decision
+
+### Color
+
+- The palette is neutral graphite with no brand accent. Color is reserved for
+  status, and status is still always text and an icon (0046).
+- Text has four tiers: `foreground`, `foreground-secondary`,
+  `muted-foreground`, and `foreground-faint`. `faint` is decorative only
+  (separators, disabled controls) and never carries information, because it
+  is deliberately below 4.5:1.
+- Surfaces form a lightness ladder: `surface-sunken`, `background`,
+  `surface-raised` (cards), `popover`, `surface-overlay`. In the dark theme the
+  steps are L 0.15, 0.17, 0.195, 0.22, and 0.24 with chroma at most 0.006, so
+  elevation reads without shadows. Lines are a hairline `border` and a
+  `border-strong` for controls.
+- Filled actions (`primary`) are graphite: near-black in light, near-white in
+  dark. Links take the text color; inside running text an underline marks
+  them, elsewhere their position does and the underline appears on hover. The
+  focus ring is the secondary text tier, at least 7:1 on every surface.
+- Status tokens come in pairs: a strong value for text and icons, and a soft
+  translucent value for fills: `success`, `warning`, `destructive`, `info`,
+  and `running`. Strong text meets 4.5:1 on its own fill.
+
+This supersedes 0046's "neutral graphite surfaces and one accent".
+
+### Type
+
+- Inter Variable, self-hosted from `@fontsource-variable/inter` (OFL-1.1). The
+  build emits one file per script subset, each loaded only when the page uses
+  it through `unicode-range`. The Latin file (about 48 kB) is preloaded by a
+  build plugin, which fails the build if the file is missing. A system
+  fallback metric-matched with `size-adjust` and ascent, descent, and line-gap
+  overrides keeps the swap from shifting text. Monospace stays the system
+  stack.
+- One scale: 11, 12, 13 (body), 14, 16, and 20 px (`text-2xs` to `text-xl`),
+  each with a fixed line height. Two weights: 400 and 600. Lint rejects the
+  other weight utilities.
+- Text fields render at 16 px on coarse pointers, so phones do not zoom into a
+  focused field.
+
+### Shape, layout, and motion
+
+- Radius 0.5rem (8 px for cards and dialogs, 6 px for controls, 4 px for
+  small items).
+- Layout tokens: `sidebar-width` 14rem, `sidebar-width-collapsed` 3.25rem,
+  `header-height` 3rem, `peek-width` `clamp(24rem, 40vw, 40rem)`.
+- Motion reports state changes and never decorates. Durations are by role
+  (`instant` 80 ms, `fast` 140 ms, `base` 200 ms, `emphasis` 360 ms) and
+  easings by direction (`ease-out` entering, `ease-in` leaving,
+  `ease-standard` moving). Only `opacity` and `transform` animate. Under
+  `prefers-reduced-motion`, every duration token is zero, transitions are
+  removed, and finite animations end at once.
+
+### Primitives
+
+- No animation library. Base UI exposes `data-starting-style` and
+  `data-ending-style` on every popup, so CSS transitions on the motion tokens
+  cover enter and exit without the bundle cost or a library that could
+  inject `<style>` elements.
+- The app renders inside Base UI's `CSPProvider` with
+  `disableStyleElements`; the one scrollbar rule Base UI would inject lives
+  in `styles.css`. The custom Select that 0056 kept for this reason can now
+  be revisited; it stays until a task needs more than it offers.
+- Floating primitives (menu, popover, tooltip) cost about 26 kB gzipped and
+  stay out of the first-load bundle. Page-level uses load with their page
+  chunk; shell-level menus use `MenuButton`, a plain eager button whose menu
+  loads on hover, focus, or the first press and anchors to it.
+- Menus and the peek panel are modal. Base UI's non-modal popups add
+  focusable focus guards marked `aria-hidden`, which fail WCAG checks.
+- Shell controls avoid primitives with a measurable cost: the segmented
+  control is native `aria-pressed` buttons, and scroll panes use native thin
+  scrollbars instead of a scroll-area component.
+- Lint rejects `innerHTML` and `outerHTML` assignment,
+  `insertAdjacentHTML`, `document.write`, `eval`, `new Function`, and the
+  JSX `style` attribute, in addition to `dangerouslySetInnerHTML` (0046).
+
+### Shell
+
+- The rail collapses to its icons with a top-bar button or Ctrl+\ (⌘+\ on
+  macOS). Like theme and density, the choice is a per-browser preference
+  applied as `data-sidebar` on the root before the first render, so a
+  collapsed rail never flashes open. A `rail-collapsed` variant hides the
+  labels visually only: each link keeps its name and gains a tooltip.
+  The width changes at once: animating the grid column would lay out the
+  whole page on every frame, and only `opacity` and `transform` animate.
+- The account (name, theme, density, sign-out) is one button at the foot of
+  the rail; its panel is a modal popover that loads on first use, like
+  `MenuButton`. The phone drawer keeps those controls inline.
+- From `md` up, a sticky top bar holds the rail toggle, the breadcrumb,
+  search, and New. Page content is no longer capped at `max-w-6xl`; it fills
+  the column up to 96rem, so wide tables use wide screens.
+- A new page fades in through the Web Animations API, keyed by the path
+  only, so tabs and filters (search parameters) do not replay it and nothing
+  remounts. It reads the duration token, so reduced motion turns it off.
+
+### List API
+
+- The jobs, tables, catalogs, audit, and principals lists take filters beside
+  their page bounds. Filters combine with AND; one filter's comma-separated
+  values (at most 16) combine with OR. An empty or unknown value is a 400, so
+  a mistyped filter never widens a list.
+- `q` searches display names only: a table alias's `namespace.name`, a
+  catalog's name, a principal's display name, an audit actor's display name.
+  It is trimmed, 1 to 128 characters, free of control characters, and
+  matched with `ILIKE` after escaping `%`, `_`, and `\`. A table matches only
+  through aliases the caller may see, so a name in a hidden catalog finds
+  nothing.
+- Jobs and audit take `order=newest`. Identifiers are UUIDv7 or a sequence,
+  so the cursor stays one index range condition in either direction.
+- Each list has a `/facets` read: per dimension, the values with their counts
+  under every filter except that dimension's own, so a person sees what
+  widening it would add. A value is exactly the parameter value that selects
+  it. Counts run through the list's grant predicate in the same query, and
+  the audit and principal facets keep their lists' organization-wide
+  permission. Table health is evaluated, not stored, so its facet scans the
+  visible inventory in the same bounded chunks as the health filter.
+- Queries are built from compile-time fragments and bind every value. An
+  absent filter adds no predicate, so each combination gets its own plan with
+  a direct index condition rather than a nullable one. A filtered cursor
+  carries a digest of its filter and order and is refused under any other.
+- Migration 0040 indexes each job and audit filter as
+  `(organization_id, value, id)`. A test seeds 5,000 rows with rare values and
+  fails if a filtered page discards the organization's other rows. Name
+  search has no index: the names live in inventory-sized tables.
+
+### List pages
+
+- Long, server-filtered lists use `DataGrid`, built on TanStack Table
+  (`@tanstack/react-table` 8.21.3) for the column model and visibility and
+  `@tanstack/react-virtual` 3.14.20 for virtualization; both are MIT and load
+  in one shared lazy chunk (about 25 kB gzipped). Jobs and Tables use it
+  first; `DataTable` stays for short client-side lists until they migrate.
+- Search, filters, and order live in validated search parameters and go to
+  the coordinator, never filter loaded rows. Validation matches the API:
+  search text loses control characters and stops at 128 characters, and list
+  filters keep known values once in canonical order, so a link never carries
+  a filter the API would reject. The search field reports after 150 ms
+  without typing.
+- Facets open from a toolbar button in a modal popover of native checkboxes
+  (OR within a filter) or radios (single-value filters), each with its count;
+  a selected value the counts no longer include stays offered with zero. The
+  choice shows at once, before the address settles. Active filters are
+  removable pills. In the narrow drawer the same choices render in place.
+  Counts are fetched only once the list has rows or filters.
+- Column visibility is a per-browser choice in local storage, like density;
+  the first column cannot hide.
+- The header sticks inside the grid's own scroll area, capped to the
+  viewport. Past 100 rows only rows in view render; spacer rows take their
+  heights through CSSOM, and `aria-rowcount` and `aria-rowindex` keep the
+  full size for assistive technology. Arrow keys, Home, and End move between
+  rows' first links.
+- While a filter loads, the previous rows stay (`keepPreviousData`), the
+  grid is `aria-busy`, and a 2 px bar fades in without moving the layout.
+  Lists and facets are fresh for 15 s.
+- The namespace select of the old Tables page is gone: `q` matches
+  `namespace.name`, so typing a namespace finds its tables. Finding a table
+  by its ID is no longer offered from the list; its page is reachable by
+  link.
+- A browser journey loads 1,000 jobs, asserts fewer than 100 rendered rows,
+  and measures interaction to next paint at most 200 ms and layout shift at
+  most 0.1 at 4× CPU throttle.
+
+### Peek and saved views
+
+- A row's preview button opens the item in the peek panel and records it as
+  `?peek=<id>`, so a reload or link reopens it; Escape or the close button
+  removes the parameter and returns focus to the button. The panel reads the
+  resource itself, shows the list row while it loads, and never writes:
+  actions stay on the detail page. Jobs and Tables offer it.
+- Saved views live in the coordinator (`/me/views`, migration 0041), not in
+  browser storage, so they follow the person. A view is the list's own
+  search parameters plus `hidden` columns, checked per list against the
+  parameter names it accepts, at most 512 characters a value and 4096 bytes
+  in all, 50 views a person, names unique per list. Saving takes an
+  idempotency key; edits and deletes name their revision; each write is
+  audited with the list and revision only. A per-person advisory lock keeps
+  concurrent saves from passing the limit together.
+- The toolbar's Views menu applies a view through the same validation as a
+  link, so a stale value is dropped rather than sent; a view matching the
+  current parameters names the menu and can be deleted after confirmation.
+- Catalogs, Audit, and Users moved to the grid with their T4 filters and
+  facets. The audit log is newest first by default. Service identities and
+  the short client-side lists keep `DataTable`.
+
+### Search and live events
+
+- `GET /api/v1/search?q=` returns at most `limit` (5 by default, 20 at most)
+  catalogs, tables, and people whose display names contain `q`, for the
+  command palette. Catalogs and tables run through their lists' grant
+  predicates, and a table matches only by an alias the caller may see.
+  People are searched only for callers who manage access; for others the
+  section is `null`, so the response shape does not depend on what exists.
+- The Overview's job outcomes carry `previous`: the same counts for the
+  24 hours before the current window, so a figure can show its change
+  without a second request.
+- `GET /api/v1/events` streams which jobs the caller may list changed
+  state. An event holds the job and table IDs, the state, and the
+  revision, never names, reasons, or actors; the page reads anything else
+  it shows. Every connection begins with `ready`, after which the client
+  reloads what it shows, and a resume point more than 10,000 ledger IDs
+  behind gets `reset` instead of a replay. Each session holds at most four
+  streams, and a stream ends with its session or after an hour.
+- The SSE `id` is the job event's ledger ID. IDs are assigned at insert,
+  so a later ID can commit first. A stream therefore delivers only up to a
+  settled horizon: it reads the ID sequence's last value, then the
+  transactions in progress, and treats that value as settled once all of
+  those have ended. Resuming after any delivered ID never skips an event.
+  A new stream sends `ready` only once a horizon settles, never at the
+  newest committed ID, which an earlier ID could still follow.
+  This adds no column, trigger, or lock to the ledger's write path; the cost
+  is that a long-running write transaction delays delivery until it ends.
+  Each read checks the jobs list's grant predicate inside the query, so
+  rows of other grants and organizations advance the cursor without being
+  sent.
+
+### Command palette, Overview, and live lists
+
+- Ctrl+K (⌘K on macOS) or the top bar's Search button opens the command
+  palette, whose code loads on first use or on hover or focus of the button.
+  It lists the pages and create forms the session's grants allow, filters
+  them as the person types, and, after 150 ms without typing, adds catalogs,
+  tables, and people from `/search`. The field is an ARIA combobox over a
+  listbox of grouped options: arrow keys move, Enter opens, and Escape
+  closes and returns focus. Every option is a typed route, so the palette
+  only navigates and never writes; actions keep their page's confirmation.
+- The Overview leads with the last day's ended, published, and failed jobs
+  and the conflict rate, each with its change against the previous 24 hours
+  in words and an arrow, never color. The outcome chart draws the day
+  before as a thin bar under each outcome, and its table adds that column.
+- The shell holds one `/events` stream per tab. A `job` event marks the
+  cached reads that may show the job: the overview, job counts, a job list
+  that lacks the job or holds an older revision, the job's own detail and
+  tasks, and, once a job ends, its table's reads. Marked reads refetch every
+  250 ms; a read whose fetch is still running waits for the next batch,
+  because that fetch may predate the event. A stream without a resume point
+  reloads every job read once `ready` arrives, and `reset` always does; a
+  resumed stream replays instead.
+- The stream closes while the tab is hidden and reopens with `after` set to
+  the last ID it saw; the browser's own reconnects send `Last-Event-ID`.
+  When the stream is refused (capacity or an ended session), the same reads
+  are refetched every 30 seconds and the stream is retried each time, so
+  polling happens only while live updates are unavailable.
+
+### Detail pages and sign-in
+
+- Job, Table, and Catalog pages open with one header: the title with its
+  status badges, a line of identifying facts, the actions, and the tabs.
+  From `md` up it sticks under the top bar, so state and actions stay in
+  reach on a long tab. The header publishes its height as a CSS variable
+  through the CSSOM, and the document's `scroll-padding-top` adds it to the
+  top bar's, so a control that focus scrolls into view is never hidden
+  under either (WCAG 2.4.11).
+- A job's header names each side of its outcome ("Execution: Running",
+  "Publication: Not started"), so the two stay separate on every tab. Its
+  tabs are Summary (the two sides with what each means, the live events,
+  and the facts), Tasks, and Statistics, kept in `?tab=` as before.
+- A table's title sets its catalog and namespace path in monospace before
+  the table name; the accessible name is still the whole dotted name. The
+  tabs follow how a table is diagnosed: Overview, Health, Statistics,
+  Snapshots, Storage, Maintenance, Definition, then Access. Preview and Run
+  stay as buttons; the four less frequent operations move into a More
+  operations menu whose items open the same confirmation each button
+  opened, and closing it returns focus to the menu button.
+- A catalog's capability report is a checklist: each check's state is
+  written beside an icon, never shown by color or icon alone. The results
+  arrive once, each a beat after the previous (`sibling-index()`, which
+  browsers without it skip), and not under reduced motion.
+- Adding a connection is three steps: the connection's name and endpoint,
+  its warehouse and credential reference, then a check of the unsaved draft
+  and an explicit save. The draft lives above the steps, so going back keeps
+  every edit, and any edit discards the check it would invalidate. A step
+  opens only through Continue, which runs the fields' own validation; the
+  endpoint's validity follows its value on every render, so a revisited
+  step still refuses a URI with credentials, a query, or a fragment. Each
+  new step takes focus at its heading and slides in from the side it comes
+  from, on the motion tokens.
+- Sign-in is one centered card on the sunken surface that fades in once.
+  There is no list of identity providers to show: the coordinator resolves
+  the provider from the organization, so the card keeps the organization
+  field.
+
+### Engineering limits
+
+These are enforced by gates, not by review:
+
+- Bundle: first-load JavaScript stays within the 175 kB gzipped budget (0056),
+  and BS-033 adds at most 15 kB to it. Stylesheets have their own gzipped
+  budget in the same build plugin, set at about 10% over the 9.9 kB measured
+  when this decision was made, and each lazy chunk is limited to 50 kB
+  gzipped. The palette and Overview brought stylesheets to 11.0 kB, the
+  whole budget, with the detail pages still to come, so the stylesheet
+  budget is 12 kB from BS-033.T8; first-load JavaScript was 159.3 kB.
+- Static files are compressed once, at build time: the build writes Brotli
+  and gzip copies of every text file of at least 1 KiB, and the coordinator
+  serves the best copy the request's `Accept-Encoding` admits, with
+  `Vary: Accept-Encoding`, falling back to the file as built. Brotli cuts the
+  entry script by about 13% over gzip. API responses stay uncompressed, so
+  no response that carries a session's secrets is exposed to
+  compression-oracle attacks.
+- The coordinator's CSP and response headers do not change. Every new popup
+  primitive and animation library passes the browser gate's policy check
+  before a page uses it; positioning writes CSSOM properties, never `style`
+  attributes (0056 kept the custom Select for that reason).
+- Lists, facets, search, live streams, and saved views are scoped by grant
+  inside the database query, so counts and suggestions cannot reveal
+  resources outside the caller's grant.
+
+## Consequences
+
+- Status is easier to find: it is the only color on the page.
+- Every existing size utility shrinks by one step, and every
+  `font-medium` became `font-semibold`; T1 reviews each page once and
+  re-records the visual baselines.
+- The production build carries about 200 kB of font files, but a page
+  downloads only the subsets it uses; most pages need only the Latin file.
+- The browser gate now serves built files as bytes and fails on a font
+  Chromium cannot decode, which it previously reported only as a warning.
+- The stylesheet is close to its budget (10.8 of 11 kB after the shell);
+  later phases must reuse utilities rather than add bespoke rules, or
+  revisit the budget in this record. T8 did, raising it to 12 kB.
+- Later phases add the toolbar data table and the API additions on top of
+  these tokens.

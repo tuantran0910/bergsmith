@@ -267,7 +267,7 @@ function GrantRow({
     return (
         <TableRow>
             <TableCell>
-                <span className="font-medium wrap-anywhere">{name}</span>
+                <span className="font-semibold wrap-anywhere">{name}</span>
             </TableCell>
             <TableCell>{roleName(grant.role)}</TableCell>
             <TableCell className="wrap-anywhere">

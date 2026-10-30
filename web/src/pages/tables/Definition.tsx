@@ -54,7 +54,7 @@ function Schema({ schema }: { schema: Schemas["TableDefinitionSchema"] }) {
                                 <TableCell className="text-right tabular-nums">
                                     {field.id}
                                 </TableCell>
-                                <TableCell className="font-medium">
+                                <TableCell className="font-semibold">
                                     {field.name}
                                 </TableCell>
                                 <TableCell className="font-mono text-xs">
@@ -126,7 +126,7 @@ function Specs({
                                             <TableCell className="text-right tabular-nums">
                                                 {field.source_id}
                                             </TableCell>
-                                            <TableCell className="font-medium">
+                                            <TableCell className="font-semibold">
                                                 {field.name}
                                             </TableCell>
                                             <TableCell className="font-mono text-xs">

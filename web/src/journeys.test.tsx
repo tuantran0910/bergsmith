@@ -19,6 +19,7 @@ import userEvent from "@testing-library/user-event";
 import { App } from "./App";
 import { browser } from "./browser";
 import { createQueryClient } from "./queryClient";
+import type { Schemas } from "./api/client";
 import { FakeApi, FakeEventSource, apiError, json, schema } from "./test/fakes";
 import {
     CATALOG_ID,
@@ -80,6 +81,17 @@ function start(path: string) {
     return user;
 }
 
+/** Opens a table operation's confirmation from the More operations menu. */
+async function openOperation(
+    user: ReturnType<typeof userEvent.setup>,
+    label: string,
+) {
+    await user.click(
+        await screen.findByRole("button", { name: "More operations" }),
+    );
+    await user.click(await screen.findByRole("menuitem", { name: label }));
+}
+
 /** The job page's event list. */
 function events() {
     return within(screen.getByRole("list", { name: "Job events" }));
@@ -108,7 +120,7 @@ it("shows ledger statistics on the job detail page", async () => {
             }),
         ),
     );
-    start(`/jobs/${JOB_ID}`);
+    start(`/jobs/${JOB_ID}?tab=statistics`);
     expect(
         await screen.findByRole("heading", { name: "Maintenance statistics" }),
     ).toBeInTheDocument();
@@ -160,6 +172,12 @@ describe("sign-in", () => {
         ).on("POST", "/auth/logout", () => new Response(null, { status: 204 }));
         const user = start("/tables");
 
+        // Sign-out sits in the account panel, which loads on first use.
+        await user.click(
+            within(
+                await screen.findByRole("region", { name: "Account" }),
+            ).getByRole("button", { name: "Alice" }),
+        );
         await user.click(
             await screen.findByRole("button", { name: "Sign out" }),
         );
@@ -170,6 +188,72 @@ describe("sign-in", () => {
         expect(
             fake.sent("POST", "/auth/logout")[0]?.headers.get("x-csrf-token"),
         ).toBe("csrf-value");
+    });
+
+    it("collapses the rail by button and shortcut, keeping link names", async () => {
+        fake.on("GET", "/api/v1/tables", () =>
+            json(200, { items: [], next_cursor: null }),
+        );
+        const user = start("/tables");
+        const root = document.documentElement;
+
+        await user.click(
+            await screen.findByRole("button", { name: "Collapse sidebar" }),
+        );
+        expect(root).toHaveAttribute("data-sidebar", "collapsed");
+        const main = screen.getByRole("navigation", { name: "Main" });
+        expect(
+            within(main).getByRole("link", { name: "Catalogs" }),
+        ).toHaveAttribute("title", "Catalogs");
+
+        await user.keyboard("{Control>}\\{/Control}");
+        expect(root).not.toHaveAttribute("data-sidebar");
+        expect(
+            screen.getByRole("button", { name: "Collapse sidebar" }),
+        ).toHaveAttribute("aria-keyshortcuts", "Control+\\ Meta+\\");
+        expect(
+            within(main).getByRole("link", { name: "Catalogs" }),
+        ).not.toHaveAttribute("title");
+    });
+
+    it("keeps theme, density, and sign-out in the account panel", async () => {
+        fake.on("GET", "/api/v1/tables", () =>
+            json(200, { items: [], next_cursor: null }),
+        );
+        const user = start("/tables");
+        await screen.findByText("No tables are visible to you.");
+        const account = within(
+            await screen.findByRole("region", { name: "Account" }),
+        ).getByRole("button", { name: "Alice" });
+
+        await user.click(account);
+        const panel = await screen.findByRole("dialog", { name: "Alice" });
+        expect(account).toHaveAttribute("aria-expanded", "true");
+        expect(
+            within(panel).getByRole("group", { name: "Theme" }),
+        ).toBeInTheDocument();
+        expect(
+            within(panel).getByRole("group", { name: "Density" }),
+        ).toBeInTheDocument();
+        expect(
+            within(panel).getByRole("button", { name: "Sign out" }),
+        ).toBeEnabled();
+
+        // The modal panel takes focus once it opens; Escape closes it from
+        // there.
+        await waitFor(() => {
+            expect(panel).toContainElement(
+                document.activeElement as HTMLElement,
+            );
+        });
+        await user.keyboard("{Escape}");
+        await waitFor(() => {
+            expect(account).toHaveAttribute("aria-expanded", "false");
+        });
+        expect(
+            screen.queryByRole("dialog", { name: "Alice" }),
+        ).not.toBeInTheDocument();
+        expect(account).toHaveFocus();
     });
 
     it("explains an unreachable coordinator and retries", async () => {
@@ -538,7 +622,7 @@ describe("browsing", () => {
         expect(window.location.pathname).toBe(`/tables/${TABLE_ID}`);
     });
 
-    it("filters tables by name and keeps the filter in the address", async () => {
+    it("searches table names on the coordinator once typing pauses", async () => {
         const other = schema("Table", {
             ...table,
             id: "0190f3c4-0000-7000-8000-000000000002",
@@ -553,11 +637,14 @@ describe("browsing", () => {
                 },
             ],
         });
-        fake.on("GET", "/api/v1/tables", () =>
+        fake.on("GET", "/api/v1/tables", (request) =>
             json(
                 200,
                 schema("TablePage", {
-                    items: [table, other],
+                    items:
+                        new URL(request.url).searchParams.get("q") === "events"
+                            ? [other]
+                            : [table, other],
                     next_cursor: null,
                 }),
             ),
@@ -567,10 +654,6 @@ describe("browsing", () => {
         expect(
             await screen.findByRole("link", { name: /^orders/ }),
         ).toBeInTheDocument();
-        expect(
-            screen.getByRole("link", { name: /^events/ }),
-        ).toBeInTheDocument();
-
         await user.type(
             screen.getByRole("searchbox", { name: "Search tables" }),
             "events",
@@ -587,20 +670,36 @@ describe("browsing", () => {
         expect(new URL(window.location.href).searchParams.get("q")).toBe(
             "events",
         );
-        expect(screen.getByText("1 of 2 tables")).toBeInTheDocument();
+        // One request for the whole word, not one per keystroke; the facet
+        // counts follow the same filter.
+        const searched = (path: string) =>
+            fake
+                .sent("GET", path)
+                .map((request) => new URL(request.url).searchParams.get("q"))
+                .filter((q) => q !== null);
+        expect(searched("/api/v1/tables")).toEqual(["events"]);
+        expect(searched("/api/v1/tables/facets")).toEqual(["events"]);
 
         await user.click(screen.getByRole("button", { name: "Clear filters" }));
         expect(
             await screen.findByRole("link", { name: /^orders/ }),
         ).toBeInTheDocument();
         expect(new URL(window.location.href).searchParams.get("q")).toBeNull();
+        expect(
+            screen.getByRole("searchbox", { name: "Search tables" }),
+        ).toHaveValue("");
     });
 
     it("explains no matches and clears the filters", async () => {
-        fake.on("GET", "/api/v1/tables", () =>
+        fake.on("GET", "/api/v1/tables", (request) =>
             json(
                 200,
-                schema("TablePage", { items: [table], next_cursor: null }),
+                schema("TablePage", {
+                    items: new URL(request.url).searchParams.has("q")
+                        ? []
+                        : [table],
+                    next_cursor: null,
+                }),
             ),
         );
         const user = start("/tables");
@@ -623,97 +722,51 @@ describe("browsing", () => {
         ).toBeInTheDocument();
     });
 
-    it("finds an unnamed table by its short ID", async () => {
-        const unnamed = schema("Table", {
-            ...table,
-            id: "0190f3c4-0000-7000-8000-000000000002",
-            table_uuid: "6f1c0d0e-1111-4222-8333-444455556667",
-            aliases: [],
-        });
+    it("filters tables by catalog with facet counts and removable pills", async () => {
         fake.on("GET", "/api/v1/tables", () =>
             json(
                 200,
-                schema("TablePage", {
-                    items: [table, unnamed],
-                    next_cursor: null,
+                schema("TablePage", { items: [table], next_cursor: null }),
+            ),
+        ).on("GET", "/api/v1/tables/facets", () =>
+            json(
+                200,
+                schema("TableFacets", {
+                    health: [{ value: "unassessed", count: 1 }],
+                    catalog: [{ value: CATALOG_ID, count: 1 }],
                 }),
             ),
         );
         const user = start("/tables");
         await screen.findByRole("link", { name: /^orders/ });
 
-        await user.type(
-            screen.getByRole("searchbox", { name: "Search tables" }),
-            "00000002",
-        );
-
-        expect(
-            await screen.findByRole("link", { name: "00000002" }),
-        ).toBeInTheDocument();
-        expect(
-            screen.queryByRole("link", { name: /^orders/ }),
-        ).not.toBeInTheDocument();
-    });
-
-    it("keeps loading more available when a filter has no matches", async () => {
-        const other = schema("Table", {
-            ...table,
-            id: "0190f3c4-0000-7000-8000-000000000004",
-            table_uuid: "6f1c0d0e-1111-4222-8333-444455556668",
-            created_at: "2026-10-05T00:00:00Z",
-            aliases: [
-                {
-                    catalog_id: CATALOG_ID,
-                    namespace: ["marketing"],
-                    name: "events",
-                    revision: 1,
-                },
-            ],
-        });
-        fake.on(
-            "GET",
-            "/api/v1/tables",
-            () =>
-                json(
-                    200,
-                    schema("TablePage", {
-                        items: [table],
-                        next_cursor: "next-page",
-                    }),
-                ),
-            () =>
-                json(
-                    200,
-                    schema("TablePage", {
-                        items: [other],
-                        next_cursor: null,
-                    }),
-                ),
-        );
-        const user = start("/tables");
-        await screen.findByRole("link", { name: /^orders/ });
-
-        await user.type(
-            screen.getByRole("searchbox", { name: "Search tables" }),
-            "events",
-        );
-
-        expect(await screen.findByText("No matches.")).toBeInTheDocument();
-        expect(
-            screen.getByText(/cover the 1 loaded table/),
-        ).toBeInTheDocument();
         await user.click(
-            screen.getByRole("button", { name: "Load more tables" }),
+            screen.getByRole("button", { name: "Catalog filter" }),
         );
+        const lake = await screen.findByRole("radio", { name: "lake 1" });
+        await user.click(lake);
 
-        expect(
-            await screen.findByRole("link", { name: /^events/ }),
-        ).toBeInTheDocument();
+        await waitFor(() => {
+            expect(
+                new URL(window.location.href).searchParams.get("catalog"),
+            ).toBe(CATALOG_ID);
+        });
         expect(
             new URL(
-                fake.sent("GET", "/api/v1/tables")[1]?.url ?? "",
-            ).searchParams.get("cursor"),
-        ).toBe("next-page");
+                fake.sent("GET", "/api/v1/tables").at(-1)?.url ?? "",
+            ).searchParams.get("catalog"),
+        ).toBe(CATALOG_ID);
+        await user.keyboard("{Escape}");
+        await user.click(
+            await screen.findByRole("button", {
+                name: "Remove filter Catalog: lake",
+            }),
+        );
+        await waitFor(() => {
+            expect(
+                new URL(window.location.href).searchParams.get("catalog"),
+            ).toBeNull();
+        });
     });
 
     it("sorts by registered date through the address", async () => {
@@ -853,6 +906,21 @@ describe("overview and shell", () => {
         ).toBeInTheDocument();
         expect(
             screen.getByRole("table", { name: /Jobs in the last day/ }),
+        ).toBeInTheDocument();
+        // Each figure of the last day is compared with the day before.
+        const window = within(
+            screen.getByRole("region", { name: "Last 24 hours" }),
+        );
+        expect(window.getByText("Jobs ended")).toBeInTheDocument();
+        expect(
+            window.getAllByText("\u22121 vs the previous 24 h"),
+        ).toHaveLength(2);
+        expect(
+            window.getByText("Same as the previous 24 h"),
+        ).toBeInTheDocument();
+        expect(window.getByText("33.3%")).toBeInTheDocument();
+        expect(
+            window.getByText("+33.3 pts vs the previous 24 h"),
         ).toBeInTheDocument();
         expect(
             screen.queryByRole("link", { name: /Browse tables and start/ }),
@@ -1294,9 +1362,7 @@ describe("preview and run", () => {
         ).on("GET", "/api/v1/jobs/{id}", () => json(200, job("Planning")));
         const user = start(`/tables/${TABLE_ID}`);
 
-        await user.click(
-            await screen.findByRole("button", { name: "Expire snapshots" }),
-        );
+        await openOperation(user, "Expire snapshots");
         expect(
             await screen.findByRole("dialog", { name: "Expire snapshots" }),
         ).toBeVisible();
@@ -1327,9 +1393,7 @@ describe("preview and run", () => {
         );
         const user = start(`/tables/${TABLE_ID}`);
 
-        await user.click(
-            await screen.findByRole("button", { name: "Remove orphan files" }),
-        );
+        await openOperation(user, "Remove orphan files");
         const dialog = await screen.findByRole("dialog", {
             name: "Remove orphan files",
         });
@@ -1366,7 +1430,7 @@ describe("preview and run", () => {
         );
         const user = start(`/tables/${TABLE_ID}`);
 
-        await user.click(await screen.findByRole("button", { name: label }));
+        await openOperation(user, label);
         const dialog = await screen.findByRole("dialog", { name: label });
         expect(dialog).toHaveTextContent("one new snapshot");
         await user.click(
@@ -1394,9 +1458,7 @@ describe("preview and run", () => {
         );
         const user = start(`/tables/${TABLE_ID}`);
 
-        await user.click(
-            await screen.findByRole("button", { name: "Rewrite manifests" }),
-        );
+        await openOperation(user, "Rewrite manifests");
         await user.click(
             await screen.findByRole("button", {
                 name: "Confirm rewrite manifests",
@@ -1425,9 +1487,7 @@ describe("preview and run", () => {
         );
         const user = start(`/tables/${TABLE_ID}`);
 
-        await user.click(
-            await screen.findByRole("button", { name: "Remove orphan files" }),
-        );
+        await openOperation(user, "Remove orphan files");
         await user.click(
             await screen.findByRole("button", {
                 name: "Confirm remove orphan files",
@@ -2081,6 +2141,324 @@ describe("job commands", () => {
 });
 
 describe("jobs and audit", () => {
+    it("filters jobs by state on the coordinator, newest first", async () => {
+        fake.on("GET", "/api/v1/jobs", (request) =>
+            json(
+                200,
+                schema("JobPage", {
+                    items:
+                        new URL(request.url).searchParams.get("state") ===
+                        "Failed"
+                            ? [job("Failed", { id: RETRY_JOB_ID })]
+                            : [
+                                  job("ReadyToCommit"),
+                                  job("Failed", { id: RETRY_JOB_ID }),
+                              ],
+                    next_cursor: null,
+                }),
+            ),
+        ).on("GET", "/api/v1/jobs/facets", () =>
+            json(
+                200,
+                schema("JobFacets", {
+                    state: [
+                        { value: "ReadyToCommit", count: 1 },
+                        { value: "Failed", count: 1 },
+                    ],
+                    operation: [{ value: "compact", count: 2 }],
+                }),
+            ),
+        );
+        const user = start("/jobs");
+        await screen.findByRole("link", { name: `Job ${JOB_ID.slice(-8)}` });
+        const params = () =>
+            new URL(fake.sent("GET", "/api/v1/jobs").at(-1)?.url ?? "")
+                .searchParams;
+        expect(params().get("order")).toBe("newest");
+
+        await user.click(screen.getByRole("button", { name: "State filter" }));
+        await user.click(
+            await screen.findByRole("checkbox", { name: "Failed 1" }),
+        );
+        await user.keyboard("{Escape}");
+
+        await waitFor(() => {
+            expect(
+                screen.queryByRole("link", {
+                    name: `Job ${JOB_ID.slice(-8)}`,
+                }),
+            ).not.toBeInTheDocument();
+        });
+        expect(params().get("state")).toBe("Failed");
+        expect(window.location.search).toContain("state=Failed");
+        expect(
+            new URL(
+                fake.sent("GET", "/api/v1/jobs/facets").at(-1)?.url ?? "",
+            ).searchParams.get("state"),
+        ).toBe("Failed");
+
+        // The order is the coordinator's too; oldest first is in the address.
+        await user.click(screen.getByRole("button", { name: "Created" }));
+        await waitFor(() => {
+            expect(params().get("order")).toBe("oldest");
+        });
+        expect(window.location.search).toContain("order=oldest");
+
+        await user.click(
+            screen.getByRole("button", { name: "Remove filter State: Failed" }),
+        );
+        await waitFor(() => {
+            expect(window.location.search).not.toContain("state=");
+        });
+        expect(
+            await screen.findByRole("link", {
+                name: `Job ${JOB_ID.slice(-8)}`,
+            }),
+        ).toBeInTheDocument();
+    });
+
+    it("previews a job beside the list and keeps it in the address", async () => {
+        fake.on("GET", "/api/v1/jobs", () =>
+            json(
+                200,
+                schema("JobPage", {
+                    items: [job("Running")],
+                    next_cursor: null,
+                }),
+            ),
+        ).on("GET", "/api/v1/jobs/{id}", () => json(200, job("Running")));
+        const user = start("/jobs");
+
+        const preview = await screen.findByRole("button", {
+            name: `Preview job ${JOB_ID.slice(-8)}`,
+        });
+        await user.click(preview);
+        const panel = await screen.findByRole("dialog", {
+            name: `Job ${JOB_ID.slice(-8)}`,
+        });
+        expect(
+            within(panel).getByRole("link", { name: "Open job" }),
+        ).toHaveAttribute("href", `/jobs/${JOB_ID}`);
+        expect(within(panel).getByText("Compaction")).toBeInTheDocument();
+        await waitFor(() => {
+            expect(window.location.search).toContain(`peek=${JOB_ID}`);
+        });
+
+        await user.keyboard("{Escape}");
+        await waitFor(() => {
+            expect(window.location.search).not.toContain("peek=");
+        });
+        await waitFor(() => {
+            expect(preview).toHaveFocus();
+        });
+    });
+
+    it("saves the current filters as a view and reapplies them", async () => {
+        const saved = schema("SavedView", {
+            id: "0190f3c4-0000-7000-8000-00000000cafe",
+            page: "jobs",
+            name: "Failed jobs",
+            params: { state: "Failed", hidden: "requester" },
+            revision: 3,
+            created_at: "2026-10-30T00:00:00Z",
+            updated_at: "2026-10-30T00:00:00Z",
+        });
+        let views: Schemas["SavedView"][] = [];
+        fake.on("GET", "/api/v1/jobs", () =>
+            json(
+                200,
+                schema("JobPage", {
+                    items: [job("Failed")],
+                    next_cursor: null,
+                }),
+            ),
+        )
+            .on("GET", "/api/v1/me/views", () =>
+                json(200, schema("SavedViewList", { items: views })),
+            )
+            .on("POST", "/api/v1/me/views", () => {
+                views = [saved];
+                return json(201, saved);
+            })
+            .on("DELETE", "/api/v1/me/views/{id}", () => {
+                views = [];
+                return json(200, saved);
+            });
+        const user = start("/jobs?state=Failed");
+        await screen.findByRole("link", { name: `Job ${JOB_ID.slice(-8)}` });
+
+        // Hide a column, then save: the view keeps filters and columns.
+        await user.click(screen.getByRole("button", { name: "Columns" }));
+        await user.click(
+            await screen.findByRole("menuitemcheckbox", {
+                name: "Requested by",
+            }),
+        );
+        await user.keyboard("{Escape}");
+        await user.click(screen.getByRole("button", { name: "Views" }));
+        await user.click(
+            await screen.findByRole("menuitem", {
+                name: "Save current view…",
+            }),
+        );
+        const dialog = await screen.findByRole("dialog", { name: "Save view" });
+        await user.type(within(dialog).getByLabelText("Name"), "Failed jobs");
+        await user.click(
+            within(dialog).getByRole("button", { name: "Save view" }),
+        );
+        await waitFor(() => {
+            expect(
+                screen.queryByRole("dialog", { name: "Save view" }),
+            ).not.toBeInTheDocument();
+        });
+        const post = fake.sent("POST", "/api/v1/me/views")[0];
+        expect(post?.headers.get("idempotency-key")).toBeTruthy();
+        expect(post?.headers.get("x-csrf-token")).toBe("csrf-value");
+        expect(await post?.json()).toEqual({
+            page: "jobs",
+            name: "Failed jobs",
+            params: { state: "Failed", hidden: "requester" },
+        });
+        // The matching view names the menu.
+        const menu = await screen.findByRole("button", {
+            name: "Failed jobs view",
+        });
+
+        // Deleting asks first and names the revision read.
+        await user.click(menu);
+        await user.click(
+            await screen.findByRole("menuitem", {
+                name: "Delete “Failed jobs”…",
+            }),
+        );
+        const confirm = await screen.findByRole("dialog", {
+            name: "Delete view",
+        });
+        await user.click(
+            within(confirm).getByRole("button", { name: "Delete view" }),
+        );
+        await waitFor(() => {
+            expect(
+                fake.sent("DELETE", `/api/v1/me/views/${saved.id}`),
+            ).toHaveLength(1);
+        });
+        expect(
+            new URL(
+                fake.sent("DELETE", `/api/v1/me/views/${saved.id}`)[0]?.url ??
+                    "",
+            ).searchParams.get("revision"),
+        ).toBe("3");
+        expect(
+            await screen.findByRole("button", { name: "Views" }),
+        ).toBeInTheDocument();
+    });
+
+    it("reloads the views when one was deleted elsewhere", async () => {
+        const saved = schema("SavedView", {
+            id: "0190f3c4-0000-7000-8000-00000000cafe",
+            page: "jobs",
+            name: "Failed jobs",
+            params: { state: "Failed" },
+            revision: 3,
+            created_at: "2026-10-30T00:00:00Z",
+            updated_at: "2026-10-30T00:00:00Z",
+        });
+        let views: Schemas["SavedView"][] = [saved];
+        fake.on("GET", "/api/v1/jobs", () =>
+            json(
+                200,
+                schema("JobPage", {
+                    items: [job("Failed")],
+                    next_cursor: null,
+                }),
+            ),
+        )
+            .on("GET", "/api/v1/me/views", () =>
+                json(200, schema("SavedViewList", { items: views })),
+            )
+            .on("DELETE", "/api/v1/me/views/{id}", () => {
+                // Another tab deleted it first.
+                views = [];
+                return apiError(
+                    404,
+                    "resource_not_found",
+                    "PermanentFailure",
+                    "reload",
+                );
+            });
+        // Columns an earlier test hid would keep the view from matching.
+        localStorage.clear();
+        const user = start("/jobs?state=Failed");
+        await user.click(
+            await screen.findByRole("button", { name: "Failed jobs view" }),
+        );
+        await user.click(
+            await screen.findByRole("menuitem", {
+                name: "Delete “Failed jobs”…",
+            }),
+        );
+        const confirm = await screen.findByRole("dialog", {
+            name: "Delete view",
+        });
+        await user.click(
+            within(confirm).getByRole("button", { name: "Delete view" }),
+        );
+        await waitFor(() => {
+            expect(fake.sent("GET", "/api/v1/me/views")).toHaveLength(2);
+        });
+        await user.click(
+            within(confirm).getByRole("button", { name: "Cancel" }),
+        );
+        expect(
+            await screen.findByRole("button", { name: "Views" }),
+        ).toBeInTheDocument();
+    });
+
+    it("applies a saved view through the address", async () => {
+        fake.on("GET", "/api/v1/jobs", () =>
+            json(
+                200,
+                schema("JobPage", {
+                    items: [job("Failed")],
+                    next_cursor: null,
+                }),
+            ),
+        ).on("GET", "/api/v1/me/views", () =>
+            json(
+                200,
+                schema("SavedViewList", {
+                    items: [
+                        {
+                            id: "0190f3c4-0000-7000-8000-00000000cafe",
+                            page: "jobs",
+                            name: "Oldest compactions",
+                            params: {
+                                operation: "compact",
+                                order: "oldest",
+                                // A stale value is dropped like a bad link.
+                                state: "Bogus",
+                            },
+                            revision: 1,
+                            created_at: "2026-10-30T00:00:00Z",
+                            updated_at: "2026-10-30T00:00:00Z",
+                        },
+                    ],
+                }),
+            ),
+        );
+        const user = start("/jobs");
+        await screen.findByRole("link", { name: `Job ${JOB_ID.slice(-8)}` });
+        await user.click(screen.getByRole("button", { name: "Views" }));
+        await user.click(
+            await screen.findByRole("menuitem", { name: "Oldest compactions" }),
+        );
+        await waitFor(() => {
+            expect(window.location.search).toBe(
+                "?operation=compact&order=oldest",
+            );
+        });
+    });
+
     it("lists jobs with execution and publication side by side", async () => {
         fake.on("GET", "/api/v1/jobs", () =>
             json(
@@ -2165,6 +2543,70 @@ describe("jobs and audit", () => {
             await screen.findByText(
                 /Audit history requires an organization-wide grant/,
             ),
+        ).toBeInTheDocument();
+    });
+
+    it("filters audit history by outcome, newest first", async () => {
+        fake.on("GET", "/auth/session", () =>
+            json(200, session("Administrator")),
+        )
+            .on("GET", "/api/v1/audit", () =>
+                json(
+                    200,
+                    schema("AuditEventPage", {
+                        items: [
+                            {
+                                id: "9007199254740993",
+                                actor_principal_id: null,
+                                actor_display_name: null,
+                                actor_kind: "Anonymous",
+                                action: "session.denied",
+                                resource_type: "session",
+                                resource_id: null,
+                                outcome: "Denied",
+                                detail: {},
+                                occurred_at: "2026-10-21T10:00:00Z",
+                            },
+                        ],
+                        next_cursor: null,
+                    }),
+                ),
+            )
+            .on("GET", "/api/v1/audit/facets", () =>
+                json(
+                    200,
+                    schema("AuditFacets", {
+                        outcome: [
+                            { value: "Allowed", count: 4 },
+                            { value: "Denied", count: 1 },
+                        ],
+                        action: [{ value: "session.denied", count: 1 }],
+                        resource_type: [{ value: "session", count: 1 }],
+                    }),
+                ),
+            );
+        const user = start("/audit");
+        await screen.findByText("session.denied");
+        const sent = () =>
+            new URL(fake.sent("GET", "/api/v1/audit").at(-1)?.url ?? "")
+                .searchParams;
+        expect(sent().get("order")).toBe("newest");
+
+        await user.click(
+            screen.getByRole("button", { name: "Outcome filter" }),
+        );
+        await user.click(
+            await screen.findByRole("checkbox", { name: "Denied 1" }),
+        );
+        await user.keyboard("{Escape}");
+        await waitFor(() => {
+            expect(sent().get("outcome")).toBe("Denied");
+        });
+        expect(window.location.search).toBe("?outcome=Denied");
+        expect(
+            screen.getByRole("button", {
+                name: "Remove filter Outcome: Denied",
+            }),
         ).toBeInTheDocument();
     });
 
@@ -2367,6 +2809,19 @@ it("filters tables by evaluated health through the coordinator", async () => {
             }),
         ),
     );
+    fake.on("GET", "/api/v1/tables/facets", () =>
+        json(
+            200,
+            schema("TableFacets", {
+                health: [
+                    { value: "critical", count: 1 },
+                    { value: "warning", count: 1 },
+                    { value: "unassessed", count: 1 },
+                ],
+                catalog: [],
+            }),
+        ),
+    );
     const user = start("/tables");
 
     // The column names each state; an unassessed table never reads as healthy.
@@ -2375,13 +2830,14 @@ it("filters tables by evaluated health through the coordinator", async () => {
 
     // The filter is the coordinator's: it is sent with the request and kept in
     // the address.
-    await user.click(screen.getByRole("combobox", { name: "Health" }));
-    await user.click(screen.getByRole("option", { name: "Critical" }));
+    await user.click(screen.getByRole("button", { name: "Health filter" }));
+    await user.click(await screen.findByRole("radio", { name: "Critical 1" }));
+    await user.keyboard("{Escape}");
 
-    // The row badge and the select's own value both read "Critical".
+    // The row badge, the filter button, and the pill all read "Critical".
     await waitFor(() => {
         expect(screen.getAllByText("Critical").length).toBeGreaterThanOrEqual(
-            2,
+            3,
         );
     });
     expect(screen.queryAllByText("Warning")).toHaveLength(0);
@@ -2444,17 +2900,31 @@ it("keeps the health filter available when it matches no table", async () => {
     const user = start("/tables");
     expect(await screen.findByText("Not assessed")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("combobox", { name: "Health" }));
-    await user.click(screen.getByRole("option", { name: "Critical" }));
+    // A value with no tables is still selectable from the address, and the
+    // filter keeps offering it with a zero count.
+    await user.click(screen.getByRole("button", { name: "Health filter" }));
+    await user.click(await screen.findByRole("radio", { name: "All states" }));
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("searchbox", { name: "Search tables" }));
+    window.history.replaceState(null, "", "/tables?health=critical");
+    cleanup();
+    const again = start("/tables?health=critical");
 
     // The empty result keeps the controls, so the selection can be undone.
     expect(await screen.findByText("No matches.")).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Health" })).toHaveTextContent(
-        "Critical",
+    expect(
+        screen.getByRole("button", { name: "Health Critical filter" }),
+    ).toBeInTheDocument();
+    await again.click(
+        screen.getByRole("button", { name: "Health Critical filter" }),
     );
+    expect(
+        await screen.findByRole("radio", { name: "Critical 0" }),
+    ).toBeChecked();
+    await again.keyboard("{Escape}");
     const clear = screen.getAllByRole("button", { name: "Clear filters" });
     expect(clear.length).toBeGreaterThan(0);
-    await user.click(clear[0] as HTMLElement);
+    await again.click(clear[0] as HTMLElement);
     expect(await screen.findByText("Not assessed")).toBeInTheDocument();
     await waitFor(() => {
         expect(window.location.search).not.toContain("health=");
@@ -2551,9 +3021,9 @@ it("shows no empty state while a filtered list is loading or failed", async () =
     // The controls stay usable while the request is out, but nothing claims
     // the filter matched nothing before a successful response.
     expect(await screen.findByText("Loading tables…")).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Health" })).toHaveTextContent(
-        "Critical",
-    );
+    expect(
+        screen.getByRole("button", { name: "Health Critical filter" }),
+    ).toBeInTheDocument();
     expect(screen.queryByText("No matches.")).not.toBeInTheDocument();
     expect(fake.sent("GET", "/api/v1/tables")).toHaveLength(1);
 
@@ -2689,30 +3159,32 @@ describe("job triage", () => {
         expect(within(tasks).queryByText("0 s")).not.toBeInTheDocument();
     });
 
-    it("puts events first while running and statistics first when terminal", async () => {
+    it("keeps events on the summary and statistics on their own tab", async () => {
         fake.on("GET", "/api/v1/jobs/{id}", () => json(200, job("Running")));
-        start(`/jobs/${JOB_ID}`);
-        const runningEvents = await screen.findByRole("heading", {
-            name: "Events",
-        });
-        const runningStatistics = screen.getByRole("heading", {
-            name: "Maintenance statistics",
-        });
+        const user = start(`/jobs/${JOB_ID}`);
         expect(
-            runningEvents.compareDocumentPosition(runningStatistics) &
-                Node.DOCUMENT_POSITION_FOLLOWING,
-        ).toBeTruthy();
+            await screen.findByRole("heading", { name: "Events" }),
+        ).toBeInTheDocument();
+        expect(screen.getByRole("tab", { name: "Summary" })).toHaveAttribute(
+            "aria-selected",
+            "true",
+        );
+        expect(
+            screen.queryByRole("heading", { name: "Maintenance statistics" }),
+        ).not.toBeInTheDocument();
+        // The header names each side, so the state stays clear on any tab.
+        expect(screen.getByText("Execution: Running")).toBeInTheDocument();
+        expect(
+            screen.getByText("Publication: Not started"),
+        ).toBeInTheDocument();
 
-        fake.on("GET", "/api/v1/jobs/{id}", () => json(200, job("Succeeded")));
-        start(`/jobs/${JOB_ID}`);
-        const endedStatistics = await screen.findByRole("heading", {
-            name: "Maintenance statistics",
-        });
-        const endedEvents = screen.getByRole("heading", { name: "Events" });
+        await user.click(screen.getByRole("tab", { name: "Statistics" }));
         expect(
-            endedStatistics.compareDocumentPosition(endedEvents) &
-                Node.DOCUMENT_POSITION_FOLLOWING,
-        ).toBeTruthy();
+            await screen.findByRole("heading", {
+                name: "Maintenance statistics",
+            }),
+        ).toBeInTheDocument();
+        expect(window.location.search).toBe("?tab=statistics");
     });
 
     it("links an attention state to the tasks tab", async () => {

@@ -332,7 +332,7 @@ export function TableHealth({ id }: { id: string }) {
                                     className="grid gap-1 border-b border-border pb-4 last:border-b-0 last:pb-0"
                                 >
                                     <div className="flex flex-wrap items-center gap-2">
-                                        <span className="font-medium">
+                                        <span className="font-semibold">
                                             {words(recommendation.action)}
                                         </span>
                                         <Badge

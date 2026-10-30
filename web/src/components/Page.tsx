@@ -2,7 +2,7 @@
 // placeholders, empty states, and the "load more" footer of a list.
 
 import { SearchXIcon, type LucideIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 
 import { Button } from "../ui/Button";
 import { Skeleton } from "../ui/Skeleton";
@@ -21,7 +21,7 @@ export function PageHeader({
     return (
         <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
             <div className="grid min-w-0 flex-1 basis-72 gap-1">
-                <h1 className="m-0 text-2xl font-semibold tracking-tight break-words">
+                <h1 className="m-0 text-xl font-semibold tracking-tight break-words">
                     {title}
                 </h1>
                 {description !== undefined && (
@@ -31,10 +31,84 @@ export function PageHeader({
                 )}
             </div>
             {actions !== undefined && (
-                <div className="flex shrink-0 flex-wrap items-center gap-2">
+                // A bare link among the actions is a 24 px target (WCAG
+                // 2.5.8), like the buttons beside it.
+                <div className="flex max-w-full flex-wrap items-center gap-2 [&>a]:inline-flex [&>a]:min-h-6 [&>a]:items-center">
                     {actions}
                 </div>
             )}
+        </header>
+    );
+}
+
+/**
+ * A detail page's header (ADR 0067): the title with its status, a line of
+ * identifying facts, the page's actions, and its tabs. From `md` up it sticks
+ * under the top bar, so state and actions stay in reach on a long tab. Its
+ * height is published as `--detail-header-height`, which the document's
+ * scroll padding adds, so a focused control never scrolls in under it.
+ */
+export function DetailHeader({
+    title,
+    status,
+    meta,
+    actions,
+    tabs,
+}: {
+    title: ReactNode;
+    /** Badges beside the title. */
+    status?: ReactNode;
+    meta?: ReactNode;
+    actions?: ReactNode;
+    /** The page's `TabsList`; the header renders inside its `Tabs`. */
+    tabs: ReactNode;
+}) {
+    const ref = useRef<HTMLElement>(null);
+    useEffect(() => {
+        const header = ref.current;
+        if (header === null || typeof ResizeObserver !== "function") {
+            return;
+        }
+        const root = document.documentElement.style;
+        const observer = new ResizeObserver(() => {
+            root.setProperty(
+                "--detail-header-height",
+                `${header.offsetHeight}px`,
+            );
+        });
+        observer.observe(header);
+        return () => {
+            observer.disconnect();
+            root.removeProperty("--detail-header-height");
+        };
+    }, []);
+    return (
+        <header
+            ref={ref}
+            data-slot="detail-header"
+            className="z-20 -mx-4 bg-background px-4 md:sticky md:top-(--header-height) md:-mx-6 md:px-6"
+        >
+            <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3 pt-1 pb-4">
+                <div className="grid min-w-0 flex-1 basis-72 gap-1">
+                    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                        <h1 className="m-0 min-w-0 text-xl font-semibold tracking-tight break-words">
+                            {title}
+                        </h1>
+                        {status}
+                    </div>
+                    {meta !== undefined && (
+                        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
+                            {meta}
+                        </div>
+                    )}
+                </div>
+                {actions !== undefined && (
+                    <div className="flex max-w-full flex-wrap items-center gap-2 [&>a]:inline-flex [&>a]:min-h-6 [&>a]:items-center">
+                        {actions}
+                    </div>
+                )}
+            </div>
+            {tabs}
         </header>
     );
 }
@@ -101,7 +175,7 @@ export function EmptyState({
             <span className="flex size-10 items-center justify-center rounded-full bg-muted text-muted-foreground">
                 <Icon aria-hidden="true" className="size-5" />
             </span>
-            <p className="m-0 font-medium">{title}</p>
+            <p className="m-0 font-semibold">{title}</p>
             {children !== undefined && (
                 <div className="max-w-md text-sm text-muted-foreground">
                     {children}

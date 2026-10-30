@@ -35,8 +35,15 @@ export interface DataTableColumn<Row> {
     id: string;
     header: string;
     cell: (row: Row) => ReactNode;
-    /** A comparable value makes the column sortable. */
+    /** A comparable value makes the column sortable in the browser. */
     sortValue?: (row: Row) => string | number;
+    /**
+     * The server orders by this column: it is sortable, and the rows arrive
+     * in order, so the table does not reorder them.
+     */
+    serverSort?: boolean;
+    /** Whether the column menu may hide it; defaults to every column but the first. */
+    hideable?: boolean;
     align?: "start" | "end";
     className?: string;
     /**
@@ -55,6 +62,11 @@ function compare(left: string | number, right: string | number): number {
         numeric: true,
         sensitivity: "base",
     });
+}
+
+/** Whether the column offers a sort, in the browser or on the server. */
+export function isSortable<Row>(column: DataTableColumn<Row>): boolean {
+    return column.sortValue !== undefined || column.serverSort === true;
 }
 
 /** Rows in the requested order, with the original order as a stable tiebreak. */
@@ -116,75 +128,16 @@ export function DataTable<Row>({
         return <>{empty}</>;
     }
 
-    const roles = columns.map((column, index) => {
-        if (column.card !== undefined) {
-            return column.card;
-        }
-        if (index === 0) {
-            return "title";
-        }
-        return column.header === "" && column.align === "end"
-            ? "actions"
-            : "detail";
-    });
-    const title = columns[roles.indexOf("title")];
-    const actions = columns.filter(
-        (_column, index) => roles[index] === "actions",
-    );
-    const details = columns.filter(
-        (_column, index) => roles[index] === "detail",
-    );
-
     if (narrow) {
         return (
-            <section aria-label={`${caption ?? "Table"} cards`}>
-                <CardSort
-                    columns={columns}
-                    sort={sort}
-                    onSortChange={onSortChange}
-                />
-                <ul className="m-0 grid list-none gap-3 p-0">
-                    {sorted.map((row) => (
-                        <li key={getRowKey(row)}>
-                            <article className="rounded-xl bg-card p-4 ring-1 ring-foreground/10">
-                                <div className="flex flex-wrap items-start justify-between gap-2">
-                                    {title !== undefined && (
-                                        <div className="min-w-0 flex-1 break-words">
-                                            {title.cell(row)}
-                                        </div>
-                                    )}
-                                    {actions.length > 0 && (
-                                        <div className="flex flex-wrap items-center justify-end gap-2">
-                                            {actions.map((column) => (
-                                                <div key={column.id}>
-                                                    {column.cell(row)}
-                                                </div>
-                                            ))}
-                                        </div>
-                                    )}
-                                </div>
-                                {details.length > 0 && (
-                                    <dl className="m-0 mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm">
-                                        {details.map((column) => (
-                                            <div
-                                                key={column.id}
-                                                className="contents"
-                                            >
-                                                <dt className="text-muted-foreground">
-                                                    {column.header}
-                                                </dt>
-                                                <dd className="m-0 min-w-0 break-words">
-                                                    {column.cell(row)}
-                                                </dd>
-                                            </div>
-                                        ))}
-                                    </dl>
-                                )}
-                            </article>
-                        </li>
-                    ))}
-                </ul>
-            </section>
+            <DataCards
+                rows={sorted}
+                columns={columns}
+                getRowKey={getRowKey}
+                sort={sort}
+                onSortChange={onSortChange}
+                caption={caption}
+            />
         );
     }
 
@@ -199,69 +152,22 @@ export function DataTable<Row>({
                 )}
                 <TableHeader>
                     <TableRow>
-                        {columns.map((column) => {
-                            const sortable =
-                                column.sortValue !== undefined &&
-                                onSortChange !== undefined;
-                            const active = sort?.column === column.id;
-                            const direction = active ? sort.direction : null;
-                            const SortIcon =
-                                direction === "asc"
-                                    ? ArrowUpIcon
-                                    : direction === "desc"
-                                      ? ArrowDownIcon
-                                      : ChevronsUpDownIcon;
-                            return (
-                                <TableHead
-                                    key={column.id}
-                                    aria-sort={
-                                        sortable
-                                            ? direction === "asc"
-                                                ? "ascending"
-                                                : direction === "desc"
-                                                  ? "descending"
-                                                  : "none"
-                                            : undefined
-                                    }
-                                    className={cn(
-                                        column.align === "end" && "text-right",
-                                        column.className,
-                                    )}
-                                >
-                                    {sortable ? (
-                                        <button
-                                            type="button"
-                                            className={cn(
-                                                "inline-flex h-6 items-center gap-1 rounded-sm text-left font-medium outline-none select-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50",
-                                                column.align === "end" &&
-                                                    "flex-row-reverse",
-                                            )}
-                                            onClick={() => {
-                                                onSortChange({
-                                                    column: column.id,
-                                                    direction:
-                                                        active &&
-                                                        sort.direction === "asc"
-                                                            ? "desc"
-                                                            : "asc",
-                                                });
-                                            }}
-                                        >
-                                            {column.header}
-                                            <SortIcon
-                                                aria-hidden="true"
-                                                className={cn(
-                                                    "size-3.5 shrink-0",
-                                                    !active && "opacity-40",
-                                                )}
-                                            />
-                                        </button>
-                                    ) : (
-                                        column.header
-                                    )}
-                                </TableHead>
-                            );
-                        })}
+                        {columns.map((column) => (
+                            <TableHead
+                                key={column.id}
+                                aria-sort={ariaSort(column, sort, onSortChange)}
+                                className={cn(
+                                    column.align === "end" && "text-right",
+                                    column.className,
+                                )}
+                            >
+                                <ColumnHeader
+                                    column={column}
+                                    sort={sort}
+                                    onSortChange={onSortChange}
+                                />
+                            </TableHead>
+                        ))}
                     </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -287,6 +193,155 @@ export function DataTable<Row>({
     );
 }
 
+/** A column header's `aria-sort`, or `undefined` when it cannot sort. */
+export function ariaSort<Row>(
+    column: DataTableColumn<Row>,
+    sort: SortState | undefined,
+    onSortChange: ((sort: SortState) => void) | undefined,
+): "ascending" | "descending" | "none" | undefined {
+    if (!isSortable(column) || onSortChange === undefined) {
+        return undefined;
+    }
+    if (sort?.column !== column.id) {
+        return "none";
+    }
+    return sort.direction === "asc" ? "ascending" : "descending";
+}
+
+/** A column's header text, as a sort toggle when the column can sort. */
+export function ColumnHeader<Row>({
+    column,
+    sort,
+    onSortChange,
+}: {
+    column: DataTableColumn<Row>;
+    sort: SortState | undefined;
+    onSortChange: ((sort: SortState) => void) | undefined;
+}) {
+    if (!isSortable(column) || onSortChange === undefined) {
+        return <>{column.header}</>;
+    }
+    const active = sort?.column === column.id;
+    const direction = active ? sort.direction : null;
+    const SortIcon =
+        direction === "asc"
+            ? ArrowUpIcon
+            : direction === "desc"
+              ? ArrowDownIcon
+              : ChevronsUpDownIcon;
+    return (
+        <button
+            type="button"
+            className={cn(
+                "inline-flex h-6 items-center gap-1 rounded-sm text-left font-semibold outline-none select-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50",
+                column.align === "end" && "flex-row-reverse",
+            )}
+            onClick={() => {
+                onSortChange({
+                    column: column.id,
+                    direction:
+                        active && sort.direction === "asc" ? "desc" : "asc",
+                });
+            }}
+        >
+            {column.header}
+            <SortIcon
+                aria-hidden="true"
+                className={cn("size-3.5 shrink-0", !active && "opacity-40")}
+            />
+        </button>
+    );
+}
+
+/**
+ * Rows as labelled cards, for the narrow layout. The first column is the
+ * card title unless a column says otherwise (see `DataTableColumn.card`).
+ */
+export function DataCards<Row>({
+    rows,
+    columns,
+    getRowKey,
+    sort,
+    onSortChange,
+    caption,
+}: {
+    rows: readonly Row[];
+    columns: readonly DataTableColumn<Row>[];
+    getRowKey: (row: Row) => string;
+    sort?: SortState | undefined;
+    onSortChange?: ((sort: SortState) => void) | undefined;
+    caption?: string | undefined;
+}) {
+    const roles = columns.map((column, index) => {
+        if (column.card !== undefined) {
+            return column.card;
+        }
+        if (index === 0) {
+            return "title";
+        }
+        return column.header === "" && column.align === "end"
+            ? "actions"
+            : "detail";
+    });
+    const title = columns[roles.indexOf("title")];
+    const actions = columns.filter(
+        (_column, index) => roles[index] === "actions",
+    );
+    const details = columns.filter(
+        (_column, index) => roles[index] === "detail",
+    );
+    return (
+        <section aria-label={`${caption ?? "Table"} cards`}>
+            <CardSort
+                columns={columns}
+                sort={sort}
+                onSortChange={onSortChange}
+            />
+            <ul className="m-0 grid list-none gap-3 p-0">
+                {rows.map((row) => (
+                    <li key={getRowKey(row)}>
+                        <article className="rounded-xl bg-card p-4 ring-1 ring-foreground/10">
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                                {title !== undefined && (
+                                    <div className="min-w-0 flex-1 break-words">
+                                        {title.cell(row)}
+                                    </div>
+                                )}
+                                {actions.length > 0 && (
+                                    <div className="flex flex-wrap items-center justify-end gap-2">
+                                        {actions.map((column) => (
+                                            <div key={column.id}>
+                                                {column.cell(row)}
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                            {details.length > 0 && (
+                                <dl className="m-0 mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm">
+                                    {details.map((column) => (
+                                        <div
+                                            key={column.id}
+                                            className="contents"
+                                        >
+                                            <dt className="text-muted-foreground">
+                                                {column.header}
+                                            </dt>
+                                            <dd className="m-0 min-w-0 break-words">
+                                                {column.cell(row)}
+                                            </dd>
+                                        </div>
+                                    ))}
+                                </dl>
+                            )}
+                        </article>
+                    </li>
+                ))}
+            </ul>
+        </section>
+    );
+}
+
 /** A compact sort control for the card layout, where the header is absent. */
 function CardSort<Row>({
     columns,
@@ -298,7 +353,7 @@ function CardSort<Row>({
     onSortChange?: ((sort: SortState) => void) | undefined;
 }) {
     const id = useId();
-    const sortable = columns.filter((column) => column.sortValue !== undefined);
+    const sortable = columns.filter(isSortable);
     if (
         sort === undefined ||
         onSortChange === undefined ||

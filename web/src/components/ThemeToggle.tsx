@@ -5,7 +5,7 @@ import {
     type ThemePreference,
     useThemePreference,
 } from "../theme";
-import { Button } from "../ui/Button";
+import { SegmentedControl } from "../ui/SegmentedControl";
 
 const OPTIONS: Record<ThemePreference, { label: string; icon: LucideIcon }> = {
     system: { label: "System theme", icon: MonitorIcon },
@@ -26,29 +26,15 @@ export function ThemeToggle(props: ThemeToggleProps = {}) {
     const preference = props.preference ?? stored;
     const choose = props.onChange ?? chooseStored;
     return (
-        <div
-            role="group"
-            aria-label="Theme"
-            className="inline-flex rounded-lg border border-border p-0.5"
-        >
-            {THEME_PREFERENCES.map((option) => {
-                const { label, icon: Icon } = OPTIONS[option];
-                return (
-                    <Button
-                        key={option}
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={label}
-                        aria-pressed={preference === option}
-                        title={label}
-                        onClick={() => {
-                            choose(option);
-                        }}
-                    >
-                        <Icon aria-hidden="true" />
-                    </Button>
-                );
-            })}
-        </div>
+        <SegmentedControl
+            label="Theme"
+            iconOnly
+            value={preference}
+            onChange={choose}
+            options={THEME_PREFERENCES.map((option) => ({
+                value: option,
+                ...OPTIONS[option],
+            }))}
+        />
     );
 }

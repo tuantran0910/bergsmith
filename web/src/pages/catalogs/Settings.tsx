@@ -329,13 +329,13 @@ export function Settings({ catalog }: { catalog: Schemas["Catalog"] }) {
                             disabled={blocked}
                             className="m-0 grid gap-4 border-0 p-0"
                         >
-                            <legend className="mb-3 font-medium">
+                            <legend className="mb-3 font-semibold">
                                 Routing
                             </legend>
                             <ConnectionFields
                                 value={routing}
                                 onChange={setRouting}
-                                showName={false}
+                                fields={["uri", "warehouse", "credential_ref"]}
                             />
                             <p className="m-0 text-sm text-muted-foreground">
                                 Routing edits are refused while dependent jobs

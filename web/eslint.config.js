@@ -30,6 +30,8 @@ export default tseslint.config(
     jsxA11y.configs.strict,
     {
         rules: {
+            "no-eval": "error",
+            "no-new-func": "error",
             "@typescript-eslint/restrict-template-expressions": [
                 "error",
                 { allowNumber: true },
@@ -56,6 +58,40 @@ export default tseslint.config(
                         "JSXAttribute[name.name='dangerouslySetInnerHTML']",
                     message:
                         "Render text through React; raw HTML is not allowed.",
+                },
+                // String-to-HTML sinks bypass React's escaping; the CSP's
+                // Trusted Types would throw at run time, lint fails first.
+                {
+                    selector:
+                        "AssignmentExpression > MemberExpression.left[property.name=/^(innerHTML|outerHTML)$/]",
+                    message:
+                        "Render text through React; raw HTML is not allowed.",
+                },
+                {
+                    selector:
+                        "CallExpression[callee.property.name=/^(insertAdjacentHTML|write|writeln|createContextualFragment)$/]",
+                    message:
+                        "Render text through React; raw HTML is not allowed.",
+                },
+                // The CSP allows no inline styles; style through classes and
+                // the tokens in styles.css (ADR 0067).
+                {
+                    selector: "JSXAttribute[name.name='style']",
+                    message:
+                        "Use classes and design tokens; inline styles are not allowed.",
+                },
+                // The type scale has two weights (ADR 0067).
+                {
+                    selector:
+                        "Literal[value=/(^|\\s|:)font-(thin|extralight|light|medium|bold|extrabold|black)(\\s|$)/]",
+                    message:
+                        "Use font-normal or font-semibold; the type scale has two weights.",
+                },
+                {
+                    selector:
+                        "TemplateElement[value.raw=/(^|\\s|:)font-(thin|extralight|light|medium|bold|extrabold|black)(\\s|$)/]",
+                    message:
+                        "Use font-normal or font-semibold; the type scale has two weights.",
                 },
             ],
         },

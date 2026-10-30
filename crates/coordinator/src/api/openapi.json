@@ -14,7 +14,7 @@
     "/api/v1/catalogs": {
       "get": {
         "operationId": "listCatalogs",
-        "description": "Authorized summaries in ascending UUID order; authorization filters before pagination.",
+        "description": "Authorized summaries in ascending UUID order; authorization and filters apply before pagination.",
         "responses": {
           "400": {
             "description": "Invalid request or cursor",
@@ -101,9 +101,31 @@
           {
             "name": "cursor",
             "in": "query",
-            "description": "Opaque continuation bound to organization, principal, and resource. Current grants are rechecked.",
+            "description": "Opaque continuation bound to organization, principal, resource, and the list's filters and order. Current grants are rechecked.",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "enabled",
+            "in": "query",
+            "description": "Keep catalogs that new previews and admissions may use (`true`) or that are disabled (`false`).",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Keep catalogs whose name contains this text, case-insensitively. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
             }
           }
         ]
@@ -243,6 +265,108 @@
             }
           }
         }
+      }
+    },
+    "/api/v1/catalogs/facets": {
+      "get": {
+        "operationId": "listCatalogFacets",
+        "description": "Catalog counts by whether they are enabled, under the list's filters, scoped by grant.",
+        "responses": {
+          "400": {
+            "description": "Invalid request or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Facet counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogFacets"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "enabled",
+            "in": "query",
+            "description": "Keep catalogs that new previews and admissions may use (`true`) or that are disabled (`false`).",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Keep catalogs whose name contains this text, case-insensitively. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ]
       }
     },
     "/api/v1/catalogs/{id}": {
@@ -784,7 +908,7 @@
           {
             "name": "cursor",
             "in": "query",
-            "description": "Opaque continuation bound to organization, principal, and resource. Current grants are rechecked.",
+            "description": "Opaque continuation bound to organization, principal, resource, and the list's filters and order. Current grants are rechecked.",
             "schema": {
               "type": "string"
             }
@@ -812,6 +936,138 @@
               "enum": [
                 "health"
               ]
+            }
+          },
+          {
+            "name": "catalog",
+            "in": "query",
+            "description": "Keep tables with an alias in this catalog that the caller may see.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Keep tables with a visible alias whose `namespace.name` contains this text, case-insensitively. Only names are searched, never table rows. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/tables/facets": {
+      "get": {
+        "operationId": "listTableFacets",
+        "description": "Table counts by health and catalog under the list's filters, scoped by grant. Health counts evaluate every visible table, so the cost grows with the inventory.",
+        "responses": {
+          "400": {
+            "description": "Invalid request or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Facet counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TableFacets"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "health",
+            "in": "query",
+            "description": "Keep only tables whose evaluated state is exactly this one. An unassessed table has no complete sample.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "healthy",
+                "warning",
+                "critical",
+                "unassessed"
+              ]
+            }
+          },
+          {
+            "name": "catalog",
+            "in": "query",
+            "description": "Keep tables with an alias in this catalog that the caller may see.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Keep tables with a visible alias whose `namespace.name` contains this text, case-insensitively. Only names are searched, never table rows. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
             }
           }
         ]
@@ -1369,7 +1625,7 @@
     "/api/v1/jobs": {
       "get": {
         "operationId": "listJobs",
-        "description": "Authorized summaries in ascending UUID order; authorization filters before pagination.",
+        "description": "Authorized summaries in UUID order, oldest first unless `order=newest`; authorization and filters apply before pagination. Filters combine with AND; the values of one filter combine with OR.",
         "responses": {
           "400": {
             "description": "Invalid request or cursor",
@@ -1456,9 +1712,75 @@
           {
             "name": "cursor",
             "in": "query",
-            "description": "Opaque continuation bound to organization, principal, and resource. Current grants are rechecked.",
+            "description": "Opaque continuation bound to organization, principal, resource, and the list's filters and order. Current grants are rechecked.",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "description": "`oldest` (default) or `newest` first. Identifiers are time-ordered, so this is creation order.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "oldest",
+                "newest"
+              ],
+              "default": "oldest"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "Keep jobs in these states. Comma-separated, at most 16 distinct values: `Planning`, `Queued`, `Running`, `ReadyToCommit`, `Committing`, `CommitOutcomeUnknown`, `Deleting`, `Cancelling`, `Succeeded`, `NoOp`, `Cancelled`, `ReplanRequired`, `Failed`. An unknown or empty value is rejected.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "operation",
+            "in": "query",
+            "description": "Keep jobs of these operations. Comma-separated, at most 16 distinct values: `compact`, `expire_snapshots`, `remove_orphan_files`, `rewrite_manifests`, `remove_dangling_deletes`. An unknown or empty value is rejected.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "table",
+            "in": "query",
+            "description": "Keep jobs of this table.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "catalog",
+            "in": "query",
+            "description": "Keep jobs whose table has an alias in this catalog that the caller may see.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "created_by",
+            "in": "query",
+            "description": "Keep jobs requested by this principal.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Keep jobs whose table has a visible alias whose `namespace.name` contains this text, case-insensitively. Only names are searched, never table rows. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
             }
           }
         ]
@@ -1597,6 +1919,139 @@
             }
           }
         }
+      }
+    },
+    "/api/v1/jobs/facets": {
+      "get": {
+        "operationId": "listJobFacets",
+        "description": "Job counts by state and operation under the list's filters, scoped by grant inside the query, so a count never includes a job the caller cannot list.",
+        "responses": {
+          "400": {
+            "description": "Invalid request or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Facet counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobFacets"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "description": "Keep jobs in these states. Comma-separated, at most 16 distinct values: `Planning`, `Queued`, `Running`, `ReadyToCommit`, `Committing`, `CommitOutcomeUnknown`, `Deleting`, `Cancelling`, `Succeeded`, `NoOp`, `Cancelled`, `ReplanRequired`, `Failed`. An unknown or empty value is rejected.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "operation",
+            "in": "query",
+            "description": "Keep jobs of these operations. Comma-separated, at most 16 distinct values: `compact`, `expire_snapshots`, `remove_orphan_files`, `rewrite_manifests`, `remove_dangling_deletes`. An unknown or empty value is rejected.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "table",
+            "in": "query",
+            "description": "Keep jobs of this table.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "catalog",
+            "in": "query",
+            "description": "Keep jobs whose table has an alias in this catalog that the caller may see.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "created_by",
+            "in": "query",
+            "description": "Keep jobs requested by this principal.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Keep jobs whose table has a visible alias whose `namespace.name` contains this text, case-insensitively. Only names are searched, never table rows. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ]
       }
     },
     "/api/v1/jobs/{id}": {
@@ -2202,7 +2657,7 @@
     "/api/v1/audit": {
       "get": {
         "operationId": "listAudit",
-        "description": "Requires organization-wide audit:read. Ascending durable event IDs, encoded as decimal strings.",
+        "description": "Requires organization-wide audit:read. Durable event IDs, encoded as decimal strings, oldest first unless `order=newest`. Filters combine with AND; the values of one filter combine with OR.",
         "responses": {
           "400": {
             "description": "Invalid request or cursor",
@@ -2289,9 +2744,188 @@
           {
             "name": "cursor",
             "in": "query",
-            "description": "Opaque continuation bound to organization, principal, and resource. Current grants are rechecked.",
+            "description": "Opaque continuation bound to organization, principal, resource, and the list's filters and order. Current grants are rechecked.",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "description": "`oldest` (default) or `newest` first.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "oldest",
+                "newest"
+              ],
+              "default": "oldest"
+            }
+          },
+          {
+            "name": "outcome",
+            "in": "query",
+            "description": "Keep records with these outcomes. Comma-separated, at most 16 distinct values: `Allowed`, `Denied`, `Failed`. An unknown or empty value is rejected.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "description": "Keep records of these stable action names, such as `job.admitted`. Comma-separated, at most 16 distinct values; an unknown action is rejected.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resource_type",
+            "in": "query",
+            "description": "Keep records about these resource kinds, such as `job` or `table`. Comma-separated, at most 16 distinct values of lowercase letters and underscores.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "actor",
+            "in": "query",
+            "description": "Keep records by this principal.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Keep records whose actor's current display name contains this text, case-insensitively. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/audit/facets": {
+      "get": {
+        "operationId": "listAuditFacets",
+        "description": "Requires organization-wide audit:read. Record counts by outcome, action, and resource kind under the list's filters.",
+        "responses": {
+          "400": {
+            "description": "Invalid request or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Facet counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditFacets"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "outcome",
+            "in": "query",
+            "description": "Keep records with these outcomes. Comma-separated, at most 16 distinct values: `Allowed`, `Denied`, `Failed`. An unknown or empty value is rejected.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "description": "Keep records of these stable action names, such as `job.admitted`. Comma-separated, at most 16 distinct values; an unknown action is rejected.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resource_type",
+            "in": "query",
+            "description": "Keep records about these resource kinds, such as `job` or `table`. Comma-separated, at most 16 distinct values of lowercase letters and underscores.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "actor",
+            "in": "query",
+            "description": "Keep records by this principal.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Keep records whose actor's current display name contains this text, case-insensitively. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
             }
           }
         ]
@@ -4347,7 +4981,7 @@
           {
             "name": "cursor",
             "in": "query",
-            "description": "Opaque continuation bound to organization, principal, and resource. Current grants are rechecked.",
+            "description": "Opaque continuation bound to organization, principal, resource, and the list's filters and order. Current grants are rechecked.",
             "schema": {
               "type": "string"
             }
@@ -4362,6 +4996,28 @@
                 "User",
                 "Service"
               ]
+            }
+          },
+          {
+            "name": "active",
+            "in": "query",
+            "description": "Keep active (`true`) or deactivated (`false`) principals.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Keep principals whose display name contains this text, case-insensitively. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
             }
           }
         ]
@@ -4491,6 +5147,120 @@
             }
           }
         }
+      }
+    },
+    "/api/v1/principals/facets": {
+      "get": {
+        "operationId": "listPrincipalFacets",
+        "description": "Requires grants:manage over the organization. Principal counts by kind and activity under the list's filters.",
+        "responses": {
+          "200": {
+            "description": "Facet counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrincipalFacets"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "Restrict the page to people (`User`) or service accounts (`Service`).",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "User",
+                "Service"
+              ]
+            }
+          },
+          {
+            "name": "active",
+            "in": "query",
+            "description": "Keep active (`true`) or deactivated (`false`) principals.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Keep principals whose display name contains this text, case-insensitively. Trimmed, 1 to 128 characters, no control characters; `%` and `_` match themselves.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ]
       }
     },
     "/api/v1/principals/{id}": {
@@ -6186,7 +6956,7 @@
     "/api/v1/overview": {
       "get": {
         "operationId": "getOverview",
-        "description": "What needs attention in the organization, from the execution ledger: terminal jobs whose terminal transition falls in the last day, by outcome and conflict rate; unresolved publications in full and a bounded list of jobs that need attention; visible tables without a sample or with a decision pending by terminal transition; schedule cursors that are overdue plus occurrences folded or skipped in the last day; and registered worker capacity. Job and table figures follow the caller's grants; the schedule and worker sections are null when the caller may not read them.",
+        "description": "What needs attention in the organization, from the execution ledger: terminal jobs whose terminal transition falls in the last day, by outcome and conflict rate, beside the same counts for the day before; unresolved publications in full and a bounded list of jobs that need attention; visible tables without a sample or with a decision pending by terminal transition; schedule cursors that are overdue plus occurrences folded or skipped in the last day; and registered worker capacity. Job and table figures follow the caller's grants; the schedule and worker sections are null when the caller may not read them.",
         "responses": {
           "401": {
             "description": "Sign in required",
@@ -7864,6 +8634,616 @@
         ],
         "summary": "Read sampled storage breakdown"
       }
+    },
+    "/api/v1/me/views": {
+      "get": {
+        "operationId": "listSavedViews",
+        "description": "The session's own saved list views. Views are personal: no grant is needed, and another person's views are never listed.",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "Only views of this list.",
+            "schema": {
+              "$ref": "#/components/schemas/ViewPage"
+            }
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Invalid request or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Saved views",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedViewList"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createSavedView",
+        "description": "Save the current filters of a list under a name. The same key and request return the same view. Requires the CSRF token; audited.",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "pattern": "^[!-~]+$"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSavedView"
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Invalid request or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body too large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Name already used on this list (`resource_already_exists`), 50 views kept (`view_limit_reached`), or the key reused for another request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "View saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedView"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me/views/{id}": {
+      "patch": {
+        "operationId": "updateSavedView",
+        "description": "Rename a view or replace its parameters. The request names the revision it read; a stale revision returns 409 and changes nothing. Another person's view is 404. Requires the CSRF token; audited.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateSavedView"
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Invalid request or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found in this organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body too large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Revision conflict or name already used on this list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "View updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedView"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteSavedView",
+        "description": "Delete a view at the revision the caller read. Requires the CSRF token; audited.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Invalid request or cursor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission or CSRF denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found in this organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Revision conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "View deleted; the body is the view as it was",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedView"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/search": {
+      "get": {
+        "operationId": "search",
+        "description": "Catalogs, tables, and principals whose display names contain `q`, case-insensitively, at most `limit` of each. Catalogs and tables follow the caller's grants inside the query, and a table matches only through an alias the caller may see. Principals are searched only for callers allowed to manage access; otherwise `principals` is null. Table rows are never searched.",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "description": "Text to find in display names, at most 128 characters; `%` and `_` match themselves.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Results per kind; 5 when absent.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20
+            }
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Missing or invalid `q`, `limit`, or query parameter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Matches by kind",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResults"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/events": {
+      "get": {
+        "operationId": "streamEvents",
+        "description": "Server-sent events naming the jobs the caller may list as they change state. Every connection first sends `ready`; a client reloads what it shows, then applies the `job` events that follow, whose `data` is a LiveJobEvent. Each event's `id` is a ledger ID: resume with the `Last-Event-ID` header (sent automatically by a reconnecting EventSource) or the `after` query parameter, and no event after it is skipped, even when transactions commit out of order. A resume point more than 10,000 ledger IDs behind receives `reset` instead of a replay, and the client reloads. Without a resume point the stream starts after the newest committed event. Visibility follows listJobs and is evaluated for every event. Each session may hold 4 streams. The stream sends a keep-alive comment every 15 seconds and ends when the session ends (checked every 30 seconds without extending it) or after one hour; reconnect with the last ID seen.",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "description": "Resume after this ledger ID.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "required": false,
+            "description": "The last event ID received; takes precedence over `after`.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Event stream of `ready`, `job`, and `reset` events",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid resume point or query parameter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable or stream capacity exhausted; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -8001,7 +9381,8 @@
               "orphan_cleanup_unavailable",
               "manifest_rewrite_unavailable",
               "dangling_delete_removal_unavailable",
-              "compaction_in_progress"
+              "compaction_in_progress",
+              "view_limit_reached"
             ]
           },
           "disposition": {
@@ -12107,7 +13488,8 @@
           "window_hours",
           "ended",
           "by_state",
-          "conflict_rate_percent"
+          "conflict_rate_percent",
+          "previous"
         ],
         "properties": {
           "window_hours": {
@@ -12155,6 +13537,10 @@
           "conflict_rate_percent": {
             "type": "string",
             "description": "Replanned jobs as a percentage of terminal jobs in the window, one decimal."
+          },
+          "previous": {
+            "$ref": "#/components/schemas/OverviewJobWindow",
+            "description": "The same counts for the window of equal length just before this one, so a page can show how each figure moved."
           }
         }
       },
@@ -13807,6 +15193,493 @@
           "stale": {
             "type": "string",
             "pattern": "^[0-9]+$"
+          }
+        }
+      },
+      "FacetCount": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "value",
+          "count"
+        ],
+        "description": "One value of a facet dimension and how many visible resources have it. `value` is exactly the filter parameter value that selects them.",
+        "properties": {
+          "value": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "JobFacets": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "state",
+          "operation"
+        ],
+        "description": "Counts of the jobs the caller may view. Each dimension applies every filter except its own; values with no jobs are omitted.",
+        "properties": {
+          "state": {
+            "type": "array",
+            "description": "Jobs per state, in lifecycle order.",
+            "items": {
+              "$ref": "#/components/schemas/FacetCount"
+            }
+          },
+          "operation": {
+            "type": "array",
+            "description": "Jobs per operation.",
+            "items": {
+              "$ref": "#/components/schemas/FacetCount"
+            }
+          }
+        }
+      },
+      "TableFacets": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "health",
+          "catalog"
+        ],
+        "description": "Counts of the tables the caller may view. Each dimension applies every filter except its own; values with no tables are omitted.",
+        "properties": {
+          "health": {
+            "type": "array",
+            "description": "Tables per evaluated state, worst first.",
+            "items": {
+              "$ref": "#/components/schemas/FacetCount"
+            }
+          },
+          "catalog": {
+            "type": "array",
+            "description": "Tables per catalog ID, counting each table once per catalog it has a visible alias in.",
+            "items": {
+              "$ref": "#/components/schemas/FacetCount"
+            }
+          }
+        }
+      },
+      "CatalogFacets": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "enabled"
+        ],
+        "description": "Counts of the catalogs the caller may view. Each dimension applies every filter except its own; values with no catalogs are omitted.",
+        "properties": {
+          "enabled": {
+            "type": "array",
+            "description": "Catalogs per `enabled` value, enabled first.",
+            "items": {
+              "$ref": "#/components/schemas/FacetCount"
+            }
+          }
+        }
+      },
+      "AuditFacets": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "outcome",
+          "action",
+          "resource_type"
+        ],
+        "description": "Counts of the organization's audit records. Each dimension applies every filter except its own; values with no records are omitted.",
+        "properties": {
+          "outcome": {
+            "type": "array",
+            "description": "Records per outcome.",
+            "items": {
+              "$ref": "#/components/schemas/FacetCount"
+            }
+          },
+          "action": {
+            "type": "array",
+            "description": "Records per action name.",
+            "items": {
+              "$ref": "#/components/schemas/FacetCount"
+            }
+          },
+          "resource_type": {
+            "type": "array",
+            "description": "Records per resource kind.",
+            "items": {
+              "$ref": "#/components/schemas/FacetCount"
+            }
+          }
+        }
+      },
+      "PrincipalFacets": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "active"
+        ],
+        "description": "Counts of the organization's principals. Each dimension applies every filter except its own; values with no principals are omitted.",
+        "properties": {
+          "kind": {
+            "type": "array",
+            "description": "Principals per kind, people first.",
+            "items": {
+              "$ref": "#/components/schemas/FacetCount"
+            }
+          },
+          "active": {
+            "type": "array",
+            "description": "Principals per activity, active first.",
+            "items": {
+              "$ref": "#/components/schemas/FacetCount"
+            }
+          }
+        }
+      },
+      "ViewPage": {
+        "type": "string",
+        "enum": [
+          "jobs",
+          "tables",
+          "catalogs",
+          "audit",
+          "principals"
+        ],
+        "description": "The list a view belongs to."
+      },
+      "ViewParams": {
+        "type": "object",
+        "description": "The list's own search parameters by name. Each list accepts only its own names (jobs: q, state, operation, order, hidden; tables: q, catalog, health, sort, order, hidden; catalogs: q, enabled, hidden; audit: q, outcome, action, resource_type, actor, order, hidden; principals: q, kind, active, hidden). Values are 1 to 512 characters without control characters, and the object is at most 4096 bytes of compact JSON. `hidden` lists hidden column IDs, comma-separated.",
+        "additionalProperties": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "maxProperties": 7
+      },
+      "SavedView": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "page",
+          "name",
+          "params",
+          "revision",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "page": {
+            "$ref": "#/components/schemas/ViewPage"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "params": {
+            "$ref": "#/components/schemas/ViewParams"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "SavedViewList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "$ref": "#/components/schemas/SavedView"
+            }
+          }
+        },
+        "description": "The session's views, by list and then oldest first. A person keeps at most 50."
+      },
+      "CreateSavedView": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "page",
+          "name",
+          "params"
+        ],
+        "properties": {
+          "page": {
+            "$ref": "#/components/schemas/ViewPage"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "description": "Trimmed; unique among the person's views of the list."
+          },
+          "params": {
+            "$ref": "#/components/schemas/ViewParams"
+          }
+        }
+      },
+      "UpdateSavedView": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "revision"
+        ],
+        "minProperties": 2,
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "params": {
+            "$ref": "#/components/schemas/ViewParams"
+          }
+        }
+      },
+      "OverviewJobWindow": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Terminal job outcomes in one window.",
+        "required": [
+          "ended",
+          "by_state",
+          "conflict_rate_percent"
+        ],
+        "properties": {
+          "ended": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Terminal jobs in the window."
+          },
+          "by_state": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "Succeeded",
+              "NoOp",
+              "Cancelled",
+              "ReplanRequired",
+              "Failed"
+            ],
+            "properties": {
+              "Succeeded": {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              },
+              "NoOp": {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              },
+              "Cancelled": {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              },
+              "ReplanRequired": {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              },
+              "Failed": {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              }
+            }
+          },
+          "conflict_rate_percent": {
+            "type": "string",
+            "description": "Replanned jobs as a percentage of terminal jobs in the window, one decimal."
+          }
+        }
+      },
+      "SearchCatalog": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "enabled"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SearchTable": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "One visible alias whose `namespace.name` matched. A table visible under several aliases may appear once per alias.",
+        "required": [
+          "id",
+          "catalog_id",
+          "namespace",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The table identity."
+          },
+          "catalog_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "namespace": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "SearchPrincipal": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "kind",
+          "display_name",
+          "active"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "User",
+              "Service"
+            ]
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SearchResults": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "catalogs",
+          "tables",
+          "principals"
+        ],
+        "properties": {
+          "catalogs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SearchCatalog"
+            }
+          },
+          "tables": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SearchTable"
+            }
+          },
+          "principals": {
+            "description": "Present only for callers allowed to manage access.",
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SearchPrincipal"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "LiveJobEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "The data of a `job` event on the organization stream: which job changed and its state. Names, reasons, and actors are never included; read the job for them.",
+        "required": [
+          "job_id",
+          "table_id",
+          "state",
+          "revision"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "table_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "Planning",
+              "Queued",
+              "Running",
+              "ReadyToCommit",
+              "Committing",
+              "CommitOutcomeUnknown",
+              "Deleting",
+              "Cancelling",
+              "Succeeded",
+              "NoOp",
+              "Cancelled",
+              "ReplanRequired",
+              "Failed"
+            ]
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "The job's state revision after this event."
           }
         }
       }

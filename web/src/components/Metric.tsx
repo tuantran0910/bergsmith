@@ -1,5 +1,6 @@
 // Summary figures and definition lists shared by detail pages (ADR 0056).
 
+import { MinusIcon, TrendingDownIcon, TrendingUpIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { cn } from "../ui/cn";
@@ -25,21 +26,51 @@ export function MetricGrid({
 }
 
 /**
+ * How a figure moved: a signed difference from `format.change` (`null` when
+ * it held) and the window it is compared with. Direction is told in words and
+ * an arrow, never color, which stays reserved for status.
+ */
+export interface MetricChange {
+    difference: string | null;
+    against: string;
+}
+
+function Change({ difference, against }: MetricChange) {
+    const Icon =
+        difference === null
+            ? MinusIcon
+            : difference.startsWith("+")
+              ? TrendingUpIcon
+              : TrendingDownIcon;
+    return (
+        <dd className="m-0 mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+            <Icon aria-hidden="true" className="size-3.5 shrink-0" />
+            {difference === null
+                ? `Same as ${against}`
+                : `${difference} vs ${against}`}
+        </dd>
+    );
+}
+
+/**
  * One labeled figure. `detail` carries the qualifier (a unit, a scope, or a
- * relative time) so the headline number stays comparable across the strip.
+ * relative time) so the headline number stays comparable across the strip;
+ * `change` compares it with an earlier window.
  */
 export function Metric({
     label,
     value,
     detail,
+    change,
 }: {
     label: string;
     value: ReactNode;
     detail?: ReactNode;
+    change?: MetricChange;
 }) {
     return (
         <div className="rounded-xl bg-card px-4 py-3 ring-1 ring-foreground/10">
-            <dt className="text-xs font-medium text-muted-foreground">
+            <dt className="text-xs font-semibold text-muted-foreground">
                 {label}
             </dt>
             <dd className="m-0 mt-1 text-lg font-semibold break-words tabular-nums">
@@ -50,6 +81,7 @@ export function Metric({
                     {detail}
                 </dd>
             )}
+            {change !== undefined && <Change {...change} />}
         </div>
     );
 }

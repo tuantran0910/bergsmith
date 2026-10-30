@@ -54,6 +54,7 @@ function start(path = `/catalogs/${CATALOG_ID}`) {
     return userEvent.setup();
 }
 
+/** Fills the first step and continues to the warehouse step. */
 async function enterDraft(user: ReturnType<typeof userEvent.setup>) {
     await user.type(
         await screen.findByLabelText("Connection name"),
@@ -62,6 +63,15 @@ async function enterDraft(user: ReturnType<typeof userEvent.setup>) {
     await user.type(
         screen.getByLabelText("Catalog URI"),
         "https://catalog.example",
+    );
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+}
+
+/** Continues from the warehouse step and checks the draft. */
+async function checkDraft(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(await screen.findByRole("button", { name: "Continue" }));
+    await user.click(
+        await screen.findByRole("button", { name: "Check capabilities" }),
     );
 }
 
@@ -125,15 +135,26 @@ it("checks a draft before saving and invalidates the diagnostic after edits", as
     ).on("POST", "/api/v1/catalogs", () => json(201, managedCatalog));
     const user = start("/catalogs/new");
     await enterDraft(user);
-    await user.type(screen.getByLabelText("Warehouse (optional)"), "warehouse");
-    await user.click(
-        screen.getByRole("button", { name: "Check capabilities" }),
+    await user.type(
+        await screen.findByLabelText("Warehouse (optional)"),
+        "warehouse",
     );
+    await checkDraft(user);
     expect(
         await screen.findByRole("button", { name: "Save connection" }),
     ).toBeEnabled();
     expect(fake.sent("POST", "/api/v1/catalogs")).toHaveLength(0);
+    // Going back keeps the draft; an edit discards the check it invalidates.
+    await user.click(screen.getByRole("button", { name: /^Connection/ }));
+    expect(screen.getByLabelText("Catalog URI")).toHaveValue(
+        "https://catalog.example",
+    );
     await user.type(screen.getByLabelText("Connection name"), "-updated");
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    expect(screen.getByLabelText("Warehouse (optional)")).toHaveValue(
+        "warehouse",
+    );
+    await user.click(screen.getByRole("button", { name: "Continue" }));
     expect(
         screen.queryByRole("button", { name: "Save connection" }),
     ).not.toBeInTheDocument();
@@ -172,9 +193,7 @@ it("requires acknowledgement for a diagnostic with missing required endpoints", 
     );
     const user = start("/catalogs/new");
     await enterDraft(user);
-    await user.click(
-        screen.getByRole("button", { name: "Check capabilities" }),
-    );
+    await checkDraft(user);
     expect(
         await screen.findByRole("button", { name: "Save connection" }),
     ).toBeDisabled();
@@ -198,9 +217,7 @@ it("does not replay an uncertain create", async () => {
     ).on("POST", "/api/v1/catalogs", () => json(502, {}));
     const user = start("/catalogs/new");
     await enterDraft(user);
-    await user.click(
-        screen.getByRole("button", { name: "Check capabilities" }),
-    );
+    await checkDraft(user);
     await user.click(
         await screen.findByRole("button", { name: "Save connection" }),
     );
@@ -225,12 +242,10 @@ it("displays failed diagnostics without creating a connection", async () => {
     const user = start("/catalogs/new");
     await enterDraft(user);
     await user.type(
-        screen.getByLabelText("Credential reference (optional)"),
+        await screen.findByLabelText("Credential reference (optional)"),
         "vault/catalog",
     );
-    await user.click(
-        screen.getByRole("button", { name: "Check capabilities" }),
-    );
+    await checkDraft(user);
     expect(
         await screen.findByText("Catalog credential unavailable"),
     ).toBeVisible();
@@ -736,4 +751,47 @@ it("shows catalog storage coverage without claiming a bucket total", async () =>
     expect(
         screen.getByRole("region", { name: "Storage breakdown" }),
     ).toBeVisible();
+});
+
+it("guides setup step by step and refuses a URI the coordinator would reject", async () => {
+    const user = start("/catalogs/new");
+    const steps = await screen.findByRole("list", { name: "Setup steps" });
+    expect(within(steps).getByText("Connection").closest("li")).toHaveAttribute(
+        "aria-current",
+        "step",
+    );
+    await user.type(screen.getByLabelText("Connection name"), "new-lake");
+    await user.type(
+        screen.getByLabelText("Catalog URI"),
+        "https://catalog.example?token=secret",
+    );
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    // The field's validity stops the step; nothing moved on or was sent.
+    expect(screen.getByLabelText("Catalog URI")).toBeInvalid();
+    expect(
+        screen.getByRole("heading", { name: "Connection" }),
+    ).toBeInTheDocument();
+
+    await user.clear(screen.getByLabelText("Catalog URI"));
+    await user.type(
+        screen.getByLabelText("Catalog URI"),
+        "https://catalog.example",
+    );
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    const heading = await screen.findByRole("heading", {
+        name: "Warehouse and credentials",
+    });
+    expect(heading).toHaveFocus();
+    expect(
+        within(steps).getByRole("button", { name: /^Connection/ }),
+    ).toBeInTheDocument();
+    // A later step opens only through Continue.
+    expect(
+        within(steps).queryByRole("button", { name: /Check and save/ }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(
+        await screen.findByRole("heading", { name: "Connection" }),
+    ).toHaveFocus();
+    expect(fake.sent("POST", "/api/v1/catalogs/check")).toHaveLength(0);
 });

@@ -1,13 +1,15 @@
-//! The tables list and its health filter (BS-028.T4).
+//! The tables list, its health filter (BS-028.T4), and its name and catalog
+//! filters and facets (BS-033.T4).
 //!
 //! A table's health is evaluated from the ledger when the page is read, never
 //! stored (ADR 0059). The plain list appends the state of each row's table to
 //! the page it already returns. Filtering or sorting by state needs the state
 //! of every visible table, so that path walks the visible inventory in id
 //! order, one bounded chunk at a time, and keeps the best `limit + 1` matches.
-//! Its cursor carries the sort key, so a later page resumes after it.
+//! Its cursor carries the sort key, so a later page resumes after it. The
+//! facets walk the same way, because health counts need every state.
 
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BTreeMap, BinaryHeap, HashMap};
 
 use axum::Json;
 use axum::extract::rejection::QueryRejection;
@@ -19,6 +21,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use super::lists::{self, TableFilter};
 use super::pagination::{Page, PageQuery};
 use super::resources::{self, Resource};
 use super::{ApiError, ApiState, Caller};
@@ -41,6 +44,25 @@ pub(super) struct TablesQuery {
     cursor: Option<String>,
     health: Option<HealthFilter>,
     sort: Option<TableSort>,
+    catalog: Option<Uuid>,
+    q: Option<String>,
+}
+
+impl TablesQuery {
+    fn filter(&self) -> Result<TableFilter, ApiError> {
+        Ok(TableFilter {
+            catalog: self.catalog,
+            q: lists::search(self.q.as_deref())?,
+        })
+    }
+}
+
+/// Every filter of a page, which its cursor scope digests.
+#[derive(serde::Serialize)]
+struct Scope<'a> {
+    filter: &'a TableFilter,
+    health: Option<&'static str>,
+    sorted: bool,
 }
 
 /// An exact health state to keep.
@@ -81,23 +103,103 @@ enum TableSort {
     Health,
 }
 
-/// `GET /api/v1/tables`, with an optional health filter and order.
+/// `GET /api/v1/tables`, with optional name, catalog, and health filters and
+/// the health order.
 pub(super) async fn tables(
     State(state): State<ApiState>,
     caller: Caller,
     query: Result<Query<TablesQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let query = query.map_err(|_| ApiError::invalid())?.0;
+    let filter = query.filter()?;
+    let scope = Scope {
+        filter: &filter,
+        health: query.health.map(HealthFilter::token),
+        sorted: query.sort.is_some(),
+    };
+    let filtered = filter != TableFilter::default() || scope.health.is_some() || scope.sorted;
     let page = Page::parse(
         PageQuery::new(query.limit, query.cursor),
         caller.organization_id,
         caller.principal_id,
-        Resource::Table.name(),
+        lists::scope(Resource::Table.name(), &scope, filtered)?,
     )?;
     if query.health.is_none() && query.sort.is_none() {
-        return plain(&state, &caller, page).await;
+        return plain(&state, &caller, page, &filter).await;
     }
-    scanned(&state, &caller, page, query.health).await
+    scanned(&state, &caller, page, &filter, query.health).await
+}
+
+/// `GET /api/v1/tables/facets`: table counts by health and by catalog.
+///
+/// Each table counts once per catalog it has a visible alias in, so the
+/// catalog counts can sum to more than the tables.
+pub(super) async fn table_facets(
+    State(state): State<ApiState>,
+    caller: Caller,
+    query: Result<Query<TablesQuery>, QueryRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let query = query.map_err(|_| ApiError::invalid())?.0;
+    if query.limit.is_some() || query.cursor.is_some() || query.sort.is_some() {
+        return Err(ApiError::invalid());
+    }
+    let filter = query.filter()?;
+    let wanted = query.health.map(HealthFilter::rank);
+    // The catalog dimension ignores its own filter, so the scan applies only
+    // the name filter and each dimension applies the other's in memory.
+    let named = TableFilter {
+        catalog: None,
+        q: filter.q.clone(),
+    };
+    let now = Utc::now();
+    let mut health = [0_i64; 4];
+    let mut catalogs: BTreeMap<Uuid, i64> = BTreeMap::new();
+    let mut after = None;
+    loop {
+        let tables = lists::visible_tables(&state, &caller.0, &named, after, SCAN_CHUNK).await?;
+        let Some((last, _)) = tables.last() else {
+            break;
+        };
+        after = Some(*last);
+        let ids: Vec<Uuid> = tables.iter().map(|(id, _)| *id).collect();
+        let assessments = assess(&state, &caller, &ids, now).await?;
+        for (id, connections) in &tables {
+            let Some(assessment) = assessments.get(&TableId::from_uuid(*id)) else {
+                continue;
+            };
+            let rank = rank(assessment.state());
+            if filter
+                .catalog
+                .is_none_or(|catalog| connections.contains(&catalog))
+                && let Some(count) = health.get_mut(usize::from(rank))
+            {
+                *count += 1;
+            }
+            if wanted.is_none_or(|wanted| wanted == rank) {
+                for connection in connections {
+                    *catalogs.entry(*connection).or_default() += 1;
+                }
+            }
+        }
+        if tables.len() < usize::try_from(SCAN_CHUNK).map_err(|_| ApiError::internal())? {
+            break;
+        }
+    }
+    let health = [
+        HealthFilter::Critical,
+        HealthFilter::Warning,
+        HealthFilter::Healthy,
+        HealthFilter::Unassessed,
+    ]
+    .into_iter()
+    .filter_map(|state| {
+        let count = health.get(usize::from(state.rank())).copied().unwrap_or(0);
+        (count > 0).then_some((state.token(), count))
+    });
+    Ok(Json(json!({
+        "health": lists::facet(health),
+        "catalog": lists::facet(catalogs.into_iter().map(|(id, count)| (id.to_string(), count))),
+    })))
 }
 
 /// `GET /api/v1/tables/{id}`: the summary with its table's health.
@@ -121,8 +223,20 @@ pub(super) async fn table(
 }
 
 /// The plain list: the page's rows, each with its table's health.
-async fn plain(state: &ApiState, caller: &Caller, page: Page) -> Result<Json<Value>, ApiError> {
-    let mut rows = resources::read_page(state, &caller.0, Resource::Table, &page, None).await?;
+async fn plain(
+    state: &ApiState,
+    caller: &Caller,
+    page: Page,
+    filter: &TableFilter,
+) -> Result<Json<Value>, ApiError> {
+    let after = page
+        .after
+        .as_deref()
+        .map(Uuid::parse_str)
+        .transpose()
+        .map_err(|_| ApiError::invalid())?;
+    let limit = i64::try_from(page.limit + 1).map_err(|_| ApiError::invalid())?;
+    let mut rows = lists::table_page(state, &caller.0, filter, after, limit).await?;
     if !rows.is_empty() {
         let ids: Vec<Uuid> = rows.iter().map(|(id, _)| *id).collect();
         let assessments = assess(state, caller, &ids, Utc::now()).await?;
@@ -145,6 +259,7 @@ async fn scanned(
     state: &ApiState,
     caller: &Caller,
     page: Page,
+    tables: &TableFilter,
     filter: Option<HealthFilter>,
 ) -> Result<Json<Value>, ApiError> {
     let cursor = health_cursor(&page, filter)?;
@@ -159,7 +274,11 @@ async fn scanned(
     let mut best: BinaryHeap<(u8, Uuid)> = BinaryHeap::new();
     let mut selected: HashMap<Uuid, Assessment> = HashMap::new();
     loop {
-        let ids = resources::visible_table_ids(state, &caller.0, after, SCAN_CHUNK).await?;
+        let ids: Vec<Uuid> = lists::visible_tables(state, &caller.0, tables, after, SCAN_CHUNK)
+            .await?
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
         if ids.is_empty() {
             break;
         }

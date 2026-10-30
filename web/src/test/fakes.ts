@@ -60,6 +60,36 @@ export class FakeApi {
     readonly unrouted: string[] = [];
     private readonly routes: RouteEntry[] = [];
 
+    constructor() {
+        // Filtered lists read facet counts and saved views beside each page
+        // (ADR 0067); a test that asserts them routes its own, which wins.
+        this.on("GET", "/api/v1/tables/facets", () =>
+            json(200, schema("TableFacets", { health: [], catalog: [] })),
+        )
+            .on("GET", "/api/v1/jobs/facets", () =>
+                json(200, schema("JobFacets", { state: [], operation: [] })),
+            )
+            .on("GET", "/api/v1/catalogs/facets", () =>
+                json(200, schema("CatalogFacets", { enabled: [] })),
+            )
+            .on("GET", "/api/v1/audit/facets", () =>
+                json(
+                    200,
+                    schema("AuditFacets", {
+                        outcome: [],
+                        action: [],
+                        resource_type: [],
+                    }),
+                ),
+            )
+            .on("GET", "/api/v1/principals/facets", () =>
+                json(200, schema("PrincipalFacets", { kind: [], active: [] })),
+            )
+            .on("GET", "/api/v1/me/views", () =>
+                json(200, schema("SavedViewList", { items: [] })),
+            );
+    }
+
     /**
      * Routes `method path`. Several handlers answer successive requests; the
      * last one repeats.
@@ -101,7 +131,13 @@ export class FakeApi {
                   );
         this.requests.push(request.clone());
         const pathname = new URL(request.url).pathname;
-        for (const route of this.routes) {
+        // Like the coordinator's router, a literal path such as
+        // `/tables/facets` wins over a parameter such as `/tables/{id}`.
+        const ordered = [
+            ...this.routes.filter((route) => route.names.length === 0),
+            ...this.routes.filter((route) => route.names.length > 0),
+        ];
+        for (const route of ordered) {
             const found =
                 route.method === request.method
                     ? route.pattern.exec(pathname)
@@ -147,12 +183,36 @@ export class FakeEventSource {
         FakeEventSource.instances.push(this);
     }
 
+    /**
+     * The newest job stream. The shell's organization stream opens beside
+     * every page, so it is reached through {@link FakeEventSource.live}.
+     */
     static latest(): FakeEventSource {
-        const latest = FakeEventSource.instances.at(-1);
+        const latest = FakeEventSource.instances
+            .filter((source) => !source.isLive())
+            .at(-1);
         if (latest === undefined) {
             throw new Error("no EventSource was opened");
         }
         return latest;
+    }
+
+    /** The newest organization stream (`/api/v1/events`). */
+    static live(): FakeEventSource {
+        const live = FakeEventSource.instances
+            .filter((source) => source.isLive())
+            .at(-1);
+        if (live === undefined) {
+            throw new Error("no organization stream was opened");
+        }
+        return live;
+    }
+
+    private isLive(): boolean {
+        return (
+            new URL(this.url, window.location.href).pathname ===
+            "/api/v1/events"
+        );
     }
 
     addEventListener(type: string, listener: Listener): void {
@@ -177,6 +237,17 @@ export class FakeEventSource {
             lastEventId: String(event.sequence),
         });
         for (const listener of this.listeners.get(event.kind) ?? []) {
+            listener(message);
+        }
+    }
+
+    /** Sends one named event, as the organization stream does. */
+    send(type: string, data: unknown, id: string): void {
+        const message = new MessageEvent<string>(type, {
+            data: JSON.stringify(data),
+            lastEventId: id,
+        });
+        for (const listener of this.listeners.get(type) ?? []) {
             listener(message);
         }
     }

@@ -200,7 +200,7 @@ function DestinationFields({
             </Field>
             {lockedKind ? (
                 <div className="grid gap-1.5 text-sm">
-                    <span className="font-medium">Kind</span>
+                    <span className="font-semibold">Kind</span>
                     <p className="m-0 text-muted-foreground">
                         {value.kind === "webhook" ? "Webhook" : "Slack"}
                     </p>

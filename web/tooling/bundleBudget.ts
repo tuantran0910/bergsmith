@@ -1,5 +1,5 @@
 // A size budget for the JavaScript the browser downloads on first load
-// (BS-021.T4, refined by ADR 0056). It counts the entry chunk and the
+// (BS-021.T4, refined by ADR 0056), and for the stylesheet (ADR 0067). It counts the entry chunk and the
 // chunks statically imported from it, follows that graph transitively, and
 // ignores lazy route chunks: what a user pays before any navigation, in
 // gzipped bytes. `vite build` fails when that total grows past the budget,
@@ -87,12 +87,50 @@ export function firstLoadFailure(
     return `First-load JavaScript is ${kilobytes(total)} gzipped, over the ${kilobytes(budgetBytes)} budget: ${largest}`;
 }
 
+/** Why a lazy chunk is too big, largest first, or `null` within budget. */
+export function lazyChunkFailure(
+    chunks: readonly EmittedChunk[],
+    budgetBytes: number,
+): string | null {
+    const over = lazyChunks(chunks).chunks.filter(
+        (chunk) => chunk.gzipBytes > budgetBytes,
+    );
+    if (over.length === 0) {
+        return null;
+    }
+    const listed = over
+        .map((chunk) => `${chunk.fileName} ${kilobytes(chunk.gzipBytes)}`)
+        .join(", ");
+    return `Lazy chunks over the ${kilobytes(budgetBytes)} per-chunk budget: ${listed}`;
+}
+
+/** Why the stylesheets are too big, or `null` within budget. */
+export function stylesheetFailure(
+    gzipBytes: number,
+    budgetBytes: number,
+): string | null {
+    return gzipBytes <= budgetBytes
+        ? null
+        : `Stylesheets are ${kilobytes(gzipBytes)} gzipped, over the ${kilobytes(budgetBytes)} budget`;
+}
+
 function kilobytes(bytes: number): string {
     return `${(bytes / 1000).toFixed(1)} kB`;
 }
 
-/** Fails the production build when first-load gzipped JavaScript is too big. */
-export function bundleBudget(budgetBytes: number): Plugin {
+/** Gzipped size limits the production build enforces. */
+export interface Budgets {
+    /** First-load JavaScript: the entry chunk and its static imports. */
+    javascriptBytes: number;
+    /** Every emitted stylesheet; the UI ships one, loaded up front. */
+    stylesheetBytes: number;
+    /** Each lazy chunk on its own, so one page cannot grow unnoticed. */
+    lazyChunkBytes: number;
+}
+
+/** Fails the production build when first-load JavaScript or CSS is too big. */
+export function bundleBudget(budgets: Budgets): Plugin {
+    const budgetBytes = budgets.javascriptBytes;
     return {
         name: "bergsmith-bundle-budget",
         apply: "build",
@@ -124,7 +162,20 @@ export function bundleBudget(budgetBytes: number): Plugin {
                         )
                         .join(", "),
             );
-            const failure = firstLoadFailure(chunks, budgetBytes);
+            const stylesheets = Object.values(bundle).reduce(
+                (sum, output) =>
+                    output.type === "asset" && output.fileName.endsWith(".css")
+                        ? sum + gzipSync(output.source).length
+                        : sum,
+                0,
+            );
+            this.info(
+                `Stylesheets: ${kilobytes(stylesheets)} gzipped (budget ${kilobytes(budgets.stylesheetBytes)})`,
+            );
+            const failure =
+                firstLoadFailure(chunks, budgetBytes) ??
+                lazyChunkFailure(chunks, budgets.lazyChunkBytes) ??
+                stylesheetFailure(stylesheets, budgets.stylesheetBytes);
             if (failure !== null) {
                 this.error(failure);
             }

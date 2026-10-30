@@ -68,7 +68,7 @@ function ManualRegistration({ id }: { id: string }) {
     const register = useRegistration(id);
     return (
         <details>
-            <summary className="cursor-pointer text-sm font-medium">
+            <summary className="cursor-pointer text-sm font-semibold">
                 Register by name
             </summary>
             <form
@@ -199,7 +199,7 @@ function NamespaceLevel({
         (tables.data?.pages.reduce((sum, page) => sum + page.skipped, 0) ?? 0);
     return (
         <div className="grid gap-4">
-            <h3 className="m-0 text-sm font-medium">
+            <h3 className="m-0 text-sm font-semibold">
                 {namespace.length
                     ? `Namespace: ${namespace.join(".")}`
                     : "Top-level namespaces"}
@@ -248,7 +248,7 @@ function NamespaceLevel({
             )}
             {namespace.length > 0 && (
                 <>
-                    <h3 className="m-0 text-sm font-medium">
+                    <h3 className="m-0 text-sm font-semibold">
                         Tables in this namespace
                     </h3>
                     {tables.isPending && (

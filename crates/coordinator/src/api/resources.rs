@@ -12,98 +12,7 @@ use super::{ApiError, ApiState, Caller};
 use crate::identity::administration::AdministrationError;
 use crate::identity::authorization::AuthorizationError;
 
-// Queries are compile-time literals. All request values are bound.
-// Filtering precedes ORDER BY / LIMIT, so inaccessible rows never consume a page.
-macro_rules! table_access {
-    () => {
-        "EXISTS (
-    SELECT 1 FROM principal_role_grants g
-    WHERE g.organization_id = $1 AND g.principal_id = $2
-      AND g.revoked_at IS NULL AND g.role = ANY($3::text[])
-      AND ((g.catalog_connection_id IS NULL AND g.table_identity_id IS NULL)
-        OR g.table_identity_id = t.id
-        OR EXISTS (SELECT 1 FROM table_aliases a
-                   WHERE a.organization_id = $1 AND a.table_identity_id = t.id
-                     AND a.catalog_connection_id = g.catalog_connection_id)))"
-    };
-}
-
-macro_rules! catalog_access {
-    () => {
-        "EXISTS (
-    SELECT 1 FROM principal_role_grants g
-    WHERE g.organization_id = $1 AND g.principal_id = $2
-      AND g.revoked_at IS NULL AND g.role = ANY($3::text[])
-      AND ((g.catalog_connection_id IS NULL AND g.table_identity_id IS NULL)
-        OR g.catalog_connection_id = r.id))"
-    };
-}
-
-// The aliases of table `$table` the caller may see: an organization or table
-// grant reveals every alias, a connection grant only that connection's.
-macro_rules! visible_aliases {
-    ($table:literal) => {
-        concat!(
-            "COALESCE((SELECT jsonb_agg(jsonb_build_object(
-              'catalog_id', a.catalog_connection_id, 'namespace', a.namespace,
-              'name', a.table_name, 'revision', a.revision)
-              ORDER BY a.catalog_connection_id, a.namespace, a.table_name)
-            FROM table_aliases a WHERE a.organization_id = $1 AND a.table_identity_id = ",
-            $table,
-            "
-              AND EXISTS (SELECT 1 FROM principal_role_grants g
-                WHERE g.organization_id = $1 AND g.principal_id = $2
-                  AND g.revoked_at IS NULL AND g.role = ANY($3::text[])
-                  AND ((g.catalog_connection_id IS NULL AND g.table_identity_id IS NULL)
-                    OR g.table_identity_id = ",
-            $table,
-            "
-                    OR g.catalog_connection_id = a.catalog_connection_id))), '[]'::jsonb)"
-        )
-    };
-}
-
-macro_rules! table_summary {
-    () => {
-        concat!(
-            "jsonb_build_object('id', r.id, 'table_uuid', r.table_uuid, 'created_at', r.created_at,
-          'aliases', ",
-            visible_aliases!("r.id"),
-            ", 'statistics', (SELECT jsonb_build_object(
-                'sampled_at', s.sampled_at,
-                'record_count', s.record_count::text,
-                'data_files', s.data_files::text,
-                'data_bytes', s.data_bytes::text,
-                'delete_files', s.delete_files::text,
-                'small_files', s.small_files::text)
-              FROM table_statistics s
-              WHERE s.organization_id = r.organization_id AND s.table_identity_id = r.id
-              ORDER BY s.sampled_at DESC LIMIT 1))"
-        )
-    };
-}
-
-// Names are for display; `table_id` and `created_by` stay the keys. The
-// requester's foreign key names a principal of the job's organization, and
-// display names are required, so `created_by_name` is never null.
-macro_rules! job_summary {
-    () => {
-        concat!(
-            "jsonb_build_object('id', r.id, 'table_id', r.table_identity_id, 'table_aliases', ",
-            visible_aliases!("r.table_identity_id"),
-            ", 'operation', CASE r.operation WHEN 'ExpireSnapshots' THEN 'expire_snapshots' WHEN 'RemoveOrphanFiles' THEN 'remove_orphan_files' WHEN 'RewriteManifests' THEN 'rewrite_manifests' WHEN 'RemoveDanglingDeletes' THEN 'remove_dangling_deletes' ELSE 'compact' END, 'state', r.state, 'revision', r.state_revision, 'state_reason', r.state_reason, \
-             'retry_of_job_id', r.retry_of_job_id, 'created_by', r.created_by, \
-             'created_by_name', (SELECT p.display_name FROM principals p \
-                WHERE p.id = r.created_by AND p.organization_id = r.organization_id), \
-             'created_at', r.created_at, 'updated_at', r.updated_at, \
-             'cancellation_requested', r.cancellation_requested_at IS NOT NULL, \
-             'publication_started', r.publication_started_at IS NOT NULL, \
-             'trigger', CASE WHEN r.trigger_finding IS NULL THEN NULL \
-                ELSE jsonb_build_object('kind', r.trigger_finding, \
-                                        'severity', r.trigger_severity) END)"
-        )
-    };
-}
+// Queries are compile-time literals (see `sql`). All request values are bound.
 
 // Logical input sizes come from the immutable plan, and only tasks with an
 // accepted receipt count as rewritten. Output objects are verified at receipt
@@ -212,7 +121,7 @@ impl Resource {
         match self {
             Self::Catalog => variants!(
                 "catalog_connections r",
-                "jsonb_build_object('id', r.id, 'name', r.name, 'enabled', r.enabled, 'settings', jsonb_build_object('maintenance_enabled', r.maintenance_enabled, 'max_execution_seconds', r.max_execution_seconds, 'max_unresolved_publication_seconds', r.max_unresolved_publication_seconds), 'revision', r.revision, 'updated_at', r.updated_at, 'created_at', r.created_at)",
+                catalog_summary!(),
                 catalog_access!()
             ),
             Self::Table => variants!(
@@ -321,57 +230,6 @@ pub(super) async fn read_page(
     Ok(rows)
 }
 
-/// The ids of the caller's visible tables, ascending, strictly after `after`.
-///
-/// The health filter walks the inventory in this order because a table's state
-/// is evaluated from its sample rather than stored, so no bounded SQL predicate
-/// can select a page of matches.
-pub(super) async fn visible_table_ids(
-    state: &ApiState,
-    caller: &bergsmith_persistence::auth::Session,
-    after: Option<Uuid>,
-    limit: i64,
-) -> Result<Vec<Uuid>, ApiError> {
-    let roles: Vec<_> = Resource::Table
-        .permission()
-        .roles()
-        .iter()
-        .map(|role| role.as_str())
-        .collect();
-    let rows: Vec<Uuid> = match after {
-        Some(after) => {
-            sqlx::query_scalar(concat!(
-                "SELECT r.id FROM table_identities r JOIN table_identities t ON t.id = r.id \
-                 WHERE r.organization_id = $1 AND ",
-                table_access!(),
-                " AND r.id > $4 ORDER BY r.id LIMIT $5"
-            ))
-            .bind(caller.organization_id.as_uuid())
-            .bind(caller.principal_id.as_uuid())
-            .bind(roles)
-            .bind(after)
-            .bind(limit)
-            .fetch_all(state.database.pool())
-            .await?
-        }
-        None => {
-            sqlx::query_scalar(concat!(
-                "SELECT r.id FROM table_identities r JOIN table_identities t ON t.id = r.id \
-                 WHERE r.organization_id = $1 AND ",
-                table_access!(),
-                " ORDER BY r.id LIMIT $4"
-            ))
-            .bind(caller.organization_id.as_uuid())
-            .bind(caller.principal_id.as_uuid())
-            .bind(roles)
-            .bind(limit)
-            .fetch_all(state.database.pool())
-            .await?
-        }
-    };
-    Ok(rows)
-}
-
 /// The summaries of `ids` the caller may see, in ascending id order.
 ///
 /// A table that stops being visible between the scan and this read is simply
@@ -404,34 +262,6 @@ pub(super) async fn table_summaries(
     Ok(rows)
 }
 
-pub(super) async fn catalogs(
-    State(state): State<ApiState>,
-    caller: Caller,
-    query: Result<Query<PageQuery>, axum::extract::rejection::QueryRejection>,
-) -> Result<Json<Value>, ApiError> {
-    read(
-        &state,
-        &caller.0,
-        Resource::Catalog,
-        query.map_err(|_| ApiError::invalid())?.0,
-        None,
-    )
-    .await
-}
-pub(super) async fn jobs(
-    State(state): State<ApiState>,
-    caller: Caller,
-    query: Result<Query<PageQuery>, axum::extract::rejection::QueryRejection>,
-) -> Result<Json<Value>, ApiError> {
-    read(
-        &state,
-        &caller.0,
-        Resource::Job,
-        query.map_err(|_| ApiError::invalid())?.0,
-        None,
-    )
-    .await
-}
 pub(super) async fn catalog(
     State(state): State<ApiState>,
     caller: Caller,
@@ -595,52 +425,6 @@ pub(super) async fn record_denial(
     {
         tracing::warn!(error = %error, "api permission-denial audit record failed");
     }
-}
-
-pub(super) async fn audit(
-    State(state): State<ApiState>,
-    caller: Caller,
-    query: Result<Query<PageQuery>, axum::extract::rejection::QueryRejection>,
-) -> Result<Json<Value>, ApiError> {
-    let page = Page::parse(
-        query.map_err(|_| ApiError::invalid())?.0,
-        caller.organization_id,
-        caller.principal_id,
-        "audit",
-    )?;
-    let after = page
-        .after
-        .as_deref()
-        .map(str::parse::<i64>)
-        .transpose()
-        .map_err(|_| ApiError::invalid())?;
-    if after.is_some_and(|id| id < 0) {
-        return Err(ApiError::invalid());
-    }
-    let mut conn = state.database.pool().acquire().await?;
-    require(
-        &mut conn,
-        &caller.0,
-        Permission::ViewAudit,
-        ResourceScope::Organization,
-    )
-    .await?;
-    let rows = bergsmith_persistence::audit::list(
-        &mut conn,
-        caller.organization_id,
-        after,
-        i64::try_from(page.limit + 1).map_err(|_| ApiError::invalid())?,
-    )
-    .await?;
-    let rows = rows.into_iter().map(|row| (row.id.to_string(), json!({
-        // Encode bigint IDs as decimal strings so JavaScript preserves precision.
-        "id": row.id.to_string(), "actor_principal_id": row.actor_principal_id,
-        "actor_display_name": row.actor_display_name, "actor_kind": row.actor_kind.as_str(),
-        "action": row.action,
-        "resource_type": row.resource_type, "resource_id": row.resource_id,
-        "outcome": row.outcome.as_str(), "detail": row.detail, "occurred_at": row.occurred_at,
-    }))).collect();
-    Ok(Json(page.finish(rows)?))
 }
 
 /// `GET /api/v1/workers`: the organization's current worker sessions.

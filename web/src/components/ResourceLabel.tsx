@@ -27,7 +27,7 @@ export function ResourceLabel({
 }) {
     return (
         <div className={cn("grid min-w-0 gap-0.5", className)}>
-            <span className="flex min-w-0 flex-wrap items-center gap-1 font-medium">
+            <span className="flex min-w-0 flex-wrap items-center gap-1 font-semibold">
                 {name}
                 {copy !== undefined && (
                     <CopyButton value={copy.value} label={copy.label} />

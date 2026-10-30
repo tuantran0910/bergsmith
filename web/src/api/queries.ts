@@ -4,6 +4,7 @@
 // and is bound to the session it started in (`forSession`).
 
 import {
+    keepPreviousData,
     useInfiniteQuery,
     useQuery,
     useQueryClient,
@@ -11,9 +12,25 @@ import {
 
 import { jobQueryKey } from "../jobs/events";
 import { forSession } from "../queryClient";
-import { api, call } from "./client";
+import { api, call, type Schemas } from "./client";
 
 const PAGE = 50;
+
+/**
+ * How long a filtered list or its facet counts stay fresh. Switching back to
+ * a filter within it shows the cached page without a request; a write still
+ * invalidates it at once.
+ */
+const LIST_STALE_MS = 15_000;
+
+/** A filter's query parameters, without the absent ones. */
+function present<T extends object>(
+    filter: T,
+): { [K in keyof T]?: Exclude<T[K], undefined> } {
+    return Object.fromEntries(
+        Object.entries(filter).filter(([, value]) => value !== undefined),
+    ) as { [K in keyof T]?: Exclude<T[K], undefined> };
+}
 
 /** One page's query: the first page has no cursor. */
 function page(cursor: string | null): { limit: number; cursor?: string } {
@@ -36,10 +53,36 @@ export function useOverview() {
     });
 }
 
-export function useCatalogNames() {
+/**
+ * Catalogs, tables, and people whose names contain `q`, for the command
+ * palette (ADR 0067). Nothing is requested without search text; while the
+ * next text loads, the previous results stay (`isPlaceholderData`).
+ */
+export function useInventorySearch(q: string | undefined) {
+    const client = useQueryClient();
+    return useQuery({
+        queryKey: ["search", q],
+        enabled: q !== undefined,
+        queryFn: ({ signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/search", {
+                        params: { query: { q: q ?? "" } },
+                        signal,
+                    }),
+                ),
+            ),
+        placeholderData: keepPreviousData,
+        staleTime: LIST_STALE_MS,
+    });
+}
+
+/** Catalog names by ID; `enabled: false` reads only what is cached. */
+export function useCatalogNames(enabled = true) {
     const client = useQueryClient();
     return useQuery({
         queryKey: ["catalogs", "names"],
+        enabled,
         queryFn: ({ signal }) =>
             forSession(client, async () => {
                 // Catalogs are few; the first page of 100 names the common
@@ -57,38 +100,66 @@ export function useCatalogNames() {
     });
 }
 
+/** The coordinator's table filters (ADR 0067); absent ones are not sent. */
+export interface TableFilter {
+    health?: "healthy" | "warning" | "critical" | "unassessed" | undefined;
+    sort?: "health" | undefined;
+    catalog?: string | undefined;
+    q?: string | undefined;
+}
+
 /**
  * The tables the session may see, worst health first when `health` or the
  * health order is requested. The server evaluates every visible table for
- * those, so the page is not a client-side slice of one page.
+ * those, so the page is not a client-side slice of one page. While a new
+ * filter loads, the previous result stays visible (`isPlaceholderData`).
  */
-export function useTables({
-    health,
-    sort,
-}: {
-    health?: "healthy" | "warning" | "critical" | "unassessed" | undefined;
-    sort?: "health" | undefined;
-} = {}) {
+export function useTables(filter: TableFilter = {}) {
     const client = useQueryClient();
+    const query = present({ ...filter });
     return useInfiniteQuery({
-        queryKey: ["tables", health ?? "any", sort ?? "name"],
+        queryKey: ["tables", "list", query],
         initialPageParam: null as string | null,
         queryFn: ({ pageParam, signal }) =>
             forSession(client, () =>
                 call(
                     api.GET("/api/v1/tables", {
-                        params: {
-                            query: {
-                                ...page(pageParam),
-                                ...(health === undefined ? {} : { health }),
-                                ...(sort === undefined ? {} : { sort }),
-                            },
-                        },
+                        params: { query: { ...page(pageParam), ...query } },
                         signal,
                     }),
                 ),
             ),
         getNextPageParam: (last) => last.next_cursor,
+        placeholderData: keepPreviousData,
+        staleTime: LIST_STALE_MS,
+    });
+}
+
+/**
+ * Table counts per health state and catalog under the other filters. Pass
+ * `enabled: false` while the page shows no filters, so an empty inventory
+ * costs no request.
+ */
+export function useTableFacets(
+    filter: Omit<TableFilter, "sort">,
+    enabled = true,
+) {
+    const client = useQueryClient();
+    const query = present({ ...filter });
+    return useQuery({
+        queryKey: ["tables", "facets", query],
+        enabled,
+        queryFn: ({ signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/tables/facets", {
+                        params: { query },
+                        signal,
+                    }),
+                ),
+            ),
+        placeholderData: keepPreviousData,
+        staleTime: LIST_STALE_MS,
     });
 }
 
@@ -222,21 +293,68 @@ export function useTableSnapshots(id: string) {
     });
 }
 
-export function useJobs() {
+/**
+ * The coordinator's job filters (ADR 0067). `state` and `operation` are
+ * comma-separated values; absent filters are not sent.
+ */
+export interface JobFilter {
+    state?: string | undefined;
+    operation?: string | undefined;
+    q?: string | undefined;
+}
+
+/**
+ * The jobs the session may see, newest first unless `order` is `oldest`.
+ * While a new filter loads, the previous result stays visible
+ * (`isPlaceholderData`).
+ */
+export function useJobs(
+    filter: JobFilter = {},
+    order: "newest" | "oldest" = "newest",
+) {
     const client = useQueryClient();
+    const query = present({ ...filter, order });
     return useInfiniteQuery({
-        queryKey: ["jobs"],
+        queryKey: ["jobs", "list", query],
         initialPageParam: null as string | null,
         queryFn: ({ pageParam, signal }) =>
             forSession(client, () =>
                 call(
                     api.GET("/api/v1/jobs", {
-                        params: { query: page(pageParam) },
+                        params: {
+                            query: { ...page(pageParam), ...query, order },
+                        },
                         signal,
                     }),
                 ),
             ),
         getNextPageParam: (last) => last.next_cursor,
+        placeholderData: keepPreviousData,
+        staleTime: LIST_STALE_MS,
+    });
+}
+
+/**
+ * Job counts per state and operation under the other filters; `enabled` as
+ * for `useTableFacets`.
+ */
+export function useJobFacets(filter: JobFilter, enabled = true) {
+    const client = useQueryClient();
+    const query = present({ ...filter });
+    return useQuery({
+        queryKey: ["jobs", "facets", query],
+        enabled,
+        queryFn: ({ signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/jobs/facets", {
+                        params: { query },
+                        signal,
+                    }),
+                ),
+            ),
+        placeholderData: keepPreviousData,
+        staleTime: LIST_STALE_MS,
     });
 }
 
@@ -295,20 +413,194 @@ export function useWorkers() {
     });
 }
 
-export function useAudit() {
+/** The lists that keep saved views. */
+export type ViewPage = Schemas["ViewPage"];
+
+/**
+ * The session's saved views of one list (ADR 0067). Views are personal, so
+ * the query needs no grant. Another tab may save or delete one, so the list
+ * goes stale like any other.
+ */
+export function useSavedViews(page: ViewPage) {
     const client = useQueryClient();
+    return useQuery({
+        queryKey: ["views", page],
+        queryFn: ({ signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/me/views", {
+                        params: { query: { page } },
+                        signal,
+                    }),
+                ),
+            ),
+        staleTime: LIST_STALE_MS,
+    });
+}
+
+/** The coordinator's catalog filters (ADR 0067). */
+export interface CatalogFilter {
+    enabled?: "true" | "false" | undefined;
+    q?: string | undefined;
+}
+
+/** Catalogs the session may see, under `filter`; see `useTables`. */
+export function useCatalogList(filter: CatalogFilter) {
+    const client = useQueryClient();
+    const query = present({ ...filter });
     return useInfiniteQuery({
-        queryKey: ["audit"],
+        queryKey: ["catalogs", "list", query],
         initialPageParam: null as string | null,
         queryFn: ({ pageParam, signal }) =>
             forSession(client, () =>
                 call(
-                    api.GET("/api/v1/audit", {
-                        params: { query: page(pageParam) },
+                    api.GET("/api/v1/catalogs", {
+                        params: { query: { ...page(pageParam), ...query } },
                         signal,
                     }),
                 ),
             ),
         getNextPageParam: (last) => last.next_cursor,
+        placeholderData: keepPreviousData,
+        staleTime: LIST_STALE_MS,
+    });
+}
+
+/** Catalog counts per `enabled` value under the search. */
+export function useCatalogFacets(filter: CatalogFilter, enabled = true) {
+    const client = useQueryClient();
+    const query = present({ ...filter });
+    return useQuery({
+        queryKey: ["catalogs", "facets", query],
+        enabled,
+        queryFn: ({ signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/catalogs/facets", {
+                        params: { query },
+                        signal,
+                    }),
+                ),
+            ),
+        placeholderData: keepPreviousData,
+        staleTime: LIST_STALE_MS,
+    });
+}
+
+/**
+ * The coordinator's audit filters (ADR 0067). `outcome`, `action`, and
+ * `resource_type` are comma-separated; `q` matches the actor's name.
+ */
+export interface AuditFilter {
+    outcome?: string | undefined;
+    action?: string | undefined;
+    resource_type?: string | undefined;
+    actor?: string | undefined;
+    q?: string | undefined;
+}
+
+/** The organization's audit records under `filter`, newest first by default. */
+export function useAuditList(
+    filter: AuditFilter,
+    order: "newest" | "oldest" = "newest",
+) {
+    const client = useQueryClient();
+    const query = present({ ...filter, order });
+    return useInfiniteQuery({
+        queryKey: ["audit", "list", query],
+        initialPageParam: null as string | null,
+        queryFn: ({ pageParam, signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/audit", {
+                        params: {
+                            query: { ...page(pageParam), ...query, order },
+                        },
+                        signal,
+                    }),
+                ),
+            ),
+        getNextPageParam: (last) => last.next_cursor,
+        placeholderData: keepPreviousData,
+        staleTime: LIST_STALE_MS,
+    });
+}
+
+/** Audit counts per outcome, action, and resource type. */
+export function useAuditFacets(filter: AuditFilter, enabled = true) {
+    const client = useQueryClient();
+    const query = present({ ...filter });
+    return useQuery({
+        queryKey: ["audit", "facets", query],
+        enabled,
+        queryFn: ({ signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/audit/facets", {
+                        params: { query },
+                        signal,
+                    }),
+                ),
+            ),
+        placeholderData: keepPreviousData,
+        staleTime: LIST_STALE_MS,
+    });
+}
+
+/** The coordinator's principal filters (ADR 0067). */
+export interface PrincipalFilter {
+    active?: "true" | "false" | undefined;
+    q?: string | undefined;
+}
+
+/**
+ * The organization's users under `filter`. The key sits under `access` so
+ * provisioning and deactivation invalidate it with the rest of the directory.
+ */
+export function useUserList(filter: PrincipalFilter) {
+    const client = useQueryClient();
+    const query = present({ ...filter });
+    return useInfiniteQuery({
+        queryKey: ["access", "principals", "users", query],
+        initialPageParam: null as string | null,
+        queryFn: ({ pageParam, signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/principals", {
+                        params: {
+                            query: {
+                                ...page(pageParam),
+                                ...query,
+                                kind: "User",
+                            },
+                        },
+                        signal,
+                    }),
+                ),
+            ),
+        getNextPageParam: (last) => last.next_cursor,
+        placeholderData: keepPreviousData,
+        staleTime: LIST_STALE_MS,
+    });
+}
+
+/** User counts per `active` value under the search. */
+export function useUserFacets(filter: PrincipalFilter, enabled = true) {
+    const client = useQueryClient();
+    const query = present({ ...filter, kind: "User" as const });
+    return useQuery({
+        queryKey: ["access", "principals", "facets", query],
+        enabled,
+        queryFn: ({ signal }) =>
+            forSession(client, () =>
+                call(
+                    api.GET("/api/v1/principals/facets", {
+                        params: { query },
+                        signal,
+                    }),
+                ),
+            ),
+        placeholderData: keepPreviousData,
+        staleTime: LIST_STALE_MS,
     });
 }

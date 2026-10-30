@@ -73,3 +73,4 @@ record's status; never rewrite an accepted decision.
 | [0064](0064-storage-breakdown.md) | Sampled table-prefix storage breakdown | Proposed |
 | [0065](0065-bounded-health-and-statistics-metrics.md) | Bounded health and statistics metrics | Proposed |
 | [0066](0066-packaged-alerts-and-dashboards.md) | Packaged Prometheus alerts and Grafana dashboards | Proposed |
+| [0067](0067-interface-system-v2.md) | Interface system v2: neutral tokens, type scale, motion, and engineering limits | Proposed |

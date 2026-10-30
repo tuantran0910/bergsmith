@@ -117,7 +117,7 @@ export function SchedulePage({ id }: { id: string }) {
                     <Link
                         to="/jobs/$jobId"
                         params={{ jobId: occurrence.job_id }}
-                        className="font-medium"
+                        className="font-semibold"
                     >
                         {shortId(occurrence.job_id)}
                     </Link>

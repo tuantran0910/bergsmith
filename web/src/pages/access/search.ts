@@ -1,6 +1,8 @@
-// The principal detail's URL state (ADR 0056): which tab is open. Tabs stay in
-// validated search parameters so a link opens the same view, while an unknown
-// tab falls back to access.
+// The principal pages' URL state (ADR 0056): the detail's open tab and the
+// user list's filters. Both stay in validated search parameters so a link
+// opens the same view, while an unknown tab falls back to access.
+
+import { flagParam, searchText } from "../../components/listSearch";
 
 const TABS = ["access", "tokens"] as const;
 
@@ -22,4 +24,22 @@ export function validatePrincipalSearch(
 ): PrincipalSearch {
     const selected = principalTab(search["tab"]);
     return selected === undefined ? {} : { tab: selected };
+}
+
+/** The user list's filters (ADR 0067). */
+export interface UsersSearch {
+    q?: string;
+    active?: "true" | "false";
+}
+
+/** Keeps unknown or malformed user-list search parameters out of the page. */
+export function validateUsersSearch(
+    search: Record<string, unknown>,
+): UsersSearch {
+    const q = searchText(search["q"]);
+    const active = flagParam(search["active"]);
+    return {
+        ...(q !== undefined ? { q } : {}),
+        ...(active !== undefined ? { active } : {}),
+    };
 }

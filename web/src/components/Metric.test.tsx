@@ -18,6 +18,26 @@ it("renders a summary strip as terms and definitions", () => {
     expect(screen.getByText("1.5 GiB")).toBeInTheDocument();
 });
 
+it("tells how a figure moved in words", () => {
+    render(
+        <MetricGrid>
+            <Metric
+                label="Failed"
+                value="4"
+                change={{ difference: "+3", against: "the previous 24 h" }}
+            />
+            <Metric
+                label="Published"
+                value="2"
+                change={{ difference: null, against: "the previous 24 h" }}
+            />
+        </MetricGrid>,
+    );
+
+    expect(screen.getByText("+3 vs the previous 24 h").tagName).toBe("DD");
+    expect(screen.getByText("Same as the previous 24 h")).toBeInTheDocument();
+});
+
 it("renders definitions as a description list", () => {
     render(
         <DefinitionList

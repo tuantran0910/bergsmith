@@ -159,7 +159,7 @@ export function SchedulesPage() {
                     to="/schedules/$scheduleId"
                     params={{ scheduleId: schedule.id }}
                     aria-label={`Open the schedule for ${labels.tableName(schedule.table_id)}`}
-                    className="text-sm font-medium text-primary underline-offset-4 hover:underline"
+                    className="text-sm font-semibold text-foreground underline-offset-4 hover:underline"
                 >
                     Open
                 </Link>

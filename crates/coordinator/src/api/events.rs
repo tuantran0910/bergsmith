@@ -11,6 +11,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::convert::Infallible;
+use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
@@ -18,6 +19,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
+use bergsmith_common::digest::Sha256Digest;
 use bergsmith_common::ids::{JobId, PrincipalId};
 use bergsmith_common::job::JobState;
 use bergsmith_persistence::auth::{self, Session};
@@ -55,8 +57,11 @@ const LISTENER_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct EventStreamLimits {
     /// The most streams this process serves at once.
     pub max_streams: usize,
-    /// The most streams one principal holds at once.
+    /// The most job streams one principal holds at once.
     pub max_streams_per_principal: usize,
+    /// The most organization streams (`/api/v1/events`) one session holds
+    /// at once.
+    pub max_live_streams_per_session: usize,
     /// The most events read from the ledger per query.
     pub replay_page: i64,
     /// How often a stream re-reads the ledger without a notification.
@@ -74,6 +79,7 @@ impl Default for EventStreamLimits {
         Self {
             max_streams: 256,
             max_streams_per_principal: 8,
+            max_live_streams_per_session: 4,
             replay_page: 500,
             poll_interval: Duration::from_secs(2),
             keep_alive: Duration::from_secs(15),
@@ -99,6 +105,10 @@ impl EventStreamLimits {
                 "max_streams_per_principal",
                 self.max_streams_per_principal == 0,
             ),
+            (
+                "max_live_streams_per_session",
+                self.max_live_streams_per_session == 0,
+            ),
             ("replay_page", self.replay_page < 1),
             ("poll_interval", self.poll_interval.is_zero()),
             ("keep_alive", self.keep_alive.is_zero()),
@@ -114,7 +124,7 @@ impl EventStreamLimits {
 
 /// Something may have been appended for `Job`, or for any job.
 #[derive(Clone, Copy, Debug)]
-enum Wake {
+pub(super) enum Wake {
     Job(JobId),
     All,
 }
@@ -128,42 +138,58 @@ pub struct JobEventHub {
     inner: Arc<Hub>,
 }
 
+/// Who holds a stream: a principal's job streams and a session's
+/// organization streams are counted separately.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Holder {
+    Principal(PrincipalId),
+    Session(Sha256Digest),
+}
+
+impl fmt::Debug for Holder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Principal(principal) => write!(f, "Principal({principal})"),
+            // A session is named by its token's hash, which stays out of logs.
+            Self::Session(_) => f.write_str("Session(..)"),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Hub {
     limits: EventStreamLimits,
     wake: broadcast::Sender<Wake>,
     capacity: Arc<Semaphore>,
-    /// Open streams per principal. An entry exists only while its count is
+    /// Open streams per holder. An entry exists only while its count is
     /// positive, so memory is bounded by concurrent streams, not by every
-    /// principal that ever connected.
-    principals: Mutex<BTreeMap<PrincipalId, usize>>,
+    /// principal or session that ever connected.
+    holders: Mutex<BTreeMap<Holder, usize>>,
 }
 
 impl Hub {
-    /// The per-principal counts. The critical sections cannot panic, so a
+    /// The per-holder counts. The critical sections cannot panic, so a
     /// poisoned lock still holds consistent counts.
-    fn principals(&self) -> MutexGuard<'_, BTreeMap<PrincipalId, usize>> {
-        self.principals
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+    fn holders(&self) -> MutexGuard<'_, BTreeMap<Holder, usize>> {
+        self.holders.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
 /// Held for the life of one stream; dropping it frees the capacity.
 #[derive(Debug)]
-struct StreamPermit {
+pub(super) struct StreamPermit {
     _process: OwnedSemaphorePermit,
     hub: Arc<Hub>,
-    principal: PrincipalId,
+    holder: Holder,
 }
 
 impl Drop for StreamPermit {
     fn drop(&mut self) {
-        let mut principals = self.hub.principals();
-        if let Some(open) = principals.get_mut(&self.principal) {
+        let mut holders = self.hub.holders();
+        if let Some(open) = holders.get_mut(&self.holder) {
             *open = open.saturating_sub(1);
             if *open == 0 {
-                principals.remove(&self.principal);
+                holders.remove(&self.holder);
             }
         }
     }
@@ -183,7 +209,7 @@ impl JobEventHub {
                 limits,
                 wake,
                 capacity: Arc::new(Semaphore::new(limits.max_streams)),
-                principals: Mutex::new(BTreeMap::new()),
+                holders: Mutex::new(BTreeMap::new()),
             }),
         })
     }
@@ -217,29 +243,44 @@ impl JobEventHub {
         tokio::spawn(run_listener(pool, Arc::downgrade(&self.inner)))
     }
 
-    fn subscribe(&self) -> broadcast::Receiver<Wake> {
+    pub(super) fn subscribe(&self) -> broadcast::Receiver<Wake> {
         self.inner.wake.subscribe()
     }
 
-    /// Reserves capacity for one stream without waiting.
-    ///
-    /// The per-principal check and increment happen under one lock, so
+    /// Reserves capacity for one job stream of `principal` without waiting.
+    fn admit(&self, principal: PrincipalId) -> Option<StreamPermit> {
+        self.admit_holder(
+            Holder::Principal(principal),
+            self.inner.limits.max_streams_per_principal,
+        )
+    }
+
+    /// Reserves capacity for one organization stream of the session whose
+    /// token hashes to `session`, without waiting.
+    pub(super) fn admit_live(&self, session: Sha256Digest) -> Option<StreamPermit> {
+        self.admit_holder(
+            Holder::Session(session),
+            self.inner.limits.max_live_streams_per_session,
+        )
+    }
+
+    /// The per-holder check and increment happen under one lock, so
     /// concurrent requests cannot exceed the limit; a refused request
     /// releases its process permit on return.
-    fn admit(&self, principal: PrincipalId) -> Option<StreamPermit> {
+    fn admit_holder(&self, holder: Holder, limit: usize) -> Option<StreamPermit> {
         let process = Arc::clone(&self.inner.capacity).try_acquire_owned().ok()?;
         {
-            let mut principals = self.inner.principals();
-            let open = principals.get(&principal).copied().unwrap_or(0);
-            if open >= self.inner.limits.max_streams_per_principal {
+            let mut holders = self.inner.holders();
+            let open = holders.get(&holder).copied().unwrap_or(0);
+            if open >= limit {
                 return None;
             }
-            principals.insert(principal, open + 1);
+            holders.insert(holder, open + 1);
         }
         Some(StreamPermit {
             _process: process,
             hub: Arc::clone(&self.inner),
-            principal,
+            holder,
         })
     }
 }
@@ -303,7 +344,7 @@ fn wake(hub: &Weak<Hub>, wake: Wake) -> bool {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct EventsQuery {
-    after: Option<String>,
+    pub(super) after: Option<String>,
 }
 
 /// `GET /api/v1/jobs/{id}/events`.
@@ -356,7 +397,7 @@ pub(super) async fn events(
 
 /// The sequence to resume after: `Last-Event-ID` wins over `after`, and
 /// neither means the start of the history.
-fn resume_point(headers: &HeaderMap, after: Option<&str>) -> Result<i64, ApiError> {
+pub(super) fn resume_point(headers: &HeaderMap, after: Option<&str>) -> Result<i64, ApiError> {
     let header = headers
         .get(LAST_EVENT_ID)
         .map(|value| value.to_str().map_err(|_| ApiError::invalid()))
@@ -680,6 +721,35 @@ mod tests {
     }
 
     #[test]
+    fn session_streams_are_bounded_apart_from_job_streams() {
+        let hub = JobEventHub::new(EventStreamLimits {
+            max_streams_per_principal: 1,
+            max_live_streams_per_session: 2,
+            ..EventStreamLimits::default()
+        })
+        .unwrap();
+        let session = Sha256Digest::of(b"test", b"session");
+        let _job = hub.admit(PrincipalId::generate()).unwrap();
+        let first = hub.admit_live(session).unwrap();
+        let _second = hub.admit_live(session).unwrap();
+        assert!(hub.admit_live(session).is_none(), "per-session limit");
+        assert!(
+            hub.admit_live(Sha256Digest::of(b"test", b"other"))
+                .is_some()
+        );
+        drop(first);
+        assert!(
+            hub.admit_live(session).is_some(),
+            "a closed stream frees capacity"
+        );
+        assert_eq!(
+            format!("{:?}", Holder::Session(session)),
+            "Session(..)",
+            "a session's token hash stays out of logs"
+        );
+    }
+
+    #[test]
     fn admission_entries_are_reclaimed_when_streams_close() {
         let hub = JobEventHub::new(EventStreamLimits {
             max_streams_per_principal: 1,
@@ -689,15 +759,15 @@ mod tests {
         for _ in 0..1_000 {
             drop(hub.admit(PrincipalId::generate()).unwrap());
         }
-        assert!(hub.inner.principals().is_empty());
+        assert!(hub.inner.holders().is_empty());
 
         let alice = PrincipalId::generate();
         let open = hub.admit(alice).unwrap();
         // A refused request neither leaks an entry nor changes the count.
         assert!(hub.admit(alice).is_none());
-        assert_eq!(hub.inner.principals().get(&alice), Some(&1));
+        assert_eq!(hub.inner.holders().get(&Holder::Principal(alice)), Some(&1));
         drop(open);
-        assert!(hub.inner.principals().is_empty());
+        assert!(hub.inner.holders().is_empty());
         // The process permit of the refused request was returned.
         assert_eq!(
             hub.inner.capacity.available_permits(),

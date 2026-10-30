@@ -56,7 +56,7 @@ pub struct AttentionJob {
     pub age_seconds: i64,
 }
 
-/// Terminal jobs in the last day, by outcome.
+/// Terminal jobs in one window, by outcome.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct JobOutcomes {
     /// Jobs that ended `Succeeded`.
@@ -205,7 +205,8 @@ pub struct WorkerOverview {
     pub running_attempts: i64,
 }
 
-/// Counts terminal jobs in the window that ended each way.
+/// Counts terminal jobs that ended each way at or after `since` and, when
+/// `until` is given, before it.
 ///
 /// # Errors
 ///
@@ -216,6 +217,7 @@ pub async fn job_outcomes(
     principal_id: PrincipalId,
     roles: &[String],
     since: DateTime<Utc>,
+    until: Option<DateTime<Utc>>,
 ) -> Result<JobOutcomes, PersistenceError> {
     let sql = concat!(
         "SELECT \
@@ -230,6 +232,7 @@ pub async fn job_outcomes(
          WHERE j.organization_id = $1 \
            AND j.state IN ('Succeeded', 'NoOp', 'Cancelled', 'ReplanRequired', 'Failed') \
            AND j.updated_at >= $4 \
+           AND ($5::timestamptz IS NULL OR j.updated_at < $5) \
            AND ",
         table_visible!()
     );
@@ -238,6 +241,7 @@ pub async fn job_outcomes(
         .bind(principal_id.as_uuid())
         .bind(roles)
         .bind(since)
+        .bind(until)
         .fetch_one(conn)
         .await?;
     Ok(JobOutcomes {

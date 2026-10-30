@@ -7,31 +7,6 @@ import {
 import { forSession } from "../queryClient";
 import { api, call } from "./client";
 
-export function useCatalogs() {
-    const client = useQueryClient();
-    return useInfiniteQuery({
-        queryKey: ["catalogs", "list"],
-        initialPageParam: null as string | null,
-        queryFn: ({ pageParam, signal }) =>
-            forSession(client, () =>
-                call(
-                    api.GET("/api/v1/catalogs", {
-                        params: {
-                            query: {
-                                limit: 50,
-                                ...(pageParam === null
-                                    ? {}
-                                    : { cursor: pageParam }),
-                            },
-                        },
-                        signal,
-                    }),
-                ),
-            ),
-        getNextPageParam: (last) => last.next_cursor,
-    });
-}
-
 export function useCatalog(id: string) {
     const client = useQueryClient();
     return useQuery({

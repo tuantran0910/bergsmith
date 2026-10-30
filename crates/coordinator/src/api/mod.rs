@@ -4,6 +4,10 @@
 //! server-side session; mutations additionally require the session's CSRF token.
 //! Organization and actor identifiers always come from that session.
 
+// Declared first: its SQL fragment macros are used by the modules below.
+#[macro_use]
+mod sql;
+
 mod catalogs;
 mod commands;
 mod creation;
@@ -12,6 +16,8 @@ mod discovery;
 mod events;
 mod grants;
 mod job_tasks;
+mod lists;
+mod live;
 mod maintenance;
 mod notification_rules;
 mod notifications;
@@ -22,18 +28,20 @@ mod principals;
 mod recommendations;
 mod resources;
 mod scheduling;
+mod search;
 mod service_identities;
 mod statistics;
 mod storage_breakdown;
 mod submission;
 mod tables;
+mod views;
 
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use bergsmith_common::disposition::FailureDisposition;
 use bergsmith_common::ids::{JobId, OrganizationId, PrincipalId};
@@ -103,8 +111,9 @@ pub fn router(state: ApiState) -> Router {
     let protected = Router::new()
         .route(
             "/api/v1/catalogs",
-            get(resources::catalogs).post(catalogs::create),
+            get(lists::catalogs).post(catalogs::create),
         )
+        .route("/api/v1/catalogs/facets", get(lists::catalog_facets))
         .route(
             "/api/v1/catalogs/{id}",
             get(resources::catalog).patch(catalogs::update),
@@ -121,6 +130,7 @@ pub fn router(state: ApiState) -> Router {
             post(discovery::register).delete(discovery::unregister),
         )
         .route("/api/v1/tables", get(tables::tables))
+        .route("/api/v1/tables/facets", get(tables::table_facets))
         .route("/api/v1/tables/{id}", get(tables::table))
         .route("/api/v1/tables/{id}/statistics", get(statistics::table))
         .route("/api/v1/tables/{id}/storage", get(storage_breakdown::table))
@@ -141,23 +151,24 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/catalogs/{id}/statistics", get(statistics::catalog))
         .route("/api/v1/statistics", get(statistics::organization))
         .route("/api/v1/overview", get(overview::overview))
+        .route("/api/v1/search", get(search::search))
         .route(
             "/api/v1/statistics/maintenance",
             get(maintenance::organization),
         )
-        .route(
-            "/api/v1/jobs",
-            get(resources::jobs).post(submission::submit),
-        )
+        .route("/api/v1/jobs", get(lists::jobs).post(submission::submit))
+        .route("/api/v1/jobs/facets", get(lists::job_facets))
         .route("/api/v1/jobs/{id}", get(resources::job))
         .route("/api/v1/jobs/{id}/tasks", get(job_tasks::tasks))
         .route("/api/v1/jobs/{id}/cancel", post(commands::cancel))
         .route("/api/v1/jobs/{id}/retry", post(commands::retry))
         .route("/api/v1/jobs/{id}/events", get(events::events))
+        .route("/api/v1/events", get(live::events))
         .route(
             "/api/v1/principals",
             get(principals::list).post(principals::create),
         )
+        .route("/api/v1/principals/facets", get(principals::facets))
         .route(
             "/api/v1/principals/{id}",
             get(principals::get).patch(principals::update),
@@ -212,7 +223,13 @@ pub fn router(state: ApiState) -> Router {
             "/api/v1/notifications/deliveries/{id}",
             get(notifications::get_delivery),
         )
-        .route("/api/v1/audit", get(resources::audit))
+        .route("/api/v1/me/views", get(views::list).post(views::create))
+        .route(
+            "/api/v1/me/views/{id}",
+            patch(views::update).delete(views::delete),
+        )
+        .route("/api/v1/audit", get(lists::audit))
+        .route("/api/v1/audit/facets", get(lists::audit_facets))
         .route("/api/v1/workers", get(resources::workers))
         .route("/api/v1/previews", post(preview::preview))
         .route(

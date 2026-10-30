@@ -31,12 +31,12 @@ export function DialogContent({
         <DialogPrimitive.Portal>
             <DialogPrimitive.Backdrop
                 data-slot="dialog-overlay"
-                className="fixed inset-0 z-50 bg-black/20 transition-opacity duration-150 data-ending-style:opacity-0 data-starting-style:opacity-0 motion-reduce:transition-none"
+                className="fixed inset-0 z-50 bg-black/30 transition-opacity duration-(--duration-base) ease-(--ease-out) data-ending-style:duration-(--duration-fast) data-ending-style:ease-(--ease-in) data-ending-style:opacity-0 data-starting-style:opacity-0"
             />
             <DialogPrimitive.Popup
                 data-slot="dialog-content"
                 className={cn(
-                    "fixed top-1/2 left-1/2 z-50 grid max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 grid-cols-[minmax(0,1fr)] gap-4 overflow-y-auto rounded-xl bg-popover p-4 text-sm wrap-anywhere text-popover-foreground shadow-lg ring-1 ring-foreground/10 transition-[opacity,scale] duration-150 outline-none data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0 motion-reduce:transition-none sm:max-w-md",
+                    "fixed top-1/2 left-1/2 z-50 grid max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 grid-cols-[minmax(0,1fr)] gap-4 overflow-y-auto rounded-lg border bg-popover p-4 text-sm wrap-anywhere text-popover-foreground shadow-lg transition-[opacity,scale] duration-(--duration-emphasis) ease-(--ease-out) outline-none data-ending-style:scale-[0.98] data-ending-style:opacity-0 data-ending-style:duration-(--duration-fast) data-ending-style:ease-(--ease-in) data-starting-style:scale-[0.96] data-starting-style:opacity-0 sm:max-w-md",
                     className,
                 )}
                 {...props}
@@ -77,7 +77,7 @@ export function DialogFooter({ className, ...props }: ComponentProps<"div">) {
         <div
             data-slot="dialog-footer"
             className={cn(
-                "-mx-4 -mb-4 flex flex-col-reverse gap-2 rounded-b-xl border-t bg-muted/50 p-4 sm:flex-row sm:justify-end",
+                "-mx-4 -mb-4 flex flex-col-reverse gap-2 rounded-b-lg border-t bg-surface-sunken p-3 sm:flex-row sm:justify-end",
                 className,
             )}
             {...props}
@@ -92,7 +92,7 @@ export function DialogTitle({
     return (
         <DialogPrimitive.Title
             data-slot="dialog-title"
-            className={cn("text-base leading-none font-medium", className)}
+            className={cn("text-base leading-none font-semibold", className)}
             {...props}
         />
     );

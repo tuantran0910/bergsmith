@@ -1,7 +1,6 @@
 import {
     healthFilter,
     namespaceKey,
-    parseNamespaceKey,
     sortColumn,
     tab,
     validateTablesSearch,
@@ -11,26 +10,32 @@ it("keeps recognized search parameters", () => {
     expect(
         validateTablesSearch({
             q: "orders",
-            catalog: "c",
-            namespace: namespaceKey(["sales"]),
+            catalog: "0190a1b2-0000-7000-8000-000000000001",
             sort: "registered",
             order: "desc",
         }),
     ).toEqual({
         q: "orders",
-        catalog: "c",
-        namespace: namespaceKey(["sales"]),
+        catalog: "0190a1b2-0000-7000-8000-000000000001",
         sort: "registered",
         order: "desc",
     });
 });
 
 it("keeps namespace levels separate when a level contains a dot", () => {
-    expect(
-        validateTablesSearch({ namespace: namespaceKey(["a", "b"]) }),
-    ).toEqual({ namespace: namespaceKey(["a", "b"]) });
-    expect(parseNamespaceKey(namespaceKey(["a.b"]))).toEqual(["a.b"]);
     expect(namespaceKey(["a", "b"])).not.toBe(namespaceKey(["a.b"]));
+});
+
+it("searches as the coordinator does, and drops the old namespace filter", () => {
+    expect(validateTablesSearch({ q: " sales.\u0007orders " })).toEqual({
+        q: "sales.orders",
+    });
+    expect(validateTablesSearch({ q: "x".repeat(200) })).toEqual({
+        q: "x".repeat(128),
+    });
+    expect(
+        validateTablesSearch({ namespace: namespaceKey(["sales"]) }),
+    ).toEqual({});
 });
 
 it("drops blank, unknown, and malformed values", () => {
@@ -43,8 +48,10 @@ it("drops blank, unknown, and malformed values", () => {
             order: "sideways",
         }),
     ).toEqual({});
-    expect(validateTablesSearch({ namespace: '["a", 7]' })).toEqual({});
-    expect(validateTablesSearch({ namespace: "{}" })).toEqual({});
+});
+
+it("drops a catalog that is not a resource ID, which the API would refuse", () => {
+    expect(validateTablesSearch({ catalog: "prod" })).toEqual({});
 });
 
 it("recognizes only the columns the table can sort", () => {

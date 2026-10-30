@@ -4,10 +4,13 @@
 //! identifiers and stable reason codes. Credentials never reach this module:
 //! the schema rejects the obvious credential keys as a second line of defense.
 
+use std::collections::BTreeSet;
+
 use bergsmith_common::audit::{ActorKind, AuditOutcome};
 use bergsmith_common::ids::{OrganizationId, PrincipalId};
+use bergsmith_common::search::SearchText;
 use chrono::{DateTime, Utc};
-use sqlx::{Connection, PgConnection};
+use sqlx::{Connection, PgConnection, Postgres, QueryBuilder};
 use uuid::Uuid;
 
 use crate::PersistenceError;
@@ -173,6 +176,79 @@ pub async fn record(
     Ok(id)
 }
 
+/// Which audit records a list or a count keeps (BS-033.T4).
+///
+/// Empty sets and `None` keep everything. `actor_name` matches the actor's
+/// current display name, never the record's detail.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AuditFilter {
+    /// Keep these outcomes.
+    pub outcomes: BTreeSet<AuditOutcome>,
+    /// Keep these stable action names.
+    pub actions: BTreeSet<String>,
+    /// Keep these resource kinds.
+    pub resource_types: BTreeSet<String>,
+    /// Keep records by this actor.
+    pub actor: Option<PrincipalId>,
+    /// Keep records whose actor's display name contains this text.
+    pub actor_name: Option<SearchText>,
+    /// List the most recent record first.
+    pub newest_first: bool,
+}
+
+/// An audit facet dimension, whose own filter its counts ignore.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuditFacet {
+    Outcome,
+    Action,
+    ResourceType,
+}
+
+impl AuditFilter {
+    fn push(&self, query: &mut QueryBuilder<Postgres>, except: Option<AuditFacet>) {
+        if except != Some(AuditFacet::Outcome) && !self.outcomes.is_empty() {
+            let outcomes: Vec<&str> = self
+                .outcomes
+                .iter()
+                .map(|outcome| outcome.as_str())
+                .collect();
+            query
+                .push(" AND e.outcome = ANY(")
+                .push_bind(outcomes)
+                .push(")");
+        }
+        if except != Some(AuditFacet::Action) && !self.actions.is_empty() {
+            let actions: Vec<&str> = self.actions.iter().map(String::as_str).collect();
+            query
+                .push(" AND e.action = ANY(")
+                .push_bind(actions)
+                .push(")");
+        }
+        if except != Some(AuditFacet::ResourceType) && !self.resource_types.is_empty() {
+            let types: Vec<&str> = self.resource_types.iter().map(String::as_str).collect();
+            query
+                .push(" AND e.resource_type = ANY(")
+                .push_bind(types)
+                .push(")");
+        }
+        if let Some(actor) = self.actor {
+            query
+                .push(" AND e.actor_principal_id = ")
+                .push_bind(*actor.as_uuid());
+        }
+        if let Some(name) = &self.actor_name {
+            query
+                .push(
+                    " AND EXISTS (SELECT 1 FROM principals p \
+                     WHERE p.id = e.actor_principal_id AND p.organization_id = e.organization_id \
+                       AND p.display_name ILIKE ",
+                )
+                .push_bind(name.contains_pattern())
+                .push(" ESCAPE '\\')");
+        }
+    }
+}
+
 /// Reads an organization's audit log in identifier order.
 ///
 /// `after` is the last identifier the caller has seen; `limit` is capped at
@@ -187,32 +263,120 @@ pub async fn list(
     after: Option<i64>,
     limit: i64,
 ) -> Result<Vec<AuditEvent>, PersistenceError> {
+    list_filtered(conn, organization_id, &AuditFilter::default(), after, limit).await
+}
+
+/// Reads the records of an organization's audit log that `filter` keeps, in
+/// identifier order, oldest first unless the filter asks for the newest.
+///
+/// `after` is the last identifier the caller has seen; `limit` is capped at
+/// 500 so one page stays bounded.
+///
+/// # Errors
+///
+/// Returns a database error if the query fails.
+pub async fn list_filtered(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    filter: &AuditFilter,
+    after: Option<i64>,
+    limit: i64,
+) -> Result<Vec<AuditEvent>, PersistenceError> {
     let limit = limit.clamp(1, 500);
-    let rows = if let Some(after) = after {
-        sqlx::query_as::<_, AuditEventRow>(concat!(
-            "SELECT ",
-            audit_columns!(),
-            " FROM audit_events e
-             WHERE e.organization_id = $1 AND e.id > $2
-             ORDER BY e.id LIMIT $3"
-        ))
-        .bind(organization_id.as_uuid())
-        .bind(after)
-        .bind(limit)
-        .fetch_all(conn)
-        .await?
-    } else {
-        sqlx::query_as::<_, AuditEventRow>(concat!(
-            "SELECT ",
-            audit_columns!(),
-            " FROM audit_events e
-             WHERE e.organization_id = $1
-             ORDER BY e.id LIMIT $2"
-        ))
-        .bind(organization_id.as_uuid())
-        .bind(limit)
-        .fetch_all(conn)
-        .await?
-    };
+    let mut query = QueryBuilder::new(concat!(
+        "SELECT ",
+        audit_columns!(),
+        " FROM audit_events e WHERE e.organization_id = "
+    ));
+    query.push_bind(*organization_id.as_uuid());
+    filter.push(&mut query, None);
+    // Each direction keeps the cursor a direct index range condition.
+    if let Some(after) = after {
+        query
+            .push(if filter.newest_first {
+                " AND e.id < "
+            } else {
+                " AND e.id > "
+            })
+            .push_bind(after);
+    }
+    query
+        .push(if filter.newest_first {
+            " ORDER BY e.id DESC LIMIT "
+        } else {
+            " ORDER BY e.id ASC LIMIT "
+        })
+        .push_bind(limit);
+    let rows: Vec<AuditEventRow> = query.build_query_as().fetch_all(conn).await?;
     rows.into_iter().map(TryInto::try_into).collect()
+}
+
+/// Counts of an organization's audit records by outcome, action, and
+/// resource kind. Each dimension applies every filter but its own, and lists
+/// its values in name order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AuditFacets {
+    /// Records per outcome.
+    pub outcome: Vec<(AuditOutcome, i64)>,
+    /// Records per action name.
+    pub action: Vec<(String, i64)>,
+    /// Records per resource kind.
+    pub resource_type: Vec<(String, i64)>,
+}
+
+/// Counts the records `filter` keeps along each facet dimension.
+///
+/// # Errors
+///
+/// [`PersistenceError::CorruptValue`] for an unknown stored outcome, and
+/// database errors.
+pub async fn facets(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    filter: &AuditFilter,
+) -> Result<AuditFacets, PersistenceError> {
+    let outcome = count(conn, organization_id, filter, AuditFacet::Outcome).await?;
+    let action = count(conn, organization_id, filter, AuditFacet::Action).await?;
+    let resource_type = count(conn, organization_id, filter, AuditFacet::ResourceType).await?;
+    let outcome = outcome
+        .into_iter()
+        .map(|(name, count)| {
+            AuditOutcome::from_name(&name)
+                .map(|outcome| (outcome, count))
+                .ok_or(PersistenceError::CorruptValue {
+                    entity: "audit outcome",
+                    value: name,
+                })
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(AuditFacets {
+        outcome,
+        action,
+        resource_type,
+    })
+}
+
+async fn count(
+    conn: &mut PgConnection,
+    organization_id: OrganizationId,
+    filter: &AuditFilter,
+    facet: AuditFacet,
+) -> Result<Vec<(String, i64)>, PersistenceError> {
+    let column = match facet {
+        AuditFacet::Outcome => "e.outcome",
+        AuditFacet::Action => "e.action",
+        AuditFacet::ResourceType => "e.resource_type",
+    };
+    let mut query = QueryBuilder::new("SELECT ");
+    query
+        .push(column)
+        .push(", count(*) FROM audit_events e WHERE e.organization_id = ")
+        .push_bind(*organization_id.as_uuid());
+    filter.push(&mut query, Some(facet));
+    query
+        .push(" GROUP BY ")
+        .push(column)
+        .push(" ORDER BY ")
+        .push(column);
+    Ok(query.build_query_as().fetch_all(conn).await?)
 }

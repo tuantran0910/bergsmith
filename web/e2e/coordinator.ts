@@ -58,7 +58,8 @@ const CONTENT_TYPES: Record<string, string> = {
 /** A reply from the fake API. */
 export interface Reply {
     status: number;
-    body: string;
+    /** Text for API replies; bytes for built files, which include fonts. */
+    body: string | Buffer;
     contentType: string;
     headers?: Record<string, string>;
 }
@@ -90,6 +91,36 @@ export function eventStream(events: readonly JobEvent[]): Reply {
     return {
         status: 200,
         body: `retry: 3600000\n\n${body}`,
+        contentType: "text/event-stream",
+    };
+}
+
+/** One event of the organization stream (`GET /api/v1/events`). */
+export interface LiveMessage {
+    event: "ready" | "job" | "reset";
+    id: string;
+    data: unknown;
+}
+
+/**
+ * A finished organization stream; like {@link eventStream}, its long `retry`
+ * keeps the browser from reconnecting during a test unless a test passes a
+ * short one. Without messages the stream sends nothing, so pages keep what
+ * they loaded.
+ */
+export function liveStream(
+    messages: readonly LiveMessage[] = [],
+    retry = 3_600_000,
+): Reply {
+    const body = messages
+        .map(
+            (message) =>
+                `id: ${message.id}\nevent: ${message.event}\ndata: ${JSON.stringify(message.data)}\n\n`,
+        )
+        .join("");
+    return {
+        status: 200,
+        body: `retry: ${retry}\n\n${body}`,
         contentType: "text/event-stream",
     };
 }
@@ -190,7 +221,13 @@ export class FakeCoordinator {
 
     private answer(sent: Sent): Reply {
         this.requests.push(sent);
-        for (const route of this.routes) {
+        // Like the coordinator's router, a literal path such as
+        // `/tables/facets` wins over a parameter such as `/tables/{id}`.
+        const ordered = [
+            ...this.routes.filter((route) => route.names.length === 0),
+            ...this.routes.filter((route) => route.names.length > 0),
+        ];
+        for (const route of ordered) {
             const found =
                 route.method === sent.method
                     ? route.pattern.exec(sent.pathname)
@@ -245,7 +282,7 @@ async function serveStatic(pathname: string): Promise<Reply> {
         relative.startsWith("assets/") && relative !== "index.html";
     return {
         status: 200,
-        body: await readFile(file, "utf8"),
+        body: await readFile(file),
         contentType:
             CONTENT_TYPES[path.extname(file)] ?? "application/octet-stream",
         headers: {
@@ -266,6 +303,12 @@ function notFound(): Reply {
  */
 const EXPECTED_CONSOLE =
     /^Failed to load resource: the server responded with a status of \d+/;
+
+/**
+ * Chromium reports a font it cannot decode as a warning, not an error, and
+ * then silently renders the fallback; the gate treats it as a failure.
+ */
+const BROKEN_FONT = /^(Failed to decode downloaded font|OTS parsing error)/;
 
 interface Fixtures {
     coordinator: FakeCoordinator;
@@ -305,8 +348,9 @@ export const test = base.extend<Fixtures>({
             });
             page.on("console", (message) => {
                 if (
-                    message.type() === "error" &&
-                    !EXPECTED_CONSOLE.test(message.text())
+                    (message.type() === "error" &&
+                        !EXPECTED_CONSOLE.test(message.text())) ||
+                    BROKEN_FONT.test(message.text())
                 ) {
                     problems.push(`console: ${message.text()}`);
                 }
@@ -330,6 +374,27 @@ export const test = base.extend<Fixtures>({
             },
         ]);
         const coordinator = new FakeCoordinator();
+        // Filtered lists read facet counts beside each page (ADR 0067); a
+        // test that asserts counts routes its own, which takes precedence.
+        coordinator
+            .on("GET", "/api/v1/tables/facets", () =>
+                json(200, { health: [], catalog: [] }),
+            )
+            .on("GET", "/api/v1/jobs/facets", () =>
+                json(200, { state: [], operation: [] }),
+            )
+            .on("GET", "/api/v1/catalogs/facets", () =>
+                json(200, { enabled: [] }),
+            )
+            .on("GET", "/api/v1/audit/facets", () =>
+                json(200, { outcome: [], action: [], resource_type: [] }),
+            )
+            .on("GET", "/api/v1/principals/facets", () =>
+                json(200, { kind: [], active: [] }),
+            )
+            .on("GET", "/api/v1/me/views", () => json(200, { items: [] }))
+            // The shell holds the organization's live stream on every page.
+            .on("GET", "/api/v1/events", () => liveStream());
         await coordinator.install(page);
         await provide(coordinator);
         expect(coordinator.unrouted, "unrouted requests").toEqual([]);

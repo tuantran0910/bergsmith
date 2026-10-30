@@ -65,7 +65,7 @@ function Attempts({ task }: { task: JobTask }) {
         <ul className="m-0 grid list-none gap-1.5 p-0">
             {task.attempts.map((attempt) => (
                 <li key={attempt.id} className="text-sm">
-                    <span className="font-medium">
+                    <span className="font-semibold">
                         Attempt {attempt.generation}
                     </span>{" "}
                     <StatusBadge
@@ -142,7 +142,9 @@ export function JobTasks({ job, active }: { job: Job; active: boolean }) {
             sortValue: (task) => task.ordinal,
             cell: (task) => (
                 <span className="inline-flex items-center gap-1">
-                    <span className="font-medium">Task {task.ordinal + 1}</span>
+                    <span className="font-semibold">
+                        Task {task.ordinal + 1}
+                    </span>
                     <ResourceId id={task.id} label="task ID" short />
                 </span>
             ),

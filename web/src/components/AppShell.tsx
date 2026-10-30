@@ -3,217 +3,103 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import {
     AnvilIcon,
-    BellIcon,
-    CalendarClockIcon,
-    DatabaseIcon,
-    GaugeIcon,
-    KeyRoundIcon,
-    ListChecksIcon,
     LogOutIcon,
     MenuIcon,
+    PanelLeftCloseIcon,
+    PanelLeftOpenIcon,
     PlusIcon,
-    ScrollTextIcon,
-    SearchIcon,
-    ServerIcon,
-    SlidersHorizontalIcon,
-    Table2Icon,
-    UsersIcon,
     XIcon,
-    type LucideIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-import {
-    type SessionInfo,
-    canManageCatalog,
-    canManageNotifications,
-    canManageSchedules,
-    canManageWorkers,
-    canReadAudit,
-    hasOrganizationPermission,
-    signOut,
-} from "../api/auth";
+import { type SessionInfo, signOut } from "../api/auth";
 import { setSession, useSessionMutation } from "../queryClient";
 import { useDensityPreference, type Density } from "../density";
+import { playRouteEntrance } from "../motion";
+import { isSidebarShortcut, useSidebarPreference } from "../sidebar";
+import { useLiveUpdates } from "../live";
 import { useThemePreference, type ThemePreference } from "../theme";
-import { Button, buttonVariants } from "../ui/Button";
+import { Button } from "../ui/Button";
 import { DialogClose } from "../ui/Dialog";
+import { MenuButton } from "../ui/MenuButton";
+import { AccountButton } from "./AccountButton";
 import { BreadcrumbLabelProvider, Breadcrumbs } from "./Breadcrumbs";
 import { DensityToggle } from "./DensityToggle";
+import { CommandPaletteButton } from "./CommandPaletteButton";
 import { ErrorNotice } from "./ErrorNotice";
+import {
+    type Destination,
+    OVERVIEW,
+    createTargets,
+    railGroups,
+} from "./navigation";
 import { SessionExpiry } from "./SessionExpiry";
 import { ThemeToggle } from "./ThemeToggle";
 
-/** A principal destination of the rail. */
-interface Destination {
-    to:
-        | "/"
-        | "/catalogs"
-        | "/tables"
-        | "/jobs"
-        | "/policies"
-        | "/schedules"
-        | "/workers"
-        | "/audit"
-        | "/users"
-        | "/service-identities"
-        | "/notifications";
-    label: string;
-    icon: LucideIcon;
-    allowed: (session: SessionInfo) => boolean;
+function NavLink({
+    destination: { to, label, icon: Icon },
+    collapsed,
+    onNavigate,
+}: {
+    destination: Destination;
+    collapsed: boolean;
+    onNavigate?: (() => void) | undefined;
+}) {
+    return (
+        <Link
+            to={to}
+            onClick={onNavigate}
+            title={collapsed ? label : undefined}
+            className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm whitespace-nowrap text-muted-foreground no-underline hover:bg-muted hover:text-foreground aria-[current=page]:bg-muted aria-[current=page]:text-foreground rail-collapsed:justify-center rail-collapsed:px-0"
+        >
+            <Icon aria-hidden="true" className="size-4 shrink-0" />
+            <span className="rail-collapsed:sr-only">{label}</span>
+        </Link>
+    );
 }
 
-/** A shell-level create action; the rail does not list these. */
-interface CreateTarget {
-    to: "/catalogs/new";
-    allowed: (session: SessionInfo) => boolean;
-}
-
-/** The rail's groups; empty groups do not render. */
-const GROUPS: readonly { label: string; items: Destination[] }[] = [
-    {
-        label: "Data",
-        items: [
-            {
-                to: "/catalogs",
-                label: "Catalogs",
-                icon: DatabaseIcon,
-                allowed: () => true,
-            },
-            {
-                to: "/tables",
-                label: "Tables",
-                icon: Table2Icon,
-                allowed: () => true,
-            },
-        ],
-    },
-    {
-        label: "Operations",
-        items: [
-            {
-                to: "/jobs",
-                label: "Jobs",
-                icon: ListChecksIcon,
-                allowed: () => true,
-            },
-            {
-                to: "/policies",
-                label: "Policies",
-                icon: SlidersHorizontalIcon,
-                allowed: canManageSchedules,
-            },
-            {
-                to: "/schedules",
-                label: "Schedules",
-                icon: CalendarClockIcon,
-                allowed: canManageSchedules,
-            },
-            {
-                to: "/workers",
-                label: "Workers",
-                icon: ServerIcon,
-                allowed: canManageWorkers,
-            },
-        ],
-    },
-    {
-        label: "Administration",
-        items: [
-            {
-                to: "/users",
-                label: "Users",
-                icon: UsersIcon,
-                allowed: (session) =>
-                    hasOrganizationPermission(session, "grants:manage"),
-            },
-            {
-                to: "/service-identities",
-                label: "Service identities",
-                icon: KeyRoundIcon,
-                allowed: canManageWorkers,
-            },
-            {
-                to: "/notifications",
-                label: "Notifications",
-                icon: BellIcon,
-                allowed: canManageNotifications,
-            },
-            {
-                to: "/audit",
-                label: "Audit",
-                icon: ScrollTextIcon,
-                allowed: canReadAudit,
-            },
-        ],
-    },
-];
-
-const OVERVIEW: Destination = {
-    to: "/",
-    label: "Overview",
-    icon: GaugeIcon,
-    allowed: () => true,
-};
-
-/** Where something can still be created; sorted, expandable in later tasks. */
-const CREATE_TARGETS: readonly CreateTarget[] = [
-    {
-        to: "/catalogs/new",
-        allowed: (session) => canManageCatalog(session),
-    },
-];
-
-function railGroups(session: SessionInfo) {
-    return GROUPS.map((group) => ({
-        label: group.label,
-        items: group.items.filter((item) => item.allowed(session)),
-    })).filter((group) => group.items.length > 0);
-}
-
-const railLinkClass =
-    "flex items-center gap-2 rounded-md px-2.5 py-1.5 no-underline text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground aria-[current=page]:bg-muted aria-[current=page]:font-semibold aria-[current=page]:text-foreground";
-
+/**
+ * The grouped destinations. In the collapsed rail only the icons show; each
+ * label stays the link's accessible name and becomes its tooltip, and a
+ * hairline replaces each group heading.
+ */
 function NavBody({
     session,
+    collapsed = false,
     onNavigate,
 }: {
     session: SessionInfo;
+    collapsed?: boolean;
     onNavigate?: () => void;
 }) {
     return (
         <>
             <ul className="m-0 list-none p-0">
                 <li>
-                    <Link
-                        to={OVERVIEW.to}
-                        onClick={onNavigate}
-                        className={railLinkClass}
-                    >
-                        <OVERVIEW.icon aria-hidden="true" className="size-4" />
-                        {OVERVIEW.label}
-                    </Link>
+                    <NavLink
+                        destination={OVERVIEW}
+                        collapsed={collapsed}
+                        onNavigate={onNavigate}
+                    />
                 </li>
             </ul>
             {railGroups(session).map(({ label, items }) => (
-                <section key={label} aria-label={label} className="mt-4">
-                    <h2 className="m-0 px-2 py-1 text-[0.7rem] font-semibold tracking-widest text-muted-foreground uppercase">
+                <section
+                    key={label}
+                    aria-label={label}
+                    className="mt-4 rail-collapsed:mt-2 rail-collapsed:border-t rail-collapsed:pt-2"
+                >
+                    <h2 className="m-0 px-2 py-1 text-2xs font-semibold tracking-widest whitespace-nowrap text-muted-foreground uppercase rail-collapsed:sr-only">
                         {label}
                     </h2>
                     <ul className="m-0 list-none p-0">
-                        {items.map(({ to, label: itemLabel, icon: Icon }) => (
-                            <li key={to}>
-                                <Link
-                                    to={to}
-                                    onClick={onNavigate}
-                                    className={railLinkClass}
-                                >
-                                    <Icon
-                                        aria-hidden="true"
-                                        className="size-4"
-                                    />
-                                    {itemLabel}
-                                </Link>
+                        {items.map((item) => (
+                            <li key={item.to}>
+                                <NavLink
+                                    destination={item}
+                                    collapsed={collapsed}
+                                    onNavigate={onNavigate}
+                                />
                             </li>
                         ))}
                     </ul>
@@ -224,9 +110,12 @@ function NavBody({
 }
 
 /**
- * The signed-in layout (ADR 0056): a grouped sidebar with the account, a
- * page-top bar (breadcrumb, search placeholder, create), and, on narrow
- * screens, a drawer navigation instead of the rail.
+ * The signed-in layout (ADR 0056, ADR 0067): a grouped sidebar that collapses
+ * to icons (Ctrl+\ or ⌘+\) with the account at its foot, a sticky top bar
+ * (breadcrumb, the command palette, create), and full-width content that
+ * fades in on each route. On narrow screens a drawer replaces the rail. The
+ * shell holds the organization's live job stream, so open pages refresh as
+ * jobs change.
  */
 export function AppShell({
     session,
@@ -238,10 +127,18 @@ export function AppShell({
     const queryClient = useQueryClient();
     const [theme, chooseTheme] = useThemePreference();
     const [density, chooseDensity] = useDensityPreference();
+    const [sidebar, toggleSidebar] = useSidebarPreference();
+    const collapsed = sidebar === "collapsed";
     const href = useRouterState({ select: (state) => state.location.href });
+    const pathname = useRouterState({
+        select: (state) => state.location.pathname,
+    });
+    const contentRef = useRef<HTMLDivElement>(null);
+    const shownPath = useRef(pathname);
     const [open, setOpen] = useState(false);
     const mainRef = useRef<HTMLElement>(null);
     const focusMainNext = useRef(false);
+    useLiveUpdates();
     const logout = useSessionMutation({
         mutationFn: signOut,
         onSuccess: () => {
@@ -259,17 +156,45 @@ export function AppShell({
         focusMainNext.current = false;
         mainRef.current?.focus();
     }, [href]);
-    const creates = CREATE_TARGETS.filter((item) => item.allowed(session));
+    // A new page fades in; a search-parameter change (a tab, a filter) is
+    // the same page and does not.
+    useEffect(() => {
+        if (pathname === shownPath.current) {
+            return;
+        }
+        shownPath.current = pathname;
+        if (contentRef.current !== null) {
+            playRouteEntrance(contentRef.current);
+        }
+    }, [pathname]);
+    useEffect(() => {
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.defaultPrevented || !isSidebarShortcut(event)) {
+                return;
+            }
+            event.preventDefault();
+            toggleSidebar();
+        };
+        window.addEventListener("keydown", onKeyDown);
+        return () => {
+            window.removeEventListener("keydown", onKeyDown);
+        };
+    }, [toggleSidebar]);
+    const creates = createTargets(session);
+    const sidebarLabel = collapsed ? "Expand sidebar" : "Collapse sidebar";
 
     return (
-        <div className="min-h-dvh md:grid md:grid-cols-[15rem_minmax(0,1fr)]">
+        <div className="min-h-dvh md:grid md:grid-cols-[var(--sidebar-current)_minmax(0,1fr)]">
             <a
                 href="#main"
                 className="sr-only focus:not-sr-only focus:absolute focus:top-3 focus:left-3 focus:z-50 focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-semibold focus:text-foreground focus:no-underline focus:ring-1 focus:ring-foreground/20"
             >
                 Skip to main content
             </a>
-            <header className="sticky top-0 z-40 flex items-center gap-2 border-b bg-background/90 px-3 py-2 backdrop-blur md:h-dvh md:flex-col md:items-stretch md:gap-5 md:border-r md:border-b-0 md:px-3 md:py-4">
+            <header
+                data-slot="rail"
+                className="sticky top-0 z-40 flex items-center gap-2 border-b bg-background/90 px-3 py-2 backdrop-blur md:h-dvh md:flex-col md:items-stretch md:gap-4 md:overflow-x-hidden md:border-r md:border-b-0 md:bg-surface-sunken md:px-2 md:py-3 md:backdrop-blur-none"
+            >
                 <button
                     type="button"
                     aria-label="Open navigation"
@@ -285,95 +210,97 @@ export function AppShell({
                 <Link
                     to="/"
                     aria-label="Bergsmith home"
-                    className="flex items-center gap-2 px-2 font-semibold no-underline text-foreground"
+                    title={collapsed ? "Bergsmith home" : undefined}
+                    className="flex h-6 items-center gap-2 px-2 font-semibold whitespace-nowrap text-foreground no-underline rail-collapsed:justify-center rail-collapsed:px-0"
                 >
                     <AnvilIcon
                         aria-hidden="true"
-                        className="size-5 text-primary"
+                        className="size-5 shrink-0 text-foreground"
                     />
-                    <span>Bergsmith</span>
+                    <span className="rail-collapsed:sr-only">Bergsmith</span>
                 </Link>
                 <nav
                     aria-label="Main"
-                    className="hidden flex-1 flex-col overflow-y-auto md:flex"
+                    className="hidden min-h-0 flex-1 flex-col md:flex"
                 >
-                    <NavBody session={session} />
+                    <div className="thin-scrollbar flex-1 overflow-y-auto overscroll-contain">
+                        <NavBody session={session} collapsed={collapsed} />
+                    </div>
                 </nav>
                 <section
                     aria-label="Account"
-                    className="hidden flex-col items-stretch border-t pt-4 md:flex"
+                    className="hidden flex-col items-stretch border-t pt-3 md:flex"
                 >
-                    <span className="truncate px-2 text-sm text-muted-foreground">
-                        {session.display_name}
-                    </span>
-                    <div className="flex flex-wrap items-center gap-2 px-2">
-                        <ThemeToggle
-                            preference={theme}
-                            onChange={chooseTheme}
-                        />
-                        <DensityToggle
-                            density={density}
-                            onChange={chooseDensity}
-                        />
-                    </div>
-                    <Button
-                        variant="ghost"
-                        size="sm"
-                        className="mx-2 justify-start"
-                        disabled={logout.isPending}
-                        onClick={() => {
-                            logout.mutate();
-                        }}
-                    >
-                        <LogOutIcon aria-hidden="true" />
-                        Sign out
-                    </Button>
+                    <AccountButton
+                        collapsed={collapsed}
+                        className="rail-collapsed:justify-center rail-collapsed:px-0"
+                        displayName={session.display_name}
+                        theme={theme}
+                        onThemeChange={chooseTheme}
+                        density={density}
+                        onDensityChange={chooseDensity}
+                        logout={logout}
+                    />
                 </section>
             </header>
             <div className="min-w-0">
-                <SessionExpiry expiresAt={session.expires_at} returnTo={href} />
-                {logout.error !== null && (
-                    <div className="px-4">
-                        <ErrorNotice error={logout.error} />
-                    </div>
-                )}
-                <main
-                    id="main"
-                    aria-label="Main content"
-                    ref={mainRef}
-                    tabIndex={-1}
-                    className="mx-auto w-full max-w-6xl px-4 py-6 outline-none md:px-8 md:py-8"
-                >
-                    <BreadcrumbLabelProvider>
-                        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-                            <Breadcrumbs />
-                            <div className="ml-auto flex items-center gap-2">
-                                <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    disabled
-                                    title="Search is not yet available"
+                <BreadcrumbLabelProvider>
+                    <div className="z-30 flex min-h-(--header-height) flex-wrap items-center gap-2 border-b bg-background/95 px-4 py-2 backdrop-blur md:sticky md:top-0 md:px-6">
+                        <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            className="-ml-1.5 hidden md:inline-flex"
+                            aria-label={sidebarLabel}
+                            aria-keyshortcuts={"Control+\\ Meta+\\"}
+                            title={`${sidebarLabel} (Ctrl+\\ or ⌘\\)`}
+                            onClick={toggleSidebar}
+                        >
+                            {collapsed ? (
+                                <PanelLeftOpenIcon aria-hidden="true" />
+                            ) : (
+                                <PanelLeftCloseIcon aria-hidden="true" />
+                            )}
+                        </Button>
+                        <Breadcrumbs />
+                        <div className="ml-auto flex items-center gap-2">
+                            <CommandPaletteButton session={session} />
+                            {creates.length > 0 && (
+                                <MenuButton
+                                    align="end"
+                                    items={creates.map(
+                                        ({ to, label, icon }) => ({
+                                            key: to,
+                                            label,
+                                            icon,
+                                            render: <Link to={to} />,
+                                        }),
+                                    )}
                                 >
-                                    <SearchIcon aria-hidden="true" />
-                                    Search
-                                </Button>
-                                {creates[0] && (
-                                    <Link
-                                        to={creates[0].to}
-                                        className={buttonVariants({
-                                            variant: "outline",
-                                            size: "sm",
-                                        })}
-                                    >
-                                        <PlusIcon aria-hidden="true" />
-                                        New
-                                    </Link>
-                                )}
-                            </div>
+                                    <PlusIcon aria-hidden="true" />
+                                    New
+                                </MenuButton>
+                            )}
                         </div>
-                        {children}
-                    </BreadcrumbLabelProvider>
-                </main>
+                    </div>
+                    <SessionExpiry
+                        expiresAt={session.expires_at}
+                        returnTo={href}
+                    />
+                    {logout.error !== null && (
+                        <div className="px-4 pt-4 md:px-6">
+                            <ErrorNotice error={logout.error} />
+                        </div>
+                    )}
+                    <main
+                        id="main"
+                        aria-label="Main content"
+                        ref={mainRef}
+                        tabIndex={-1}
+                        className="mx-auto w-full max-w-page px-4 py-6 outline-none md:px-6"
+                    >
+                        <div ref={contentRef}>{children}</div>
+                    </main>
+                </BreadcrumbLabelProvider>
             </div>
             <NavigationDrawer
                 open={open}

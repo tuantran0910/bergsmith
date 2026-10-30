@@ -313,7 +313,23 @@ tracking task.
   themes, hover/focus states, narrow layouts, and long names or identifiers.
 - Keep runtime requests on the deployment's origin: no CDN assets, external
   fonts, or analytics. Follow the coordinator's CSP; avoid inline styles and
-  HTML injection. Keep the JavaScript build within the existing bundle budget.
+  HTML injection. Keep the JavaScript and stylesheet builds within their
+  budgets.
+- Render server data as text. Never pass it to `innerHTML`, `eval`, or an
+  `href`; build links only from typed routes. A new popup primitive or
+  animation library must pass the browser gate's policy check before a page
+  uses it.
+- Scope aggregates by grant inside the database query: counts, facets,
+  search suggestions, and event streams must not reveal resources outside the
+  caller's grant. Test them with two principals on disjoint grants.
+- Cap free-text query parameters and escape `LIKE` wildcards; search display
+  names only, never table rows.
+- Pass the query's abort signal so superseded requests cancel, keep the
+  previous page visible while a filter changes, and virtualize long lists.
+- Use the color, type, and motion tokens of ADR 0067: color only for status,
+  two font weights, and motion only on `opacity` and `transform`.
+- A shortcut (command palette, row action, peek panel) that writes opens the
+  same confirmation dialog as the page.
 
 ## 6. Testing
 
@@ -408,7 +424,10 @@ Breaking one of these is a correctness bug, whatever the tests say.
   `feat/bs-003-job-transitions`. Use `chore/<slug>` or `docs/<slug>` for work
   outside the backlog.
 - One task (`BS-NNN.Tn`) per branch and pull request. Keep pull requests small
-  enough to review in one sitting.
+  enough to review in one sitting. When the plan delivers a work package as
+  a single branch (BS-033), each task is one or more commits on it, every
+  commit names its task in `Refs:`, and each commit still builds and passes
+  its checks.
 
 ### Commits
 

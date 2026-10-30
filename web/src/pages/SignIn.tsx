@@ -1,8 +1,9 @@
 import { AnvilIcon, LogInIcon } from "lucide-react";
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import { loginUrl } from "../api/auth";
 import { browser } from "../browser";
+import { playRouteEntrance } from "../motion";
 import { readLastOrganization, saveLastOrganization } from "../organization";
 import { Button } from "../ui/Button";
 import { Card, CardContent, CardDescription, CardHeader } from "../ui/Card";
@@ -15,16 +16,23 @@ export function SignIn({ returnTo }: { returnTo: string }) {
     );
     const fieldId = useId();
     const hintId = useId();
+    const card = useRef<HTMLDivElement>(null);
+    // The card fades in once; reduced motion leaves it still.
+    useEffect(() => {
+        if (card.current !== null) {
+            playRouteEntrance(card.current);
+        }
+    }, []);
 
     return (
-        <main className="flex min-h-dvh items-start justify-center bg-muted/40 px-4 pt-[12vh]">
-            <Card className="w-full max-w-sm">
-                <CardHeader>
-                    <span className="flex items-center gap-2 text-primary">
-                        <AnvilIcon aria-hidden="true" className="size-6" />
+        <main className="flex min-h-dvh flex-col items-center justify-center gap-6 bg-surface-sunken px-4 py-12">
+            <Card ref={card} className="w-full max-w-sm">
+                <CardHeader className="justify-items-center text-center">
+                    <span className="mb-2 flex size-10 items-center justify-center rounded-lg border bg-background text-foreground">
+                        <AnvilIcon aria-hidden="true" className="size-5" />
                     </span>
                     <h1 className="m-0 text-xl font-semibold tracking-tight">
-                        Bergsmith
+                        Sign in to Bergsmith
                     </h1>
                     <CardDescription>
                         Sign in through your organization's identity provider.

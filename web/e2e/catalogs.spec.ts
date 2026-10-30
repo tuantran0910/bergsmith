@@ -114,6 +114,12 @@ test("checks an unsaved connection, saves it, and registers a discovered table",
     await page.getByLabel("Connection name").fill("new-lake");
     await page.getByLabel("Catalog URI").fill("https://catalog.example");
     await expectAccessible(page);
+    await page.getByRole("button", { name: "Continue" }).click();
+    await expect(
+        page.getByRole("heading", { name: "Warehouse and credentials" }),
+    ).toBeFocused();
+    await expectAccessible(page);
+    await page.getByRole("button", { name: "Continue" }).click();
     await page.getByRole("button", { name: "Check capabilities" }).click();
     await expect(
         page.getByRole("button", { name: "Save connection" }),
@@ -272,7 +278,16 @@ test("blocks secret-bearing URIs before sending a draft to the coordinator", asy
     await page
         .getByLabel("Catalog URI")
         .fill("https://user:secret@catalog.example?token=secret");
-    await page.getByRole("button", { name: "Check capabilities" }).click();
+    await page.getByRole("button", { name: "Continue" }).click();
+    // The field refuses the URI, so the setup never reaches its check.
+    await expect(
+        page.getByRole("heading", { name: "Connection", exact: true }),
+    ).toBeVisible();
+    expect(
+        await page
+            .getByLabel("Catalog URI")
+            .evaluate((input: HTMLInputElement) => input.validity.valid),
+    ).toBe(false);
     expect(coordinator.sent("POST", "/api/v1/catalogs/check")).toHaveLength(0);
     await expect(
         page.getByRole("button", { name: "Save connection" }),
