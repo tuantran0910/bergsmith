@@ -25,6 +25,9 @@ mod list_filters;
 #[path = "api/saved_views.rs"]
 mod saved_views;
 
+#[path = "api/search_and_live.rs"]
+mod search_and_live;
+
 #[path = "api/notification_rules.rs"]
 mod notification_rules_api;
 
@@ -1465,6 +1468,8 @@ const ROUTES: &[(&str, &str)] = &[
     ("/api/v1/jobs/{id}/cancel", "post"),
     ("/api/v1/jobs/{id}/retry", "post"),
     ("/api/v1/jobs/{id}/events", "get"),
+    ("/api/v1/events", "get"),
+    ("/api/v1/search", "get"),
     ("/api/v1/me/views", "get"),
     ("/api/v1/me/views", "post"),
     ("/api/v1/me/views/{id}", "patch"),

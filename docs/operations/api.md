@@ -37,7 +37,7 @@ as `x-csrf-token`. All responses use `Cache-Control: no-store`.
 | `GET /api/v1/tables/{id}/recommendations` | Health findings from the table's newest metadata-only sample and the action each finding recommends. The table's state is the worst evaluation across its enabled policies' threshold sets, and each finding names the source of its thresholds (`kind: defaults`, or `kind: policy` with the policy id and name); a disabled policy or schedule contributes no set. Findings need inventory visibility only, so a viewer can explain a state; the catalog assessment behind an actionable recommendation needs `jobs:submit`, and `assessment` says what to expect (`included`, `requires_jobs_submit`, or `not_applicable` for an advisory recommendation). An actionable finding (small files) carries the prefilled preview and the planner's estimate from the current table (`outcome`, `estimate`); an advisory finding carries the reason it cannot run yet (delete pressure needs BS-031's delete cleanup, partition skew needs partition targeting, snapshot and manifest work is BS-031, stale statistics resolves on the collector's interval). Visibility is checked first, so a table outside the caller's inventory is 404. A table without a sample, or with a sample predating the health counters, returns `state: null` with no findings or recommendations and no catalog request; counters are decimal strings |
 | `GET /api/v1/tables/{id}/maintenance` | The table's terminal jobs, newest first, each with the files and bytes its accepted tasks rewrote, the delete files they applied, and its elapsed time, plus totals over the range; `since` (RFC 3339, default thirty days ago) sets the range on the first page and the cursor carries it afterwards; accepted output is partitioned by outcome (`output_*` published, `discarded_*` after a conflict, `abandoned_*` from stopped jobs) so no byte is counted twice, and delete files count once per job; requires `jobs:read` on the table and returns 404 for unknown or invisible tables; counters are decimal strings |
 | `GET /api/v1/statistics/maintenance` | The same impact totals over every table the caller may read jobs on, over the range; counters are decimal strings |
-| `GET /api/v1/overview` | The landing overview: terminal jobs whose transition falls in the last day, by outcome and conflict rate; the unresolved-publication count and oldest age in full plus a bounded list of jobs that need attention (unresolved publications first, aged from send authorization, then `ReplanRequired` and failed jobs, aged from their terminal transition); visible tables that were never sampled or whose newest job needs a decision; enabled schedules whose next due instant has passed, plus occurrences folded or skipped in the last day; and registered worker capacity. Job and table figures follow the caller's grants, and the schedule and worker sections are `null` when the caller may not manage them; counters are decimal strings |
+| `GET /api/v1/overview` | The landing overview: terminal jobs whose transition falls in the last day, by outcome and conflict rate, with the same counts for the day before under `previous`; the unresolved-publication count and oldest age in full plus a bounded list of jobs that need attention (unresolved publications first, aged from send authorization, then `ReplanRequired` and failed jobs, aged from their terminal transition); visible tables that were never sampled or whose newest job needs a decision; enabled schedules whose next due instant has passed, plus occurrences folded or skipped in the last day; and registered worker capacity. Job and table figures follow the caller's grants, and the schedule and worker sections are `null` when the caller may not manage them; counters are decimal strings |
 | `GET /api/v1/catalogs/{id}/statistics` | Totals over the newest sample of every visible table on one connection; 404 when the connection is not visible |
 | `GET /api/v1/statistics` | The same totals over every table the caller may view in the organization |
 | `GET /api/v1/jobs`, `GET /api/v1/jobs/{id}` | Authorized job state, revision, requester and their display name, the table's caller-visible aliases, cancellation/publication boundary, retry link, and the `trigger` (finding kind and severity) that admitted it, or null. The list accepts `state`, `operation`, `table`, `catalog`, `created_by`, `q` (a visible alias's `namespace.name`), and `order=newest` |
@@ -543,6 +543,39 @@ Delivery is woken by a PostgreSQL notification on the `bergsmith_job_events`
 channel; if notifications are lost, streams still poll the ledger every 2
 seconds. The `serve` runtime starts `JobEventHub::listen`, which holds one dedicated
 PostgreSQL connection per process in addition to the request pool.
+
+## Organization events
+
+`GET /api/v1/events` streams, as server-sent events, which jobs the caller may
+list changed state. Visibility follows `GET /api/v1/jobs` and is checked for
+every event inside the query.
+
+- `ready` comes first on every connection, with the resume point as its ID.
+  Reload what the page shows, then apply the events that follow.
+- `job` events carry `{job_id, table_id, state, revision}` and nothing else;
+  read the job for names and reasons. The ID is the job event's ledger ID.
+- `reset` replaces a replay when the resume point is more than 10,000 ledger
+  IDs behind; reload, then continue from its ID.
+
+Resume with `Last-Event-ID` or `?after=`, as for job events. Ledger IDs can
+commit out of order, so the stream holds an ID back until every transaction
+that could still write a lower one has ended; no event after the resume
+point is skipped. Without a resume point the stream starts after the newest
+committed event. Each session holds at most 4 streams (503
+`event_stream_capacity_exhausted` beyond that, sharing the process limit of
+256). The stream sends keep-alive comments every 15 seconds and ends when the
+session ends (checked at most every 30 seconds without extending it) or after
+one hour.
+
+## Search
+
+`GET /api/v1/search?q=&limit=` finds catalogs, tables, and principals whose
+display names contain `q` (1 to 128 characters, case-insensitive, `%` and `_`
+literal), at most `limit` of each (default 5, at most 20). Catalogs and tables
+need `inventory:read` through a grant that covers them, and a table is found
+only by an alias the caller may see, once per matching alias. `principals` is
+present for callers with organization-wide `grants:manage` and `null`
+otherwise. Table contents are never searched.
 
 ## Policies and schedules
 

@@ -17,6 +17,7 @@ mod events;
 mod grants;
 mod job_tasks;
 mod lists;
+mod live;
 mod maintenance;
 mod notification_rules;
 mod notifications;
@@ -27,6 +28,7 @@ mod principals;
 mod recommendations;
 mod resources;
 mod scheduling;
+mod search;
 mod service_identities;
 mod statistics;
 mod storage_breakdown;
@@ -149,6 +151,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/catalogs/{id}/statistics", get(statistics::catalog))
         .route("/api/v1/statistics", get(statistics::organization))
         .route("/api/v1/overview", get(overview::overview))
+        .route("/api/v1/search", get(search::search))
         .route(
             "/api/v1/statistics/maintenance",
             get(maintenance::organization),
@@ -160,6 +163,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/jobs/{id}/cancel", post(commands::cancel))
         .route("/api/v1/jobs/{id}/retry", post(commands::retry))
         .route("/api/v1/jobs/{id}/events", get(events::events))
+        .route("/api/v1/events", get(live::events))
         .route(
             "/api/v1/principals",
             get(principals::list).post(principals::create),

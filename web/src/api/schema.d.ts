@@ -789,7 +789,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description What needs attention in the organization, from the execution ledger: terminal jobs whose terminal transition falls in the last day, by outcome and conflict rate; unresolved publications in full and a bounded list of jobs that need attention; visible tables without a sample or with a decision pending by terminal transition; schedule cursors that are overdue plus occurrences folded or skipped in the last day; and registered worker capacity. Job and table figures follow the caller's grants; the schedule and worker sections are null when the caller may not read them. */
+        /** @description What needs attention in the organization, from the execution ledger: terminal jobs whose terminal transition falls in the last day, by outcome and conflict rate, beside the same counts for the day before; unresolved publications in full and a bounded list of jobs that need attention; visible tables without a sample or with a decision pending by terminal transition; schedule cursors that are overdue plus occurrences folded or skipped in the last day; and registered worker capacity. Job and table figures follow the caller's grants; the schedule and worker sections are null when the caller may not read them. */
         get: operations["getOverview"];
         put?: never;
         post?: never;
@@ -1013,6 +1013,40 @@ export interface paths {
         head?: never;
         /** @description Rename a view or replace its parameters. The request names the revision it read; a stale revision returns 409 and changes nothing. Another person's view is 404. Requires the CSRF token; audited. */
         patch: operations["updateSavedView"];
+        trace?: never;
+    };
+    "/api/v1/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Catalogs, tables, and principals whose display names contain `q`, case-insensitively, at most `limit` of each. Catalogs and tables follow the caller's grants inside the query, and a table matches only through an alias the caller may see. Principals are searched only for callers allowed to manage access; otherwise `principals` is null. Table rows are never searched. */
+        get: operations["search"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Server-sent events naming the jobs the caller may list as they change state. Every connection first sends `ready`; a client reloads what it shows, then applies the `job` events that follow, whose `data` is a LiveJobEvent. Each event's `id` is a ledger ID: resume with the `Last-Event-ID` header (sent automatically by a reconnecting EventSource) or the `after` query parameter, and no event after it is skipped, even when transactions commit out of order. A resume point more than 10,000 ledger IDs behind receives `reset` instead of a replay, and the client reloads. Without a resume point the stream starts after the newest committed event. Visibility follows listJobs and is evaluated for every event. Each session may hold 4 streams. The stream sends a keep-alive comment every 15 seconds and ends when the session ends (checked every 30 seconds without extending it) or after one hour; reconnect with the last ID seen. */
+        get: operations["streamEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
 }
@@ -2015,6 +2049,8 @@ export interface components {
             };
             /** @description Replanned jobs as a percentage of terminal jobs in the window, one decimal. */
             conflict_rate_percent: string;
+            /** @description The same counts for the window of equal length just before this one, so a page can show how each figure moved. */
+            previous: components["schemas"]["OverviewJobWindow"];
         };
         OverviewTables: {
             /** Format: int32 */
@@ -2467,6 +2503,66 @@ export interface components {
             revision: number;
             name?: string;
             params?: components["schemas"]["ViewParams"];
+        };
+        /** @description Terminal job outcomes in one window. */
+        OverviewJobWindow: {
+            /** @description Terminal jobs in the window. */
+            ended: string;
+            by_state: {
+                Succeeded: string;
+                NoOp: string;
+                Cancelled: string;
+                ReplanRequired: string;
+                Failed: string;
+            };
+            /** @description Replanned jobs as a percentage of terminal jobs in the window, one decimal. */
+            conflict_rate_percent: string;
+        };
+        SearchCatalog: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            enabled: boolean;
+        };
+        /** @description One visible alias whose `namespace.name` matched. A table visible under several aliases may appear once per alias. */
+        SearchTable: {
+            /**
+             * Format: uuid
+             * @description The table identity.
+             */
+            id: string;
+            /** Format: uuid */
+            catalog_id: string;
+            namespace: string[];
+            name: string;
+        };
+        SearchPrincipal: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            kind: "User" | "Service";
+            display_name: string;
+            active: boolean;
+        };
+        SearchResults: {
+            catalogs: components["schemas"]["SearchCatalog"][];
+            tables: components["schemas"]["SearchTable"][];
+            /** @description Present only for callers allowed to manage access. */
+            principals: components["schemas"]["SearchPrincipal"][] | null;
+        };
+        /** @description The data of a `job` event on the organization stream: which job changed and its state. Names, reasons, and actors are never included; read the job for them. */
+        LiveJobEvent: {
+            /** Format: uuid */
+            job_id: string;
+            /** Format: uuid */
+            table_id: string;
+            /** @enum {string} */
+            state: "Planning" | "Queued" | "Running" | "ReadyToCommit" | "Committing" | "CommitOutcomeUnknown" | "Deleting" | "Cancelling" | "Succeeded" | "NoOp" | "Cancelled" | "ReplanRequired" | "Failed";
+            /**
+             * Format: int64
+             * @description The job's state revision after this event.
+             */
+            revision: number;
         };
     };
     responses: never;
@@ -9523,6 +9619,147 @@ export interface operations {
                 };
             };
             /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    search: {
+        parameters: {
+            query: {
+                /** @description Text to find in display names, at most 128 characters; `%` and `_` match themselves. */
+                q: string;
+                /** @description Results per kind; 5 when absent. */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Matches by kind */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SearchResults"];
+                };
+            };
+            /** @description Missing or invalid `q`, `limit`, or query parameter */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable; retry the same request */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    streamEvents: {
+        parameters: {
+            query?: {
+                /** @description Resume after this ledger ID. */
+                after?: string;
+            };
+            header?: {
+                /** @description The last event ID received; takes precedence over `after`. */
+                "Last-Event-ID"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Event stream of `ready`, `job`, and `reset` events */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            /** @description Invalid resume point or query parameter */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Sign in required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Method not allowed */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Internal error; do not retry */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Ledger unavailable or stream capacity exhausted; retry the same request */
             503: {
                 headers: {
                     [name: string]: unknown;

@@ -144,7 +144,7 @@ fn no_pages(limit: Option<usize>, cursor: Option<&String>) -> Result<(), ApiErro
 /// A query whose first three parameters are the caller's organization,
 /// principal, and the roles that grant `permission`, as the `sql` access
 /// fragments expect. Later binds are numbered from `$4`.
-fn scoped(
+pub(super) fn scoped(
     sql: &'static str,
     caller: &Session,
     permission: Permission,

@@ -317,6 +317,17 @@ export const overview = schema("Overview", {
             Failed: "0",
         },
         conflict_rate_percent: "33.3",
+        previous: {
+            ended: "4",
+            by_state: {
+                Succeeded: "3",
+                NoOp: "1",
+                Cancelled: "0",
+                ReplanRequired: "0",
+                Failed: "0",
+            },
+            conflict_rate_percent: "0.0",
+        },
     },
     attention: {
         unresolved_publications: "1",

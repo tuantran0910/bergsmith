@@ -6956,7 +6956,7 @@
     "/api/v1/overview": {
       "get": {
         "operationId": "getOverview",
-        "description": "What needs attention in the organization, from the execution ledger: terminal jobs whose terminal transition falls in the last day, by outcome and conflict rate; unresolved publications in full and a bounded list of jobs that need attention; visible tables without a sample or with a decision pending by terminal transition; schedule cursors that are overdue plus occurrences folded or skipped in the last day; and registered worker capacity. Job and table figures follow the caller's grants; the schedule and worker sections are null when the caller may not read them.",
+        "description": "What needs attention in the organization, from the execution ledger: terminal jobs whose terminal transition falls in the last day, by outcome and conflict rate, beside the same counts for the day before; unresolved publications in full and a bounded list of jobs that need attention; visible tables without a sample or with a decision pending by terminal transition; schedule cursors that are overdue plus occurrences folded or skipped in the last day; and registered worker capacity. Job and table figures follow the caller's grants; the schedule and worker sections are null when the caller may not read them.",
         "responses": {
           "401": {
             "description": "Sign in required",
@@ -9056,6 +9056,188 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SavedView"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/search": {
+      "get": {
+        "operationId": "search",
+        "description": "Catalogs, tables, and principals whose display names contain `q`, case-insensitively, at most `limit` of each. Catalogs and tables follow the caller's grants inside the query, and a table matches only through an alias the caller may see. Principals are searched only for callers allowed to manage access; otherwise `principals` is null. Table rows are never searched.",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "description": "Text to find in display names, at most 128 characters; `%` and `_` match themselves.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Results per kind; 5 when absent.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20
+            }
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Missing or invalid `q`, `limit`, or query parameter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Matches by kind",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResults"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/events": {
+      "get": {
+        "operationId": "streamEvents",
+        "description": "Server-sent events naming the jobs the caller may list as they change state. Every connection first sends `ready`; a client reloads what it shows, then applies the `job` events that follow, whose `data` is a LiveJobEvent. Each event's `id` is a ledger ID: resume with the `Last-Event-ID` header (sent automatically by a reconnecting EventSource) or the `after` query parameter, and no event after it is skipped, even when transactions commit out of order. A resume point more than 10,000 ledger IDs behind receives `reset` instead of a replay, and the client reloads. Without a resume point the stream starts after the newest committed event. Visibility follows listJobs and is evaluated for every event. Each session may hold 4 streams. The stream sends a keep-alive comment every 15 seconds and ends when the session ends (checked every 30 seconds without extending it) or after one hour; reconnect with the last ID seen.",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "description": "Resume after this ledger ID.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "required": false,
+            "description": "The last event ID received; takes precedence over `after`.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Event stream of `ready`, `job`, and `reset` events",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid resume point or query parameter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error; do not retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Ledger unavailable or stream capacity exhausted; retry the same request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             }
@@ -13306,7 +13488,8 @@
           "window_hours",
           "ended",
           "by_state",
-          "conflict_rate_percent"
+          "conflict_rate_percent",
+          "previous"
         ],
         "properties": {
           "window_hours": {
@@ -13354,6 +13537,10 @@
           "conflict_rate_percent": {
             "type": "string",
             "description": "Replanned jobs as a percentage of terminal jobs in the window, one decimal."
+          },
+          "previous": {
+            "$ref": "#/components/schemas/OverviewJobWindow",
+            "description": "The same counts for the window of equal length just before this one, so a page can show how each figure moved."
           }
         }
       },
@@ -15276,6 +15463,223 @@
           },
           "params": {
             "$ref": "#/components/schemas/ViewParams"
+          }
+        }
+      },
+      "OverviewJobWindow": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Terminal job outcomes in one window.",
+        "required": [
+          "ended",
+          "by_state",
+          "conflict_rate_percent"
+        ],
+        "properties": {
+          "ended": {
+            "type": "string",
+            "pattern": "^[0-9]+$",
+            "description": "Terminal jobs in the window."
+          },
+          "by_state": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "Succeeded",
+              "NoOp",
+              "Cancelled",
+              "ReplanRequired",
+              "Failed"
+            ],
+            "properties": {
+              "Succeeded": {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              },
+              "NoOp": {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              },
+              "Cancelled": {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              },
+              "ReplanRequired": {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              },
+              "Failed": {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              }
+            }
+          },
+          "conflict_rate_percent": {
+            "type": "string",
+            "description": "Replanned jobs as a percentage of terminal jobs in the window, one decimal."
+          }
+        }
+      },
+      "SearchCatalog": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "enabled"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SearchTable": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "One visible alias whose `namespace.name` matched. A table visible under several aliases may appear once per alias.",
+        "required": [
+          "id",
+          "catalog_id",
+          "namespace",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The table identity."
+          },
+          "catalog_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "namespace": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "SearchPrincipal": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "kind",
+          "display_name",
+          "active"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "User",
+              "Service"
+            ]
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SearchResults": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "catalogs",
+          "tables",
+          "principals"
+        ],
+        "properties": {
+          "catalogs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SearchCatalog"
+            }
+          },
+          "tables": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SearchTable"
+            }
+          },
+          "principals": {
+            "description": "Present only for callers allowed to manage access.",
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SearchPrincipal"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "LiveJobEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "The data of a `job` event on the organization stream: which job changed and its state. Names, reasons, and actors are never included; read the job for them.",
+        "required": [
+          "job_id",
+          "table_id",
+          "state",
+          "revision"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "table_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "Planning",
+              "Queued",
+              "Running",
+              "ReadyToCommit",
+              "Committing",
+              "CommitOutcomeUnknown",
+              "Deleting",
+              "Cancelling",
+              "Succeeded",
+              "NoOp",
+              "Cancelled",
+              "ReplanRequired",
+              "Failed"
+            ]
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0,
+            "description": "The job's state revision after this event."
           }
         }
       }

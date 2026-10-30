@@ -4,7 +4,9 @@
 //! that ended in the last day, jobs whose publication is unresolved or whose
 //! work a conflict discarded, tables with no sample or a decision pending,
 //! schedule evaluations that are late or folded, and registered worker
-//! capacity. Every figure follows the caller's grants; the schedule and worker
+//! capacity. Job outcomes also carry the previous window's counts, so the page
+//! can show how each figure moved (BS-033.T7). Every figure follows the
+//! caller's grants; the schedule and worker
 //! sections are `null` when the caller may not read them, rather than failing
 //! the page.
 
@@ -48,6 +50,16 @@ pub(super) async fn overview(
         caller.principal_id,
         &roles,
         job_since,
+        None,
+    )
+    .await?;
+    let previous = overview::job_outcomes(
+        &mut conn,
+        caller.organization_id,
+        caller.principal_id,
+        &roles,
+        job_since - TimeDelta::hours(JOB_WINDOW_HOURS),
+        Some(job_since),
     )
     .await?;
     let attention = overview::attention(
@@ -104,6 +116,7 @@ pub(super) async fn overview(
 
     Ok(Json(report(
         outcomes,
+        previous,
         attention_summary,
         &attention,
         tables,
@@ -115,24 +128,21 @@ pub(super) async fn overview(
 /// The wire form of the overview.
 fn report(
     outcomes: overview::JobOutcomes,
+    previous: overview::JobOutcomes,
     attention_summary: overview::AttentionSummary,
     attention: &[overview::AttentionJob],
     tables: overview::TableOverview,
     schedules: Option<overview::ScheduleOverview>,
     workers: Option<overview::WorkerOverview>,
 ) -> Value {
-    let ended = outcomes.ended();
+    let mut jobs = outcome_counts(outcomes);
+    jobs.insert("window_hours".to_owned(), json!(JOB_WINDOW_HOURS));
+    jobs.insert(
+        "previous".to_owned(),
+        Value::Object(outcome_counts(previous)),
+    );
     json!({
-        "jobs": {
-            "window_hours": JOB_WINDOW_HOURS,
-            "ended": counter(ended),
-            "by_state": outcomes
-                .by_state()
-                .into_iter()
-                .map(|(state, count)| (state.to_owned(), json!(counter(count))))
-                .collect::<serde_json::Map<_, _>>(),
-            "conflict_rate_percent": percent(outcomes.replanned, ended),
-        },
+        "jobs": jobs,
         "attention": {
             "unresolved_publications": counter(attention_summary.unresolved_publications),
             "oldest_unresolved_age_seconds": counter(
@@ -174,6 +184,28 @@ fn report(
             "running_attempts": counter(w.running_attempts),
         })),
     })
+}
+
+/// One window's job outcomes: ended, by state, and the conflict rate.
+fn outcome_counts(outcomes: overview::JobOutcomes) -> serde_json::Map<String, Value> {
+    let ended = outcomes.ended();
+    let mut counts = serde_json::Map::new();
+    counts.insert("ended".to_owned(), json!(counter(ended)));
+    counts.insert(
+        "by_state".to_owned(),
+        Value::Object(
+            outcomes
+                .by_state()
+                .into_iter()
+                .map(|(state, count)| (state.to_owned(), json!(counter(count))))
+                .collect(),
+        ),
+    );
+    counts.insert(
+        "conflict_rate_percent".to_owned(),
+        json!(percent(outcomes.replanned, ended)),
+    );
+    counts
 }
 
 /// A percentage with one decimal, as a decimal string.

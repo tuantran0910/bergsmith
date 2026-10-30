@@ -204,6 +204,35 @@ This supersedes 0046's "neutral graphite surfaces and one accent".
   facets. The audit log is newest first by default. Service identities and
   the short client-side lists keep `DataTable`.
 
+### Search and live events
+
+- `GET /api/v1/search?q=` returns at most `limit` (5 by default, 20 at most)
+  catalogs, tables, and people whose display names contain `q`, for the
+  command palette. Catalogs and tables run through their lists' grant
+  predicates, and a table matches only by an alias the caller may see.
+  People are searched only for callers who manage access; for others the
+  section is `null`, so the response shape does not depend on what exists.
+- The Overview's job outcomes carry `previous`: the same counts for the
+  24 hours before the current window, so a figure can show its change
+  without a second request.
+- `GET /api/v1/events` streams which jobs the caller may list changed
+  state. An event holds the job and table IDs, the state, and the
+  revision, never names, reasons, or actors; the page reads anything else
+  it shows. Every connection begins with `ready`, after which the client
+  reloads what it shows, and a resume point more than 10,000 ledger IDs
+  behind gets `reset` instead of a replay. Each session holds at most four
+  streams, and a stream ends with its session or after an hour.
+- The SSE `id` is the job event's ledger ID. IDs are assigned at insert,
+  so a later ID can commit first. A stream therefore delivers only up to a
+  settled horizon: it reads the ID sequence's last value, then the
+  transactions in progress, and treats that value as settled once all of
+  those have ended. Resuming after any delivered ID never skips an event.
+  This adds no column, trigger, or lock to the ledger's write path; the cost
+  is that a long-running write transaction delays delivery until it ends.
+  Each read checks the jobs list's grant predicate inside the query, so
+  rows of other grants and organizations advance the cursor without being
+  sent.
+
 ### Engineering limits
 
 These are enforced by gates, not by review:
