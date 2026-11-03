@@ -145,6 +145,8 @@ async fn tls_client(
         Server::builder()
             .tls_config(worker_tls_config(identity))
             .unwrap()
+            // The production RPC layer, so trace adoption is exercised.
+            .layer(bergsmith_coordinator::observability::RpcMetrics::default().layer())
             .add_service(ClusterServiceServer::new(service))
             .serve_with_incoming(incoming)
             .await
@@ -1157,4 +1159,49 @@ async fn revoking_a_pool_token_stops_an_existing_worker_service(pool: PgPool) {
     assert_eq!(status.code(), tonic::Code::Unauthenticated);
     let failure = common::Failure::decode(status.details()).unwrap();
     assert_eq!(failure.reason_code, "WorkerTokenInvalid");
+}
+
+/// ADR 0068: a worker RPC continues the caller's trace only after its token
+/// authenticates, so an unauthenticated caller cannot pick a trace ID or force
+/// sampling.
+#[sqlx::test(migrator = "bergsmith_persistence::MIGRATOR")]
+async fn only_an_authenticated_worker_rpc_continues_the_callers_trace(pool: PgPool) {
+    const TRACE: &str = "0af7651916cd43dd8448eb211c80319c";
+    const PARENT: &str = "b7ad6b7169203331";
+    let mut run = setup(&pool).await;
+    let (_guard, captured) = bergsmith_telemetry::testing::capture();
+    let unknown =
+        ServiceToken::parse("bsw1_native_Zbcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMN-0").unwrap();
+    for token in [&run.token, &unknown] {
+        let mut call = request(
+            token,
+            wire::GetAttemptStatusRequest {
+                worker_session_id: run.session.clone(),
+                attempt_id: Uuid::now_v7().to_string(),
+            },
+        );
+        call.metadata_mut().insert(
+            "traceparent",
+            format!("00-{TRACE}-{PARENT}-01").parse().unwrap(),
+        );
+        // The first call authenticates; the outcome after that does not matter.
+        let _ = run.client.get_attempt_status(call).await;
+    }
+
+    let spans: Vec<_> = captured
+        .spans()
+        .into_iter()
+        .filter(|span| span.name.ends_with("/GetAttemptStatus"))
+        .collect();
+    assert_eq!(spans.len(), 2, "{spans:?}");
+    let (adopted, rejected): (Vec<_>, Vec<_>) =
+        spans.iter().partition(|span| span.trace_id == TRACE);
+    assert_eq!(adopted.len(), 1, "{spans:?}");
+    assert_eq!(adopted[0].parent_span_id, PARENT);
+    assert_eq!(rejected.len(), 1, "{spans:?}");
+    assert_eq!(rejected[0].parent_span_id, "0000000000000000");
+    assert_eq!(
+        rejected[0].attributes["rpc.grpc.status_code"],
+        "Unauthenticated"
+    );
 }

@@ -13,6 +13,7 @@ use bergsmith_storage::{CredentialCell, Location, StorageProfile};
 use prost::Message;
 use tokio::sync::{Mutex, watch};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
+use tracing::Instrument;
 
 use super::journal::{self, Journal};
 use super::service::{Control, LocalService};
@@ -120,6 +121,15 @@ fn request<T>(
         .map_err(|_| WorkerError::Invalid("invalid authorization metadata"))?;
     token.set_sensitive(true);
     request.metadata_mut().insert("authorization", token);
+    // Continue the current span's trace on the coordinator (ADR 0068).
+    for (name, value) in bergsmith_telemetry::trace_headers(&tracing::Span::current()) {
+        if let (Ok(name), Ok(value)) = (
+            tonic::metadata::MetadataKey::from_bytes(name.as_bytes()),
+            tonic::metadata::MetadataValue::try_from(value),
+        ) {
+            request.metadata_mut().insert(name, value);
+        }
+    }
     request.set_timeout(timeout);
     Ok(request)
 }
@@ -467,42 +477,27 @@ async fn polling(
         };
         match response.result {
             Some(cluster::request_task_response::Result::Grant(grant)) => {
-                let begin_config = config.clone();
-                let begin_grant = grant.clone();
-                let begin_session = session.clone();
-                let begin_journal = journal.clone();
-                let begun = super::blocking(move || {
-                    begin(&begin_config, &begin_grant, &begin_session, begin_journal)
-                })
-                .await;
-                let (service, expiry) = match begun {
-                    Ok(begun) => begun,
-                    Err(error) => {
-                        // Report the refusal for this attempt and keep polling;
-                        // the journal backpressure above waits for its ack.
-                        if !refuse(config, &grant, &session, journal, error).await
-                            && pause(&mut shutdown, Duration::from_secs(1)).await
-                        {
-                            return Ok(());
-                        }
-                        continue;
-                    }
-                };
-                *active.lock().await = Some(Active {
-                    lease: local_deadline(expiry, coordinator_now, SystemTime::now(), received),
-                    grant: grant.clone(),
-                    service: service.clone(),
-                });
-                let result = supervise(config, &grant, &service, &active, shutdown.clone()).await;
-                if let Err(error) = result {
-                    let credentials = service.task.lock().await.credentials.clone();
-                    service
-                        .fail(super::worker_failure(&error, credentials.as_ref()))
-                        .await?;
-                    tracing::warn!(attempt_id = %grant.attempt_id, error = %error, "task supervision failed");
+                let span = tracing::info_span!(
+                    "task_attempt",
+                    job_id = %grant.job_id,
+                    task_id = %grant.task_id,
+                    attempt_id = %grant.attempt_id,
+                );
+                let lease = (received, coordinator_now);
+                let stop = run_grant(
+                    config,
+                    grant,
+                    &session,
+                    journal,
+                    &active,
+                    &mut shutdown,
+                    lease,
+                )
+                .instrument(span)
+                .await?;
+                if stop {
+                    return Ok(());
                 }
-                settle(&service, &mut shutdown).await?;
-                *active.lock().await = None;
             }
             Some(cluster::request_task_response::Result::NoTask(no_task)) => {
                 if pause(&mut shutdown, duration(no_task.retry_after)?).await {
@@ -513,6 +508,52 @@ async fn polling(
             None => return Err(WorkerError::Invalid("missing poll result")),
         }
     }
+}
+
+/// Runs one granted attempt; the caller wraps it in a `task_attempt` span, so
+/// RPCs made for the attempt carry its trace context (ADR 0068). Returns
+/// whether shutdown was requested while a refusal waited to be reported.
+async fn run_grant(
+    config: &WorkerConfig,
+    grant: cluster::TaskGrant,
+    session: &str,
+    journal: &Journal,
+    active: &ActiveSlot,
+    shutdown: &mut watch::Receiver<bool>,
+    (received, coordinator_now): (tokio::time::Instant, Option<SystemTime>),
+) -> Result<bool, WorkerError> {
+    let begin_config = config.clone();
+    let begin_grant = grant.clone();
+    let begin_session = session.to_owned();
+    let begin_journal = journal.clone();
+    let begun =
+        super::blocking(move || begin(&begin_config, &begin_grant, &begin_session, begin_journal))
+            .await;
+    let (service, expiry) = match begun {
+        Ok(begun) => begun,
+        Err(error) => {
+            // Report the refusal for this attempt and keep polling;
+            // the polling loop's journal backpressure waits for its ack.
+            return Ok(!refuse(config, &grant, session, journal, error).await
+                && pause(shutdown, Duration::from_secs(1)).await);
+        }
+    };
+    *active.lock().await = Some(Active {
+        lease: local_deadline(expiry, coordinator_now, SystemTime::now(), received),
+        grant: grant.clone(),
+        service: service.clone(),
+    });
+    let result = supervise(config, &grant, &service, active, shutdown.clone()).await;
+    if let Err(error) = result {
+        let credentials = service.task.lock().await.credentials.clone();
+        service
+            .fail(super::worker_failure(&error, credentials.as_ref()))
+            .await?;
+        tracing::warn!(attempt_id = %grant.attempt_id, error = %error, "task supervision failed");
+    }
+    settle(&service, shutdown).await?;
+    *active.lock().await = None;
+    Ok(false)
 }
 
 fn begin(
@@ -1064,6 +1105,10 @@ async fn resolve(
     }
 }
 
+/// Sends one journal record inside a `report_attempt` span. The attempt ran
+/// in an earlier `task_attempt` span, possibly in an earlier process, so the
+/// two are correlated by `attempt_id` rather than by parentage.
+#[tracing::instrument(name = "report_attempt", skip_all, fields(attempt_id = tracing::field::Empty))]
 async fn report_one(
     config: &WorkerConfig,
     client: &mut Client,
@@ -1081,6 +1126,7 @@ async fn report_one(
                 .map(|receipt| receipt.attempt_id.clone())
                 .unwrap_or_default(),
         };
+        tracing::Span::current().record("attempt_id", query.attempt_id.as_str());
         let response = match rpc(
             RPC_TIMEOUT,
             client.report_task_result(request(config, report, RPC_TIMEOUT)?),
@@ -1110,6 +1156,7 @@ async fn report_one(
             worker_session_id: report.worker_session_id.clone(),
             attempt_id: report.attempt_id.clone(),
         };
+        tracing::Span::current().record("attempt_id", query.attempt_id.as_str());
         let response = match rpc(
             RPC_TIMEOUT,
             client.report_task_failure(request(config, report, RPC_TIMEOUT)?),

@@ -9,16 +9,22 @@
 //! (`app.js.br`, `app.js.gz`). A request that accepts one of those codings
 //! gets the precompressed copy, so the coordinator never compresses at run
 //! time; API responses are never compressed here.
+//!
+//! Each `/api/v1` and `/auth` request runs inside an `http_request` span named
+//! by its route template, never its path, so IDs do not become span names. A
+//! browser's `traceparent` header is ignored: every request starts a new
+//! trace (ADR 0068). Probes and static files are not traced.
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
-use axum::extract::Request;
+use axum::extract::{MatchedPath, Request};
 use axum::http::{HeaderValue, StatusCode, header};
-use axum::middleware;
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
+use tracing::Instrument;
 
 use crate::api::{self, ApiState};
 use crate::identity::routes::{self as identity_routes, IdentityState};
@@ -89,18 +95,69 @@ pub fn app(
             }
         }
     };
-    Ok(Router::new()
-        .route("/healthz", axum::routing::get(health))
-        .route(
-            "/readyz",
-            axum::routing::get(
-                move || async move { crate::observability::readiness(&database).await },
-            ),
-        )
-        .merge(api::router(api))
-        .merge(identity_routes::router(identity))
-        .fallback(fallback)
-        .layer(middleware::map_response(security_headers)))
+    Ok(traced(
+        Router::new()
+            .merge(api::router(api))
+            .merge(identity_routes::router(identity)),
+    )
+    .route("/healthz", axum::routing::get(health))
+    .route(
+        "/readyz",
+        axum::routing::get(move || async move { crate::observability::readiness(&database).await }),
+    )
+    .fallback(fallback)
+    .layer(middleware::map_response(security_headers)))
+}
+
+/// Runs each of `router`'s matched routes inside an `http_request` span.
+fn traced(router: Router) -> Router {
+    router.route_layer(middleware::from_fn(request_span))
+}
+
+/// See the module documentation. A `5xx` response marks the span as failed;
+/// a client error is the client's, not the server's.
+async fn request_span(route: Option<MatchedPath>, request: Request, next: Next) -> Response {
+    let route = route.as_ref().map_or("unmatched", MatchedPath::as_str);
+    let method = method_name(request.method());
+    let span = tracing::info_span!(
+        "http_request",
+        otel.name = %format_args!("{method} {route}"),
+        otel.kind = "server",
+        otel.status_code = tracing::field::Empty,
+        http.request.method = method,
+        http.route = route,
+        http.response.status_code = tracing::field::Empty,
+    );
+    async move {
+        let response = next.run(request).await;
+        let current = tracing::Span::current();
+        current.record("http.response.status_code", response.status().as_u16());
+        if response.status().is_server_error() {
+            current.record("otel.status_code", "error");
+        }
+        response
+    }
+    .instrument(span)
+    .await
+}
+
+/// The request method for span names and attributes. Any method outside
+/// the standard set is `_OTHER`, as the HTTP semantic conventions require, so
+/// a client cannot mint span names.
+fn method_name(method: &axum::http::Method) -> &'static str {
+    use axum::http::Method;
+    match *method {
+        Method::GET => "GET",
+        Method::HEAD => "HEAD",
+        Method::POST => "POST",
+        Method::PUT => "PUT",
+        Method::DELETE => "DELETE",
+        Method::CONNECT => "CONNECT",
+        Method::OPTIONS => "OPTIONS",
+        Method::TRACE => "TRACE",
+        Method::PATCH => "PATCH",
+        _ => "_OTHER",
+    }
 }
 
 /// Liveness for a container or load balancer. It does not touch the database;
@@ -532,6 +589,54 @@ mod tests {
         );
         assert!(safe_relative("/../secret").is_none());
         assert!(safe_relative("//etc/passwd").is_some());
+    }
+
+    #[tokio::test]
+    async fn api_requests_start_a_new_trace_named_by_route() {
+        let (_guard, captured) = bergsmith_telemetry::testing::capture();
+        let router = traced(Router::new().route(
+            "/api/v1/jobs/{id}",
+            axum::routing::get(|| async { StatusCode::SERVICE_UNAVAILABLE }),
+        ));
+        let request = Request::builder()
+            .uri("/api/v1/jobs/0190a3b4-0000-7000-8000-000000000001")
+            // A browser cannot join or steer the coordinator's traces.
+            .header(
+                "traceparent",
+                "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+            )
+            .body(Body::empty())
+            .unwrap();
+        router.oneshot(request).await.unwrap();
+
+        let spans = captured.spans();
+        assert_eq!(spans.len(), 1, "{spans:?}");
+        let span = &spans[0];
+        assert_eq!(span.name, "GET /api/v1/jobs/{id}");
+        assert_ne!(span.trace_id, "0af7651916cd43dd8448eb211c80319c");
+        assert_eq!(span.parent_span_id, "0000000000000000");
+        assert_eq!(span.attributes["http.route"], "/api/v1/jobs/{id}");
+        assert_eq!(span.attributes["http.response.status_code"], "503");
+    }
+
+    #[tokio::test]
+    async fn an_extension_method_cannot_mint_a_span_name() {
+        let (_guard, captured) = bergsmith_telemetry::testing::capture();
+        let router = traced(Router::new().route(
+            "/api/v1/jobs/{id}",
+            axum::routing::get(|| async { StatusCode::OK }),
+        ));
+        let request = Request::builder()
+            .method(axum::http::Method::from_bytes(b"PURGEX").unwrap())
+            .uri("/api/v1/jobs/1")
+            .body(Body::empty())
+            .unwrap();
+        router.oneshot(request).await.unwrap();
+
+        let spans = captured.spans();
+        assert_eq!(spans.len(), 1, "{spans:?}");
+        assert_eq!(spans[0].name, "_OTHER /api/v1/jobs/{id}");
+        assert_eq!(spans[0].attributes["http.request.method"], "_OTHER");
     }
 
     #[tokio::test]

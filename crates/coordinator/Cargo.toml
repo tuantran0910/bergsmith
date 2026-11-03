@@ -25,6 +25,7 @@ bergsmith-maintenance.workspace = true
 bergsmith-persistence.workspace = true
 bergsmith-protocol.workspace = true
 bergsmith-storage.workspace = true
+bergsmith-telemetry.workspace = true
 iceberg.workspace = true
 parquet.workspace = true
 prost.workspace = true
@@ -48,6 +49,8 @@ tracing.workspace = true
 tower.workspace = true
 
 [dev-dependencies]
+# Capture exported spans to test trace propagation (ADR 0068).
+bergsmith-telemetry = { workspace = true, features = ["testing"] }
 # Observe a real task process and gate its metadata read during crash acceptance.
 rustix = { workspace = true, features = ["fs"] }
 sysinfo.workspace = true

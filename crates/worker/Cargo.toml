@@ -11,6 +11,7 @@ bergsmith-common.workspace = true
 bergsmith-maintenance.workspace = true
 bergsmith-protocol.workspace = true
 bergsmith-storage.workspace = true
+bergsmith-telemetry.workspace = true
 iceberg.workspace = true
 futures.workspace = true
 hyper-util.workspace = true
@@ -34,6 +35,8 @@ sysinfo.workspace = true
 
 [dev-dependencies]
 bergsmith-fixtures.workspace = true
+# Capture exported spans to test trace propagation (ADR 0068).
+bergsmith-telemetry = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]

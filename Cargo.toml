@@ -28,6 +28,7 @@ bergsmith-maintenance = { path = "crates/maintenance" }
 bergsmith-persistence = { path = "crates/persistence" }
 bergsmith-protocol = { path = "crates/protocol" }
 bergsmith-storage = { path = "crates/storage" }
+bergsmith-telemetry = { path = "crates/telemetry" }
 bergsmith-worker = { path = "crates/worker" }
 
 # External crates. Git dependencies must be pinned by `rev` (see AGENTS.md).
@@ -45,7 +46,14 @@ axum = "0.8.9"
 base64 = "0.23.1"
 bytes = "1.12.1"
 futures = "0.3.34"
+http = "1.5.0"
 mockito = "1.7.2"
+# OTLP trace export (ADR 0068): gRPC over the workspace tonic and aws-lc TLS.
+opentelemetry = { version = "0.33.1", default-features = false, features = ["trace"] }
+opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["grpc-tonic", "gzip-tonic", "tls-aws-lc", "tls-roots", "trace"] }
+opentelemetry-proto = { version = "0.33.1", default-features = false, features = ["gen-tonic", "trace"] }
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace"] }
+tracing-opentelemetry = { version = "0.34.0", default-features = false }
 prost = "0.14.4"
 # Property tests only; no process forking. Failing cases are saved under
 # `proptest-regressions/`.

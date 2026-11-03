@@ -160,10 +160,57 @@ Scrape the leader only, as for the probes above, and route the alerts'
 Both binaries log through `tracing`. `RUST_LOG` filters (default `info`), and
 `BERGSMITH_LOG_FORMAT` selects `text` (default) or `json`. A JSON line carries
 the event fields, the current span, and its parent spans; an unknown format
-stops the process at startup. Spans name `job_id` for each job the planner or
-publisher handles and the `method` of each worker RPC. Spans are the trace
-baseline; there is no OpenTelemetry exporter yet. Credentials and tokens never
-appear in fields.
+stops the process at startup. Credentials and tokens never appear in fields.
+
+### Trace export
+
+BS-030.T3 ([ADR 0068](../adr/0068-otlp-trace-export.md)) exports spans over
+OTLP/gRPC from the coordinator and the worker supervisor. Export is off unless
+an endpoint is set:
+
+| Variable | Effect |
+|---|---|
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_ENDPOINT` | Collector URL, `http://` or `https://`; the first one set wins. Unset means no export |
+| `OTEL_SDK_DISABLED=true`, `OTEL_TRACES_EXPORTER=none` | Turn export off while keeping the endpoint |
+| `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | Only `grpc` |
+| `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_TIMEOUT` (and `TRACES_` forms) | Standard exporter settings; put a collector token in the headers |
+| `OTEL_EXPORTER_OTLP_COMPRESSION`, `OTEL_EXPORTER_OTLP_TRACES_COMPRESSION` | `gzip` or `none` (default) |
+| `OTEL_EXPORTER_OTLP_CERTIFICATE`, `OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE` | PEM CA bundle for a private collector certificate, added to the system roots |
+| `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | `always_on`, `always_off`, `traceidratio`, or a `parentbased_` form (default `parentbased_always_on`); the argument is a ratio from 0 to 1 |
+| `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` | Resource attributes; the service name defaults to `bergsmith-coordinator` or `bergsmith-worker` |
+| `OTEL_BSP_*` | Batch queue size, batch size, delay, and export timeout |
+| `BERGSMITH_TRACE_FILTER` | Level directives for exported spans (default `info`) |
+
+An unsupported value stops the process at startup with the variable's name.
+Only Bergsmith's own spans and events are exported; spans from dependencies,
+such as SQL statements and the exporter's own requests, never are, whatever
+`BERGSMITH_TRACE_FILTER` says.
+
+| Span | Where | Fields |
+|---|---|---|
+| `http_request`, named `<METHOD> <route template>` (`_OTHER` for a non-standard method) | Coordinator, each `/api/v1` and `/auth` request | `http.route`, `http.request.method`, `http.response.status_code` |
+| `bergsmith.cluster.v1.ClusterService/<Method>` | Coordinator, each worker RPC | `method`, `rpc.grpc.status_code` |
+| `plan_job`, `publish_job`, `resume_intent` | Coordinator, one job each | `job_id` |
+| `task_attempt` | Worker, one granted attempt | `job_id`, `task_id`, `attempt_id` |
+| `report_attempt` | Worker, one journal record sent | `attempt_id` |
+
+Worker RPCs carry W3C `traceparent` and `tracestate`. The coordinator's RPC
+span continues the worker's trace once the worker's token authenticates; an
+unauthenticated call starts its own trace. Browser and API requests always start a
+new trace, and Bergsmith never sends trace context to catalogs, object
+storage, or notification destinations. With a `parentbased_traceidratio`
+sampler, give workers and coordinators the same ratio: a remote parent's
+"sampled" flag does not override the coordinator's own ratio, but the ratio
+decision depends only on the trace ID, so both sides agree.
+
+Spans wait in a bounded queue and are dropped when it is full; a slow or
+unreachable collector never delays work. An export failure is logged once
+when it starts and once when export recovers. On shutdown the process waits
+at most five seconds for queued spans. Task subprocesses do not export; the
+supervisor's `task_attempt` span covers them.
+
+The span names and fields above also appear in JSON log lines, whether or not
+export is on.
 
 ## Worker health
 

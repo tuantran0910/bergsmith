@@ -74,3 +74,4 @@ record's status; never rewrite an accepted decision.
 | [0065](0065-bounded-health-and-statistics-metrics.md) | Bounded health and statistics metrics | Proposed |
 | [0066](0066-packaged-alerts-and-dashboards.md) | Packaged Prometheus alerts and Grafana dashboards | Proposed |
 | [0067](0067-interface-system-v2.md) | Interface system v2: neutral tokens, type scale, motion, and engineering limits | Proposed |
+| [0068](0068-otlp-trace-export.md) | OTLP trace export with worker-to-coordinator propagation | Proposed |
