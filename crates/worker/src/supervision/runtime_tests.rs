@@ -627,7 +627,12 @@ async fn coordinator_requests_carry_the_current_trace_and_never_another() {
     let untraced = request(&harness.config, (), RPC_TIMEOUT).unwrap();
     drop(attempt);
 
-    let parent = traced.metadata().get("traceparent").unwrap().to_str().unwrap();
+    let parent = traced
+        .metadata()
+        .get("traceparent")
+        .unwrap()
+        .to_str()
+        .unwrap();
     let span = captured
         .spans()
         .into_iter()
