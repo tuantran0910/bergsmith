@@ -617,6 +617,34 @@ async fn a_repeated_grant_never_reexecutes_and_an_interrupted_one_reports_retrya
 }
 
 #[tokio::test]
+async fn coordinator_requests_carry_the_current_trace_and_never_another() {
+    let harness = harness().await;
+    let (_guard, captured) = bergsmith_telemetry::testing::capture();
+    let attempt = tracing::info_span!("task_attempt");
+    let traced = attempt
+        .in_scope(|| request(&harness.config, (), RPC_TIMEOUT))
+        .unwrap();
+    let untraced = request(&harness.config, (), RPC_TIMEOUT).unwrap();
+    drop(attempt);
+
+    let parent = traced
+        .metadata()
+        .get("traceparent")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let span = captured
+        .spans()
+        .into_iter()
+        .find(|span| span.name == "task_attempt")
+        .unwrap();
+    assert!(parent.contains(&span.trace_id), "{parent}");
+    assert!(parent.contains(&span.span_id), "{parent}");
+    assert!(traced.metadata().get("authorization").is_some());
+    assert!(untraced.metadata().get("traceparent").is_none());
+}
+
+#[tokio::test]
 async fn coordinator_responses_carry_the_date_used_for_lease_conversion() {
     let harness = harness().await;
     let tls = ClientTlsConfig::new().ca_certificate(Certificate::from_pem(

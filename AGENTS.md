@@ -31,6 +31,7 @@ metadata authority.
 | `crates/storage` | Backend-neutral object storage: locations, profiles, `ObjectStore` |
 | `crates/maintenance` | Planner, rewrite executor, delete application |
 | `crates/fixtures` | Dev-only: native Iceberg fixtures and the live-row oracle (ADR 0016) |
+| `crates/telemetry` | Log subscriber, optional OTLP trace export, and W3C propagation for both binaries (ADR 0068) |
 | `crates/persistence` | SQLx repositories and migrations |
 | `crates/coordinator` | Coordinator services |
 | `crates/worker` | Worker supervisor and task subprocess |

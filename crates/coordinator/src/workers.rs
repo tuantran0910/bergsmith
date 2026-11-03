@@ -501,8 +501,17 @@ impl WorkerService {
                 "worker token authentication is unavailable",
             )
         })?;
-        authenticated
-            .ok_or_else(|| unauthenticated("WorkerTokenInvalid", "invalid worker service token"))
+        let identity = authenticated
+            .ok_or_else(|| unauthenticated("WorkerTokenInvalid", "invalid worker service token"))?;
+        // Only now may the RPC span continue the worker's trace: before
+        // authentication, a caller could choose the trace ID (ADR 0068).
+        if let Some(parent) = request
+            .extensions()
+            .get::<bergsmith_telemetry::RemoteParent>()
+        {
+            parent.adopt();
+        }
+        Ok(identity)
     }
 
     /// Loads table access with a bounded wait; every error carries a typed reason.

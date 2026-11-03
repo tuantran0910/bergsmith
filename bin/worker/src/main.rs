@@ -6,7 +6,6 @@ use std::process::ExitCode;
 
 use bergsmith_worker::local::{self, LocalRequest};
 use clap::{Parser, Subcommand};
-use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(name = "bergsmith-worker", version, about = "Bergsmith worker")]
@@ -56,28 +55,6 @@ enum Command {
     },
 }
 
-/// Installs the log subscriber. `BERGSMITH_LOG_FORMAT` selects `text` (the
-/// default) or `json`, whose lines include the active span and its parents;
-/// `RUST_LOG` filters both. Returns an unrecognized format after installing
-/// the text format, so the caller can report it.
-fn init_logging() -> Result<(), String> {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
-    match std::env::var("BERGSMITH_LOG_FORMAT").as_deref() {
-        Err(_) | Ok("" | "text") => tracing_subscriber::fmt().with_env_filter(filter).init(),
-        Ok("json") => tracing_subscriber::fmt()
-            .json()
-            .with_current_span(true)
-            .with_span_list(true)
-            .with_env_filter(filter)
-            .init(),
-        Ok(other) => {
-            tracing_subscriber::fmt().with_env_filter(filter).init();
-            return Err(other.to_owned());
-        }
-    }
-    Ok(())
-}
-
 fn main() -> ExitCode {
     let command = Cli::parse().command;
     #[cfg(target_os = "linux")]
@@ -95,10 +72,6 @@ fn main() -> ExitCode {
     {
         return ExitCode::FAILURE;
     }
-    if let Err(format) = init_logging() {
-        tracing::error!(format, "BERGSMITH_LOG_FORMAT must be text or json");
-        return ExitCode::FAILURE;
-    }
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -106,11 +79,25 @@ fn main() -> ExitCode {
     {
         Ok(runtime) => runtime,
         Err(error) => {
+            bergsmith_telemetry::install_fallback();
             tracing::error!(error = %error, "worker runtime could not start");
             return ExitCode::FAILURE;
         }
     };
-    let result = runtime.block_on(dispatch(command));
+    // Trace export (ADR 0068) needs the runtime for its gRPC channel. Task
+    // subprocesses start with a cleared environment, so they only log.
+    let result = runtime.block_on(async {
+        let telemetry = match bergsmith_telemetry::install("bergsmith-worker") {
+            Ok(telemetry) => telemetry,
+            Err(error) => {
+                tracing::error!(error = %error, "telemetry could not start");
+                return ExitCode::FAILURE;
+            }
+        };
+        let code = dispatch(command).await;
+        telemetry.shutdown().await;
+        code
+    });
     // A cancelled native blocking operation must not delay process termination.
     runtime.shutdown_background();
     result

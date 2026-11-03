@@ -3,7 +3,9 @@
 //! Each call is timed from request to response headers and recorded by
 //! method and gRPC status code; a unary handler has finished by then. The
 //! call also runs inside a `worker_rpc` span, so its log events carry the
-//! method.
+//! method. When trace export is on, the W3C context in the request headers is
+//! kept in the request's extensions, and the span continues the worker's
+//! trace only once the worker service authenticates the call (ADR 0068).
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -145,9 +147,20 @@ where
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, request: http::Request<B>) -> Self::Future {
+    fn call(&mut self, mut request: http::Request<B>) -> Self::Future {
         let method = method(request.uri().path());
-        let span = tracing::info_span!("worker_rpc", method);
+        let span = tracing::info_span!(
+            "worker_rpc",
+            method,
+            otel.name = rpc_name(method),
+            otel.kind = "server",
+            otel.status_code = tracing::field::Empty,
+            rpc.system = "grpc",
+            rpc.grpc.status_code = tracing::field::Empty,
+        );
+        if let Some(parent) = bergsmith_telemetry::RemoteParent::extract(&span, request.headers()) {
+            request.extensions_mut().insert(parent);
+        }
         let started = Instant::now();
         let call = self.inner.call(request);
         let metrics = self.metrics.clone();
@@ -159,6 +172,11 @@ where
                     Err(_) => "Transport".to_owned(),
                 };
                 metrics.observe(method, &code, started.elapsed().as_secs_f64());
+                let current = tracing::Span::current();
+                current.record("rpc.grpc.status_code", code.as_str());
+                if code != "Ok" {
+                    current.record("otel.status_code", "error");
+                }
                 result
             }
             .instrument(span),
@@ -185,6 +203,21 @@ fn method(path: &str) -> &'static str {
         .into_iter()
         .find(|method| *method == name)
         .unwrap_or("unknown")
+}
+
+/// The span name for a method from [`method`], following the OpenTelemetry
+/// RPC convention of `package.Service/Method`.
+fn rpc_name(method: &'static str) -> &'static str {
+    match method {
+        "RegisterWorker" => "bergsmith.cluster.v1.ClusterService/RegisterWorker",
+        "RequestTask" => "bergsmith.cluster.v1.ClusterService/RequestTask",
+        "Heartbeat" => "bergsmith.cluster.v1.ClusterService/Heartbeat",
+        "ReportTaskResult" => "bergsmith.cluster.v1.ClusterService/ReportTaskResult",
+        "ReportTaskFailure" => "bergsmith.cluster.v1.ClusterService/ReportTaskFailure",
+        "GetAttemptStatus" => "bergsmith.cluster.v1.ClusterService/GetAttemptStatus",
+        "DrainWorker" => "bergsmith.cluster.v1.ClusterService/DrainWorker",
+        _ => "bergsmith.cluster.v1.ClusterService/unknown",
+    }
 }
 
 /// The status of a trailers-only (error) response, or `Ok`: a successful
@@ -279,5 +312,61 @@ mod tests {
 
         assert!(text.contains("{method=\"Heartbeat\",code=\"NotFound\"} 1\n"));
         assert!(text.contains("{method=\"RequestTask\",code=\"Ok\"} 1\n"));
+    }
+    #[tokio::test]
+    async fn only_an_authenticated_worker_rpc_continues_the_worker_trace() {
+        let (_guard, captured) = bergsmith_telemetry::testing::capture();
+        // Stands in for the worker service: it adopts the parent only when
+        // the call authenticates, as `WorkerService::authenticate` does.
+        let service = RpcMetrics::default().layer().layer(tower::service_fn(
+            |request: http::Request<bool>| async move {
+                if *request.body()
+                    && let Some(parent) = request
+                        .extensions()
+                        .get::<bergsmith_telemetry::RemoteParent>()
+                {
+                    parent.adopt();
+                }
+                let mut response = http::Response::new(());
+                response
+                    .headers_mut()
+                    .insert("grpc-status", http::HeaderValue::from_static("5"));
+                Ok::<_, Infallible>(response)
+            },
+        ));
+        let worker = tracing::info_span!("task_attempt");
+        let headers = bergsmith_telemetry::trace_headers(&worker);
+        drop(worker);
+        for (path, authenticated) in [
+            (
+                "/bergsmith.cluster.v1.ClusterService/ReportTaskResult",
+                true,
+            ),
+            ("/bergsmith.cluster.v1.ClusterService/Heartbeat", false),
+        ] {
+            let mut request = http::Request::builder()
+                .uri(path)
+                .body(authenticated)
+                .unwrap();
+            for (name, value) in &headers {
+                request.headers_mut().insert(
+                    http::HeaderName::try_from(name.as_str()).unwrap(),
+                    http::HeaderValue::try_from(value.as_str()).unwrap(),
+                );
+            }
+            service.clone().oneshot(request).await.unwrap();
+        }
+
+        let spans = captured.spans();
+        let find = |name: &str| spans.iter().find(|span| span.name == name).unwrap();
+        let worker = find("task_attempt");
+        let adopted = find("bergsmith.cluster.v1.ClusterService/ReportTaskResult");
+        let rejected = find("bergsmith.cluster.v1.ClusterService/Heartbeat");
+        assert_eq!(adopted.trace_id, worker.trace_id);
+        assert_eq!(adopted.parent_span_id, worker.span_id);
+        assert_eq!(adopted.attributes["rpc.grpc.status_code"], "NotFound");
+        assert_eq!(adopted.attributes["method"], "ReportTaskResult");
+        assert_ne!(rejected.trace_id, worker.trace_id);
+        assert_eq!(rejected.parent_span_id, "0000000000000000");
     }
 }
